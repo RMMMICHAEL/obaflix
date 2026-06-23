@@ -61,6 +61,7 @@ export function CustomPlayer({
   const durationRef = useRef(duracaoSeg ?? 0);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSkipDoneRef = useRef(false);
+  const extractAbortRef = useRef<AbortController | null>(null);
 
   const allFontes: Fonte[] = [
     ...parseFontes(urlDub, "[Dub]"),
@@ -127,11 +128,16 @@ export function CustomPlayer({
   }, []);
 
   const extract = useCallback(async (embedUrl: string) => {
+    // Cancela qualquer extração anterior ainda em andamento
+    extractAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    extractAbortRef.current = ctrl;
+
     setStatus("extracting");
     setError("");
     setStreamUrl(null);
     try {
-      const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`);
+      const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
       const data = await res.json();
       if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
       setStreamTipo(data.tipo ?? "hls");
@@ -144,6 +150,7 @@ export function CustomPlayer({
         setStatus("loading");
       }
     } catch (e: any) {
+      if ((e as any)?.name === "AbortError") return; // extração cancelada, ignora
       // Auto-pula para a próxima fonte disponível
       if (fonteIdx < allFontes.length - 1) {
         switchFonte(fonteIdx + 1);

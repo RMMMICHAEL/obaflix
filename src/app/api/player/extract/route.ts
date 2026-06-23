@@ -92,7 +92,23 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
 }
 
 async function extractWish(html: string, embedUrl: string): Promise<string | null> {
-  // Mesmo padrão do hide
+  // 1. Tenta direto no HTML sem ofuscação (alguns wish expõem o m3u8 limpo)
+  const direct = findM3u8(html);
+  if (direct) return direct;
+
+  // 2. Tenta padrão {file:"..."} sem deofuscar
+  const fileSplit = html.split('[{file:"')[1]?.split('"')[0];
+  if (fileSplit?.startsWith("http")) return fileSplit;
+
+  // 3. Padrão jwplayer setup com sources
+  const jwMatch = html.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i);
+  if (jwMatch?.[1]?.startsWith("http")) return jwMatch[1];
+
+  // 4. Padrão "file":"URL" em JSON inline
+  const jsonFile = html.match(/"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i);
+  if (jsonFile?.[1]) return jsonFile[1];
+
+  // 5. Fallback: moon.php (deofusca o eval packer)
   return extractHide(html, embedUrl);
 }
 

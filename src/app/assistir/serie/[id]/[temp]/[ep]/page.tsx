@@ -61,6 +61,7 @@ export default async function AssistirEpPage({
 
   return (
     <CustomPlayer
+      key={episodio.id}
       urlDub={episodio.urlDub}
       urlLeg={episodio.urlLeg}
       titulo={serie.titulo}
