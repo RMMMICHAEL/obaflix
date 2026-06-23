@@ -91,7 +91,9 @@ export function CustomPlayer({
       const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`);
       const data = await res.json();
       if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
-      setStreamUrl(data.stream);
+      // Passa pelo proxy para contornar CORS do CDN
+      const proxied = `/api/player/proxy?url=${encodeURIComponent(data.stream)}`;
+      setStreamUrl(proxied);
       setStatus("loading");
     } catch (e: any) {
       setError(e.message || "Erro ao extrair stream");
