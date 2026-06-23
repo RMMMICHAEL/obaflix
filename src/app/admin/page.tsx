@@ -81,6 +81,7 @@ export default function AdminPage() {
   const [token, setToken] = useState("");
   const [savedToken, setSavedToken] = useState("");
   const [tab, setTab] = useState<"dash" | "filme" | "serie" | "catalogo" | "episodios">("dash");
+  const [preloadSerieId, setPreloadSerieId] = useState<string | undefined>();
 
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
@@ -152,9 +153,25 @@ export default function AdminPage() {
       <div className="px-4 py-6 md:px-8 max-w-5xl">
         {tab === "dash"      && <Dashboard headers={headers} />}
         {tab === "filme"     && <AdicionarFilme headers={headers} />}
-        {tab === "serie"     && <AdicionarSerie headers={headers} />}
-        {tab === "catalogo"  && <Catalogo headers={headers} onEditEp={(id) => setTab("episodios")} />}
-        {tab === "episodios" && <GerenciarEpisodios headers={headers} />}
+        {tab === "serie"     && (
+          <AdicionarSerie
+            headers={headers}
+            onSaved={(id) => { setPreloadSerieId(id); setTab("episodios"); }}
+          />
+        )}
+        {tab === "catalogo"  && (
+          <Catalogo
+            headers={headers}
+            onEditEp={(id) => { setPreloadSerieId(id); setTab("episodios"); }}
+          />
+        )}
+        {tab === "episodios" && (
+          <GerenciarEpisodios
+            headers={headers}
+            initialSerieId={preloadSerieId}
+            onLoaded={() => setPreloadSerieId(undefined)}
+          />
+        )}
       </div>
     </div>
   );
@@ -359,7 +376,7 @@ function FilmeForm({ form, set }: { form: any; set: (k: string, v: string) => vo
 
 // ── Adicionar Série ───────────────────────────────────────────────────────────
 
-function AdicionarSerie({ headers }: { headers: Record<string, string> }) {
+function AdicionarSerie({ headers, onSaved }: { headers: Record<string, string>; onSaved?: (id: string) => void }) {
   const blank = { id: "", tmdbId: "", titulo: "", tituloOriginal: "", poster: "", background: "", sinopse: "", ano: "", nota: "", temporadas: "", tipo: "serie", generos: [] as any[] };
   const [form, setForm] = useState(blank);
   const [saving, setSaving] = useState(false);
@@ -397,7 +414,11 @@ function AdicionarSerie({ headers }: { headers: Record<string, string> }) {
     });
     const d = await r.json();
     setMsg(r.ok ? `✓ Salvo: ${d.id}` : `Erro: ${d.error}`);
-    if (r.ok) setForm(blank);
+    if (r.ok) {
+      const savedId = form.id;
+      setForm(blank);
+      setTimeout(() => onSaved?.(savedId), 600);
+    }
     setSaving(false);
   };
 
@@ -588,14 +609,32 @@ function Catalogo({ headers, onEditEp }: { headers: Record<string, string>; onEd
 
 // ── Gerenciar Episódios ───────────────────────────────────────────────────────
 
-function GerenciarEpisodios({ headers }: { headers: Record<string, string> }) {
+function GerenciarEpisodios({ headers, initialSerieId, onLoaded }: {
+  headers: Record<string, string>;
+  initialSerieId?: string;
+  onLoaded?: () => void;
+}) {
   const [serieId, setSerieId] = useState("");
+  const [serieNome, setSerieNome] = useState("");
   const [serieQ, setSerieQ] = useState("");
   const [serieResults, setSerieResults] = useState<SerieItem[]>([]);
   const [episodios, setEpisodios] = useState<EpItem[]>([]);
   const [newEp, setNewEp] = useState({ temporada: "1", numeroEp: "", titulo: "", urlDub: "", urlLeg: "" });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [bulkJson, setBulkJson] = useState("");
+  const [bulkMsg, setBulkMsg] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [showConsole, setShowConsole] = useState(false);
+
+  // Auto-load quando vem de "Add Série" ou catálogo
+  useEffect(() => {
+    if (initialSerieId) {
+      loadEps(initialSerieId);
+      onLoaded?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSerieId]);
 
   const searchSerie = async () => {
     const r = await fetch(`/api/admin/serie?q=${encodeURIComponent(serieQ)}`, { headers });
@@ -603,11 +642,37 @@ function GerenciarEpisodios({ headers }: { headers: Record<string, string> }) {
     setSerieResults(d.items ?? []);
   };
 
-  const loadEps = async (id: string) => {
+  const loadEps = async (id: string, nome?: string) => {
     setSerieId(id);
+    if (nome) setSerieNome(nome);
     setSerieResults([]);
     const r = await fetch(`/api/admin/episodio?serieId=${id}`, { headers });
     setEpisodios(await r.json());
+  };
+
+  const bulkImport = async () => {
+    if (!serieId || !bulkJson.trim()) return;
+    setBulkSaving(true);
+    setBulkMsg("");
+    try {
+      const episodios = JSON.parse(bulkJson);
+      const r = await fetch("/api/admin/episodio/bulk", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ serieId, episodios }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setBulkMsg(`✓ ${d.ok} episódios importados${d.errors ? `, ${d.errors} erros` : ""}`);
+        setBulkJson("");
+        loadEps(serieId);
+      } else {
+        setBulkMsg(`Erro: ${d.error}`);
+      }
+    } catch {
+      setBulkMsg("JSON inválido — verifique o formato");
+    }
+    setBulkSaving(false);
   };
 
   const addEp = async () => {
@@ -659,7 +724,7 @@ function GerenciarEpisodios({ headers }: { headers: Record<string, string> }) {
       {serieResults.length > 0 && (
         <div className="bg-zinc-900 border border-white/10 rounded-lg overflow-hidden mb-4 max-h-48 overflow-y-auto">
           {serieResults.map((s) => (
-            <button key={s.id} onClick={() => loadEps(s.id)}
+            <button key={s.id} onClick={() => loadEps(s.id, s.titulo)}
               className="w-full text-left px-4 py-2.5 hover:bg-zinc-800 transition border-b border-white/5 last:border-0 text-sm">
               <span className="font-medium">{s.titulo}</span>
               <span className="text-zinc-400 ml-2 text-xs">{s.tipo} · {s._count.episodios} eps · {s.id}</span>
@@ -670,7 +735,10 @@ function GerenciarEpisodios({ headers }: { headers: Record<string, string> }) {
 
       {serieId && (
         <>
-          <p className="text-xs text-zinc-500 mb-4">Série: <code className="text-zinc-300">{serieId}</code></p>
+          <p className="text-xs text-zinc-500 mb-4">
+            Série: <code className="text-zinc-300">{serieNome || serieId}</code>
+            <code className="text-zinc-600 ml-2 text-[10px]">{serieId}</code>
+          </p>
 
           {/* Add episode form */}
           <div className="bg-zinc-900 border border-white/10 rounded-xl p-4 mb-6">
@@ -694,6 +762,63 @@ function GerenciarEpisodios({ headers }: { headers: Record<string, string> }) {
                 Adicionar
               </button>
               {msg && <p className={`text-sm ${msg.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{msg}</p>}
+            </div>
+          </div>
+
+          {/* ── Importar em Lote ── */}
+          <div className="bg-zinc-900 border border-white/10 rounded-xl p-4 mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-zinc-300">Importar em Lote</h3>
+              <button
+                onClick={() => setShowConsole(!showConsole)}
+                className="text-xs text-[#E50914] hover:underline"
+              >
+                {showConsole ? "Ocultar" : "Ver script do console"}
+              </button>
+            </div>
+
+            {showConsole && (
+              <div className="mb-4 bg-zinc-950 border border-white/10 rounded-lg p-3">
+                <p className="text-xs text-zinc-400 mb-2">
+                  Cole no console do painel MegaFlix (F12 → Console) enquanto estiver na página de episódios da série:
+                </p>
+                <pre className="text-[11px] text-green-300 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{`(function(){
+  var eps = [];
+  document.querySelectorAll('.edit_ep').forEach(function(btn){
+    eps.push({
+      ep:     btn.getAttribute('data-ep'),
+      temp:   btn.getAttribute('data-temp'),
+      titulo: btn.getAttribute('data-nome'),
+      urlDub: btn.getAttribute('data-urlBR'),
+      urlLeg: btn.getAttribute('data-urlENG')
+    });
+  });
+  var json = JSON.stringify(eps, null, 2);
+  console.log(json);
+  if(navigator.clipboard) navigator.clipboard.writeText(json).then(function(){ console.log('✓ Copiado!'); });
+  return eps.length + ' episódios extraídos';
+})()`}</pre>
+                <p className="text-[10px] text-zinc-500 mt-2">O JSON será copiado automaticamente para a área de transferência. Cole abaixo.</p>
+              </div>
+            )}
+
+            <textarea
+              value={bulkJson}
+              onChange={(e) => setBulkJson(e.target.value)}
+              placeholder={`Cole o JSON aqui:\n[\n  {"ep":"1","temp":"1","titulo":"Episódio 1","urlDub":"https://...","urlLeg":""},\n  ...\n]`}
+              rows={6}
+              className="w-full bg-zinc-800 text-white px-3 py-2.5 rounded-lg border border-white/10 focus:border-white/30 text-xs font-mono outline-none resize-none mb-3"
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={bulkImport}
+                disabled={bulkSaving || !bulkJson.trim()}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2 rounded-lg transition disabled:opacity-50 text-sm"
+              >
+                {bulkSaving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                Importar Todos
+              </button>
+              {bulkMsg && <p className={`text-sm ${bulkMsg.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{bulkMsg}</p>}
             </div>
           </div>
 
