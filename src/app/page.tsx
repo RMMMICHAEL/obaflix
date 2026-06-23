@@ -2,6 +2,9 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { ContentRow } from "@/components/ui/ContentRow";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 async function getHomeData() {
   try {
     const [lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos] =
