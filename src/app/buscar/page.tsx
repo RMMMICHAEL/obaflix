@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { Search } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 type Aba = "tudo" | "filme" | "serie" | "anime";
 
-export default function BuscarPage() {
+function BuscarConteudo() {
   const sp = useSearchParams();
   const q = sp.get("q") ?? "";
   const [filmes, setFilmes] = useState<any[]>([]);
@@ -83,5 +85,13 @@ export default function BuscarPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function BuscarPage() {
+  return (
+    <Suspense fallback={<div className="pt-20 px-8 text-zinc-500 text-sm">Carregando...</div>}>
+      <BuscarConteudo />
+    </Suspense>
   );
 }

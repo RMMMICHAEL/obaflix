@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ContentCard } from "@/components/ui/ContentCard";
+
+export const dynamic = "force-dynamic";
 
 const ORDENS = [
   { value: "recente", label: "Mais Recente" },
@@ -10,7 +12,7 @@ const ORDENS = [
   { value: "az", label: "A-Z" },
 ];
 
-export default function SeriesPage() {
+function SeriesConteudo() {
   const router = useRouter();
   const sp = useSearchParams();
   const [series, setSeries] = useState<any[]>([]);
@@ -70,5 +72,13 @@ export default function SeriesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function SeriesPage() {
+  return (
+    <Suspense fallback={<div className="pt-20 px-8 text-zinc-500 text-sm">Carregando...</div>}>
+      <SeriesConteudo />
+    </Suspense>
   );
 }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ContentCard } from "@/components/ui/ContentCard";
-import { Filter } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 const ORDENS = [
   { value: "recente", label: "Mais Recente" },
@@ -11,14 +12,13 @@ const ORDENS = [
   { value: "az", label: "A-Z" },
 ];
 
-export default function FilmesPage() {
+function FilmesConteudo() {
   const router = useRouter();
   const sp = useSearchParams();
   const [filmes, setFilmes] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [generos, setGeneros] = useState<any[]>([]);
 
   const genero = sp.get("genero") ?? "";
   const ano = sp.get("ano") ?? "";
@@ -37,12 +37,6 @@ export default function FilmesPage() {
   }, [genero, ano, ordem]);
 
   useEffect(() => { setPage(1); load(1, true); }, [load]);
-
-  useEffect(() => {
-    fetch("/api/filmes?page=1&limit=0").then(() => {});
-    // load generos
-    fetch("/api/search?q=a").then(() => {});
-  }, []);
 
   const setParam = (key: string, val: string) => {
     const params = new URLSearchParams(sp.toString());
@@ -70,17 +64,7 @@ export default function FilmesPage() {
 
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-3">
         {filmes.map((f) => (
-          <ContentCard
-            key={f.id}
-            id={f.id}
-            tipo="filme"
-            titulo={f.titulo}
-            poster={f.poster}
-            ano={f.ano}
-            nota={f.nota}
-            urlDub={f.urlDub}
-            urlLeg={f.urlLeg}
-          />
+          <ContentCard key={f.id} id={f.id} tipo="filme" titulo={f.titulo} poster={f.poster} ano={f.ano} nota={f.nota} urlDub={f.urlDub} urlLeg={f.urlLeg} />
         ))}
       </div>
 
@@ -96,5 +80,13 @@ export default function FilmesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function FilmesPage() {
+  return (
+    <Suspense fallback={<div className="pt-20 px-8 text-zinc-500 text-sm">Carregando...</div>}>
+      <FilmesConteudo />
+    </Suspense>
   );
 }
