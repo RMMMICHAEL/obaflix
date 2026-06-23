@@ -26,11 +26,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const existe = await prisma.user.findUnique({ where: { email } });
+  const normalizedEmail = email.toLowerCase().trim();
+  const existe = await prisma.user.findUnique({ where: { email: normalizedEmail } });
   if (existe) return NextResponse.json({ error: "Email já cadastrado" }, { status: 409 });
 
   const senhaHash = await bcrypt.hash(senha, 10);
-  const user = await prisma.user.create({ data: { nome, email, senhaHash } });
+  const user = await prisma.user.create({ data: { nome, email: normalizedEmail, senhaHash } });
 
   return NextResponse.json({ id: user.id, email: user.email });
 }

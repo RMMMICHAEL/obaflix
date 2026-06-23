@@ -42,7 +42,7 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials: any) {
         if (!credentials?.email || !credentials?.senha) return null;
-        const user = await prisma.user.findUnique({ where: { email: credentials.email } });
+        const user = await prisma.user.findUnique({ where: { email: credentials.email.toLowerCase().trim() } });
         if (!user) return null;
         if (!user.senhaHash) {
           // Conta criada via Google — não tem senha, retorna erro específico
