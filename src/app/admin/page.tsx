@@ -1,8 +1,8 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   Film, Tv, LayoutDashboard, Search, Plus, Trash2, Edit2,
   ChevronLeft, ChevronRight, Loader2, Check, X, ListVideo,
@@ -77,18 +77,20 @@ function slugify(str: string) {
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
+  const router = useRouter();
   const [token, setToken] = useState("");
   const [savedToken, setSavedToken] = useState("");
   const [tab, setTab] = useState<"dash" | "filme" | "serie" | "catalogo" | "episodios">("dash");
 
   useEffect(() => {
-    if (status === "unauthenticated") redirect("/login");
-    // Temporarily disabled role check — debug mode
-    // if (status === "authenticated" && (session?.user as any)?.role !== "admin") redirect("/");
-    const t = localStorage.getItem("admin_token") ?? "";
-    setToken(t);
-    setSavedToken(t);
-  }, [status, session]);
+    if (status === "unauthenticated") router.push("/login");
+    if (status === "authenticated" && (session?.user as any)?.role !== "admin") router.push("/");
+    if (status === "authenticated") {
+      const t = localStorage.getItem("admin_token") ?? "";
+      setToken(t);
+      setSavedToken(t);
+    }
+  }, [status, session, router]);
 
   const saveToken = () => {
     localStorage.setItem("admin_token", token);
