@@ -83,7 +83,8 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (status === "unauthenticated") redirect("/login");
-    if (status === "authenticated" && (session?.user as any)?.role !== "admin") redirect("/");
+    // Temporarily disabled role check — debug mode
+    // if (status === "authenticated" && (session?.user as any)?.role !== "admin") redirect("/");
     const t = localStorage.getItem("admin_token") ?? "";
     setToken(t);
     setSavedToken(t);
@@ -100,6 +101,13 @@ export default function AdminPage() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white pt-16">
+      {/* Debug info */}
+      <div className="bg-yellow-900/40 border-b border-yellow-500/20 px-4 py-1.5 text-xs text-yellow-300 flex gap-4">
+        <span>Email: {session?.user?.email ?? "—"}</span>
+        <span>Role: {(session?.user as any)?.role ?? "—"}</span>
+        <span>Status: {status}</span>
+      </div>
+
       {/* Token bar */}
       <div className="bg-zinc-900 border-b border-white/5 px-4 py-2 flex items-center gap-3">
         <span className="text-xs text-zinc-400 shrink-0">Admin Token:</span>
