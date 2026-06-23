@@ -1,13 +1,10 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-
-function isAdmin(req: NextRequest) {
-  return req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
-}
+import { requireAdmin } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo") ?? "";
@@ -33,7 +30,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const body = await req.json();
   const {
@@ -80,7 +77,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const { id } = await req.json();
   await prisma.watchHistory.deleteMany({ where: { conteudoId: id } });

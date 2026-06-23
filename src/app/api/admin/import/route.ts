@@ -1,14 +1,10 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-
-function isAdmin(req: NextRequest) {
-  const token = req.headers.get("x-admin-token");
-  return token === process.env.ADMIN_SECRET_TOKEN;
-}
+import { requireAdmin } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const { tipo, dados } = await req.json();
   if (!Array.isArray(dados)) return NextResponse.json({ error: "dados deve ser array" }, { status: 400 });

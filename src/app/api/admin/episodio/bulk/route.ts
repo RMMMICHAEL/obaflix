@@ -1,15 +1,12 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-
-function isAdmin(req: NextRequest) {
-  return req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
-}
+import { requireAdmin } from "@/lib/auth";
 
 // POST /api/admin/episodio/bulk
 // Body: { serieId: string, episodios: Array<{ temp, ep, titulo?, urlDub?, urlLeg? }> }
 export async function POST(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const { serieId, episodios } = await req.json();
   if (!serieId || !Array.isArray(episodios)) {

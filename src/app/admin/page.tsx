@@ -78,55 +78,21 @@ function slugify(str: string) {
 export default function AdminPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const [token, setToken] = useState("");
-  const [savedToken, setSavedToken] = useState("");
   const [tab, setTab] = useState<"dash" | "filme" | "serie" | "catalogo" | "episodios">("dash");
   const [preloadSerieId, setPreloadSerieId] = useState<string | undefined>();
 
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
     if (status === "authenticated" && (session?.user as any)?.role !== "admin") router.push("/");
-    if (status === "authenticated") {
-      const t = localStorage.getItem("admin_token") ?? "";
-      setToken(t);
-      setSavedToken(t);
-    }
   }, [status, session, router]);
-
-  const saveToken = () => {
-    localStorage.setItem("admin_token", token);
-    setSavedToken(token);
-  };
 
   if (status === "loading") return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin text-white" /></div>;
 
-  const headers = { "Content-Type": "application/json", "x-admin-token": savedToken };
+  // Autorização agora é por sessão (cookie enviado automaticamente). Sem token client-side.
+  const headers = { "Content-Type": "application/json" };
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white pt-16">
-      {/* Debug info */}
-      <div className="bg-yellow-900/40 border-b border-yellow-500/20 px-4 py-1.5 text-xs text-yellow-300 flex gap-4">
-        <span>Email: {session?.user?.email ?? "—"}</span>
-        <span>Role: {(session?.user as any)?.role ?? "—"}</span>
-        <span>Status: {status}</span>
-      </div>
-
-      {/* Token bar */}
-      <div className="bg-zinc-900 border-b border-white/5 px-4 py-2 flex items-center gap-3">
-        <span className="text-xs text-zinc-400 shrink-0">Admin Token:</span>
-        <input
-          type="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="ADMIN_SECRET_TOKEN"
-          className="flex-1 max-w-xs bg-zinc-800 text-white text-xs px-3 py-1.5 rounded outline-none border border-white/10 focus:border-white/30"
-        />
-        <button onClick={saveToken} className="text-xs bg-[#E50914] px-3 py-1.5 rounded font-semibold hover:bg-red-700 transition">
-          Salvar
-        </button>
-        {savedToken && <Check size={14} className="text-green-400" />}
-      </div>
-
       {/* Tab nav */}
       <nav className="flex gap-1 px-4 pt-4 pb-0 border-b border-white/5">
         {([
@@ -480,7 +446,8 @@ function Catalogo({ headers, onEditEp }: { headers: Record<string, string>; onEd
     setLoading(true);
     const endpoint = tipo === "filme" ? "/api/admin/filme" : "/api/admin/serie";
     const r = await fetch(`${endpoint}?q=${encodeURIComponent(q)}&page=${page}`, { headers });
-    setData(await r.json());
+    const d = await r.json();
+    setData(r.ok && Array.isArray(d.items) ? d : null);
     setLoading(false);
   }, [tipo, q, page, headers]);
 

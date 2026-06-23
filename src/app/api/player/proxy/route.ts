@@ -1,18 +1,26 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { assertSafeUrl } from "@/lib/ssrf";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 // Faz fetch server-side (sem CORS) e devolve o conteúdo pro browser
 export async function GET(req: NextRequest) {
+  // Exige sessão para evitar uso do servidor como open proxy anônimo.
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return new NextResponse("Não autenticado", { status: 401 });
+
   const url = req.nextUrl.searchParams.get("url");
   if (!url) return new NextResponse("url obrigatória", { status: 400 });
 
+  // Valida contra SSRF (scheme http/https, bloqueia IPs internos / metadata).
   let parsed: URL;
   try {
-    parsed = new URL(url);
-  } catch {
-    return new NextResponse("URL inválida", { status: 400 });
+    parsed = await assertSafeUrl(url);
+  } catch (e: any) {
+    return new NextResponse(e?.message ?? "URL inválida", { status: 400 });
   }
 
   try {
@@ -69,7 +77,6 @@ export async function GET(req: NextRequest) {
         status: 200,
         headers: {
           "Content-Type": "application/vnd.apple.mpegurl",
-          "Access-Control-Allow-Origin": "*",
           "Cache-Control": "no-cache",
         },
       });
@@ -81,7 +88,6 @@ export async function GET(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": contentType,
-        "Access-Control-Allow-Origin": "*",
         "Cache-Control": "public, max-age=3600",
       },
     });

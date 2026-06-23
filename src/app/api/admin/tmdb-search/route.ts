@@ -4,12 +4,10 @@ import { NextRequest, NextResponse } from "next/server";
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const BASE = "https://api.themoviedb.org/3";
 
-function isAdmin(req: NextRequest) {
-  return req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
-}
+import { requireAdmin } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo") ?? "filme"; // "filme" | "serie"

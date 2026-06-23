@@ -1,5 +1,8 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { assertSafeUrl } from "@/lib/ssrf";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
@@ -166,11 +169,14 @@ function findM3u8(text: string): string | null {
 // ── Router principal ──────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+
   const url = req.nextUrl.searchParams.get("url");
   if (!url) return NextResponse.json({ error: "url obrigatória" }, { status: 400 });
 
   try {
-    const parsed = new URL(url);
+    const parsed = await assertSafeUrl(url);
     const hostname = parsed.hostname;
     const pathname = parsed.pathname;
     const id = pathname.split("/").filter(Boolean).pop() ?? "";

@@ -1,13 +1,10 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
-function isAdmin(req: NextRequest) {
-  return req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
-}
-
-export async function GET(req: NextRequest) {
-  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+export async function GET(_req: NextRequest) {
+  const guard = await requireAdmin(); if (guard) return guard;
 
   const [filmes, series, animes, desenhos, episodios, usuarios] = await Promise.all([
     prisma.filme.count(),

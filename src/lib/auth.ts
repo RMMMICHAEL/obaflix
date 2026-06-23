@@ -2,7 +2,25 @@ import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
+import { getServerSession } from "next-auth";
 import { prisma } from "./prisma";
+
+/**
+ * Autoriza apenas usuários autenticados com role "admin".
+ * Lança NextResponse 401/403 que deve ser propagado pela rota.
+ * Uso:  const guard = await requireAdmin(); if (guard) return guard;
+ */
+export async function requireAdmin() {
+  const { NextResponse } = await import("next/server");
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  }
+  if ((session.user as { role?: string }).role !== "admin") {
+    return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+  }
+  return null;
+}
 
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
