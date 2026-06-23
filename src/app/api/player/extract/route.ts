@@ -207,13 +207,17 @@ export async function GET(req: NextRequest) {
     }
 
     if (!streamUrl) {
-      return NextResponse.json({ error: "stream não encontrado" }, { status: 404 });
+      // Fallback final: usa iframe — melhor exibir algo do que erro
+      return NextResponse.json({ stream: url, tipo: "iframe" });
     }
 
     const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
     return NextResponse.json({ stream: streamUrl, tipo });
 
   } catch (err: any) {
+    // Em qualquer exceção, cai no iframe como último recurso
+    const url2 = req.nextUrl.searchParams.get("url");
+    if (url2) return NextResponse.json({ stream: url2, tipo: "iframe" });
     return NextResponse.json({ error: err?.message ?? "erro interno" }, { status: 500 });
   }
 }

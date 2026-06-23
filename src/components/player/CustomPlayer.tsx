@@ -317,22 +317,36 @@ export function CustomPlayer({
       </div>
 
       {/* ── Bottom controls ── */}
-      <div className={`absolute bottom-0 inset-x-0 z-20 flex flex-col gap-3 px-5 pb-5 pt-20 bg-gradient-to-t from-black/90 via-black/40 to-transparent transition-opacity duration-300 ${ctrlVisible}`}>
+      <div
+        className={`absolute bottom-0 inset-x-0 z-20 flex flex-col gap-2 px-4 pb-5 pt-20 bg-gradient-to-t from-black via-black/70 to-transparent transition-opacity duration-300 ${ctrlVisible}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Fontes */}
+        {allFontes.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+            {allFontes.map((f, i) => (
+              <button
+                key={i}
+                onClick={() => switchFonte(i)}
+                className={`text-[11px] px-2.5 py-0.5 rounded-full border transition-all ${
+                  fonteIdx === i
+                    ? "bg-[#E50914] border-[#E50914] text-white font-semibold"
+                    : "border-white/20 text-white/50 hover:border-white/40 hover:text-white/80 bg-white/5"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        )}
 
-        {/* Progress bar */}
-        <div
-          className="relative w-full group/bar cursor-pointer"
-          style={{ height: "4px" }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        {/* Barra de progresso */}
+        <div className="relative w-full cursor-pointer group/bar" style={{ height: 18 }}>
           {/* Track */}
-          <div className="absolute inset-0 rounded-full bg-white/20 transition-all duration-150 group-hover/bar:h-[6px] group-hover/bar:-top-[1px]">
-            {/* Buffer */}
-            <div className="absolute inset-0 rounded-full bg-white/25" style={{ width: `${bufPct}%` }} />
-            {/* Progress */}
-            <div className="absolute inset-0 rounded-full bg-[#ED1D24]" style={{ width: `${pct}%` }}>
-              {/* Thumb */}
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-3 rounded-full bg-white shadow opacity-0 group-hover/bar:opacity-100 transition-opacity" />
+          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[3px] rounded-full bg-white/15 group-hover/bar:h-[5px] transition-all duration-150">
+            <div className="absolute inset-0 rounded-full bg-white/20" style={{ width: `${bufPct}%` }} />
+            <div className="absolute inset-0 rounded-full bg-[#E50914]" style={{ width: `${pct}%` }}>
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-3 rounded-full bg-white shadow-md opacity-0 group-hover/bar:opacity-100 transition-opacity" />
             </div>
           </div>
           <input
@@ -342,87 +356,66 @@ export function CustomPlayer({
           />
         </div>
 
-        {/* Controls row */}
-        <div
-          className="flex items-center justify-between gap-4"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Left: playback */}
-          <div className="flex items-center gap-3">
-            <button onClick={() => seek(-10)} className="text-white/60 hover:text-white transition-colors">
-              <SkipBack size={19} strokeWidth={1.5} />
-            </button>
-            <button onClick={togglePlay} className="text-white hover:text-white/80 transition-colors">
-              {playing
-                ? <Pause size={28} fill="currentColor" strokeWidth={0} />
-                : <Play size={28} fill="currentColor" strokeWidth={0} />
-              }
-            </button>
-            <button onClick={() => seek(10)} className="text-white/60 hover:text-white transition-colors">
-              <SkipForward size={19} strokeWidth={1.5} />
-            </button>
-            <span className="text-white/50 text-xs font-mono tracking-wider">
-              {fmt(currentTime)} <span className="text-white/25">/</span> {fmt(duration)}
-            </span>
-          </div>
+        {/* Linha de controles */}
+        <div className="flex items-center gap-1">
+          {/* Playback */}
+          <button onClick={() => seek(-10)} className="p-1.5 text-white/60 hover:text-white transition-colors">
+            <SkipBack size={17} strokeWidth={1.5} />
+          </button>
+          <button onClick={togglePlay} className="p-1.5 text-white hover:scale-110 transition-transform">
+            {playing
+              ? <Pause size={26} fill="currentColor" strokeWidth={0} />
+              : <Play size={26} fill="currentColor" strokeWidth={0} />
+            }
+          </button>
+          <button onClick={() => seek(10)} className="p-1.5 text-white/60 hover:text-white transition-colors">
+            <SkipForward size={17} strokeWidth={1.5} />
+          </button>
 
-          {/* Center: fontes */}
-          <div className="flex items-center gap-1.5 flex-wrap justify-center">
-            {allFontes.map((f, i) => (
-              <button
-                key={i}
-                onClick={() => switchFonte(i)}
-                className={`text-xs px-3 py-1 rounded-full border transition-all ${
-                  fonteIdx === i
-                    ? "bg-[#ED1D24] border-[#ED1D24] text-white font-semibold"
-                    : "border-white/15 text-white/50 hover:border-white/30 hover:text-white/80"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Right: volume + nav + fullscreen */}
-          <div className="flex items-center gap-3">
-            {prevUrl && (
-              <button
-                onClick={() => { saveProgress(); router.push(prevUrl); }}
-                className="flex items-center gap-1 text-xs text-white/50 hover:text-white transition-colors"
-              >
-                <ChevronLeft size={15} strokeWidth={1.5} /> Anterior
-              </button>
-            )}
-            {nextUrl && (
-              <button
-                onClick={() => { saveProgress(); router.push(nextUrl); }}
-                className="flex items-center gap-1 text-xs text-white border border-white/20 hover:bg-white/10 px-3 py-1 rounded-full transition-all"
-              >
-                Próximo <ChevronRight size={15} strokeWidth={1.5} />
-              </button>
-            )}
-
-            {/* Volume */}
-            <div className="flex items-center gap-2 group/vol">
-              <button onClick={toggleMute} className="text-white/60 hover:text-white transition-colors">
-                {muted || volume === 0
-                  ? <VolumeX size={19} strokeWidth={1.5} />
-                  : <Volume2 size={19} strokeWidth={1.5} />
-                }
-              </button>
-              <div className="w-0 overflow-hidden group-hover/vol:w-20 transition-all duration-200">
-                <input
-                  type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume}
-                  onChange={onVolumeSlider}
-                  className="w-20 accent-[#ED1D24] cursor-pointer"
-                />
-              </div>
+          {/* Volume */}
+          <div className="flex items-center group/vol ml-1">
+            <button onClick={toggleMute} className="p-1.5 text-white/60 hover:text-white transition-colors">
+              {muted || volume === 0 ? <VolumeX size={17} strokeWidth={1.5} /> : <Volume2 size={17} strokeWidth={1.5} />}
+            </button>
+            <div className="overflow-hidden w-0 group-hover/vol:w-20 transition-all duration-200 ease-out">
+              <input
+                type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume}
+                onChange={onVolumeSlider}
+                className="w-20 accent-[#E50914] cursor-pointer"
+              />
             </div>
-
-            <button onClick={toggleFullscreen} className="text-white/60 hover:text-white transition-colors">
-              <Maximize size={19} strokeWidth={1.5} />
-            </button>
           </div>
+
+          {/* Tempo */}
+          <span className="text-white/40 text-[11px] font-mono ml-2 shrink-0">
+            {fmt(currentTime)} <span className="text-white/20">/</span> {fmt(duration)}
+          </span>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Nav episódios */}
+          {prevUrl && (
+            <button
+              onClick={() => { saveProgress(); router.push(prevUrl); }}
+              className="flex items-center gap-0.5 text-[11px] text-white/50 hover:text-white transition-colors px-1"
+            >
+              <ChevronLeft size={13} strokeWidth={2} /> Ant.
+            </button>
+          )}
+          {nextUrl && (
+            <button
+              onClick={() => { saveProgress(); router.push(nextUrl); }}
+              className="flex items-center gap-0.5 text-[11px] text-white/80 hover:text-white border border-white/20 hover:bg-white/10 px-2.5 py-1 rounded-full transition-all"
+            >
+              Próximo <ChevronRight size={13} strokeWidth={2} />
+            </button>
+          )}
+
+          {/* Fullscreen */}
+          <button onClick={toggleFullscreen} className="p-1.5 text-white/60 hover:text-white transition-colors ml-1">
+            <Maximize size={17} strokeWidth={1.5} />
+          </button>
         </div>
       </div>
     </div>
