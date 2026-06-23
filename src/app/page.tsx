@@ -1,12 +1,22 @@
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { ContentRow } from "@/components/ui/ContentRow";
+import { prisma } from "@/lib/prisma";
 
 async function getHomeData() {
   try {
-    const base = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
-    const res = await fetch(`${base}/api/home`, { next: { revalidate: 60 } });
-    if (!res.ok) return null;
-    return res.json();
+    const [lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos] =
+      await Promise.all([
+        prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+        prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+        prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+        prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+        prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+        prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+      ]);
+
+    const hero = [...lancamentosFilmes.slice(0, 3), ...lancamentosSeries.slice(0, 2)];
+
+    return { hero, lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos };
   } catch {
     return null;
   }
@@ -15,7 +25,7 @@ async function getHomeData() {
 export default async function HomePage() {
   const data = await getHomeData();
 
-  if (!data) {
+  if (!data || data.lancamentosFilmes.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
