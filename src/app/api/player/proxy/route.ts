@@ -33,7 +33,11 @@ export async function GET(req: NextRequest) {
     }
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
-    const isM3u8 = url.includes(".m3u8") || contentType.includes("mpegurl");
+    const isM3u8 =
+      url.includes(".m3u8") ||
+      url.includes(".txt") ||
+      contentType.includes("mpegurl") ||
+      contentType.includes("x-mpegurl");
 
     if (isM3u8) {
       // Reescreve o .m3u8 para que todos os segmentos também passem pelo proxy
