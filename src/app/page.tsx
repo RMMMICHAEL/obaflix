@@ -61,7 +61,7 @@ function tmdbToCard(
 
   // Use DB poster if available, otherwise TMDB poster
   const poster = db?.poster ?? item.poster_path ?? null;
-  const ano = db?.ano ?? Number((item.release_date ?? item.first_air_date ?? "").slice(0, 4)) || null;
+  const ano = db?.ano ?? (Number((item.release_date ?? item.first_air_date ?? "").slice(0, 4)) || null);
   const nota = db?.nota ?? item.vote_average ?? null;
   const titulo = db?.titulo ?? item.title ?? item.name ?? "";
 
