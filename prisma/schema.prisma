@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Filme {
+  id             String        @id
+  tmdbId         String?
+  titulo         String
+  tituloOriginal String?
+  poster         String?
+  background     String?
+  sinopse        String?       @db.Text
+  ano            Int?
+  nota           Float?
+  duracao        Int?
+  sagaId         Int?
+  urlDub         String?       @db.Text
+  urlLeg         String?       @db.Text
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  generos        FilmeGenero[]
+  progresso      WatchHistory[]
+  watchlist      Watchlist[]
+}
+
+model Serie {
+  id             String        @id
+  tmdbId         String?
+  titulo         String
+  tituloOriginal String?
+  poster         String?
+  background     String?
+  sinopse        String?       @db.Text
+  ano            Int?
+  nota           Float?
+  temporadas     Int?
+  tipo           String        @default("serie")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  episodios      Episodio[]
+  generos        SerieGenero[]
+  progresso      WatchHistory[]
+  watchlist      Watchlist[]
+}
+
+model Episodio {
+  id        String        @id
+  serieId   String
+  serie     Serie         @relation(fields: [serieId], references: [id])
+  numeroEp  Int
+  temporada Int
+  titulo    String?
+  thumbnail String?
+  urlDub    String?       @db.Text
+  urlLeg    String?       @db.Text
+  createdAt DateTime      @default(now())
+  progresso WatchHistory[]
+}
+
+model Genero {
+  id     Int           @id
+  nome   String
+  filmes FilmeGenero[]
+  series SerieGenero[]
+}
+
+model FilmeGenero {
+  filmeId  String
+  generoId Int
+  filme    Filme  @relation(fields: [filmeId], references: [id])
+  genero   Genero @relation(fields: [generoId], references: [id])
+  @@id([filmeId, generoId])
+}
+
+model SerieGenero {
+  serieId  String
+  generoId Int
+  serie    Serie  @relation(fields: [serieId], references: [id])
+  genero   Genero @relation(fields: [generoId], references: [id])
+  @@id([serieId, generoId])
+}
+
+model User {
+  id        String         @id @default(cuid())
+  nome      String?
+  email     String         @unique
+  senhaHash String?
+  avatar    String?
+  role      String         @default("user")
+  createdAt DateTime       @default(now())
+  historico WatchHistory[]
+  watchlist Watchlist[]
+}
+
+model WatchHistory {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  conteudoId   String
+  conteudoTipo String
+  episodioId   String?
+  episodio     Episodio? @relation(fields: [episodioId], references: [id])
+  temporada    Int?
+  numeroEp     Int?
+  progressoSeg Int       @default(0)
+  duracaoSeg   Int?
+  concluido    Boolean   @default(false)
+  updatedAt    DateTime  @updatedAt
+  filmeId      String?
+  filme        Filme?    @relation(fields: [filmeId], references: [id])
+  serieId      String?
+  serie        Serie?    @relation(fields: [serieId], references: [id])
+  @@unique([userId, conteudoId, episodioId])
+}
+
+model Watchlist {
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  conteudoId   String
+  conteudoTipo String
+  addedAt      DateTime @default(now())
+  filmeId      String?
+  filme        Filme?   @relation(fields: [filmeId], references: [id])
+  serieId      String?
+  serie        Serie?   @relation(fields: [serieId], references: [id])
+  @@id([userId, conteudoId, conteudoTipo])
+}
+
+model Saga {
+  id   Int    @id
+  nome String
+}
