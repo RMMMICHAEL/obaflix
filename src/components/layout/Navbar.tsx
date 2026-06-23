@@ -49,20 +49,33 @@ export function Navbar() {
           </form>
 
           {session ? (
-            <div className="relative group">
-              <button className="flex items-center gap-1.5 text-white text-sm">
+            <div className="relative">
+              <button
+                onClick={() => setMenuOpen((o) => !o)}
+                className="flex items-center gap-1.5 text-white text-sm"
+              >
                 <User size={18} />
-                <span className="hidden md:inline">{session.user?.name?.split(" ")[0]}</span>
+                <span className="hidden md:inline">{session.user?.name?.split(" ")[0] ?? session.user?.email}</span>
               </button>
-              <div className="absolute right-0 top-full mt-2 w-40 bg-zinc-900 border border-zinc-800 rounded shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition">
-                <Link href="/conta" className="block px-4 py-2.5 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800">Minha Conta</Link>
-                {(session.user as { role?: string })?.role === "admin" && (
-                  <Link href="/admin" className="block px-4 py-2.5 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800">Admin</Link>
-                )}
-                <button onClick={() => signOut()} className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-zinc-800">
-                  Sair
-                </button>
-              </div>
+              {menuOpen && (
+                <>
+                  {/* Backdrop para fechar ao clicar fora */}
+                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl z-20 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-800">
+                      <p className="text-xs text-zinc-400">Logado como</p>
+                      <p className="text-sm text-white font-medium truncate">{session.user?.email}</p>
+                    </div>
+                    <Link href="/conta" onClick={() => setMenuOpen(false)} className="block px-4 py-2.5 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800">Minha Conta</Link>
+                    {(session.user as { role?: string })?.role === "admin" && (
+                      <Link href="/admin" onClick={() => setMenuOpen(false)} className="block px-4 py-2.5 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800">Admin</Link>
+                    )}
+                    <button onClick={() => signOut()} className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-zinc-800">
+                      Sair
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <Link href="/login" className="bg-red-600 text-white text-sm font-semibold px-4 py-1.5 rounded hover:bg-red-700 transition">
