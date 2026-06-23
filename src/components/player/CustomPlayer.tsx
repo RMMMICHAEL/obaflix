@@ -23,6 +23,7 @@ interface Props {
 }
 
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
+type StreamTipo = "hls" | "mp4" | "iframe";
 
 interface Fonte {
   label: string;
@@ -68,6 +69,7 @@ export function CustomPlayer({
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [streamTipo, setStreamTipo] = useState<StreamTipo>("hls");
 
   // Player controls state
   const [playing, setPlaying] = useState(false);
@@ -91,10 +93,17 @@ export function CustomPlayer({
       const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`);
       const data = await res.json();
       if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
-      // Passa pelo proxy para contornar CORS do CDN
-      const proxied = `/api/player/proxy?url=${encodeURIComponent(data.stream)}`;
-      setStreamUrl(proxied);
-      setStatus("loading");
+      setStreamTipo(data.tipo ?? "hls");
+      if (data.tipo === "iframe") {
+        // Embed que não suporta extração server-side — usa iframe direto
+        setStreamUrl(data.stream);
+        setStatus("playing");
+      } else {
+        // Passa pelo proxy para contornar CORS do CDN
+        const proxied = `/api/player/proxy?url=${encodeURIComponent(data.stream)}`;
+        setStreamUrl(proxied);
+        setStatus("loading");
+      }
     } catch (e: any) {
       setError(e.message || "Erro ao extrair stream");
       setStatus("error");
@@ -326,13 +335,23 @@ export function CustomPlayer({
       </div>
 
       {/* ── Video ── */}
-      <div className="flex-1 relative flex items-center justify-center cursor-pointer" onClick={togglePlay}>
-        <video
-          ref={videoRef}
-          className="w-full h-full object-contain"
-          playsInline
-          preload="auto"
-        />
+      <div className="flex-1 relative flex items-center justify-center cursor-pointer" onClick={streamTipo !== "iframe" ? togglePlay : undefined}>
+        {streamTipo === "iframe" && streamUrl ? (
+          <iframe
+            key={streamUrl}
+            src={streamUrl}
+            className="w-full h-full border-0"
+            allowFullScreen
+            allow="autoplay; fullscreen; picture-in-picture"
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            className="w-full h-full object-contain"
+            playsInline
+            preload="auto"
+          />
+        )}
 
         {/* Status overlay */}
         {status === "extracting" && (

@@ -164,8 +164,8 @@ export async function GET(req: NextRequest) {
     // ── Rota por plataforma (exatamente como o app Megaflix) ──────────────────
 
     if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
-      const html = await fetchHtml(url, "https://megaflix.lat/");
-      streamUrl = await extractLulu(html);
+      // luluvdo bloqueia fetch server-side com 403 — retorna iframe para o player
+      return NextResponse.json({ stream: url, tipo: "iframe" });
 
     } else if (hostname.includes("hide") || hostname.includes("playhide")) {
       const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/");
