@@ -1,5 +1,6 @@
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { ContentRow } from "@/components/ui/ContentRow";
+import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { prisma } from "@/lib/prisma";
 import {
   getTrending, getPopularMovies, getPopularTV,
@@ -217,6 +218,9 @@ export default async function HomePage() {
       <HeroSlider items={heroItems as any} />
 
       <div className="mt-6 space-y-2">
+        {/* Continuar assistindo — client component (requer sessão) */}
+        <ContinuarAssistindo />
+
         {/* TMDB-powered sections */}
         {trending.length > 0 && (
           <ContentRow titulo="🔥 Em Alta Esta Semana" items={trending} />
