@@ -19,6 +19,8 @@ export default function LoginPage() {
     const res = await signIn("credentials", { email, senha: senha, redirect: false });
     if (res?.ok) {
       router.push("/");
+    } else if (res?.error === "google-account") {
+      setErro('Esta conta foi criada com o Google. Use o botão "Entrar com Google" acima.');
     } else {
       setErro("Email ou senha incorretos.");
     }

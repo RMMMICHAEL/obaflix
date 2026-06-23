@@ -27,7 +27,8 @@ function pct(item: HistoryItem) {
 
 function watchUrl(item: HistoryItem) {
   if (item.tipo === "filme") return `/assistir/filme/${item.id}`;
-  if (item.episodioId) return `/assistir/serie/${item.id}/ep/${item.episodioId}`;
+  if (item.temporada && item.numeroEp)
+    return `/assistir/serie/${item.id}/t${item.temporada}/ep${item.numeroEp}`;
   return `/serie/${item.id}`;
 }
 
