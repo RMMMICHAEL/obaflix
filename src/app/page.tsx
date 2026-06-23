@@ -65,19 +65,8 @@ function tmdbToCard(
   const nota = db?.nota ?? item.vote_average ?? null;
   const titulo = db?.titulo ?? item.title ?? item.name ?? "";
 
-  if (!db) {
-    // Item not in our DB — still show it without play link
-    return {
-      id: `tmdb-${tmdbId}`,
-      tipo,
-      titulo,
-      poster,
-      ano,
-      nota,
-      urlDub: null,
-      urlLeg: null,
-    };
-  }
+  // Item not in our DB — skip it
+  if (!db) return null;
 
   return {
     id: db.id,
