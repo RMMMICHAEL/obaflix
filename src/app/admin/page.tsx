@@ -166,16 +166,19 @@ function Dashboard({ headers }: { headers: Record<string, string> }) {
   const [stats, setStats] = useState<any>(null);
 
   useEffect(() => {
-    fetch("/api/admin/stats", { headers }).then((r) => r.json()).then(setStats);
+    fetch("/api/admin/stats", { headers })
+      .then((r) => r.json())
+      .then((d) => { if (d && typeof d.filmes === "number") setStats(d); })
+      .catch(() => {});
   }, []);
 
   const cards = stats ? [
-    { label: "Filmes", value: stats.filmes, color: "from-blue-600 to-blue-800" },
-    { label: "Séries", value: stats.series, color: "from-purple-600 to-purple-800" },
-    { label: "Animes", value: stats.animes, color: "from-pink-600 to-pink-800" },
-    { label: "Desenhos", value: stats.desenhos, color: "from-orange-600 to-orange-800" },
-    { label: "Episódios", value: stats.episodios, color: "from-green-600 to-green-800" },
-    { label: "Usuários", value: stats.usuarios, color: "from-zinc-600 to-zinc-800" },
+    { label: "Filmes", value: stats.filmes ?? 0, color: "from-blue-600 to-blue-800" },
+    { label: "Séries", value: stats.series ?? 0, color: "from-purple-600 to-purple-800" },
+    { label: "Animes", value: stats.animes ?? 0, color: "from-pink-600 to-pink-800" },
+    { label: "Desenhos", value: stats.desenhos ?? 0, color: "from-orange-600 to-orange-800" },
+    { label: "Episódios", value: stats.episodios ?? 0, color: "from-green-600 to-green-800" },
+    { label: "Usuários", value: stats.usuarios ?? 0, color: "from-zinc-600 to-zinc-800" },
   ] : [];
 
   return (
