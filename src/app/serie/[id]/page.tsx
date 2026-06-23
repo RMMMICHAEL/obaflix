@@ -1,14 +1,18 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star } from "lucide-react";
-import { imgUrl } from "@/lib/tmdb";
+import { Play, Star, User } from "lucide-react";
+import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
+import { ContentRow } from "@/components/ui/ContentRow";
+import { TrailerButton } from "@/components/ui/TrailerButton";
+
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const serie = await prisma.serie.findUnique({ where: { id: params.id } });
-  return { title: serie ? `${serie.titulo} — Streamix` : "Streamix" };
+  return { title: serie ? `${serie.titulo} — Obaflix` : "Obaflix" };
 }
 
 export default async function SeriePage({ params }: { params: { id: string } }) {
@@ -19,16 +23,46 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   if (!serie) notFound();
 
-  const episodios = await prisma.episodio.findMany({
-    where: { serieId: serie.id },
-    orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
-  });
+  const [episodios, videos, credits, tmdbRecs] = await Promise.all([
+    prisma.episodio.findMany({
+      where: { serieId: serie.id },
+      orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
+    }),
+    serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
+    serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
+    serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
+  ]);
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
+  const trailer = pickTrailer(videos?.results);
+  const cast = (credits?.cast ?? []).slice(0, 16);
+
+  // TMDB recommendations → match with DB
+  let recCards: any[] = [];
+  if (tmdbRecs?.results?.length) {
+    const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
+    const dbRecs = await prisma.serie.findMany({
+      where: { tmdbId: { in: tmdbIds } },
+      select: { id: true, titulo: true, poster: true, ano: true, nota: true, tipo: true },
+    });
+    recCards = dbRecs.map((s) => ({ ...s, tipo: s.tipo as any }));
+  }
+
+  // Fallback: series do mesmo gênero
+  if (!recCards.length) {
+    const generoIds = serie.generos.map((g: any) => g.generoId);
+    const fallback = await prisma.serie.findMany({
+      where: { id: { not: serie.id }, generos: { some: { generoId: { in: generoIds } } } },
+      take: 20,
+      select: { id: true, titulo: true, poster: true, ano: true, nota: true, tipo: true },
+    });
+    recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
+  }
 
   return (
     <div className="min-h-screen">
-      <div className="relative h-[60vh] min-h-[360px]">
+      {/* Backdrop */}
+      <div className="relative h-[65vh] min-h-[400px]">
         <Image
           src={serie.background ? imgUrl(serie.background, "original") : "/placeholder-bg.jpg"}
           alt={serie.titulo}
@@ -40,10 +74,11 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
       </div>
 
-      <div className="relative -mt-48 px-4 md:px-16 pb-16">
+      <div className="relative -mt-56 px-4 md:px-16 pb-16">
         <div className="flex flex-col md:flex-row gap-8">
+          {/* Poster */}
           <div className="shrink-0">
-            <div className="w-40 md:w-56 rounded-lg overflow-hidden shadow-2xl">
+            <div className="w-40 md:w-56 rounded-xl overflow-hidden shadow-2xl ring-1 ring-white/10">
               <Image
                 src={serie.poster ? imgUrl(serie.poster, "w342") : "/placeholder.jpg"}
                 alt={serie.titulo}
@@ -54,40 +89,99 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
             </div>
           </div>
 
-          <div className="flex-1 pt-0 md:pt-8">
-            <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">{serie.titulo}</h1>
+          {/* Info */}
+          <div className="flex-1 pt-0 md:pt-12">
+            <h1 className="text-3xl md:text-5xl font-black text-white mb-1 leading-tight">{serie.titulo}</h1>
 
-            <div className="flex flex-wrap items-center gap-3 mb-4 text-sm text-zinc-400">
-              {serie.ano && <span>{serie.ano}</span>}
-              {serie.temporadas && <span>{serie.temporadas} temp.</span>}
-              {serie.nota && (
-                <span className="flex items-center gap-1 text-yellow-400"><Star size={14} fill="currentColor" /> {serie.nota.toFixed(1)}</span>
+            <div className="flex flex-wrap items-center gap-4 mb-4 text-sm text-zinc-400">
+              {serie.ano && <span className="font-medium">{serie.ano}</span>}
+              {serie.temporadas && (
+                <span>{serie.temporadas} {serie.temporadas === 1 ? "temporada" : "temporadas"}</span>
               )}
-              <span className="bg-zinc-800 text-zinc-300 text-xs px-2 py-0.5 rounded capitalize">{serie.tipo}</span>
+              {serie.nota && (
+                <span className="flex items-center gap-1.5 text-yellow-400 font-semibold">
+                  <Star size={14} fill="currentColor" /> {serie.nota.toFixed(1)}
+                </span>
+              )}
+              <span className="bg-zinc-800 text-zinc-300 text-xs px-2.5 py-1 rounded-full capitalize border border-zinc-700">
+                {serie.tipo}
+              </span>
             </div>
 
-            <div className="flex flex-wrap gap-2 mb-4">
-              {serie.generos.map((g: { generoId: number; genero: { nome: string } }) => (
-                <span key={g.generoId} className="text-xs bg-zinc-800 text-zinc-300 px-2.5 py-1 rounded-full">{g.genero.nome}</span>
+            <div className="flex flex-wrap gap-2 mb-5">
+              {serie.generos.map((g: any) => (
+                <span key={g.generoId} className="text-xs bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-zinc-700">
+                  {g.genero.nome}
+                </span>
               ))}
             </div>
 
-            {serie.sinopse && <p className="text-zinc-300 text-sm leading-relaxed mb-6 max-w-2xl">{serie.sinopse}</p>}
-
-            {episodios[0] && (
-              <Link
-                href={`/assistir/serie/${serie.id}/t${episodios[0].temporada}/ep${episodios[0].numeroEp}`}
-                className="inline-flex items-center gap-2 bg-white text-black font-bold px-7 py-2.5 rounded hover:bg-zinc-200 transition"
-              >
-                <Play size={18} fill="black" /> Assistir
-              </Link>
+            {serie.sinopse && (
+              <p className="text-zinc-300 text-sm md:text-base leading-relaxed mb-6 max-w-2xl">{serie.sinopse}</p>
             )}
+
+            <div className="flex flex-wrap gap-3">
+              {episodios[0] && (
+                <Link
+                  href={`/assistir/serie/${serie.id}/t${episodios[0].temporada}/ep${episodios[0].numeroEp}`}
+                  className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
+                >
+                  <Play size={18} fill="black" /> Assistir
+                </Link>
+              )}
+              {trailer && (
+                <TrailerButton videoKey={trailer.key} titulo={serie.titulo} />
+              )}
+            </div>
           </div>
         </div>
 
+        {/* Elenco */}
+        {cast.length > 0 && (
+          <div className="mt-12">
+            <h2 className="text-white font-semibold text-lg mb-4">Elenco Principal</h2>
+            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2">
+              {cast.map((person: any) => {
+                const character = person.character ?? person.roles?.[0]?.character;
+                return (
+                  <div key={person.id} className="flex-none w-24 text-center">
+                    <div className="w-24 h-24 rounded-full overflow-hidden bg-zinc-800 mb-2 mx-auto ring-2 ring-zinc-700">
+                      {person.profile_path ? (
+                        <Image
+                          src={imgUrl(person.profile_path, "w185")}
+                          alt={person.name}
+                          width={96}
+                          height={96}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-zinc-600">
+                          <User size={32} />
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-white text-xs font-semibold line-clamp-2 leading-tight">{person.name}</p>
+                    {character && (
+                      <p className="text-zinc-500 text-[10px] line-clamp-1 mt-0.5">{character}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Episódios */}
         <div className="mt-10">
           <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} />
         </div>
+
+        {/* Recomendações */}
+        {recCards.length > 0 && (
+          <div className="mt-10">
+            <ContentRow titulo="Você Também Pode Gostar" items={recCards} />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -29,7 +29,10 @@ export function HeroSlider({ items }: { items: HeroItem[] }) {
   return (
     <div className="relative h-[70vh] min-h-[400px] w-full overflow-hidden">
       <Image
-        src={item.background ? imgUrl(item.background, "original") : "/placeholder-bg.jpg"}
+        src={item.background
+          ? (item.background.startsWith("http") ? item.background : imgUrl(item.background, "original"))
+          : "/placeholder-bg.jpg"
+        }
         alt={item.titulo}
         fill
         className="object-cover transition-opacity duration-700"
