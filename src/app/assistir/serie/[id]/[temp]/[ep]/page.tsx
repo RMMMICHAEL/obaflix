@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
 
@@ -7,6 +9,9 @@ export default async function AssistirEpPage({
 }: {
   params: { id: string; temp: string; ep: string };
 }) {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as any)?.id;
+
   const temporada = Number(params.temp.replace("t", ""));
   const numeroEp = Number(params.ep.replace("ep", ""));
 
@@ -19,7 +24,7 @@ export default async function AssistirEpPage({
 
   if (!serie || !episodio) notFound();
 
-  const [prevEp, nextEp] = await Promise.all([
+  const [prevEp, nextEp, historico] = await Promise.all([
     prisma.episodio.findFirst({
       where: {
         serieId: params.id,
@@ -40,6 +45,11 @@ export default async function AssistirEpPage({
       },
       orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
     }),
+    userId
+      ? prisma.watchHistory.findUnique({
+          where: { userId_conteudoId_episodioId: { userId, conteudoId: serie.id, episodioId: episodio.id } },
+        })
+      : null,
   ]);
 
   const prevUrl = prevEp
@@ -61,6 +71,7 @@ export default async function AssistirEpPage({
       numeroEp={numeroEp}
       prevUrl={prevUrl}
       nextUrl={nextUrl}
+      initialProgressoSeg={historico?.progressoSeg ?? 0}
     />
   );
 }

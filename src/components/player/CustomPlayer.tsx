@@ -20,6 +20,7 @@ interface Props {
   prevUrl?: string;
   nextUrl?: string;
   duracaoSeg?: number;
+  initialProgressoSeg?: number;
 }
 
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
@@ -50,7 +51,7 @@ function fmt(s: number): string {
 
 export function CustomPlayer({
   urlDub, urlLeg, titulo, conteudoId, conteudoTipo,
-  episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg,
+  episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -98,20 +99,17 @@ export function CustomPlayer({
     }).catch(() => {});
   }, [conteudoId, conteudoTipo, episodioId, temporada, numeroEp, duracaoSeg]);
 
-  // Salva a cada 15s + no pause + ao sair da página
+  // Salva a cada 15s + ao sair da página
   useEffect(() => {
     const t = setInterval(saveProgress, 15000);
-    const onPause = () => saveProgress();
     const onHide = () => { if (document.visibilityState === "hidden") saveProgress(); };
     const onUnload = () => saveProgress();
 
-    videoRef.current?.addEventListener("pause", onPause);
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", onUnload);
 
     return () => {
       clearInterval(t);
-      videoRef.current?.removeEventListener("pause", onPause);
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onUnload);
     };
@@ -177,7 +175,10 @@ export function CustomPlayer({
         hlsRef.current = hls;
         hls.loadSource(streamUrl!);
         hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (initialProgressoSeg > 5) video.currentTime = initialProgressoSeg;
+          video.play().catch(() => {});
+        });
         hls.on(Hls.Events.ERROR, (_: any, data: any) => {
           if (data.fatal) {
             // Auto-pula para próxima fonte em erro HLS fatal
@@ -192,6 +193,9 @@ export function CustomPlayer({
       });
     } else {
       video.src = streamUrl;
+      if (initialProgressoSeg > 5) {
+        video.addEventListener("loadedmetadata", () => { video.currentTime = initialProgressoSeg; }, { once: true });
+      }
       video.play().catch(() => {});
     }
     return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
@@ -203,7 +207,7 @@ export function CustomPlayer({
     if (!video) return;
 
     const onPlay = () => { setPlaying(true); setStatus("playing"); };
-    const onPause = () => setPlaying(false);
+    const onPause = () => { setPlaying(false); saveProgress(); };
     const onWaiting = () => setStatus("loading");
     const onCanPlay = () => setStatus("playing");
     const onTimeUpdate = () => {
@@ -255,7 +259,7 @@ export function CustomPlayer({
       document.removeEventListener("fullscreenchange", onFullscreenChange);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextUrl, nextEpCountdown]);
+  }, [nextUrl, nextEpCountdown, saveProgress]);
 
   // ── Auto-hide controls ────────────────────────────────────────────────────
   const resetHideTimer = useCallback(() => {
