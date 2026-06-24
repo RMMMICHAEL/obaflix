@@ -11,8 +11,9 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
   const [filme, historico] = await Promise.all([
     prisma.filme.findUnique({ where: { id: params.id } }),
     userId
-      ? prisma.watchHistory.findUnique({
-          where: { userId_conteudoId_episodioId: { userId, conteudoId: params.id, episodioId: null } },
+      ? prisma.watchHistory.findFirst({
+          where: { userId, conteudoId: params.id, episodioId: null },
+          orderBy: { updatedAt: "desc" },
         })
       : null,
   ]);

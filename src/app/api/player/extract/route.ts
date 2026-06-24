@@ -95,23 +95,57 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
 }
 
 async function extractWish(html: string, embedUrl: string): Promise<string | null> {
-  // 1. Tenta direto no HTML sem ofuscação (alguns wish expõem o m3u8 limpo)
+  const parsed = new URL(embedUrl);
+  const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+
+  // 1. API POST direta — igual ao rola, mais rápida que parsing de HTML
+  if (id) {
+    try {
+      const form = new URLSearchParams({ hash: id, r: "", do: "getVideo" });
+      const res = await fetch(embedUrl, {
+        method: "POST",
+        headers: {
+          "User-Agent": UA,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Referer": "https://megaflix.lat/",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: form.toString(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json) {
+          // Formato: { sources: [{file:"..."}] } ou { videoSource: "..." }
+          const src =
+            json.sources?.[0]?.file ||
+            json.source?.[0]?.file ||
+            json.videoSource ||
+            json.src ||
+            null;
+          if (src?.startsWith("http")) return src;
+        }
+      }
+    } catch { /* tenta próximo método */ }
+  }
+
+  // 2. Tenta direto no HTML sem ofuscação
   const direct = findM3u8(html);
   if (direct) return direct;
 
-  // 2. Tenta padrão {file:"..."} sem deofuscar
+  // 3. Padrão {file:"..."} sem deofuscar
   const fileSplit = html.split('[{file:"')[1]?.split('"')[0];
   if (fileSplit?.startsWith("http")) return fileSplit;
 
-  // 3. Padrão jwplayer setup com sources
+  // 4. JW Player sources: [{file: "..."}]
   const jwMatch = html.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i);
   if (jwMatch?.[1]?.startsWith("http")) return jwMatch[1];
 
-  // 4. Padrão "file":"URL" em JSON inline
+  // 5. JSON "file":"...m3u8..."
   const jsonFile = html.match(/"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i);
   if (jsonFile?.[1]) return jsonFile[1];
 
-  // 5. Fallback: moon.php (deofusca o eval packer)
+  // 6. Último recurso: moon.php
   return extractHide(html, embedUrl);
 }
 
