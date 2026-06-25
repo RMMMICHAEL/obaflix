@@ -7,7 +7,7 @@ const BASE = "https://api.themoviedb.org/3";
 import { requireAdmin } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo") ?? "filme"; // "filme" | "serie"

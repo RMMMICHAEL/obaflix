@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const { tipo, dados } = await req.json();
   if (!Array.isArray(dados)) return NextResponse.json({ error: "dados deve ser array" }, { status: 400 });

@@ -5,7 +5,7 @@ import { requireAdmin } from "@/lib/auth";
 
 // GET — lista filmes com busca
 export async function GET(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const page = Number(req.nextUrl.searchParams.get("page") ?? 1);
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
 
 // POST — cria ou atualiza filme
 export async function POST(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const body = await req.json();
   const {
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
 
 // DELETE — remove filme
 export async function DELETE(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const { id } = await req.json();
   await prisma.filmeGenero.deleteMany({ where: { filmeId: id } });

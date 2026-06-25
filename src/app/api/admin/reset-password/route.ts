@@ -7,6 +7,18 @@ function isAdmin(req: NextRequest) {
   return req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
 }
 
+// GET /api/admin/reset-password — lista todos os usuários
+export async function GET(req: NextRequest) {
+  if (!isAdmin(req)) return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+
+  const users = await prisma.user.findMany({
+    select: { id: true, email: true, nome: true, role: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return NextResponse.json(users);
+}
+
 // POST /api/admin/reset-password
 // Body: { email: string, novaSenha: string }
 export async function POST(req: NextRequest) {

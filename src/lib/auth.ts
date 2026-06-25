@@ -10,14 +10,50 @@ import { prisma } from "./prisma";
  * Lança NextResponse 401/403 que deve ser propagado pela rota.
  * Uso:  const guard = await requireAdmin(); if (guard) return guard;
  */
-export async function requireAdmin() {
+export const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
+
+export function withCors<T extends import("next/server").NextResponse>(res: T, req: import("next/server").NextRequest): T {
+  const origin = req.headers.get("origin");
+  if (origin === ADMIN_CORS_ORIGIN) addCors(res, origin);
+  return res;
+}
+
+function addCors(res: import("next/server").NextResponse, origin: string | null) {
+  if (origin === ADMIN_CORS_ORIGIN) {
+    res.headers.set("Access-Control-Allow-Origin", ADMIN_CORS_ORIGIN);
+    res.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.headers.set("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
+  }
+  return res;
+}
+
+export async function requireAdmin(req?: import("next/server").NextRequest) {
   const { NextResponse } = await import("next/server");
+  const origin = req?.headers.get("origin") ?? null;
+
+  // Preflight
+  if (req?.method === "OPTIONS") {
+    return addCors(new NextResponse(null, { status: 204 }), origin);
+  }
+
+  // Token direto (console script do painel Megaflix)
+  if (req?.headers.get("x-admin-token")) {
+    if (req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN) {
+      return null; // autorizado
+    }
+    return addCors(
+      NextResponse.json({ error: "Token inválido" }, { status: 403 }),
+      origin
+    );
+  }
+
+  // JWT session (painel /admin)
   const session = await getServerSession(authOptions);
   if (!session?.user) {
-    return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+    return addCors(NextResponse.json({ error: "Não autenticado" }, { status: 401 }), origin);
   }
   if ((session.user as { role?: string }).role !== "admin") {
-    return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
+    return addCors(NextResponse.json({ error: "Não autorizado" }, { status: 403 }), origin);
   }
   return null;
 }

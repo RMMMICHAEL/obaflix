@@ -1,10 +1,14 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, withCors } from "@/lib/auth";
+
+export async function OPTIONS(req: NextRequest) {
+  const guard = await requireAdmin(req); return guard ?? new NextResponse(null, { status: 204 });
+}
 
 export async function GET(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo") ?? "";
@@ -26,11 +30,11 @@ export async function GET(req: NextRequest) {
     prisma.serie.count({ where }),
   ]);
 
-  return NextResponse.json({ items, total, pages: Math.ceil(total / take) });
+  return withCors(NextResponse.json({ items, total, pages: Math.ceil(total / take) }), req);
 }
 
 export async function POST(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const body = await req.json();
   const {
@@ -73,11 +77,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, id: serie.id });
+  return withCors(NextResponse.json({ ok: true, id: serie.id }), req);
 }
 
 export async function DELETE(req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const { id } = await req.json();
   await prisma.watchHistory.deleteMany({ where: { conteudoId: id } });

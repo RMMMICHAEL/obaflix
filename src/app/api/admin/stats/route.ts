@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 
 export async function GET(_req: NextRequest) {
-  const guard = await requireAdmin(); if (guard) return guard;
+  const guard = await requireAdmin(req); if (guard) return guard;
 
   const [filmes, series, animes, desenhos, episodios, usuarios] = await Promise.all([
     prisma.filme.count(),
