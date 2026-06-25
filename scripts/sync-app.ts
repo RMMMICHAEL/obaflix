@@ -56,6 +56,23 @@ function parseItem(html: string) {
   return { id, tmdb, imdb, title, poster, sinopse, ano, nota, duracaoMin, urlBR, urlENG, movie, temporadas };
 }
 
+// Extrai episódios recentes do viewHome: { serieId, temp, ep }
+function parseRecentEpisodes(html: string): Array<{ serieId: string; temp: number; ep: number }> {
+  const start = html.indexOf("Episodios Recentes");
+  if (start === -1) return [];
+  // Pega até a próxima seção (qualquer título depois)
+  const after = html.slice(start + 100);
+  const nextSection = after.search(/Cole|Filmes|Séries|Series/);
+  const section = html.slice(start, start + 100 + (nextSection === -1 ? 5000 : nextSection));
+
+  const result: Array<{ serieId: string; temp: number; ep: number }> = [];
+  const matches = section.matchAll(/openMovie\((\d+)\)[\s\S]*?class="ano">\s*(\d+)x(\d+)/g);
+  for (const m of matches) {
+    result.push({ serieId: m[1], temp: Number(m[2]), ep: Number(m[3]) });
+  }
+  return result;
+}
+
 function parseEpisodes(html: string) {
   const eps: Array<{ ep: number; temp: number; titulo: string | null; urlDub: string | null; urlLeg: string | null }> = [];
   const matches = html.matchAll(/data-episode='({[^']+})'/g);
@@ -88,16 +105,6 @@ async function fetchApp(path: string, body?: string): Promise<string> {
   return res.text();
 }
 
-async function getRecentIds(): Promise<string[]> {
-  const ids = new Set<string>();
-  for (let p = 1; p <= PAGINAS; p++) {
-    const html = await fetchApp("?page=viewHome");
-    const matches = html.matchAll(/openMovie\((\d+)\)/g);
-    for (const m of matches) ids.add(m[1]);
-    await sleep(DELAY_MS);
-  }
-  return [...ids];
-}
 
 // ── Obaflix API ───────────────────────────────────────────────────────────────
 
@@ -133,13 +140,33 @@ async function main() {
   console.log(`   App: ${APP} | Páginas: ${PAGINAS}`);
   console.log(`   Filmes: ${SYNC_FILMES} | Séries: ${SYNC_SERIES}\n`);
 
-  const ids = await getRecentIds();
+  const homeHtml = await fetchApp("?page=viewHome");
+  const ids = [...new Set(homeHtml.matchAll(/openMovie\((\d+)\)/g))].map(m => m[1]);
   console.log(`📋 ${ids.length} IDs encontrados no viewHome\n`);
 
   let filmesSincronizados = 0;
   let seriesSincronizadas = 0;
   let episodiosSincronizados = 0;
   let ignorados = 0;
+
+  // ── Episódios Recentes ──────────────────────────────────────────────────────
+  if (SYNC_SERIES) {
+    const recentes = parseRecentEpisodes(homeHtml);
+    console.log(`📺 ${recentes.length} episódios recentes detectados`);
+    for (const { serieId, temp, ep } of recentes) {
+      await sleep(DELAY_MS);
+      const epsHtml = await fetchApp(`?page=getEpisodes`, `item=${serieId}&season=${temp}&userEpisodes=[]`);
+      const todos = parseEpisodes(epsHtml);
+      const alvo = todos.filter(e => e.ep === ep && e.temp === temp);
+      if (alvo.length === 0) continue;
+      const r: any = await obaFetch("/api/admin/episodio/bulk", { serieId, episodios: alvo });
+      if (r.ok > 0) {
+        episodiosSincronizados += r.ok;
+        console.log(`  ✅ Série ${serieId} — T${temp}E${ep} importado`);
+      }
+    }
+    console.log();
+  }
 
   for (const id of ids) {
     await sleep(DELAY_MS);
