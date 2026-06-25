@@ -50,7 +50,9 @@ export default withAuth(
   {
     callbacks: {
       authorized: ({ token, req }) => {
-        // Permite passar se tiver x-admin-token (rota valida internamente)
+        // Preflight CORS: deixa passar, middleware retorna 204
+        if (req.method === "OPTIONS") return true;
+        // x-admin-token: rota valida internamente
         if (req.headers.get("x-admin-token")) return true;
         return !!token;
       },
