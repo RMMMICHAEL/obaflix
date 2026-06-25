@@ -38,3 +38,4 @@ next-env.d.ts
 # secrets — nunca commitar
 .env
 .env.production
+scripts/.sync-memory.json
