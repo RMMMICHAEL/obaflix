@@ -1,4 +1,5 @@
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -21,7 +22,7 @@ async function fetchHtml(url: string, referer = ""): Promise<string> {
       "Sec-Fetch-Site": "cross-site",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} em ${url}`);
   return res.text();
@@ -39,7 +40,7 @@ async function moon(obfuscatedScript: string): Promise<string> {
       "Referer": "https://megaflix.lat/",
     },
     body: `data=${encodeURIComponent(encoded)}`,
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error(`moon.php HTTP ${res.status}`);
   return res.text();
@@ -58,7 +59,7 @@ async function postPlayer(url: string, id: string): Promise<string> {
       "Referer": url,
     },
     body: form.toString(),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(8000),
   });
   const text = await res.text();
   const json = JSON.parse(text);
@@ -202,6 +203,59 @@ function findM3u8(text: string): string | null {
 
 // ── Router principal ──────────────────────────────────────────────────────────
 
+const EXTRACT_TIMEOUT_MS = 25000;
+
+async function doExtract(url: string): Promise<{ stream: string; tipo: string }> {
+  const parsed = await assertSafeUrl(url);
+  const hostname = parsed.hostname;
+  const pathname = parsed.pathname;
+  const id = pathname.split("/").filter(Boolean).pop() ?? "";
+
+  let streamUrl: string | null = null;
+
+  if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
+    return { stream: url, tipo: "iframe" };
+
+  } else if (hostname.includes("hide") || hostname.includes("playhide")) {
+    const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/");
+    streamUrl = await extractHide(html, url);
+
+  } else if (hostname.includes("wish") || hostname.includes("hlswish") || hostname.includes("streamwish") || hostname.includes("playerwish")) {
+    const html = await fetchHtml(url, "https://megaflix.lat/");
+    streamUrl = await extractWish(html, url);
+
+  } else if (hostname.includes("rola3") || hostname.includes("embedplayer1")) {
+    streamUrl = await extractRola3(id);
+
+  } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
+    streamUrl = await extractRola(id);
+
+  } else if (hostname.includes("bolt")) {
+    const html = await fetchHtml(url, "https://megaflix.lat/");
+    streamUrl = await extractBolt(html);
+
+  } else if (hostname.includes("big") || hostname.includes("bigshare")) {
+    const html = await fetchHtml(url, "https://megaflix.lat/");
+    streamUrl = await extractBig(html);
+
+  } else {
+    const html = await fetchHtml(url, "https://megaflix.lat/");
+    const evalScript = extractEvalScript(html);
+    if (evalScript) {
+      try {
+        const decoded = await moon(evalScript);
+        streamUrl = findM3u8(decoded) || decoded.split('[{file:"')[1]?.split('"')[0] || null;
+      } catch { /**/ }
+    }
+    if (!streamUrl) streamUrl = findM3u8(html);
+  }
+
+  if (!streamUrl) return { stream: url, tipo: "iframe" };
+
+  const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
+  return { stream: streamUrl, tipo };
+}
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
@@ -210,70 +264,16 @@ export async function GET(req: NextRequest) {
   if (!url) return NextResponse.json({ error: "url obrigatória" }, { status: 400 });
 
   try {
-    const parsed = await assertSafeUrl(url);
-    const hostname = parsed.hostname;
-    const pathname = parsed.pathname;
-    const id = pathname.split("/").filter(Boolean).pop() ?? "";
+    // Corrida entre a extração e um timeout global
+    const result = await Promise.race([
+      doExtract(url),
+      new Promise<{ stream: string; tipo: string }>((resolve) =>
+        setTimeout(() => resolve({ stream: url, tipo: "iframe" }), EXTRACT_TIMEOUT_MS)
+      ),
+    ]);
 
-    let streamUrl: string | null = null;
-
-    // ── Rota por plataforma (exatamente como o app Megaflix) ──────────────────
-
-    if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
-      // luluvdo bloqueia fetch server-side com 403 — retorna iframe para o player
-      return NextResponse.json({ stream: url, tipo: "iframe" });
-
-    } else if (hostname.includes("hide") || hostname.includes("playhide")) {
-      const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/");
-      streamUrl = await extractHide(html, url);
-
-    } else if (hostname.includes("wish") || hostname.includes("hlswish") || hostname.includes("streamwish") || hostname.includes("playerwish")) {
-      const html = await fetchHtml(url, "https://megaflix.lat/");
-      streamUrl = await extractWish(html, url);
-
-    } else if (hostname.includes("rola3") || hostname.includes("embedplayer1")) {
-      streamUrl = await extractRola3(id);
-
-    } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
-      streamUrl = await extractRola(id);
-
-    } else if (hostname.includes("bolt")) {
-      const html = await fetchHtml(url, "https://megaflix.lat/");
-      streamUrl = await extractBolt(html);
-
-    } else if (hostname.includes("big") || hostname.includes("bigshare")) {
-      const html = await fetchHtml(url, "https://megaflix.lat/");
-      streamUrl = await extractBig(html);
-
-    } else {
-      // Fallback genérico: busca m3u8 no HTML bruto
-      const html = await fetchHtml(url, "https://megaflix.lat/");
-
-      // Tenta moon.php se tiver eval script
-      const evalScript = extractEvalScript(html);
-      if (evalScript) {
-        try {
-          const decoded = await moon(evalScript);
-          streamUrl = findM3u8(decoded) || decoded.split('[{file:"')[1]?.split('"')[0] || null;
-        } catch { /**/ }
-      }
-
-      // Fallback: procura m3u8 direto no HTML
-      if (!streamUrl) streamUrl = findM3u8(html);
-    }
-
-    if (!streamUrl) {
-      // Fallback final: usa iframe — melhor exibir algo do que erro
-      return NextResponse.json({ stream: url, tipo: "iframe" });
-    }
-
-    const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
-    return NextResponse.json({ stream: streamUrl, tipo });
-
+    return NextResponse.json(result);
   } catch (err: any) {
-    // Em qualquer exceção, cai no iframe como último recurso
-    const url2 = req.nextUrl.searchParams.get("url");
-    if (url2) return NextResponse.json({ stream: url2, tipo: "iframe" });
-    return NextResponse.json({ error: err?.message ?? "erro interno" }, { status: 500 });
+    return NextResponse.json({ stream: url, tipo: "iframe" });
   }
 }
