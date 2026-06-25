@@ -61,5 +61,6 @@ export default withAuth(
 );
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/admin/:path*"],
+  // /api/admin/* tem proteção própria via x-admin-token nos route handlers
+  matcher: ["/admin/:path*"],
 };
