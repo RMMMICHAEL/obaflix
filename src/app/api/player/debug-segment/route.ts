@@ -97,7 +97,7 @@ async function probeUrl(
         // Lê o corpo completo para playlists (necessário para extrair URLs de variant/segmento)
         const text = await res.text();
         bytes = text.length;
-        body_preview = text.slice(0, 4000);
+        body_preview = text.slice(0, 20000);
       } else {
         // Para segmentos binários, lê apenas o primeiro chunk
         const reader = res.body.getReader();
