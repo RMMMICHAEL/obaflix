@@ -100,6 +100,16 @@ async function postEmbedPlayer(embedUrl: string): Promise<string> {
 
 // ── Extratores por plataforma ─────────────────────────────────────────────────
 
+// Voltz player: GET na URL → URL do stream no body e em const stream = "..."
+async function extractVoltz(url: string): Promise<string | null> {
+  const html = await fetchHtml(url, "https://megaflix.lat/");
+  // 1. const stream = "URL"
+  const streamMatch = html.match(/const\s+stream\s*=\s*["']([^"']+)["']/);
+  if (streamMatch?.[1]?.startsWith("http")) return streamMatch[1];
+  // 2. URL diretamente no body (sem obfuscação)
+  return findM3u8(html) || html.match(/https?:\/\/[^\s<>"']+\.(mp4|m3u8)[^\s<>"']*/i)?.[0] || null;
+}
+
 async function extractLulu(html: string): Promise<string | null> {
   // Pega o eval(function(p,a,c,k,e,d)) → manda para moon.php → split em [{file:"
   const evalScript = extractEvalScript(html);
@@ -258,7 +268,11 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string }>
 
   let streamUrl: string | null = null;
 
-  if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
+  if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
+    // Voltz player — GET retorna URL no body e em const stream = "..."
+    streamUrl = await extractVoltz(url);
+
+  } else if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
     return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("hide") || hostname.includes("playhide")) {

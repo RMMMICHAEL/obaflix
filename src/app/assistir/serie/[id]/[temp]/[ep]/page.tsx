@@ -4,6 +4,41 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
 
+// Busca URLs extras do warez2 para o episódio (voltz como player 1)
+async function getWarez2Ep(
+  serieId: string,
+  temporada: number,
+  ep: number
+): Promise<{ br: string[]; eng: string[] }> {
+  try {
+    const params = new URLSearchParams({
+      item_id: serieId,
+      season_num: String(temporada),
+      episode_num: String(ep),
+    });
+    const r = await fetch(
+      `https://megafrixapi.com/iptv/warez2.php?${params}`,
+      { headers: { "User-Agent": "okhttp/4.9.3" }, next: { revalidate: 0 } }
+    );
+    if (!r.ok) return { br: [], eng: [] };
+    const data = await r.json().catch(() => null);
+    return { br: data?.br ?? [], eng: data?.eng ?? [] };
+  } catch {
+    return { br: [], eng: [] };
+  }
+}
+
+// Mescla URLs do warez2 (prioridade) com as do banco
+function mergeEpUrls(warezUrls: string[], dbUrl: string | null): string | null {
+  const all = [...warezUrls];
+  if (dbUrl) {
+    dbUrl.split(",").map((u) => u.trim()).filter(Boolean).forEach((u) => {
+      if (!all.includes(u)) all.push(u);
+    });
+  }
+  return all.length > 0 ? all.join(",") : null;
+}
+
 export default async function AssistirEpPage({
   params,
 }: {
@@ -24,7 +59,7 @@ export default async function AssistirEpPage({
 
   if (!serie || !episodio) notFound();
 
-  const [prevEp, nextEp, historico] = await Promise.all([
+  const [prevEp, nextEp, historico, warez] = await Promise.all([
     prisma.episodio.findFirst({
       where: {
         serieId: params.id,
@@ -50,6 +85,8 @@ export default async function AssistirEpPage({
           where: { userId_conteudoId_episodioId: { userId, conteudoId: serie.id, episodioId: episodio.id } },
         })
       : null,
+    // Busca voltz e outros players extras via warez2 (em paralelo com o resto)
+    getWarez2Ep(params.id, temporada, numeroEp),
   ]);
 
   const prevUrl = prevEp
@@ -59,11 +96,15 @@ export default async function AssistirEpPage({
     ? `/assistir/serie/${params.id}/t${nextEp.temporada}/ep${nextEp.numeroEp}`
     : undefined;
 
+  // Voltz (e outros players do warez2) ficam em primeiro na lista
+  const urlDub = mergeEpUrls(warez.br, episodio.urlDub);
+  const urlLeg = mergeEpUrls(warez.eng, episodio.urlLeg);
+
   return (
     <CustomPlayer
       key={episodio.id}
-      urlDub={episodio.urlDub}
-      urlLeg={episodio.urlLeg}
+      urlDub={urlDub}
+      urlLeg={urlLeg}
       titulo={serie.titulo}
       conteudoId={serie.id}
       conteudoTipo="serie"
