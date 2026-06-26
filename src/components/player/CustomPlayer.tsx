@@ -227,8 +227,12 @@ export function CustomPlayer({
     const isHls = streamUrl.includes(".m3u8") || streamUrl.includes(".txt") || streamUrl.includes("/proxy");
     const fileType = isHls || streamTipo === "hls" ? "hls" : "mp4";
 
-    const sources: any[] = [{ file: streamUrl, type: fileType }];
-    if (proxyUrl) sources.push({ file: proxyUrl, type: fileType });
+    // MP4: proxy primeiro — CDNs bloqueiam CORS silenciosamente (tela preta sem erro)
+    // HLS: tenta direto primeiro, proxy como fallback (XHR falha explicitamente → JW dispara error)
+    const sources: any[] =
+      fileType === "mp4" && proxyUrl
+        ? [{ file: proxyUrl, type: "mp4" }]
+        : [{ file: streamUrl, type: fileType }, ...(proxyUrl ? [{ file: proxyUrl, type: fileType }] : [])];
 
     const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
 

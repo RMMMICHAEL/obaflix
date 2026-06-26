@@ -63,6 +63,10 @@ export async function GET(req: NextRequest) {
       headers["Referer"] = referer;
     }
 
+    // Encaminha Range header para suportar seek em MP4
+    const rangeHeader = req.headers.get("range");
+    if (rangeHeader) headers["Range"] = rangeHeader;
+
     const res = await fetch(url, {
       headers,
       signal: AbortSignal.timeout(20000),
@@ -130,14 +134,21 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Segmento .ts ou outro binário — faz stream direto
-    const body = await res.arrayBuffer();
-    return new NextResponse(body, {
-      status: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=3600",
-      },
+    // Binário (segmento .ts, MP4, etc.) — stream direto sem bufferizar
+    // Preserva Range/206 para suporte a seek no JW Player
+    const responseHeaders: Record<string, string> = {
+      "Content-Type": contentType,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=3600",
+    };
+    const contentRange = res.headers.get("content-range");
+    if (contentRange) responseHeaders["Content-Range"] = contentRange;
+    const contentLength = res.headers.get("content-length");
+    if (contentLength) responseHeaders["Content-Length"] = contentLength;
+
+    return new NextResponse(res.body, {
+      status: res.status, // 206 Partial Content quando upstream respondeu com range
+      headers: responseHeaders,
     });
 
   } catch (err: any) {
