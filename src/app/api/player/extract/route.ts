@@ -200,26 +200,6 @@ async function extractRola(id: string): Promise<string | null> {
   } catch { return null; }
 }
 
-async function extractRola3(url: string, id: string): Promise<string | null> {
-  // Tenta via postEmbedPlayer (suporta embedplayer1 e embedplayer2 com X-Requested-With)
-  try {
-    const src = await postEmbedPlayer(url);
-    if (src) return src;
-  } catch { /* tenta fallback */ }
-  // Fallback legado para embedplayer1.xyz via postPlayer simples
-  try {
-    const src = await postPlayer("https://embedplayer1.xyz/player/index.php", id);
-    return src || null;
-  } catch { return null; }
-}
-
-async function extractRola4(url: string): Promise<string | null> {
-  try {
-    const src = await postEmbedPlayer(url);
-    return src || null;
-  } catch { return null; }
-}
-
 async function extractBolt(html: string): Promise<string | null> {
   const src = html.split('[{file:"')[1]?.split('"')[0];
   return src?.startsWith("http") ? src : null;
@@ -292,21 +272,15 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     const html = await fetchHtml(url, "https://megaflix.lat/");
     streamUrl = await extractWish(html, url);
 
-  } else if (pathname.includes("/rola4/")) {
-    // rola4 / Player Xnn — CDN bloqueia datacenter IPs + rejeita Origin header de outro domínio.
-    // Solução: extrai o securedLink server-side (funciona), retorna tipo "native".
-    // CustomPlayer usa video.src direto sem crossOrigin → no-CORS request → sem Origin header.
-    // Funciona em Safari/iOS/Android (HLS nativo). Desktop Chrome: fallback para iframe.
-    streamUrl = await extractRola4(url);
-    if (streamUrl) return { stream: streamUrl, tipo: "native" as any, referer: url };
-    throw new Error("rola4_extraction_failed");
-
-  } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
-    // rola3 / Player Embv — CDN bloqueia datacenter IPs igual ao rola4; usa "native".
-    // Safari/iOS: HLS nativo. Chrome: CustomPlayer faz fallback para iframe com a página HTML do player.
-    streamUrl = await extractRola3(url, id);
-    if (!streamUrl) throw new Error("rola3_hash_expirado");
-    return { stream: streamUrl, tipo: "native" as any, referer: url };
+  } else if (
+    pathname.includes("/rola4/") ||
+    pathname.includes("/rola3/") ||
+    hostname.includes("embedplayer") ||
+    hostname.includes("rola3")
+  ) {
+    // rola4 (Xnn) e rola3 (Embv): securedLink é IP-bound ao nó Vercel que fez a extração.
+    // O load balancer roteia requests de segmento para nós diferentes → 403 garantido.
+    return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
