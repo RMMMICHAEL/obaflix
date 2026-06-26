@@ -291,12 +291,13 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     // Funciona em Safari/iOS/Android (HLS nativo). Desktop Chrome: fallback para iframe.
     streamUrl = await extractRola4(url);
     if (streamUrl) return { stream: streamUrl, tipo: "native" as any, referer: url };
-    return { stream: url, tipo: "iframe" };
+    throw new Error("rola4_extraction_failed");
 
   } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
-    // rola3 / Player Embv — o securedLink valida Referer; usa a página do player como Referer
+    // rola3 / Player Embv — hash expira; se falhar, lança erro para CustomPlayer auto-pular
     streamUrl = await extractRola3(url, id);
-    referer = url; // https://embedplayer2.xyz/rola3/HASH
+    if (!streamUrl) throw new Error("rola3_hash_expirado");
+    referer = url;
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
@@ -345,6 +346,10 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (err: any) {
+    // Erro de extração (hash expirado etc) → CustomPlayer detecta !res.ok e auto-pula a fonte
+    if (err?.message?.includes("expirado") || err?.message?.includes("failed")) {
+      return NextResponse.json({ error: err.message }, { status: 422 });
+    }
     return NextResponse.json({ stream: url, tipo: "iframe" });
   }
 }
