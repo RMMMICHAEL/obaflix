@@ -64,6 +64,7 @@ export function CustomPlayer({
   const extractAbortRef = useRef<AbortController | null>(null);
   const isProxiedRef = useRef(false);
   const directStreamRef = useRef<string | null>(null);
+  const streamRefererRef = useRef<string | null>(null);
 
   const allFontes: Fonte[] = [
     ...parseFontes(urlDub, "[Dub]"),
@@ -129,6 +130,7 @@ export function CustomPlayer({
     autoSkipDoneRef.current = false;
     isProxiedRef.current = false;
     directStreamRef.current = null;
+    streamRefererRef.current = null;
   }, []);
 
   const extract = useCallback(async (embedUrl: string) => {
@@ -138,6 +140,7 @@ export function CustomPlayer({
     extractAbortRef.current = ctrl;
     isProxiedRef.current = false;
     directStreamRef.current = null;
+    streamRefererRef.current = null;
 
     setStatus("extracting");
     setError("");
@@ -153,6 +156,7 @@ export function CustomPlayer({
       } else {
         // Tenta direto do browser primeiro — CDNs aceitam o IP do usuário mas bloqueiam Vercel
         directStreamRef.current = data.stream;
+        streamRefererRef.current = data.referer ?? null;
         setStreamUrl(data.stream);
         setStatus("loading");
       }
@@ -197,9 +201,11 @@ export function CustomPlayer({
           if (data.fatal) {
             const direct = directStreamRef.current;
             if (!isProxiedRef.current && direct) {
-              // Fallback: tenta via proxy (CDN sem CORS ou domínio que exige servidor)
+              // Fallback: tenta via proxy com Referer correto para validação da CDN
               isProxiedRef.current = true;
-              setStreamUrl(`/api/player/proxy?url=${encodeURIComponent(direct)}`);
+              const ref = streamRefererRef.current;
+              const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
+              setStreamUrl(`/api/player/proxy?url=${encodeURIComponent(direct)}${refParam}`);
             } else if (fonteIdx < allFontes.length - 1) {
               switchFonte(fonteIdx + 1);
             } else {

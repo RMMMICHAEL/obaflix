@@ -260,13 +260,14 @@ function findM3u8(text: string): string | null {
 
 const EXTRACT_TIMEOUT_MS = 25000;
 
-async function doExtract(url: string): Promise<{ stream: string; tipo: string }> {
+async function doExtract(url: string): Promise<{ stream: string; tipo: string; referer?: string }> {
   const parsed = await assertSafeUrl(url);
   const hostname = parsed.hostname;
   const pathname = parsed.pathname;
   const id = pathname.split("/").filter(Boolean).pop() ?? "";
 
   let streamUrl: string | null = null;
+  let referer: string | undefined;
 
   if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
     // Voltz player — GET retorna URL no body e em const stream = "..."
@@ -284,12 +285,14 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string }>
     streamUrl = await extractWish(html, url);
 
   } else if (pathname.includes("/rola4/")) {
-    // rola4 / Player Xnn — domínio punycode (xn--...)
+    // rola4 / Player Xnn — o securedLink valida Referer; usa a página do player como Referer
     streamUrl = await extractRola4(url);
+    referer = url; // https://xn--...com/rola4/HASH
 
   } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
-    // rola3 / Player Embv — embedplayer1.xyz (legado) e embedplayer2.xyz (novo)
+    // rola3 / Player Embv — o securedLink valida Referer; usa a página do player como Referer
     streamUrl = await extractRola3(url, id);
+    referer = url; // https://embedplayer2.xyz/rola3/HASH
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
@@ -317,7 +320,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string }>
   if (!streamUrl) return { stream: url, tipo: "iframe" };
 
   const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
-  return { stream: streamUrl, tipo };
+  return { stream: streamUrl, tipo, referer };
 }
 
 export async function GET(req: NextRequest) {
