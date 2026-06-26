@@ -40,14 +40,25 @@ export async function GET(req: NextRequest) {
   let refOrigin: string;
   try { refOrigin = new URL(referer).origin; } catch { refOrigin = parsed.origin; }
 
+  // Deriva o Origin a spoofar: o origin do ?ref= (embed player) ou do próprio CDN como fallback.
+  // Isso faz a request ao CDN parecer idêntica à que o embed player faria (same/cross-site XHR).
+  let spoofedOrigin: string;
+  try { spoofedOrigin = ref ? new URL(ref).origin : parsed.origin; } catch { spoofedOrigin = parsed.origin; }
+
+  // Determina Sec-Fetch-Site: se ref é de domínio diferente do URL proxiado → cross-site
+  const secFetchSite = spoofedOrigin !== parsed.origin ? "cross-site" : "same-origin";
+
   try {
     const headers: Record<string, string> = {
       "User-Agent": UA,
       "Accept": "*/*",
       "Accept-Language": "pt-BR,pt;q=0.5",
+      "Origin": spoofedOrigin,
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": secFetchSite,
+      "Sec-GPC": "1",
     };
-    // Só envia Referer se foi passado explicitamente — CDNs de hotlink bloqueiam Origin
-    // mas aceitam requisições sem Origin (como navegação direta no browser)
     if (referer && referer !== parsed.origin + "/") {
       headers["Referer"] = referer;
     }
