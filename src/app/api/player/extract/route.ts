@@ -285,9 +285,9 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     streamUrl = await extractWish(html, url);
 
   } else if (pathname.includes("/rola4/")) {
-    // rola4 / Player Xnn — o securedLink valida Referer; usa a página do player como Referer
-    streamUrl = await extractRola4(url);
-    referer = url; // https://xn--...com/rola4/HASH
+    // rola4 / Player Xnn — CDN bloqueia IP da Vercel; retorna como iframe para que o
+    // embed player faça a extração client-side (IP do usuário, sem CORS/IP block)
+    return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
     // rola3 / Player Embv — o securedLink valida Referer; usa a página do player como Referer
