@@ -114,6 +114,7 @@ model WatchHistory {
   progressoSeg Int       @default(0)
   duracaoSeg   Int?
   concluido    Boolean   @default(false)
+  queued       Boolean   @default(false)
   updatedAt    DateTime  @updatedAt
   filmeId      String?
   filme        Filme?    @relation(fields: [filmeId], references: [id])

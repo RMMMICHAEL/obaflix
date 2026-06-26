@@ -2,6 +2,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Play, Star, User } from "lucide-react";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
@@ -16,6 +18,9 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
 }
 
 export default async function SeriePage({ params }: { params: { id: string } }) {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as any)?.id as string | undefined;
+
   const serie = await prisma.serie.findUnique({
     where: { id: params.id },
     include: { generos: { include: { genero: true } } },
@@ -23,7 +28,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   if (!serie) notFound();
 
-  const [episodios, videos, credits, tmdbRecs] = await Promise.all([
+  const [episodios, videos, credits, tmdbRecs, episodeProgressList, continueEp] = await Promise.all([
     prisma.episodio.findMany({
       where: { serieId: serie.id },
       orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
@@ -31,7 +36,28 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
     serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
     serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
+    userId
+      ? prisma.watchHistory.findMany({
+          where: { userId, serieId: serie.id, episodioId: { not: null } },
+          select: { episodioId: true, progressoSeg: true, duracaoSeg: true, concluido: true },
+        })
+      : Promise.resolve([]),
+    userId
+      ? prisma.watchHistory.findFirst({
+          where: { userId, serieId: serie.id, concluido: false, progressoSeg: { gt: 30 } },
+          orderBy: { updatedAt: "desc" },
+          select: { temporada: true, numeroEp: true },
+        })
+      : Promise.resolve(null),
   ]);
+
+  const progressoMap: Record<string, { progressoSeg: number; duracaoSeg: number | null; concluido: boolean }> =
+    Object.fromEntries(
+      episodeProgressList.map((p) => [
+        p.episodioId!,
+        { progressoSeg: p.progressoSeg, duracaoSeg: p.duracaoSeg ?? null, concluido: p.concluido },
+      ])
+    );
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
   const trailer = pickTrailer(videos?.results);
@@ -121,14 +147,21 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
             )}
 
             <div className="flex flex-wrap gap-3">
-              {episodios[0] && (
+              {continueEp ? (
+                <Link
+                  href={`/assistir/serie/${serie.id}/t${continueEp.temporada}/ep${continueEp.numeroEp}`}
+                  className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
+                >
+                  <Play size={18} fill="black" /> Continuar
+                </Link>
+              ) : episodios[0] ? (
                 <Link
                   href={`/assistir/serie/${serie.id}/t${episodios[0].temporada}/ep${episodios[0].numeroEp}`}
                   className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
                 >
                   <Play size={18} fill="black" /> Assistir
                 </Link>
-              )}
+              ) : null}
               {trailer && (
                 <TrailerButton videoKey={trailer.key} titulo={serie.titulo} />
               )}
@@ -173,7 +206,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
         {/* Episódios */}
         <div className="mt-10">
-          <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} />
+          <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} progresso={progressoMap} />
         </div>
 
         {/* Recomendações */}

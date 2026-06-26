@@ -18,6 +18,7 @@ interface HistoryItem {
   temporada: number | null;
   numeroEp: number | null;
   episodioId: string | null;
+  queued: boolean;
 }
 
 function pct(item: HistoryItem) {
@@ -101,11 +102,18 @@ export function ContinuarAssistindo() {
                   </div>
                 </div>
 
+                {/* Badge próximo episódio */}
+                {item.queued && item.progressoSeg === 0 && (
+                  <div className="absolute top-1.5 left-1.5 bg-[#E50914] text-white text-[9px] font-bold px-1.5 py-0.5 rounded leading-none">
+                    PRÓXIMO
+                  </div>
+                )}
+
                 {/* Progress bar */}
                 <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20">
                   <div
                     className="h-full bg-[#E50914]"
-                    style={{ width: `${pct(item)}%` }}
+                    style={{ width: `${item.queued && item.progressoSeg === 0 ? 0 : pct(item)}%` }}
                   />
                 </div>
               </Link>

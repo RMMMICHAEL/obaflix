@@ -11,7 +11,11 @@ export async function GET() {
   const userId = (session.user as { id: string }).id;
 
   const history = await prisma.watchHistory.findMany({
-    where: { userId, concluido: false, progressoSeg: { gt: 30 } },
+    where: {
+      userId,
+      concluido: false,
+      OR: [{ progressoSeg: { gt: 30 } }, { queued: true }],
+    },
     orderBy: { updatedAt: "desc" },
     take: 24,
     include: {
@@ -37,6 +41,7 @@ export async function GET() {
         temporada: h.temporada,
         numeroEp: h.numeroEp,
         episodioId: h.episodioId,
+        queued: h.queued,
       };
     })
     .filter(Boolean);
