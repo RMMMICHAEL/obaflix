@@ -56,6 +56,7 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
       urlDub={urlDub}
       urlLeg={urlLeg}
       titulo={filme.titulo}
+      thumbUrl={filme.background || filme.poster || undefined}
       conteudoId={filme.id}
       conteudoTipo="filme"
       duracaoSeg={filme.duracao ? filme.duracao * 60 : undefined}

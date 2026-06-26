@@ -3,15 +3,31 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   X, ChevronLeft, ChevronRight, Play, Pause,
-  Volume2, VolumeX, Maximize, Loader2, AlertCircle,
+  Volume2, VolumeX, Maximize, AlertCircle,
   SkipBack, SkipForward,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+
+function BouncingDots({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
+  const sz = size === "lg" ? "w-4 h-4" : size === "sm" ? "w-2 h-2" : "w-3 h-3";
+  return (
+    <div className="flex gap-2 items-center">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={`rounded-full bg-[#E50914] ${sz} animate-bounce`}
+          style={{ animationDelay: `${i * 0.15}s` }}
+        />
+      ))}
+    </div>
+  );
+}
 
 interface Props {
   urlDub: string | null;
   urlLeg: string | null;
   titulo: string;
+  thumbUrl?: string;
   conteudoId: string;
   conteudoTipo: "filme" | "serie";
   episodioId?: string;
@@ -50,7 +66,7 @@ function fmt(s: number): string {
 }
 
 export function CustomPlayer({
-  urlDub, urlLeg, titulo, conteudoId, conteudoTipo,
+  urlDub, urlLeg, titulo, thumbUrl, conteudoId, conteudoTipo,
   episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
   const router = useRouter();
@@ -86,6 +102,7 @@ export function CustomPlayer({
   const [showControls, setShowControls] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
+  const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
 
   const fonte = allFontes[fonteIdx];
 
@@ -127,6 +144,7 @@ export function CustomPlayer({
     setError("");
     setCurrentTime(0);
     setPlaying(false);
+    setAutoPlayBlocked(false);
     autoSkipDoneRef.current = false;
     isProxiedRef.current = false;
     directStreamRef.current = null;
@@ -141,6 +159,7 @@ export function CustomPlayer({
     isProxiedRef.current = false;
     directStreamRef.current = null;
     streamRefererRef.current = null;
+    setAutoPlayBlocked(false);
 
     setStatus("extracting");
     setError("");
@@ -216,7 +235,7 @@ export function CustomPlayer({
       if (initialProgressoSeg > 5) {
         video.addEventListener("loadedmetadata", () => { video.currentTime = initialProgressoSeg; }, { once: true });
       }
-      video.play().catch(() => {});
+      video.play().catch(() => setAutoPlayBlocked(true));
       // Fallback: se nativo falhar mesmo assim, tenta iframe
       const onNativeError = () => {
         const embedUrl = streamRefererRef.current;
@@ -232,14 +251,14 @@ export function CustomPlayer({
 
     if (isHls) {
       import("hls.js").then(({ default: Hls }) => {
-        if (!Hls.isSupported()) { video.src = streamUrl!; video.play().catch(() => {}); return; }
+        if (!Hls.isSupported()) { video.src = streamUrl!; video.play().catch(() => setAutoPlayBlocked(true)); return; }
         const hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 90 });
         hlsRef.current = hls;
         hls.loadSource(streamUrl!);
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (initialProgressoSeg > 5) video.currentTime = initialProgressoSeg;
-          video.play().catch(() => {});
+          video.play().catch(() => setAutoPlayBlocked(true));
         });
         hls.on(Hls.Events.ERROR, (_: any, data: any) => {
           if (data.fatal) {
@@ -264,7 +283,7 @@ export function CustomPlayer({
       if (initialProgressoSeg > 5) {
         video.addEventListener("loadedmetadata", () => { video.currentTime = initialProgressoSeg; }, { once: true });
       }
-      video.play().catch(() => {});
+      video.play().catch(() => setAutoPlayBlocked(true));
     }
     return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
   }, [streamUrl, streamTipo, fonteIdx, allFontes.length, switchFonte]);
@@ -274,7 +293,7 @@ export function CustomPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const onPlay = () => { setPlaying(true); setStatus("playing"); };
+    const onPlay = () => { setPlaying(true); setStatus("playing"); setAutoPlayBlocked(false); };
     const onPause = () => { setPlaying(false); saveProgress(); };
     const onWaiting = () => setStatus("loading");
     const onCanPlay = () => setStatus("playing");
@@ -412,18 +431,50 @@ export function CustomPlayer({
           />
         )}
 
-        {/* Extracting */}
+        {/* Extracting – backdrop + título + dots */}
         {status === "extracting" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm gap-4">
-            <Loader2 size={44} className="animate-spin text-[#E50914]" strokeWidth={1.5} />
-            <p className="text-white/70 text-xs uppercase tracking-widest">Obtendo stream</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            {thumbUrl ? (
+              <div
+                className="absolute inset-0 bg-cover bg-center scale-105"
+                style={{ backgroundImage: `url(${thumbUrl})` }}
+              />
+            ) : null}
+            <div className="absolute inset-0 bg-black/75" />
+            <div className="relative z-10 flex flex-col items-center gap-5 text-center px-8">
+              <div className="flex flex-col items-center gap-1">
+                <p className="text-white/40 text-[10px] uppercase tracking-[0.25em] font-medium">
+                  Você está assistindo
+                </p>
+                <p className="text-white font-bold text-lg md:text-xl leading-snug">
+                  {titulo}{temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}
+                </p>
+              </div>
+              <BouncingDots size="md" />
+            </div>
           </div>
         )}
 
-        {/* Loading */}
-        {status === "loading" && (
+        {/* Buffering */}
+        {status === "loading" && !autoPlayBlocked && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <Loader2 size={36} className="animate-spin text-white/50" strokeWidth={1.5} />
+            <BouncingDots size="sm" />
+          </div>
+        )}
+
+        {/* Autoplay bloqueado – clique para reproduzir */}
+        {autoPlayBlocked && status !== "extracting" && status !== "error" && (
+          <div
+            className="absolute inset-0 flex items-center justify-center cursor-pointer"
+            onClick={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              v.play().then(() => setAutoPlayBlocked(false)).catch(() => {});
+            }}
+          >
+            <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center hover:bg-white/10 transition-colors">
+              <Play size={38} fill="white" strokeWidth={0} className="ml-1" />
+            </div>
           </div>
         )}
 
