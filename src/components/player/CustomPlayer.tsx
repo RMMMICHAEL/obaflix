@@ -356,6 +356,8 @@ export function CustomPlayer({
             className="w-full h-full border-0"
             allowFullScreen
             allow="autoplay; fullscreen; picture-in-picture"
+            referrerPolicy="no-referrer"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
           />
         ) : (
           <video
