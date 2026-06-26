@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
+import { imgUrl } from "@/lib/tmdb";
 
 // Busca URLs extras do warez2 para o episódio (voltz como player 1)
 async function getWarez2Ep(
@@ -106,7 +107,7 @@ export default async function AssistirEpPage({
       urlDub={urlDub}
       urlLeg={urlLeg}
       titulo={serie.titulo}
-      thumbUrl={episodio.thumbnail || serie.background || serie.poster || undefined}
+      thumbUrl={imgUrl(episodio.thumbnail || serie.background || serie.poster || null, "original")}
       conteudoId={serie.id}
       conteudoTipo="serie"
       episodioId={episodio.id}

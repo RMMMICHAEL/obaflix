@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
+import { imgUrl } from "@/lib/tmdb";
 
 async function getWarez2Filme(
   filmeId: string
@@ -56,7 +57,7 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
       urlDub={urlDub}
       urlLeg={urlLeg}
       titulo={filme.titulo}
-      thumbUrl={filme.background || filme.poster || undefined}
+      thumbUrl={imgUrl(filme.background || filme.poster || null, "original")}
       conteudoId={filme.id}
       conteudoTipo="filme"
       duracaoSeg={filme.duracao ? filme.duracao * 60 : undefined}

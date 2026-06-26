@@ -227,12 +227,13 @@ export function CustomPlayer({
     const isHls = streamUrl.includes(".m3u8") || streamUrl.includes(".txt") || streamUrl.includes("/proxy");
     const fileType = isHls || streamTipo === "hls" ? "hls" : "mp4";
 
-    // MP4: proxy primeiro — CDNs bloqueiam CORS silenciosamente (tela preta sem erro)
-    // HLS: tenta direto primeiro, proxy como fallback (XHR falha explicitamente → JW dispara error)
-    const sources: any[] =
-      fileType === "mp4" && proxyUrl
-        ? [{ file: proxyUrl, type: "mp4" }]
-        : [{ file: streamUrl, type: fileType }, ...(proxyUrl ? [{ file: proxyUrl, type: fileType }] : [])];
+    // Tenta direto primeiro; proxy como fallback para ambos tipos.
+    // Nota: CDNs com IP-block (ex: jvrkt.online) rejeitam o proxy com 403 —
+    // mas o request direto do browser (IP residencial) funciona.
+    const sources: any[] = [
+      { file: streamUrl, type: fileType },
+      ...(proxyUrl ? [{ file: proxyUrl, type: fileType }] : []),
+    ];
 
     const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
 
