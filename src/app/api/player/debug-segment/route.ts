@@ -1,85 +1,80 @@
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertSafeUrl } from "@/lib/ssrf";
 
-// Testa um segmento .ts (ou qualquer URL de CDN) com diferentes combinações de headers,
-// retornando status + headers de resposta para cada combinação.
-// Uso: GET /api/player/debug-segment?url=<segment_url>&ref=<embed_url>
+// Testa a cadeia completa de reprodução HLS a partir do servidor Vercel:
+//   master.m3u8 → variant playlist → 1º segmento
 //
-// Isso permite identificar se o bloqueio é por:
-// - IP de datacenter (todos os combos retornam 403/404/503)
-// - Referer/Origin inválido (alguns combos passam, outros não)
-// - Token/assinatura com IP binding (200 do servidor ≠ comportamento do browser)
+// Uso: GET /api/player/debug-segment?url=<master_ou_segmento>&ref=<embed_url>
+//
+// Permite identificar em qual nível da cadeia ocorre o bloqueio e qual
+// combinação de headers (Referer, Origin, UA) o CDN aceita ou rejeita.
+
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const COMBOS = [
-  {
-    label: "sem headers",
-    headers: {},
-  },
-  {
-    label: "UA apenas",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-    },
-  },
+  { label: "sem headers", headers: {} },
+  { label: "UA apenas", headers: { "User-Agent": UA } },
   {
     label: "UA + Referer embed",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "__REF__",
-    },
+    headers: { "User-Agent": UA, "Referer": "__REF__" },
   },
   {
     label: "UA + Referer embed + Origin CDN",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "__REF__",
-      "Origin": "__CDN_ORIGIN__",
-    },
+    headers: { "User-Agent": UA, "Referer": "__REF__", "Origin": "__CDN_ORIGIN__" },
   },
   {
-    label: "UA + Referer CDN base + Origin CDN",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "__CDN_ORIGIN__/",
-      "Origin": "__CDN_ORIGIN__",
-    },
+    label: "UA + Referer CDN raiz + Origin CDN",
+    headers: { "User-Agent": UA, "Referer": "__CDN_ORIGIN__/", "Origin": "__CDN_ORIGIN__" },
   },
   {
     label: "UA + Referer megaflix + Origin megaflix",
+    headers: { "User-Agent": UA, "Referer": "https://megaflix.lat/", "Origin": "https://megaflix.lat" },
+  },
+  {
+    label: "UA + Referer embed + Origin CDN + Sec-Fetch cors",
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "https://megaflix.lat/",
-      "Origin": "https://megaflix.lat",
+      "User-Agent": UA, "Referer": "__REF__", "Origin": "__CDN_ORIGIN__",
+      "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin",
     },
   },
   {
-    label: "UA + Referer embed + Origin embed + Sec-Fetch",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "__REF__",
-      "Origin": "__CDN_ORIGIN__",
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-origin",
-    },
-  },
-  {
-    label: "sem Origin (simula <video> nativo)",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "Referer": "__REF__",
-    },
+    label: "UA + Referer embed (sem Origin — simula <video> nativo)",
+    headers: { "User-Agent": UA, "Referer": "__REF__" },
   },
 ];
+
+const RESP_HEADERS = [
+  "content-type", "content-length", "access-control-allow-origin",
+  "access-control-allow-headers", "access-control-allow-methods",
+  "set-cookie", "cf-cache-status", "x-cache", "server",
+  "x-powered-by", "location", "vary",
+];
+
+function resolveHeaders(
+  raw: Record<string, string>,
+  cdnOrigin: string,
+  refUrl: string
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(raw).map(([k, v]) => [
+      k,
+      v
+        .replace(/__REF__/g, refUrl || cdnOrigin + "/")
+        .replace(/__CDN_ORIGIN__/g, cdnOrigin),
+    ])
+  );
+}
 
 async function probeUrl(
   url: string,
   headers: Record<string, string>,
-  timeout = 8000
-): Promise<{ status: number | null; headers: Record<string, string>; error?: string; bytes?: number }> {
+  readBytes = true,
+  timeout = 10000
+): Promise<{ status: number | null; resp_headers: Record<string, string>; error?: string; bytes?: number; body_preview?: string }> {
   try {
     const res = await fetch(url, {
       headers,
@@ -88,77 +83,154 @@ async function probeUrl(
     });
 
     const respHeaders: Record<string, string> = {};
-    const relevant = [
-      "content-type", "content-length", "access-control-allow-origin",
-      "access-control-allow-headers", "set-cookie", "cf-cache-status",
-      "x-cache", "server", "x-powered-by", "location", "vary",
-    ];
-    for (const key of relevant) {
+    for (const key of RESP_HEADERS) {
       const val = res.headers.get(key);
       if (val) respHeaders[key] = val;
     }
 
-    // Lê apenas os primeiros bytes para confirmar se é conteúdo real ou página de erro
-    const reader = res.body?.getReader();
     let bytes = 0;
-    if (reader) {
+    let body_preview: string | undefined;
+    if (readBytes && res.body) {
+      const reader = res.body.getReader();
       const { value } = await reader.read();
-      bytes = value?.byteLength ?? 0;
       reader.cancel();
+      bytes = value?.byteLength ?? 0;
+      // Para playlists m3u8, captura texto para extrair URLs
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("mpegurl") || url.includes(".m3u8") || url.includes(".txt")) {
+        body_preview = new TextDecoder().decode(value?.slice(0, 2000));
+      }
     }
 
-    return { status: res.status, headers: respHeaders, bytes };
+    return { status: res.status, resp_headers: respHeaders, bytes, body_preview };
   } catch (e: any) {
-    return { status: null, headers: {}, error: e?.message ?? "timeout" };
+    return { status: null, resp_headers: {}, error: e?.message ?? "timeout" };
   }
+}
+
+// Extrai a primeira variante e o primeiro segmento de um m3u8
+function parseM3u8(text: string, baseUrl: string): { variants: string[]; segments: string[] } {
+  const base = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const variants: string[] = [];
+  const segments: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("#")) continue;
+    const abs = line.startsWith("http") ? line : line.startsWith("/") ? new URL(baseUrl).origin + line : base + line;
+    if (line.includes(".m3u8") || line.includes("/hls/")) {
+      variants.push(abs);
+    } else {
+      segments.push(abs);
+    }
+  }
+  return { variants, segments };
 }
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
-  const segUrl = req.nextUrl.searchParams.get("url");
+  const masterUrl = req.nextUrl.searchParams.get("url");
   const refUrl = req.nextUrl.searchParams.get("ref") ?? "";
 
-  if (!segUrl) return NextResponse.json({ error: "url obrigatória (?url=<segmento_url>&ref=<embed_url>)" }, { status: 400 });
+  if (!masterUrl) {
+    return NextResponse.json({ error: "url obrigatória (?url=<master.m3u8>&ref=<embed_url>)" }, { status: 400 });
+  }
 
-  let parsedSeg: URL;
-  try {
-    parsedSeg = await assertSafeUrl(segUrl);
-  } catch (e: any) {
+  try { await assertSafeUrl(masterUrl); } catch (e: any) {
     return NextResponse.json({ error: e?.message }, { status: 400 });
   }
 
-  const cdnOrigin = parsedSeg.origin;
-  const refOrigin = refUrl ? (() => { try { return new URL(refUrl).origin; } catch { return ""; } })() : "";
+  const cdnOrigin = new URL(masterUrl).origin;
 
-  // Substitui placeholders nos headers de cada combo
-  const combos = COMBOS.map((c) => ({
-    label: c.label,
-    headers: Object.fromEntries(
-      Object.entries(c.headers).map(([k, v]) => [
-        k,
-        v
-          .replace("__REF__", refUrl || cdnOrigin + "/")
-          .replace(/__CDN_ORIGIN__/g, cdnOrigin)
-          .replace(/__EMBED_ORIGIN__/g, refOrigin),
-      ])
-    ),
-  }));
-
-  // Executa todos os combos em paralelo
-  const results = await Promise.all(
-    combos.map(async (c) => {
-      const result = await probeUrl(segUrl, c.headers);
-      return { label: c.label, headers_sent: c.headers, ...result };
+  // ── Etapa 1: master.m3u8 ────────────────────────────────────────────────────
+  const masterCombos = await Promise.all(
+    COMBOS.map(async (c) => {
+      const headers = resolveHeaders(c.headers, cdnOrigin, refUrl);
+      const result = await probeUrl(masterUrl, headers, true);
+      return { label: c.label, headers_sent: headers, ...result };
     })
   );
 
+  // Escolhe o melhor resultado do master (primeiro com status 200/206)
+  const bestMaster = masterCombos.find((r) => r.status === 200 || r.status === 206);
+
+  // ── Etapa 2: variant playlist ────────────────────────────────────────────────
+  let variantResults: any[] = [];
+  let variantUrl: string | null = null;
+  let bestVariant: any = null;
+
+  if (bestMaster?.body_preview) {
+    const { variants } = parseM3u8(bestMaster.body_preview, masterUrl);
+    variantUrl = variants[0] ?? null;
+
+    if (variantUrl) {
+      const variantCdnOrigin = (() => { try { return new URL(variantUrl).origin; } catch { return cdnOrigin; } })();
+      variantResults = await Promise.all(
+        COMBOS.map(async (c) => {
+          const headers = resolveHeaders(c.headers, variantCdnOrigin, refUrl);
+          const result = await probeUrl(variantUrl!, headers, true);
+          return { label: c.label, headers_sent: headers, ...result };
+        })
+      );
+      bestVariant = variantResults.find((r) => r.status === 200 || r.status === 206);
+    }
+  }
+
+  // ── Etapa 3: 1º segmento ────────────────────────────────────────────────────
+  let segmentResults: any[] = [];
+  let segmentUrl: string | null = null;
+
+  const playlistForSegments = bestVariant?.body_preview
+    ? { text: bestVariant.body_preview, url: variantUrl! }
+    : bestMaster?.body_preview
+    ? { text: bestMaster.body_preview, url: masterUrl }
+    : null;
+
+  if (playlistForSegments) {
+    const { segments } = parseM3u8(playlistForSegments.text, playlistForSegments.url);
+    segmentUrl = segments[0] ?? null;
+
+    if (segmentUrl) {
+      const segCdnOrigin = (() => { try { return new URL(segmentUrl).origin; } catch { return cdnOrigin; } })();
+      segmentResults = await Promise.all(
+        COMBOS.map(async (c) => {
+          const headers = resolveHeaders(c.headers, segCdnOrigin, refUrl);
+          const result = await probeUrl(segmentUrl!, headers, true);
+          return { label: c.label, headers_sent: headers, ...result };
+        })
+      );
+    }
+  }
+
+  // ── Veredicto ────────────────────────────────────────────────────────────────
+  const ok = (r: any[]) => r.some((x) => x.status === 200 || x.status === 206);
+  const verdicts = {
+    master: ok(masterCombos) ? "✅ acessível" : "❌ bloqueado",
+    variant: variantUrl ? (ok(variantResults) ? "✅ acessível" : "❌ bloqueado") : "⏭ não encontrado no master",
+    segment: segmentUrl ? (ok(segmentResults) ? "✅ acessível" : "❌ bloqueado") : "⏭ não encontrado na playlist",
+  };
+
+  const overallVerdict =
+    ok(masterCombos) && ok(variantResults) && ok(segmentResults)
+      ? "✅ CADEIA COMPLETA ACESSÍVEL — proxy viável"
+      : !ok(masterCombos)
+      ? "❌ BLOQUEIO NO MASTER — IP binding ou bloqueio total de datacenter"
+      : !ok(variantResults)
+      ? "❌ BLOQUEIO NA VARIANT — master liberado mas playlists bloqueadas"
+      : "❌ BLOQUEIO NOS SEGMENTOS — master e variant liberados, CDN bloqueia bytes de vídeo";
+
   return NextResponse.json({
-    segment_url: segUrl,
+    note: "Todas as requisições são feitas pelo servidor Vercel (mesmo IP da extração)",
+    master_url: masterUrl,
+    variant_url: variantUrl,
+    segment_url: segmentUrl,
     ref_url: refUrl,
-    cdn_origin: cdnOrigin,
-    server_ip_note: "requests feitas pelo IP do servidor Vercel (datacenter)",
-    results,
+    verdict: overallVerdict,
+    chain: verdicts,
+    master: masterCombos,
+    variant: variantUrl ? variantResults : null,
+    segment: segmentUrl ? segmentResults : null,
   });
 }
