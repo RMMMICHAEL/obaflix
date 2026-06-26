@@ -41,14 +41,19 @@ export async function GET(req: NextRequest) {
   try { refOrigin = new URL(referer).origin; } catch { refOrigin = parsed.origin; }
 
   try {
+    const headers: Record<string, string> = {
+      "User-Agent": UA,
+      "Accept": "*/*",
+      "Accept-Language": "pt-BR,pt;q=0.5",
+    };
+    // Só envia Referer se foi passado explicitamente — CDNs de hotlink bloqueiam Origin
+    // mas aceitam requisições sem Origin (como navegação direta no browser)
+    if (referer && referer !== parsed.origin + "/") {
+      headers["Referer"] = referer;
+    }
+
     const res = await fetch(url, {
-      headers: {
-        "User-Agent": UA,
-        "Accept": "*/*",
-        "Accept-Language": "pt-BR,pt;q=0.5",
-        "Origin": refOrigin,
-        "Referer": referer,
-      },
+      headers,
       signal: AbortSignal.timeout(20000),
       redirect: "follow",
     });
