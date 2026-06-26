@@ -24,7 +24,7 @@ interface Props {
 }
 
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
-type StreamTipo = "hls" | "mp4" | "iframe";
+type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
 interface Fonte {
   label: string;
@@ -153,6 +153,14 @@ export function CustomPlayer({
       if (data.tipo === "iframe") {
         setStreamUrl(data.stream);
         setStatus("playing");
+      } else if (data.tipo === "native") {
+        // CDN bloqueia Origin header (CORS) e IPs de datacenter.
+        // video.src sem crossOrigin = no-CORS request = sem Origin = CDN aceita IP residencial.
+        // Funciona em Safari/iOS/Android nativamente. Desktop Chrome: fallback para iframe.
+        directStreamRef.current = data.stream;
+        streamRefererRef.current = data.referer ?? null; // URL do embed (iframe fallback)
+        setStreamUrl(data.stream);
+        setStatus("loading");
       } else {
         // Tenta direto do browser primeiro — CDNs aceitam o IP do usuário mas bloqueiam Vercel
         directStreamRef.current = data.stream;
@@ -183,6 +191,42 @@ export function CustomPlayer({
     if (!streamUrl || !videoRef.current || streamTipo === "iframe") return;
     const video = videoRef.current;
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+
+    // "native": video.src direto sem crossOrigin → no-CORS → sem Origin header.
+    // CDN aceita IPs residenciais sem Origin. Safari/iOS/Android suportam HLS nativo.
+    // Desktop Chrome não suporta HLS nativo → erro → fallback para iframe com embed URL.
+    if (streamTipo === "native") {
+      const supportsNativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
+      if (!supportsNativeHls) {
+        // Desktop Chrome/Firefox: sem HLS nativo → vai direto para iframe com o embed URL
+        const embedUrl = streamRefererRef.current;
+        if (embedUrl) {
+          setStreamTipo("iframe");
+          setStreamUrl(embedUrl);
+        } else if (fonteIdx < allFontes.length - 1) {
+          switchFonte(fonteIdx + 1);
+        } else {
+          setError("Player não suportado neste browser");
+          setStatus("error");
+        }
+        return;
+      }
+      // Safari / iOS / Android: HLS nativo sem CORS
+      video.src = streamUrl;
+      if (initialProgressoSeg > 5) {
+        video.addEventListener("loadedmetadata", () => { video.currentTime = initialProgressoSeg; }, { once: true });
+      }
+      video.play().catch(() => {});
+      // Fallback: se nativo falhar mesmo assim, tenta iframe
+      const onNativeError = () => {
+        const embedUrl = streamRefererRef.current;
+        if (embedUrl) { setStreamTipo("iframe"); setStreamUrl(embedUrl); }
+        else if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); }
+        else { setError("Erro no stream"); setStatus("error"); }
+      };
+      video.addEventListener("error", onNativeError, { once: true });
+      return () => { video.removeEventListener("error", onNativeError); };
+    }
 
     const isHls = streamUrl.includes(".m3u8") || streamUrl.includes(".txt") || streamUrl.includes("proxy");
 
@@ -347,7 +391,7 @@ export function CustomPlayer({
       {/* ── Video area ── */}
       <div
         className="flex-1 relative flex items-center justify-center"
-        onClick={streamTipo !== "iframe" ? togglePlay : undefined}
+        onClick={streamTipo !== "iframe" && streamTipo !== "native" ? togglePlay : undefined}
       >
         {streamTipo === "iframe" && streamUrl ? (
           <iframe

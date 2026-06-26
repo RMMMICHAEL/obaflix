@@ -285,8 +285,12 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     streamUrl = await extractWish(html, url);
 
   } else if (pathname.includes("/rola4/")) {
-    // rola4 / Player Xnn — CDN bloqueia IPs de datacenter (Vercel/AWS/etc), só IPs residenciais.
-    // O browser do usuário carrega o embed via iframe: IP residencial + same-origin dentro do frame.
+    // rola4 / Player Xnn — CDN bloqueia datacenter IPs + rejeita Origin header de outro domínio.
+    // Solução: extrai o securedLink server-side (funciona), retorna tipo "native".
+    // CustomPlayer usa video.src direto sem crossOrigin → no-CORS request → sem Origin header.
+    // Funciona em Safari/iOS/Android (HLS nativo). Desktop Chrome: fallback para iframe.
+    streamUrl = await extractRola4(url);
+    if (streamUrl) return { stream: streamUrl, tipo: "native" as any, referer: url };
     return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
