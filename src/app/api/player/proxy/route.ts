@@ -57,7 +57,17 @@ export async function GET(req: NextRequest) {
         .split("\n")
         .map((line) => {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith("#")) return line;
+          if (!trimmed) return line;
+
+          // Reescreve URI do #EXT-X-KEY para que a chave AES-128 também passe pelo proxy
+          if (trimmed.startsWith("#EXT-X-KEY") || trimmed.startsWith("#EXT-X-SESSION-KEY")) {
+            return line.replace(/URI="([^"]+)"/, (_, uri: string) => {
+              const absUri = uri.startsWith("http") ? uri : uri.startsWith("/") ? parsed.origin + uri : base + uri;
+              return `URI="${origin}/api/player/proxy?url=${encodeURIComponent(absUri)}"`;
+            });
+          }
+
+          if (trimmed.startsWith("#")) return line;
 
           // Monta URL absoluta do segmento
           let segUrl: string;

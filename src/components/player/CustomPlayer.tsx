@@ -62,6 +62,8 @@ export function CustomPlayer({
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSkipDoneRef = useRef(false);
   const extractAbortRef = useRef<AbortController | null>(null);
+  const isProxiedRef = useRef(false);
+  const directStreamRef = useRef<string | null>(null);
 
   const allFontes: Fonte[] = [
     ...parseFontes(urlDub, "[Dub]"),
@@ -125,6 +127,8 @@ export function CustomPlayer({
     setCurrentTime(0);
     setPlaying(false);
     autoSkipDoneRef.current = false;
+    isProxiedRef.current = false;
+    directStreamRef.current = null;
   }, []);
 
   const extract = useCallback(async (embedUrl: string) => {
@@ -132,6 +136,8 @@ export function CustomPlayer({
     extractAbortRef.current?.abort();
     const ctrl = new AbortController();
     extractAbortRef.current = ctrl;
+    isProxiedRef.current = false;
+    directStreamRef.current = null;
 
     setStatus("extracting");
     setError("");
@@ -145,8 +151,9 @@ export function CustomPlayer({
         setStreamUrl(data.stream);
         setStatus("playing");
       } else {
-        const proxied = `/api/player/proxy?url=${encodeURIComponent(data.stream)}`;
-        setStreamUrl(proxied);
+        // Tenta direto do browser primeiro — CDNs aceitam o IP do usuário mas bloqueiam Vercel
+        directStreamRef.current = data.stream;
+        setStreamUrl(data.stream);
         setStatus("loading");
       }
     } catch (e: any) {
@@ -188,8 +195,12 @@ export function CustomPlayer({
         });
         hls.on(Hls.Events.ERROR, (_: any, data: any) => {
           if (data.fatal) {
-            // Auto-pula para próxima fonte em erro HLS fatal
-            if (fonteIdx < allFontes.length - 1) {
+            const direct = directStreamRef.current;
+            if (!isProxiedRef.current && direct) {
+              // Fallback: tenta via proxy (CDN sem CORS ou domínio que exige servidor)
+              isProxiedRef.current = true;
+              setStreamUrl(`/api/player/proxy?url=${encodeURIComponent(direct)}`);
+            } else if (fonteIdx < allFontes.length - 1) {
               switchFonte(fonteIdx + 1);
             } else {
               setError("Erro no stream HLS");
