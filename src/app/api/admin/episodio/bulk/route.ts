@@ -25,24 +25,25 @@ export async function POST(req: NextRequest) {
       const numeroEp = Number(e.ep ?? e.numeroEp);
       if (!numeroEp) { errors++; return; }
 
-      const epId = `${serieId}-t${temporada}e${numeroEp}`;
       const urlDub = e.urlDub || e.urlBR || e.url_dub || null;
       const urlLeg = e.urlLeg || e.urlENG || e.url_leg || null;
+      const titulo = e.titulo || e.nome || null;
 
       try {
+        // Upsert pela constraint única (serieId, temporada, numeroEp) — evita duplicatas
         await prisma.episodio.upsert({
-          where: { id: epId },
+          where: { serieId_temporada_numeroEp: { serieId, temporada, numeroEp } },
           update: {
-            titulo: e.titulo || e.nome || null,
+            titulo: titulo || undefined,
             urlDub: urlDub || undefined,
             urlLeg: urlLeg || undefined,
           },
           create: {
-            id: epId,
+            id: `${serieId}-t${temporada}e${numeroEp}`,
             serieId,
             temporada,
             numeroEp,
-            titulo: e.titulo || e.nome || null,
+            titulo,
             urlDub,
             urlLeg,
           },

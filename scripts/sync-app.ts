@@ -108,6 +108,29 @@ async function fetchApp(path: string, body?: string) {
   return r.text();
 }
 
+// Busca URLs adicionais do warez2.php (Player Embv/rola3 e Xnn/rola4 injetados em todo catálogo)
+async function fetchWarez2(itemId: string, seasonNum?: number, episodeNum?: number): Promise<{ br: string[]; eng: string[] }> {
+  try {
+    const params = new URLSearchParams({ item_id: itemId });
+    if (seasonNum != null) params.append("season_num", String(seasonNum));
+    if (episodeNum != null) params.append("episode_num", String(episodeNum));
+    const r = await fetch(`https://megafrixapi.com/iptv/warez2.php?${params}`, {
+      headers: { "User-Agent": UA },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return { br: [], eng: [] };
+    const data = await r.json().catch(() => null);
+    return { br: data?.br ?? [], eng: data?.eng ?? [] };
+  } catch { return { br: [], eng: [] }; }
+}
+
+// Mescla URLs do warez2 com as do HTML (warez2 tem prioridade — aparece primeiro)
+function mergeUrls(warezUrls: string[], htmlUrl: string | null): string | null {
+  const all = [...warezUrls];
+  if (htmlUrl && !all.includes(htmlUrl)) all.push(htmlUrl);
+  return all.length > 0 ? all.join(",") : null;
+}
+
 async function obaPost(path: string, data: object): Promise<any> {
   const r = await fetch(`${OBAFLIX}${path}`, {
     method: "POST",
@@ -218,12 +241,17 @@ async function main() {
     const item = parseItem(html);
     if (!item.id || !item.title) continue;
 
+    // Busca URLs adicionais do warez2 (Player Embv/rola3, Xnn/rola4)
+    const warez = await fetchWarez2(item.id!);
+    const urlDub = mergeUrls(warez.br, item.urlBR);
+    const urlLeg = mergeUrls(warez.eng, item.urlENG || null);
+
     const r = await obaPost("/api/admin/filme", {
       id: item.id, titulo: item.title, poster: item.poster, tmdbId: item.tmdb,
       ano: item.ano ? Number(item.ano) : null,
       nota: item.nota ? Number(item.nota) : null,
       duracao: item.duracaoMin ? Number(item.duracaoMin) : null,
-      sinopse: item.sinopse, urlDub: item.urlBR, urlLeg: item.urlENG || null,
+      sinopse: item.sinopse, urlDub, urlLeg,
     });
 
     mem.filmes.push(id);

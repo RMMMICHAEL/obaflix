@@ -62,6 +62,8 @@ model Episodio {
   urlLeg    String?       @db.Text
   createdAt DateTime      @default(now())
   progresso WatchHistory[]
+
+  @@unique([serieId, temporada, numeroEp])
 }
 
 model Genero {

@@ -66,6 +66,38 @@ async function postPlayer(url: string, id: string): Promise<string> {
   return json.videoSource || json.src || "";
 }
 
+// POST para players embedplayer2/rola4 que requerem X-Requested-With para retornar JSON
+// Retorna securedLink (URL assinada com expiração) ou videoSource como fallback
+async function postEmbedPlayer(embedUrl: string): Promise<string> {
+  const parsed = new URL(embedUrl);
+  const base = `${parsed.protocol}//${parsed.hostname}`;
+  const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+  if (!id) return "";
+
+  const form = new URLSearchParams();
+  form.append("hash", id);
+  form.append("r", "https://megaflix.lat/");
+
+  const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "User-Agent": UA,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": apiUrl,
+      "Origin": base,
+    },
+    body: form.toString(),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return "";
+  const text = await res.text();
+  if (!text.trimStart().startsWith("{")) return "";
+  const json = JSON.parse(text);
+  return json.securedLink || json.videoSource || json.src || "";
+}
+
 // ── Extratores por plataforma ─────────────────────────────────────────────────
 
 async function extractLulu(html: string): Promise<string | null> {
@@ -158,9 +190,22 @@ async function extractRola(id: string): Promise<string | null> {
   } catch { return null; }
 }
 
-async function extractRola3(id: string): Promise<string | null> {
+async function extractRola3(url: string, id: string): Promise<string | null> {
+  // Tenta via postEmbedPlayer (suporta embedplayer1 e embedplayer2 com X-Requested-With)
+  try {
+    const src = await postEmbedPlayer(url);
+    if (src) return src;
+  } catch { /* tenta fallback */ }
+  // Fallback legado para embedplayer1.xyz via postPlayer simples
   try {
     const src = await postPlayer("https://embedplayer1.xyz/player/index.php", id);
+    return src || null;
+  } catch { return null; }
+}
+
+async function extractRola4(url: string): Promise<string | null> {
+  try {
+    const src = await postEmbedPlayer(url);
     return src || null;
   } catch { return null; }
 }
@@ -224,8 +269,13 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string }>
     const html = await fetchHtml(url, "https://megaflix.lat/");
     streamUrl = await extractWish(html, url);
 
-  } else if (hostname.includes("rola3") || hostname.includes("embedplayer1")) {
-    streamUrl = await extractRola3(id);
+  } else if (pathname.includes("/rola4/")) {
+    // rola4 / Player Xnn — domínio punycode (xn--...)
+    streamUrl = await extractRola4(url);
+
+  } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
+    // rola3 / Player Embv — embedplayer1.xyz (legado) e embedplayer2.xyz (novo)
+    streamUrl = await extractRola3(url, id);
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
