@@ -89,6 +89,7 @@ export function CustomPlayer({
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoRetryDoneRef = useRef(false);
   const extractRef = useRef<(url: string) => void>(() => {});
 
   useEffect(() => { nextUrlRef.current = nextUrl; }, [nextUrl]);
@@ -153,6 +154,7 @@ export function CustomPlayer({
     setAutoPlayBlocked(false);
     setNextEpCountdown(null);
     autoSkipDoneRef.current = false;
+    autoRetryDoneRef.current = false;
     nextEpCountdownActiveRef.current = false;
     isProxiedRef.current = false;
     directStreamRef.current = null;
@@ -267,15 +269,20 @@ export function CustomPlayer({
         player.once("firstFrame", () => { player.seek(initialProgressoSeg); });
       }
 
-      // Retry timer: se não jogar em 10s, oferece botão de retry
+      // Retry automático: 8s sem play → 1 re-extração silenciosa; se ainda travar → mostra botão
+      // autoRetryDoneRef é resetado apenas no switchFonte (troca de fonte), não em re-extração
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       setShowRetry(false);
       retryTimerRef.current = setTimeout(() => {
         const state = jwRef.current?.getState?.();
-        if (state && state !== "playing" && state !== "paused") {
+        if (!state || state === "playing" || state === "paused") return;
+        if (!autoRetryDoneRef.current) {
+          autoRetryDoneRef.current = true;
+          extractRef.current(fonte?.embedUrl ?? "");
+        } else {
           setShowRetry(true);
         }
-      }, 10000);
+      }, 8000);
 
       player.on("play", () => {
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
@@ -336,12 +343,7 @@ export function CustomPlayer({
     const supportsNativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
     if (!supportsNativeHls) {
       const refUrl = streamRefererRef.current;
-      // rola4 (xn--): embed URL retorna 404 → tenta HLS via JW Player (proxy spoofará Origin do CDN)
-      if (directStreamRef.current && refUrl && (refUrl.includes("rola4") || refUrl.includes("xn--"))) {
-        setStreamTipo("hls");
-        return;
-      }
-      // rola3 e outros: a embed URL é a página HTML do player — iframe funciona
+      // rola3: embed URL é página HTML funcional → iframe. rola4: embed retorna 404 → pula fonte.
       if (refUrl) { setStreamTipo("iframe"); setStreamUrl(refUrl); return; }
       if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); return; }
       setError("Player não suportado neste browser"); setStatus("error");
@@ -356,12 +358,6 @@ export function CustomPlayer({
 
     const onNativeError = () => {
       const refUrl = streamRefererRef.current;
-      // rola4 (xn--): embed URL retorna 404 → tenta HLS via JW Player
-      if (directStreamRef.current && refUrl && (refUrl.includes("rola4") || refUrl.includes("xn--"))) {
-        setStreamTipo("hls");
-        return;
-      }
-      // rola3 e outros: iframe com a página HTML do player
       if (refUrl) { setStreamTipo("iframe"); setStreamUrl(refUrl); return; }
       if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); return; }
       setError("Erro no stream"); setStatus("error");
