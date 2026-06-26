@@ -91,14 +91,19 @@ async function probeUrl(
     let bytes = 0;
     let body_preview: string | undefined;
     if (readBytes && res.body) {
-      const reader = res.body.getReader();
-      const { value } = await reader.read();
-      reader.cancel();
-      bytes = value?.byteLength ?? 0;
-      // Para playlists m3u8, captura texto para extrair URLs
       const ct = res.headers.get("content-type") ?? "";
-      if (ct.includes("mpegurl") || url.includes(".m3u8") || url.includes(".txt")) {
-        body_preview = new TextDecoder().decode(value?.slice(0, 2000));
+      const isPlaylist = ct.includes("mpegurl") || url.includes(".m3u8") || url.includes(".txt");
+      if (isPlaylist) {
+        // Lê o corpo completo para playlists (necessário para extrair URLs de variant/segmento)
+        const text = await res.text();
+        bytes = text.length;
+        body_preview = text.slice(0, 4000);
+      } else {
+        // Para segmentos binários, lê apenas o primeiro chunk
+        const reader = res.body.getReader();
+        const { value } = await reader.read();
+        reader.cancel();
+        bytes = value?.byteLength ?? 0;
       }
     }
 
@@ -108,19 +113,30 @@ async function probeUrl(
   }
 }
 
-// Extrai a primeira variante e o primeiro segmento de um m3u8
+// Extrai variantes e segmentos de um m3u8, incluindo formatos não-convencionais (/md/, /hls/, etc.)
 function parseM3u8(text: string, baseUrl: string): { variants: string[]; segments: string[] } {
   const base = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const origin = new URL(baseUrl).origin;
+  const lines = text.split("\n").map((l) => l.trim());
   const variants: string[] = [];
   const segments: string[] = [];
 
+  let nextIsVariant = false;
   for (const line of lines) {
+    if (!line) continue;
+    if (line.startsWith("#EXT-X-STREAM-INF")) {
+      nextIsVariant = true;
+      continue;
+    }
     if (line.startsWith("#")) continue;
-    const abs = line.startsWith("http") ? line : line.startsWith("/") ? new URL(baseUrl).origin + line : base + line;
-    if (line.includes(".m3u8") || line.includes("/hls/")) {
+
+    const abs = line.startsWith("http") ? line : line.startsWith("/") ? origin + line : base + line;
+
+    if (nextIsVariant) {
       variants.push(abs);
+      nextIsVariant = false;
     } else {
+      // Linha de segmento (EXTINF já passou ou playlist flat)
       segments.push(abs);
     }
   }
@@ -213,13 +229,15 @@ export async function GET(req: NextRequest) {
   };
 
   const overallVerdict =
-    ok(masterCombos) && ok(variantResults) && ok(segmentResults)
-      ? "✅ CADEIA COMPLETA ACESSÍVEL — proxy viável"
-      : !ok(masterCombos)
+    !ok(masterCombos)
       ? "❌ BLOQUEIO NO MASTER — IP binding ou bloqueio total de datacenter"
-      : !ok(variantResults)
-      ? "❌ BLOQUEIO NA VARIANT — master liberado mas playlists bloqueadas"
-      : "❌ BLOQUEIO NOS SEGMENTOS — master e variant liberados, CDN bloqueia bytes de vídeo";
+      : !variantUrl && !segmentUrl
+      ? "⚠️ MASTER ACESSÍVEL mas parser não encontrou variant nem segmento — ver body_preview do master"
+      : variantUrl && !ok(variantResults)
+      ? "❌ BLOQUEIO NA VARIANT — master liberado mas playlist de qualidade bloqueada"
+      : segmentUrl && !ok(segmentResults)
+      ? "❌ BLOQUEIO NOS SEGMENTOS — master e variant liberados, CDN bloqueia bytes de vídeo"
+      : "✅ CADEIA COMPLETA ACESSÍVEL — proxy viável";
 
   return NextResponse.json({
     note: "Todas as requisições são feitas pelo servidor Vercel (mesmo IP da extração)",
