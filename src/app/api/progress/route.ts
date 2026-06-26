@@ -16,7 +16,12 @@ export async function POST(req: NextRequest) {
 
   await prisma.watchHistory.upsert({
     where: { userId_conteudoId_episodioId: { userId, conteudoId, episodioId: episodioId ?? null } },
-    update: { progressoSeg, duracaoSeg, concluido, temporada, numeroEp, queued: false },
+    update: {
+      progressoSeg, duracaoSeg, concluido, temporada, numeroEp, queued: false,
+      conteudoTipo,
+      filmeId: conteudoTipo === "filme" ? conteudoId : undefined,
+      serieId: conteudoTipo === "serie" ? conteudoId : undefined,
+    },
     create: {
       userId,
       conteudoId,
