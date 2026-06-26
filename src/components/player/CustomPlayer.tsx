@@ -335,10 +335,16 @@ export function CustomPlayer({
 
     const supportsNativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
     if (!supportsNativeHls) {
-      const embedUrl = streamRefererRef.current;
-      if (embedUrl) { setStreamTipo("iframe"); setStreamUrl(embedUrl); }
-      else if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); }
-      else { setError("Player não suportado neste browser"); setStatus("error"); }
+      const refUrl = streamRefererRef.current;
+      // rola4 (xn--): embed URL retorna 404 → tenta HLS via JW Player (proxy spoofará Origin do CDN)
+      if (directStreamRef.current && refUrl && (refUrl.includes("rola4") || refUrl.includes("xn--"))) {
+        setStreamTipo("hls");
+        return;
+      }
+      // rola3 e outros: a embed URL é a página HTML do player — iframe funciona
+      if (refUrl) { setStreamTipo("iframe"); setStreamUrl(refUrl); return; }
+      if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); return; }
+      setError("Player não suportado neste browser"); setStatus("error");
       return;
     }
 
@@ -349,10 +355,16 @@ export function CustomPlayer({
     video.play().catch(() => setAutoPlayBlocked(true));
 
     const onNativeError = () => {
-      const embedUrl = streamRefererRef.current;
-      if (embedUrl) { setStreamTipo("iframe"); setStreamUrl(embedUrl); }
-      else if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); }
-      else { setError("Erro no stream"); setStatus("error"); }
+      const refUrl = streamRefererRef.current;
+      // rola4 (xn--): embed URL retorna 404 → tenta HLS via JW Player
+      if (directStreamRef.current && refUrl && (refUrl.includes("rola4") || refUrl.includes("xn--"))) {
+        setStreamTipo("hls");
+        return;
+      }
+      // rola3 e outros: iframe com a página HTML do player
+      if (refUrl) { setStreamTipo("iframe"); setStreamUrl(refUrl); return; }
+      if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); return; }
+      setError("Erro no stream"); setStatus("error");
     };
     video.addEventListener("error", onNativeError, { once: true });
     return () => { video.removeEventListener("error", onNativeError); };

@@ -269,6 +269,14 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   let streamUrl: string | null = null;
   let referer: string | undefined;
 
+  // vast.php: decodifica o param 'link' (base64) e delega ao extrator correto
+  if (pathname.includes("vast.php")) {
+    const linkParam = parsed.searchParams.get("link");
+    if (!linkParam) return { stream: url, tipo: "iframe" };
+    const innerUrl = Buffer.from(linkParam, "base64").toString("utf-8");
+    return doExtract(innerUrl);
+  }
+
   if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
     // Voltz player — GET retorna URL no body e em const stream = "..."
     streamUrl = await extractVoltz(url);
@@ -294,10 +302,11 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     throw new Error("rola4_extraction_failed");
 
   } else if (hostname.includes("embedplayer") || hostname.includes("rola3") || pathname.includes("/rola3/")) {
-    // rola3 / Player Embv — hash expira; se falhar, lança erro para CustomPlayer auto-pular
+    // rola3 / Player Embv — CDN bloqueia datacenter IPs igual ao rola4; usa "native".
+    // Safari/iOS: HLS nativo. Chrome: CustomPlayer faz fallback para iframe com a página HTML do player.
     streamUrl = await extractRola3(url, id);
     if (!streamUrl) throw new Error("rola3_hash_expirado");
-    referer = url;
+    return { stream: streamUrl, tipo: "native" as any, referer: url };
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
