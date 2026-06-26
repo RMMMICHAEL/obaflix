@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, ChevronLeft, ChevronRight, Play, AlertCircle } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -88,6 +88,8 @@ export function CustomPlayer({
   const switchFonteRef = useRef<(idx: number) => void>(() => {});
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extractRef = useRef<(url: string) => void>(() => {});
 
   useEffect(() => { nextUrlRef.current = nextUrl; }, [nextUrl]);
 
@@ -105,6 +107,7 @@ export function CustomPlayer({
   const [nativePlaying, setNativePlaying] = useState(false);
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
+  const [showRetry, setShowRetry] = useState(false);
 
   const fonte = allFontes[fonteIdx];
 
@@ -139,11 +142,13 @@ export function CustomPlayer({
 
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number) => {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     setFonteIdx(idx);
     setStatus("idle");
     setStreamUrl(null);
     setError("");
+    setShowRetry(false);
     setNativePlaying(false);
     setAutoPlayBlocked(false);
     setNextEpCountdown(null);
@@ -193,6 +198,8 @@ export function CustomPlayer({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fonteIdx, allFontes.length, switchFonte]);
+
+  extractRef.current = extract;
 
   useEffect(() => {
     if (!fonte?.embedUrl) return;
@@ -255,7 +262,21 @@ export function CustomPlayer({
         player.once("firstFrame", () => { player.seek(initialProgressoSeg); });
       }
 
-      player.on("play", () => setStatus("playing"));
+      // Retry timer: se não jogar em 10s, oferece botão de retry
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      setShowRetry(false);
+      retryTimerRef.current = setTimeout(() => {
+        const state = jwRef.current?.getState?.();
+        if (state && state !== "playing" && state !== "paused") {
+          setShowRetry(true);
+        }
+      }, 10000);
+
+      player.on("play", () => {
+        if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+        setShowRetry(false);
+        setStatus("playing");
+      });
       player.on("pause", () => { saveProgressRef.current(); });
       player.on("complete", () => { saveProgressRef.current(); });
 
@@ -296,6 +317,7 @@ export function CustomPlayer({
     });
 
     return () => {
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -497,6 +519,25 @@ export function CustomPlayer({
             <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center hover:bg-white/10 transition-colors">
               <Play size={38} fill="white" strokeWidth={0} className="ml-1" />
             </div>
+          </div>
+        )}
+
+        {/* ── Retry: player travou sem erro explícito ── */}
+        {showRetry && status !== "error" && status !== "extracting" && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50">
+            <button
+              onClick={() => {
+                setShowRetry(false);
+                if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+                extractRef.current(fonte?.embedUrl ?? "");
+              }}
+              className="flex flex-col items-center gap-3 text-white/70 hover:text-white transition-colors group"
+            >
+              <div className="w-16 h-16 rounded-full bg-white/10 border border-white/20 flex items-center justify-center group-hover:bg-white/20 transition-colors">
+                <RotateCcw size={26} strokeWidth={1.5} />
+              </div>
+              <span className="text-sm font-medium">Tentar novamente</span>
+            </button>
           </div>
         )}
 
