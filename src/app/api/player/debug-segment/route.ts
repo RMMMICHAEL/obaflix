@@ -91,7 +91,7 @@ async function probeUrl(
     let bytes = 0;
     let body_preview: string | undefined;
     if (readBytes && res.body) {
-      const ct = res.headers.get("content-type") ?? "";
+      const ct = (res.headers.get("content-type") ?? "").toLowerCase();
       const isPlaylist = ct.includes("mpegurl") || url.includes(".m3u8") || url.includes(".txt");
       if (isPlaylist) {
         // Lê o corpo completo para playlists (necessário para extrair URLs de variant/segmento)
