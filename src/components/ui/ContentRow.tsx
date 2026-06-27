@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRef } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { ContentCard } from "./ContentCard";
@@ -18,9 +19,10 @@ interface Item {
 interface Props {
   titulo: string;
   items: Item[];
+  verTodosHref?: string;
 }
 
-export function ContentRow({ titulo, items }: Props) {
+export function ContentRow({ titulo, items, verTodosHref }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   const scroll = (dir: "left" | "right") => {
@@ -32,7 +34,14 @@ export function ContentRow({ titulo, items }: Props) {
 
   return (
     <section className="mb-8">
-      <h2 className="text-white font-semibold text-lg mb-3 px-4 md:px-8">{titulo}</h2>
+      <div className="flex items-center gap-3 mb-3 px-4 md:px-8">
+        <h2 className="text-white font-semibold text-lg">{titulo}</h2>
+        {verTodosHref && (
+          <Link href={verTodosHref} className="text-xs text-zinc-400 hover:text-white transition ml-1">
+            Ver todos →
+          </Link>
+        )}
+      </div>
       <div className="relative group/row">
         <button
           onClick={() => scroll("left")}

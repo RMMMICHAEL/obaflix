@@ -23,7 +23,7 @@ interface Props {
 export function ContentCard({ id, tipo, titulo, poster, ano, nota, urlDub, urlLeg, progresso, onWatchlistToggle, inWatchlist }: Props) {
   const [hovered, setHovered] = useState(false);
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
-  const playerHref = tipo === "filme" ? `/assistir/filme/${id}` : `/serie/${id}`;
+  const playerHref = href;
   const pct = progresso?.duracaoSeg ? (progresso.progressoSeg / progresso.duracaoSeg) * 100 : 0;
 
   return (

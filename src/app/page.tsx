@@ -251,16 +251,16 @@ export default async function HomePage() {
 
         {/* TMDB genre rows */}
         {acaoList.length > 0 && (
-          <ContentRow titulo="💥 Ação" items={acaoList} />
+          <ContentRow titulo="💥 Ação" items={acaoList} verTodosHref="/genero/28" />
         )}
         {terrorList.length > 0 && (
-          <ContentRow titulo="👻 Terror" items={terrorList} />
+          <ContentRow titulo="👻 Terror" items={terrorList} verTodosHref="/genero/27" />
         )}
         {ficcaoList.length > 0 && (
-          <ContentRow titulo="🚀 Ficção Científica" items={ficcaoList} />
+          <ContentRow titulo="🚀 Ficção Científica" items={ficcaoList} verTodosHref="/genero/878" />
         )}
         {animeList.length > 0 && (
-          <ContentRow titulo="🎌 Animes" items={animeList} />
+          <ContentRow titulo="🎌 Animes" items={animeList} verTodosHref="/genero/16" />
         )}
         {dbAnimes.length > 0 && (
           <ContentRow titulo="🎌 Animes no Catálogo" items={dbAnimes.map((s) => dbToCard(s, "anime"))} />
@@ -272,7 +272,7 @@ export default async function HomePage() {
         {/* DB genre rows */}
         {generoRows.map((g) =>
           g.filmes.length > 0 ? (
-            <ContentRow key={g.id} titulo={g.nome} items={g.filmes} />
+            <ContentRow key={g.id} titulo={g.nome} items={g.filmes} verTodosHref={`/genero/${g.id}`} />
           ) : null
         )}
       </div>

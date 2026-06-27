@@ -136,9 +136,9 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
             <div className="flex flex-wrap gap-2 mb-5">
               {serie.generos.map((g: any) => (
-                <span key={g.generoId} className="text-xs bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-zinc-700">
+                <Link key={g.generoId} href={`/genero/${g.generoId}`} className="text-xs bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-zinc-700 hover:bg-zinc-700 hover:text-white transition">
                   {g.genero.nome}
-                </span>
+                </Link>
               ))}
             </div>
 
