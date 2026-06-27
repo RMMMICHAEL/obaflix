@@ -314,10 +314,11 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     hostname.includes("embedplayer") ||
     hostname.includes("rola3")
   ) {
-    // Via Cloudflare Worker: extrai e proxia M3U8+segmentos pelo mesmo IP
-    // evitando o IP-bound 403 que ocorre quando Vercel extrai de um nó e serve de outro.
-    const src = await postEmbedPlayer(url);
-    streamUrl = src || null;
+    // Delega ao Worker /stream: extração + M3U8 acontecem no mesmo request do browser
+    // → mesmo PoP Cloudflare → mesmo IP de saída → sem 403 IP-bound.
+    const workerUrl = process.env.EMBED_WORKER_URL;
+    if (!workerUrl) return { stream: url, tipo: "iframe" };
+    return { stream: `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`, tipo: "hls" };
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);

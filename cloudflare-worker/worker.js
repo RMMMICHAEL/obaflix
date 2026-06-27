@@ -1,16 +1,20 @@
 /**
  * Obaflix Embed Proxy — Cloudflare Worker
  *
- * Dois endpoints:
- *
- * POST / { "url": "https://embedplayer2.xyz/rola3/HASH" }
- *   → Extrai o securedLink e devolve já embrulhado no proxy:
- *     { "securedLink": "https://obaflix-proxy.obavercel.workers.dev/proxy?u=..." }
+ * GET /stream?embedUrl=ENCODED_URL
+ *   Extrai + busca M3U8 em um único request (mesmo PoP, mesmo IP de saída).
+ *   Reescreve todas as URLs para /proxy, incluindo EXT-X-KEY e EXT-X-MAP.
+ *   Chamado diretamente pelo browser — sem auth (HLS.js não suporta headers custom).
  *
  * GET /proxy?u=ENCODED_URL
- *   → Proxia qualquer URL pelo IP deste Worker.
- *     Se for M3U8 reescreve todas as URLs de segmentos para também passarem por aqui.
- *     Isso garante que extração + segmentos saiam do mesmo IP → sem 403 IP-bound.
+ *   Proxia qualquer URL (M3U8, .ts, chaves AES) pelo IP deste Worker.
+ *   Reescreve M3U8 recursivamente. Chamado pelo HLS player para cada segmento.
+ *
+ * Arquitetura de IP:
+ *   O browser chama /stream → Cloudflare roteia para o PoP mais próximo do usuário.
+ *   Extração e M3U8 inicial saem desse mesmo PoP.
+ *   Requests /proxy subsequentes do mesmo browser vão para o mesmo PoP (anycast).
+ *   → IP de saída consistente durante toda a sessão.
  */
 
 const UA =
@@ -24,112 +28,92 @@ export default {
       return new Response(null, { headers: corsHeaders(env) });
     }
 
-    if (request.method === "GET" && url.pathname === "/proxy") {
-      return handleProxy(request, url, env);
-    }
-
-    if (request.method === "POST" && url.pathname === "/") {
-      return handleExtract(request, url, env);
+    if (request.method === "GET") {
+      if (url.pathname === "/stream") return handleStream(request, url, env);
+      if (url.pathname === "/proxy") return handleProxy(request, url, env);
     }
 
     return new Response("Not Found", { status: 404 });
   },
 };
 
-// ── Extração ──────────────────────────────────────────────────────────────────
+// ── /stream — extrai + serve M3U8 reescrito em um único request ───────────────
 
-async function handleExtract(request, workerUrl, env) {
-  const secret = request.headers.get("X-Worker-Secret");
-  if (env.WORKER_SECRET && secret !== env.WORKER_SECRET) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+async function handleStream(request, workerUrl, env) {
+  const embedParam = workerUrl.searchParams.get("embedUrl");
+  if (!embedParam) return new Response("Missing embedUrl", { status: 400 });
 
-  let body;
+  let embedUrl;
   try {
-    body = await request.json();
+    embedUrl = decodeURIComponent(embedParam);
+    new URL(embedUrl);
   } catch {
-    return new Response("Bad Request", { status: 400 });
+    return new Response("Invalid embedUrl", { status: 400 });
   }
 
-  const { url } = body;
-  if (!url || typeof url !== "string") {
-    return json({ error: "url required" }, 400, env);
+  // Extrai o securedLink do player usando o IP deste PoP
+  const securedLink = await extractEmbedPlayer(embedUrl);
+  if (!securedLink) {
+    return new Response(
+      JSON.stringify({ error: "extraction failed", embedUrl }),
+      { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders(env) } }
+    );
   }
 
-  let parsed;
+  // Busca o master.m3u8 com o mesmo IP que fez a extração
+  let m3u8Text;
   try {
-    parsed = new URL(url);
-  } catch {
-    return json({ error: "invalid url" }, 400, env);
-  }
-
-  const base = `${parsed.protocol}//${parsed.hostname}`;
-  const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
-
-  if (!id) {
-    return json({ error: "hash not found in path" }, 400, env);
-  }
-
-  const form = new URLSearchParams();
-  form.append("hash", id);
-  form.append("r", "https://megaflix.lat/");
-
-  const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
-
-  try {
-    const res = await fetch(apiUrl, {
-      method: "POST",
+    const res = await fetch(securedLink, {
       headers: {
         "User-Agent": UA,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": url,
-        "Origin": base,
+        "Referer": new URL(embedUrl).origin + "/",
+        "Origin": new URL(embedUrl).origin,
       },
-      body: form.toString(),
     });
-
-    const text = await res.text();
-
-    if (!text.trimStart().startsWith("{")) {
-      return json({ error: "player returned non-JSON", raw: text.slice(0, 200) }, 502, env);
+    if (!res.ok) {
+      return new Response(`CDN ${res.status} on master.m3u8`, { status: res.status });
     }
-
-    const data = JSON.parse(text);
-    const securedLink = data.securedLink || data.videoSource || data.src || "";
-
-    if (!securedLink) {
-      return json({ error: "no stream in response", raw: data }, 502, env);
-    }
-
-    // Embrulha o link no proxy para que extração e segmentos saiam do mesmo IP
-    const proxied = `${workerUrl.origin}/proxy?u=${encodeURIComponent(securedLink)}`;
-    return json({ securedLink: proxied, videoSource: proxied }, 200, env);
+    m3u8Text = await res.text();
   } catch (err) {
-    return json({ error: String(err) }, 502, env);
+    return new Response(String(err), { status: 502 });
   }
+
+  const rewritten = rewriteM3u8(m3u8Text, securedLink, workerUrl.origin, embedUrl);
+
+  return new Response(rewritten, {
+    headers: {
+      "Content-Type": "application/vnd.apple.mpegurl",
+      "Cache-Control": "no-cache",
+      ...corsHeaders(env),
+    },
+  });
 }
 
-// ── Proxy de M3U8 e segmentos ─────────────────────────────────────────────────
+// ── /proxy — proxia qualquer URL (M3U8, segmentos, chaves AES) ───────────────
 
 async function handleProxy(request, workerUrl, env) {
   const targetParam = workerUrl.searchParams.get("u");
   if (!targetParam) return new Response("Missing u param", { status: 400 });
 
+  // Referer original do player pode ser passado para headers corretos
+  const refererParam = workerUrl.searchParams.get("ref");
+
   let targetUrl;
   try {
     targetUrl = decodeURIComponent(targetParam);
-    new URL(targetUrl); // valida
+    new URL(targetUrl);
   } catch {
     return new Response("Invalid u param", { status: 400 });
   }
+
+  let referer = refererParam ? decodeURIComponent(refererParam) : new URL(targetUrl).origin + "/";
 
   let res;
   try {
     res = await fetch(targetUrl, {
       headers: {
         "User-Agent": UA,
-        "Referer": new URL(targetUrl).origin + "/",
+        "Referer": referer,
         "Origin": new URL(targetUrl).origin,
       },
     });
@@ -145,11 +129,11 @@ async function handleProxy(request, workerUrl, env) {
   const isM3u8 =
     contentType.includes("mpegurl") ||
     contentType.includes("x-mpegurl") ||
-    targetUrl.includes(".m3u8");
+    targetUrl.split("?")[0].endsWith(".m3u8");
 
   if (isM3u8) {
     const text = await res.text();
-    const rewritten = rewriteM3u8(text, targetUrl, workerUrl.origin);
+    const rewritten = rewriteM3u8(text, targetUrl, workerUrl.origin, referer);
     return new Response(rewritten, {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
@@ -159,7 +143,7 @@ async function handleProxy(request, workerUrl, env) {
     });
   }
 
-  // Passa binário (segmentos .ts, .aac, etc.) diretamente
+  // Binário: .ts, chaves AES, etc.
   const headers = new Headers({
     "Content-Type": contentType || "video/mp2t",
     "Cache-Control": "public, max-age=3600",
@@ -173,39 +157,87 @@ async function handleProxy(request, workerUrl, env) {
   return new Response(res.body, { status: res.status, headers });
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Extração de securedLink via POST (embedplayer2 / xnn) ────────────────────
 
-function rewriteM3u8(text, baseUrl, workerOrigin) {
+async function extractEmbedPlayer(embedUrl) {
+  const parsed = new URL(embedUrl);
+  const base = `${parsed.protocol}//${parsed.hostname}`;
+  const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+  if (!id) return null;
+
+  const form = new URLSearchParams();
+  form.append("hash", id);
+  form.append("r", "https://megaflix.lat/");
+
+  const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
+
+  try {
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": embedUrl,
+        "Origin": base,
+      },
+      body: form.toString(),
+    });
+
+    const text = await res.text();
+    if (!text.trimStart().startsWith("{")) return null;
+    const data = JSON.parse(text);
+    return data.securedLink || data.videoSource || data.src || null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Reescrita de M3U8 ─────────────────────────────────────────────────────────
+
+function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
+  const parsedBase = new URL(baseUrl);
   const base = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
-  const origin = new URL(baseUrl).origin;
-  const proxyBase = `${workerOrigin}/proxy?u=`;
+  const origin = parsedBase.origin;
+  const proxyBase = `${workerOrigin}/proxy`;
+  const refParam = playerReferer ? "&ref=" + encodeURIComponent(playerReferer) : "";
+
+  function toAbsolute(href) {
+    if (href.startsWith("http://") || href.startsWith("https://")) return href;
+    if (href.startsWith("//")) return parsedBase.protocol + href;
+    if (href.startsWith("/")) return origin + href;
+    return base + href;
+  }
+
+  function wrapProxy(href) {
+    return `${proxyBase}?u=${encodeURIComponent(toAbsolute(href))}${refParam}`;
+  }
 
   return text
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
-      if (trimmed === "" || trimmed.startsWith("#")) return line;
 
-      let absolute;
-      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        absolute = trimmed;
-      } else if (trimmed.startsWith("/")) {
-        absolute = origin + trimmed;
-      } else {
-        absolute = base + trimmed;
+      if (trimmed === "") return line;
+
+      // Reescreve URI dentro de tags de metadados (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA, etc.)
+      if (trimmed.startsWith("#EXT-X-KEY") ||
+          trimmed.startsWith("#EXT-X-MAP") ||
+          trimmed.startsWith("#EXT-X-MEDIA") ||
+          trimmed.startsWith("#EXT-X-SESSION-KEY")) {
+        return trimmed.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${wrapProxy(uri)}"`);
       }
 
-      return proxyBase + encodeURIComponent(absolute);
+      // Ignora outros comentários
+      if (trimmed.startsWith("#")) return line;
+
+      // Linha de URL (segmento ou playlist variante)
+      return wrapProxy(trimmed);
     })
     .join("\n");
 }
 
-function json(data, status, env) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", ...corsHeaders(env) },
-  });
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function corsHeaders(env) {
   return {
