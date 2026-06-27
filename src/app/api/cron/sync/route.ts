@@ -181,19 +181,28 @@ async function syncSerie(id: string, novosEpsAlvo: Array<{ temp: number; ep: num
     const eps = parseEpisodes(epsHtml);
 
     for (const e of eps) {
-      await prisma.episodio.upsert({
-        where: { serieId_temporada_numeroEp: { serieId: item.id!, temporada: e.temp, numeroEp: e.ep } },
-        update: { urlDub: e.urlDub ?? undefined, urlLeg: e.urlLeg ?? undefined },
-        create: {
-          id: `${item.id}-t${e.temp}e${e.ep}`,
-          serieId: item.id!,
-          temporada: e.temp,
-          numeroEp: e.ep,
-          titulo: e.titulo,
-          urlDub: e.urlDub,
-          urlLeg: e.urlLeg,
-        },
+      const existing = await prisma.episodio.findFirst({
+        where: { serieId: item.id!, temporada: e.temp, numeroEp: e.ep },
+        select: { id: true },
       });
+      if (existing) {
+        await prisma.episodio.update({
+          where: { id: existing.id },
+          data: { urlDub: e.urlDub ?? undefined, urlLeg: e.urlLeg ?? undefined },
+        });
+      } else {
+        await prisma.episodio.create({
+          data: {
+            id: `${item.id}-t${e.temp}e${e.ep}`,
+            serieId: item.id!,
+            temporada: e.temp,
+            numeroEp: e.ep,
+            titulo: e.titulo,
+            urlDub: e.urlDub,
+            urlLeg: e.urlLeg,
+          },
+        });
+      }
       totalEps++;
     }
   }
