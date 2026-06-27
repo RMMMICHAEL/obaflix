@@ -476,8 +476,7 @@ export function CustomPlayer({
             className="absolute inset-0 w-full h-full border-0"
             allowFullScreen
             allow="autoplay; fullscreen; picture-in-picture"
-            referrerPolicy="no-referrer"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-autoplay"
           />
         ) : streamTipo === "native" ? (
           /* Native video (rola4 em Safari/iOS sem CORS) */

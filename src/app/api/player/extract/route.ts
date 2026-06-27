@@ -101,13 +101,22 @@ async function postEmbedPlayer(embedUrl: string): Promise<string> {
 // ── Extratores por plataforma ─────────────────────────────────────────────────
 
 // Voltz player: GET na URL → URL do stream no body e em const stream = "..."
+// O servidor Voltz às vezes gera a URL de stream de forma assíncrona — primeira req retorna HTML
+// sem o stream, segunda (após ~1s) já tem. Retry único resolve o problema sem aumentar latência
+// na maioria dos casos onde a URL está disponível imediatamente.
 async function extractVoltz(url: string): Promise<string | null> {
+  function parse(html: string): string | null {
+    const m = html.match(/const\s+stream\s*=\s*["']([^"']+)["']/);
+    if (m?.[1]?.startsWith("http")) return m[1];
+    return findM3u8(html) || html.match(/https?:\/\/[^\s<>"']+\.(mp4|m3u8)[^\s<>"']*/i)?.[0] || null;
+  }
   const html = await fetchHtml(url, "https://megaflix.lat/");
-  // 1. const stream = "URL"
-  const streamMatch = html.match(/const\s+stream\s*=\s*["']([^"']+)["']/);
-  if (streamMatch?.[1]?.startsWith("http")) return streamMatch[1];
-  // 2. URL diretamente no body (sem obfuscação)
-  return findM3u8(html) || html.match(/https?:\/\/[^\s<>"']+\.(mp4|m3u8)[^\s<>"']*/i)?.[0] || null;
+  const first = parse(html);
+  if (first) return first;
+  // Retry: servidor Voltz pode não ter a URL pronta na primeira requisição
+  await new Promise((r) => setTimeout(r, 1200));
+  const html2 = await fetchHtml(url, "https://megaflix.lat/");
+  return parse(html2);
 }
 
 async function extractLulu(html: string): Promise<string | null> {
