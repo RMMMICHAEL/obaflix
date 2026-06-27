@@ -66,9 +66,36 @@ async function postPlayer(url: string, id: string): Promise<string> {
   return json.videoSource || json.src || "";
 }
 
-// POST para players embedplayer2/rola4 que requerem X-Requested-With para retornar JSON
-// Retorna securedLink (URL assinada com expiração) ou videoSource como fallback
+// POST para players embedplayer2/rola4 via Cloudflare Worker (IP não-datacenter)
+// ou direto como fallback. Retorna securedLink ou videoSource.
 async function postEmbedPlayer(embedUrl: string): Promise<string> {
+  const workerUrl = process.env.EMBED_WORKER_URL;
+  const workerSecret = process.env.EMBED_WORKER_SECRET ?? "";
+
+  // Rota preferencial: Cloudflare Worker (evita bloqueio de datacenter IPs)
+  if (workerUrl) {
+    try {
+      const res = await fetch(workerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Worker-Secret": workerSecret,
+        },
+        body: JSON.stringify({ url: embedUrl }),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (res.ok) {
+        const text = await res.text();
+        if (text.trimStart().startsWith("{")) {
+          const json = JSON.parse(text);
+          const src = json.securedLink || json.videoSource || json.src || "";
+          if (src) return src;
+        }
+      }
+    } catch { /* fallback para direto */ }
+  }
+
+  // Fallback direto (pode ser bloqueado por CDNs que rejeitam datacenter IPs)
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
@@ -85,7 +112,7 @@ async function postEmbedPlayer(embedUrl: string): Promise<string> {
       "User-Agent": UA,
       "Content-Type": "application/x-www-form-urlencoded",
       "X-Requested-With": "XMLHttpRequest",
-      "Referer": apiUrl,
+      "Referer": embedUrl,
       "Origin": base,
     },
     body: form.toString(),
@@ -287,9 +314,10 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     hostname.includes("embedplayer") ||
     hostname.includes("rola3")
   ) {
-    // rola4 (Xnn) e rola3 (Embv): securedLink é IP-bound ao nó Vercel que fez a extração.
-    // O load balancer roteia requests de segmento para nós diferentes → 403 garantido.
-    return { stream: url, tipo: "iframe" };
+    // Via Cloudflare Worker: extrai e proxia M3U8+segmentos pelo mesmo IP
+    // evitando o IP-bound 403 que ocorre quando Vercel extrai de um nó e serve de outro.
+    const src = await postEmbedPlayer(url);
+    streamUrl = src || null;
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);

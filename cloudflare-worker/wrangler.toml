@@ -1,0 +1,10 @@
+name = "obaflix-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+ALLOWED_ORIGIN = "https://obaflix.vercel.app"
+
+# Setar o segredo com:
+#   npx wrangler secret put WORKER_SECRET
+# e copiar o mesmo valor em EMBED_WORKER_SECRET no .env do obaflix
