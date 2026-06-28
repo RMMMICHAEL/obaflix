@@ -6,6 +6,7 @@ import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickT
 import { prisma } from "@/lib/prisma";
 import { ContentRow } from "@/components/ui/ContentRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
+import { LikeButtons } from "@/components/ui/LikeButtons";
 
 export const dynamic = "force-dynamic";
 
@@ -120,7 +121,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
               <p className="text-zinc-300 text-sm md:text-base leading-relaxed mb-6 max-w-2xl">{filme.sinopse}</p>
             )}
 
-            <div className="flex flex-wrap gap-3 items-center">
+            <div className="flex flex-wrap gap-3 items-center mb-4">
               <Link
                 href={`/assistir/filme/${filme.id}`}
                 className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
@@ -137,6 +138,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
                 <span className="bg-zinc-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg">LEG</span>
               )}
             </div>
+            <LikeButtons conteudoId={filme.id} tipo="filme" />
           </div>
         </div>
 

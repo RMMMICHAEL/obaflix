@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
 import { ContentRow } from "@/components/ui/ContentRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
+import { LikeButtons } from "@/components/ui/LikeButtons";
 
 export const dynamic = "force-dynamic";
 
@@ -146,7 +147,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
               <p className="text-zinc-300 text-sm md:text-base leading-relaxed mb-6 max-w-2xl">{serie.sinopse}</p>
             )}
 
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3 mb-4">
               {continueEp ? (
                 <Link
                   href={`/assistir/serie/${serie.id}/t${continueEp.temporada}/ep${continueEp.numeroEp}`}
@@ -166,6 +167,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
                 <TrailerButton videoKey={trailer.key} titulo={serie.titulo} />
               )}
             </div>
+            <LikeButtons conteudoId={serie.id} tipo={serie.tipo as any} />
           </div>
         </div>
 

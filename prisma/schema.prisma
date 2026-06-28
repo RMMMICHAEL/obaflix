@@ -99,6 +99,19 @@ model User {
   createdAt DateTime       @default(now())
   historico WatchHistory[]
   watchlist Watchlist[]
+  likes     Like[]
+}
+
+model Like {
+  id           String   @id @default(cuid())
+  userId       String
+  conteudoId   String
+  conteudoTipo String
+  valor        Int
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conteudoId, conteudoTipo])
 }
 
 model WatchHistory {

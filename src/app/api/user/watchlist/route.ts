@@ -41,3 +41,13 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true });
 }
+
+export async function DELETE(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const userId = (session.user as { id: string }).id;
+  const { conteudoId, conteudoTipo } = await req.json();
+
+  await prisma.watchlist.deleteMany({ where: { userId, conteudoId, conteudoTipo } });
+  return NextResponse.json({ ok: true });
+}

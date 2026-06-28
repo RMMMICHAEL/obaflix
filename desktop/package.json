@@ -1,0 +1,57 @@
+{
+  "name": "obaflix",
+  "version": "1.0.0",
+  "description": "Obaflix - Aplicativo Desktop",
+  "main": "electron/main.js",
+  "author": "Obaflix",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "build:all": "electron-builder --win --mac --linux",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.4"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.obaflix.app",
+    "productName": "Obaflix",
+    "copyright": "Copyright © 2026 Obaflix",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false,
+      "sign": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Obaflix"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "contaobaanuncio4-dot",
+      "repo": "obaflix-releases"
+    }
+  }
+}

@@ -3,7 +3,7 @@ main = "worker.js"
 compatibility_date = "2024-09-23"
 
 [vars]
-ALLOWED_ORIGIN = "https://obaflix.vercel.app"
+ALLOWED_ORIGIN = "*"
 
 # Setar o segredo com:
 #   npx wrangler secret put WORKER_SECRET

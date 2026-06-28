@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Play, Info } from "lucide-react";
+import { Play, Info, ChevronLeft, ChevronRight } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
 interface HeroItem {
@@ -14,63 +14,121 @@ interface HeroItem {
   background: string | null;
 }
 
+const INTERVAL = 8000;
+
 export function HeroSlider({ items }: { items: HeroItem[] }) {
   const [idx, setIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  const goTo = useCallback((i: number) => {
+    setIdx(i);
+    setProgress(0);
+  }, []);
+
+  const prev = useCallback(() => goTo((idx - 1 + items.length) % items.length), [idx, items.length, goTo]);
+  const next = useCallback(() => goTo((idx + 1) % items.length), [idx, items.length, goTo]);
 
   useEffect(() => {
-    const t = setInterval(() => setIdx((i) => (i + 1) % items.length), 8000);
-    return () => clearInterval(t);
-  }, [items.length]);
+    setProgress(0);
+    if (paused) return;
+    const start = Date.now();
+    const tick = setInterval(() => {
+      const pct = ((Date.now() - start) / INTERVAL) * 100;
+      if (pct >= 100) {
+        setIdx((i) => (i + 1) % items.length);
+        setProgress(0);
+      } else {
+        setProgress(pct);
+      }
+    }, 80);
+    return () => clearInterval(tick);
+  }, [idx, paused, items.length]);
 
   if (!items.length) return null;
   const item = items[idx];
-  const isFilme = !item.tipo || item.tipo === "filme";
+  const href = item.tipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`;
+  const bgSrc = item.background
+    ? item.background.startsWith("http") ? item.background : imgUrl(item.background, "original")
+    : "/placeholder-bg.jpg";
 
   return (
-    <div className="relative h-[70vh] min-h-[400px] w-full overflow-hidden">
-      <Image
-        src={item.background
-          ? (item.background.startsWith("http") ? item.background : imgUrl(item.background, "original"))
-          : "/placeholder-bg.jpg"
-        }
-        alt={item.titulo}
-        fill
-        className="object-cover transition-opacity duration-700"
-        priority
-      />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/50 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
+    <div
+      className="relative h-[72vh] min-h-[440px] w-full overflow-hidden select-none"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+    >
+      {/* Backdrop */}
+      <Image src={bgSrc} alt={item.titulo} fill className="object-cover transition-opacity duration-700" priority />
 
-      <div className="absolute bottom-16 left-4 md:left-16 max-w-xl">
-        <h1 className="text-white font-bold text-3xl md:text-5xl mb-3 drop-shadow-lg">{item.titulo}</h1>
+      {/* Gradients */}
+      <div className="absolute inset-0 bg-gradient-to-r from-black/95 via-black/55 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/10 to-transparent" />
+
+      {/* Prev arrow */}
+      <button
+        onClick={prev}
+        aria-label="Anterior"
+        className="absolute left-2 md:left-4 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/80 transition opacity-60 hover:opacity-100"
+      >
+        <ChevronLeft size={20} />
+      </button>
+
+      {/* Next arrow */}
+      <button
+        onClick={next}
+        aria-label="Próximo"
+        className="absolute right-2 md:right-4 top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/80 transition opacity-60 hover:opacity-100"
+      >
+        <ChevronRight size={20} />
+      </button>
+
+      {/* Content */}
+      <div className="absolute bottom-20 left-4 md:left-16 max-w-lg z-10">
+        <h1 className="text-white font-black text-3xl md:text-5xl mb-3 drop-shadow-xl leading-tight">
+          {item.titulo}
+        </h1>
         {item.sinopse && (
-          <p className="text-zinc-300 text-sm md:text-base line-clamp-2 mb-5">{item.sinopse}</p>
+          <p className="text-zinc-300 text-sm md:text-base line-clamp-3 mb-5 max-w-md leading-relaxed">
+            {item.sinopse}
+          </p>
         )}
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
           <Link
-            href={isFilme ? `/assistir/filme/${item.id}` : `/serie/${item.id}`}
-            className="flex items-center gap-2 bg-white text-black font-bold px-6 py-2.5 rounded hover:bg-zinc-200 transition"
+            href={href}
+            className="flex items-center gap-2 bg-white text-black font-bold px-6 py-2.5 rounded-lg hover:bg-zinc-100 transition text-sm shadow-lg"
           >
-            <Play size={18} fill="black" /> Assistir
+            <Play size={16} fill="black" /> Assistir
           </Link>
           <Link
-            href={isFilme ? `/filme/${item.id}` : `/serie/${item.id}`}
-            className="flex items-center gap-2 bg-zinc-700/80 text-white font-semibold px-6 py-2.5 rounded hover:bg-zinc-600 transition"
+            href={href}
+            className="flex items-center gap-2 bg-white/10 backdrop-blur border border-white/20 text-white font-semibold px-6 py-2.5 rounded-lg hover:bg-white/20 transition text-sm"
           >
-            <Info size={18} /> Mais Info
+            <Info size={16} /> Mais Info
           </Link>
         </div>
       </div>
 
-      {/* dots */}
-      <div className="absolute bottom-6 left-4 md:left-16 flex gap-2">
+      {/* Dots */}
+      <div className="absolute bottom-8 left-4 md:left-16 flex gap-1.5 z-10">
         {items.map((_, i) => (
           <button
             key={i}
-            onClick={() => setIdx(i)}
-            className={`w-2 h-2 rounded-full transition ${i === idx ? "bg-white" : "bg-zinc-600"}`}
+            onClick={() => goTo(i)}
+            aria-label={`Slide ${i + 1}`}
+            className={`rounded-full transition-all duration-300 ${
+              i === idx ? "bg-white w-5 h-1.5" : "bg-zinc-500 w-1.5 h-1.5"
+            }`}
           />
         ))}
+      </div>
+
+      {/* Progress bar */}
+      <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-zinc-800 z-10">
+        <div
+          className="h-full bg-red-600"
+          style={{ width: `${progress}%`, transition: "width 80ms linear" }}
+        />
       </div>
     </div>
   );

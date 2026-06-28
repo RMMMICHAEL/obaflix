@@ -29,8 +29,8 @@ export async function GET(req: NextRequest) {
         skip,
         take: limit,
         select: {
-          id: true, titulo: true, poster: true, ano: true,
-          nota: true, urlDub: true, urlLeg: true,
+          id: true, titulo: true, poster: true, background: true,
+          sinopse: true, ano: true, nota: true, urlDub: true, urlLeg: true,
           generos: { select: { genero: { select: { id: true, nome: true } } } },
         },
       }),

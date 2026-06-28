@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -91,6 +91,7 @@ export function CustomPlayer({
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoRetryDoneRef = useRef(false);
   const extractRef = useRef<(url: string) => void>(() => {});
+  const castContextRef = useRef<any>(null);
 
   useEffect(() => { nextUrlRef.current = nextUrl; }, [nextUrl]);
 
@@ -109,8 +110,81 @@ export function CustomPlayer({
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
   const [showRetry, setShowRetry] = useState(false);
+  // chromecast
+  const [castAvailable, setCastAvailable] = useState(false);
+  const [isCasting, setIsCasting] = useState(false);
 
   const fonte = allFontes[fonteIdx];
+
+  // ── Chromecast SDK ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // __onGCastApiAvailable é chamado pelo SDK assim que ele carrega
+    (window as any).__onGCastApiAvailable = (isAvailable: boolean) => {
+      if (!isAvailable) return;
+      const castApi = (window as any).cast;
+      const chromeApi = (window as any).chrome;
+      const ctx = castApi.framework.CastContext.getInstance();
+      ctx.setOptions({
+        receiverApplicationId: chromeApi.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        autoJoinPolicy: chromeApi.cast.AutoJoinPolicy.ORIGIN_SCOPED,
+      });
+      castContextRef.current = ctx;
+      setCastAvailable(true);
+      const ss = castApi.framework.SessionState;
+      ctx.addEventListener(
+        castApi.framework.CastContextEventType.SESSION_STATE_CHANGED,
+        (e: any) => {
+          if (e.sessionState === ss.SESSION_STARTED || e.sessionState === ss.SESSION_RESUMED) {
+            setIsCasting(true);
+          } else if (e.sessionState === ss.SESSION_ENDED) {
+            setIsCasting(false);
+            // retoma o player local quando a transmissão encerra
+            if (jwRef.current) { try { jwRef.current.play(); } catch { /**/ } }
+          }
+        }
+      );
+    };
+    // Carrega SDK apenas uma vez por página
+    if (!(window as any).__castSdkInjected) {
+      (window as any).__castSdkInjected = true;
+      const s = document.createElement("script");
+      s.src = "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1";
+      document.head.appendChild(s);
+    }
+  }, []);
+
+  // ── handleCast ───────────────────────────────────────────────────────────────
+  const handleCast = async () => {
+    const ctx = castContextRef.current;
+    if (!ctx) return;
+    if (isCasting) { ctx.endCurrentSession(true); return; }
+
+    const url = directStreamRef.current || streamUrl;
+    if (!url) return;
+
+    try {
+      await ctx.requestSession();
+      const session = ctx.getCurrentSession();
+      if (!session) return;
+
+      const chromeApi = (window as any).chrome;
+      const mediaInfo = new chromeApi.cast.media.MediaInfo(url, "application/vnd.apple.mpegurl");
+      const meta = new chromeApi.cast.media.GenericMediaMetadata();
+      meta.title = titulo;
+      if (thumbUrl) meta.images = [{ url: thumbUrl }];
+      mediaInfo.metadata = meta;
+
+      const loadReq = new chromeApi.cast.media.LoadRequest(mediaInfo);
+      if (progressoRef.current > 5) loadReq.currentTime = progressoRef.current;
+
+      await session.loadMedia(loadReq);
+      // pausa o player local para evitar áudio duplo
+      if (jwRef.current) { try { jwRef.current.pause(); } catch { /**/ } }
+    } catch (err: any) {
+      if (err?.code !== "CANCEL") console.error("[CAST]", err);
+    }
+  };
 
   // ── Save progress ────────────────────────────────────────────────────────────
   const saveProgress = useCallback(async () => {
@@ -176,17 +250,28 @@ export function CustomPlayer({
     setError("");
     setStreamUrl(null);
     try {
-      const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
-      const data = await res.json();
-      if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
-      setStreamTipo(data.tipo ?? "hls");
-      directStreamRef.current = data.stream;
+      // No Electron, usa extração nativa (sem CORS, sem proxy) para rola3/rola4
+      const isRola34 = /\/(rola3|rola4)\//.test(embedUrl) || /embedplayer/.test(embedUrl);
+      const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
+      let data: { stream?: string; tipo?: string; referer?: string; error?: string };
+
+      if (desktop && isRola34) {
+        data = await desktop.extractStream(embedUrl);
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+      } else {
+        const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
+        data = await res.json();
+        if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
+      }
+
+      setStreamTipo((data.tipo ?? "hls") as StreamTipo);
+      directStreamRef.current = data.stream!;
       streamRefererRef.current = data.referer ?? null;
       if (data.tipo === "iframe") {
-        setStreamUrl(data.stream);
+        setStreamUrl(data.stream!);
         setStatus("playing");
       } else {
-        setStreamUrl(data.stream);
+        setStreamUrl(data.stream!);
         setStatus("loading");
       }
     } catch (e: any) {
@@ -462,6 +547,20 @@ export function CustomPlayer({
             onClick={() => { saveProgress(); router.push(nextUrl); }}
           >
             Próximo <ChevronRight size={13} strokeWidth={2} />
+          </button>
+        )}
+        {/* Chromecast */}
+        {castAvailable && (
+          <button
+            onClick={handleCast}
+            title={isCasting ? "Parar transmissão" : "Transmitir no Chromecast"}
+            className={`pointer-events-auto p-1.5 rounded-full border transition-all ${
+              isCasting
+                ? "border-[#E50914] text-[#E50914] bg-[#E50914]/10"
+                : "border-white/20 text-white/50 hover:border-white/40 hover:text-white bg-white/5"
+            }`}
+          >
+            <Cast size={14} strokeWidth={1.5} />
           </button>
         )}
       </div>
