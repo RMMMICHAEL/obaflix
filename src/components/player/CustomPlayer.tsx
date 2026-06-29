@@ -131,6 +131,8 @@ export function CustomPlayer({
   // ── Chromecast SDK ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Chromecast não funciona no Electron — evita session_error no .exe
+    if ((window as any).obaflixDesktop) return;
     // __onGCastApiAvailable é chamado pelo SDK assim que ele carrega
     (window as any).__onGCastApiAvailable = (isAvailable: boolean) => {
       if (!isAvailable) return;
@@ -613,7 +615,7 @@ export function CustomPlayer({
             className="absolute inset-0 w-full h-full border-0"
             allowFullScreen
             allow="autoplay; fullscreen; picture-in-picture"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-autoplay"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
           />
         ) : streamTipo === "native" ? (
           /* Native video (rola4 em Safari/iOS sem CORS) */
@@ -624,8 +626,13 @@ export function CustomPlayer({
             preload="auto"
           />
         ) : (
-          /* JW Player container */
-          <div id="jw-player-container" className="absolute inset-0 w-full h-full" />
+          /* JW Player container — dangerouslySetInnerHTML previne conflito de removeChild
+             entre o reconciliador do React e as mutações de DOM do JW Player */
+          <div
+            id="jw-player-container"
+            className="absolute inset-0 w-full h-full"
+            dangerouslySetInnerHTML={{ __html: "" }}
+          />
         )}
 
         {/* ── Extracting overlay: backdrop + título + dots ── */}
