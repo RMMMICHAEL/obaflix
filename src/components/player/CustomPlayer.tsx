@@ -90,8 +90,7 @@ export function CustomPlayer({
   const isProxiedRef = useRef(false);
   const directStreamRef = useRef<string | null>(null);
   const streamRefererRef = useRef<string | null>(null);
-  const reExtractPosRef = useRef(0);   // posição salva para continuar após re-extração
-  const reExtractCountRef = useRef(0); // limite de re-extrações por fonte
+  const reExtractCountRef = useRef(0); // re-extrações por fonte (renova token CDN)
   // Stable refs to avoid stale closures in JW Player callbacks
   const saveProgressRef = useRef<() => Promise<void>>(async () => {});
   const switchFonteRef = useRef<(idx: number) => void>(() => {});
@@ -246,7 +245,6 @@ export function CustomPlayer({
     isProxiedRef.current = false;
     directStreamRef.current = null;
     streamRefererRef.current = null;
-    reExtractPosRef.current = 0;
     reExtractCountRef.current = 0;
   }, []);
 
@@ -363,11 +361,9 @@ export function CustomPlayer({
 
       jwRef.current = player;
 
-      // Seek to resume position — cobre tanto o carregamento inicial quanto re-extrações
-      const seekTo = reExtractPosRef.current > 5 ? reExtractPosRef.current : initialProgressoSeg > 5 ? initialProgressoSeg : 0;
-      reExtractPosRef.current = 0;
-      if (seekTo > 5) {
-        player.once("firstFrame", () => { player.seek(seekTo); });
+      // Seek to resume position on initial load
+      if (initialProgressoSeg > 5) {
+        player.once("firstFrame", () => { player.seek(initialProgressoSeg); });
       }
 
       // Retry automático: 8s sem play → 1 re-extração silenciosa; se ainda travar → mostra botão
@@ -423,12 +419,26 @@ export function CustomPlayer({
         const embedUrl = fonte?.embedUrl ?? "";
         const inElectron = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
 
-        // rola3/rola4 no Electron: token CDN expirou → re-extrai com token fresco
-        // e retoma do ponto atual (até 5 tentativas antes de trocar fonte)
+        // rola3/rola4 no Electron: token CDN expirou → re-extrai silenciosamente
+        // sem destruir o player (sem overlay, sem troca de fonte).
+        // Usa player.load() com a nova URL e retoma do ponto salvo.
         if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < 5) {
           reExtractCountRef.current += 1;
-          reExtractPosRef.current = progressoRef.current;
-          extractRef.current(embedUrl);
+          const pos = progressoRef.current;
+          const desktop = (window as any).obaflixDesktop;
+          desktop.extractStream(embedUrl)
+            .then((data: any) => {
+              if (!data?.stream || !jwRef.current) return;
+              jwRef.current.load([{ file: data.stream, type: "hls" }]);
+              if (pos > 5) {
+                jwRef.current.once("firstFrame", () => { jwRef.current?.seek(pos); });
+              }
+              jwRef.current.play();
+            })
+            .catch(() => {
+              if (fi < len - 1) switchFonteRef.current(fi + 1);
+              else { setError("Erro no stream"); setStatus("error"); }
+            });
           return;
         }
 
