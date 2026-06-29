@@ -92,7 +92,7 @@ export function ContinuarAssistindo() {
             const ep = episodeLabel(item);
 
             return (
-              <div key={item.historyId} className="flex-none w-44 sm:w-48 md:w-56 relative group/card">
+              <div key={item.historyId} className="flex-none w-36 sm:w-40 md:w-56 relative group/card">
                 {/* Card */}
                 <Link
                   href={watchUrl(item)}
