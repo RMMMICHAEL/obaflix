@@ -61,9 +61,16 @@ type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
 interface Fonte { label: string; embedUrl: string; }
 
-function parseFontes(urls: string | null, prefix: string): Fonte[] {
+function isRola34Url(url: string) {
+  return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f/.test(url);
+}
+
+function parseFontes(urls: string | null, prefix: string, includeRola34: boolean): Fonte[] {
   if (!urls) return [];
-  return urls.split(",").map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u.trim() })).filter((f) => f.embedUrl);
+  return urls.split(",")
+    .map((u) => u.trim())
+    .filter((u) => u && (includeRola34 || !isRola34Url(u)))
+    .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u }));
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -95,9 +102,13 @@ export function CustomPlayer({
 
   useEffect(() => { nextUrlRef.current = nextUrl; }, [nextUrl]);
 
+  // No Electron (.exe): inclui rola3/rola4 como players principais
+  // No site: remove rola3/rola4 (só funcionam com IP residencial via app nativo)
+  const isDesktop = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
+
   const allFontes: Fonte[] = [
-    ...parseFontes(urlDub, "[Dub]"),
-    ...parseFontes(urlLeg, "[Leg]"),
+    ...parseFontes(urlDub, "[Dub]", isDesktop),
+    ...parseFontes(urlLeg, "[Leg]", isDesktop),
   ];
 
   const [fonteIdx, setFonteIdx] = useState(0);
@@ -250,11 +261,10 @@ export function CustomPlayer({
     setError("");
     setStreamUrl(null);
     try {
-      const isRola34 = /\/(rola3|rola4)\//.test(embedUrl) || /embedplayer/.test(embedUrl);
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
       let data: { stream?: string; tipo?: string; referer?: string; error?: string };
 
-      if (desktop && isRola34) {
+      if (desktop && isRola34Url(embedUrl)) {
         // No Electron: extração nativa via IPC → main.js usa Node.js fetch com IP do usuário
         data = await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
