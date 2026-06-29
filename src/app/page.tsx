@@ -2,6 +2,7 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { RankRow } from "@/components/ui/RankRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
+import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
 import {
   getTrending, getPopularMovies, getPopularTV,
@@ -14,11 +15,18 @@ import {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// Content added within the last 3 days is flagged as "Recém Adicionado"
-const NEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+// Série/filme adicionado nos últimos 3 dias → "Recém Adicionado"
+const NEW_SERIE_MS = 3 * 24 * 60 * 60 * 1000;
+// Episódio adicionado nas últimas 48h → "Novo Episódio"
+const NEW_EP_MS = 48 * 60 * 60 * 1000;
+
 function isRecent(date?: Date | null): boolean {
   if (!date) return false;
-  return Date.now() - new Date(date).getTime() < NEW_THRESHOLD_MS;
+  return Date.now() - new Date(date).getTime() < NEW_SERIE_MS;
+}
+function isEpRecent(date?: Date | null): boolean {
+  if (!date) return false;
+  return Date.now() - new Date(date).getTime() < NEW_EP_MS;
 }
 
 type CardItem = {
@@ -94,6 +102,7 @@ export default async function HomePage() {
     // Top 10 direto do banco — garante 10 itens (focado no catálogo brasileiro)
     dbTop10Filmes,
     dbTop10Series,
+    dbEpsRecentes,
     ...dbGeneroFilmes
   ] = await Promise.all([
     getTrending("week"),
@@ -115,6 +124,16 @@ export default async function HomePage() {
     // Top 10 do banco por nota — sem depender do TMDB airing today (era vazio por ser série americana)
     prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 10, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 10, select: selSerie }),
+    // Episódios recentes — últimos 24 adicionados com info da série
+    prisma.episodio.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 24,
+      select: {
+        id: true, serieId: true, titulo: true, thumbnail: true,
+        temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
+        serie: { select: { titulo: true, poster: true, tipo: true } },
+      },
+    }),
     // Gêneros por banco
     ...["28","35","27","10749","878","18","16","80","53","12","99","9648"].map((gId) =>
       prisma.filme.findMany({
@@ -210,6 +229,21 @@ export default async function HomePage() {
     };
   });
 
+  const epsRecentesItems = (dbEpsRecentes as any[]).map((e) => ({
+    episodioId: e.id,
+    serieId: e.serieId,
+    titulo: e.titulo ?? null,
+    serieTitulo: e.serie.titulo,
+    poster: e.serie.poster ?? null,
+    thumbnail: e.thumbnail ?? null,
+    temporada: e.temporada,
+    numeroEp: e.numeroEp,
+    tipo: (e.serie.tipo ?? "serie") as "serie" | "anime" | "desenho",
+    isNovoEpisodio: isEpRecent(e.createdAt),
+    urlDub: e.urlDub ?? null,
+    urlLeg: e.urlLeg ?? null,
+  }));
+
   const generoRows = GENEROS.map((g, i) => ({
     ...g,
     filmes: (dbGeneroFilmes[i] ?? []).map((f) => dbToCard(f, "filme")),
@@ -281,6 +315,9 @@ export default async function HomePage() {
             verTodosHref="/series"
           />
         )}
+
+        {/* Episódios Recentes */}
+        <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
 
         {/* Séries Mais Bem Avaliadas */}
         {topTV.length > 0 && (
