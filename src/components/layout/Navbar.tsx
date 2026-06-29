@@ -37,10 +37,10 @@ export function Navbar() {
   return (
     <nav
       className={`fixed top-0 left-0 right-0 z-40 transition-colors duration-300 ${
-        scrolled ? "bg-zinc-950/98 border-b border-zinc-800/50" : "bg-gradient-to-b from-black/90 to-transparent"
+        scrolled ? "bg-zinc-950" : "bg-gradient-to-b from-black/80 to-transparent"
       }`}
     >
-      <div className="flex items-center justify-between px-4 md:px-8 h-16">
+      <div className="flex items-center justify-between px-4 md:px-14 h-16">
         {/* Logo */}
         <Link href="/" className="text-red-600 font-black text-xl tracking-tight shrink-0 mr-6">
           OBA<span className="text-white">FLIX</span>

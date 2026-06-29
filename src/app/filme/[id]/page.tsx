@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { Play, Star, Clock, User } from "lucide-react";
 import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
-import { ContentRow } from "@/components/ui/ContentRow";
+import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
 import { LikeButtons } from "@/components/ui/LikeButtons";
 
@@ -33,7 +33,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     prisma.filme.findMany({
       where: { id: { not: filme.id }, generos: { some: { generoId: { in: generoIds } } } },
       take: 20,
-      select: { id: true, titulo: true, poster: true, ano: true, nota: true, urlDub: true, urlLeg: true },
+      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, urlDub: true, urlLeg: true },
     }),
   ]);
 
@@ -46,7 +46,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
     const dbRecs = await prisma.filme.findMany({
       where: { tmdbId: { in: tmdbIds } },
-      select: { id: true, titulo: true, poster: true, ano: true, nota: true, urlDub: true, urlLeg: true },
+      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, urlDub: true, urlLeg: true },
     });
     recCards = dbRecs.map((f) => ({ ...f, tipo: "filme" as const }));
   }
@@ -177,7 +177,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         {/* Recommendations */}
         {similares.length > 0 && (
           <div className="mt-10">
-            <ContentRow titulo="Você Também Pode Gostar" items={similares} />
+            <LandscapeRow titulo="Você Também Pode Gostar" items={similares} />
           </div>
         )}
       </div>

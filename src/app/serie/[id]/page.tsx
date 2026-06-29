@@ -7,7 +7,7 @@ import { authOptions } from "@/lib/auth";
 import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
-import { ContentRow } from "@/components/ui/ContentRow";
+import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
 import { LikeButtons } from "@/components/ui/LikeButtons";
 
@@ -70,7 +70,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
     const dbRecs = await prisma.serie.findMany({
       where: { tmdbId: { in: tmdbIds } },
-      select: { id: true, titulo: true, poster: true, ano: true, nota: true, tipo: true },
+      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, tipo: true },
     });
     recCards = dbRecs.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
@@ -81,7 +81,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     const fallback = await prisma.serie.findMany({
       where: { id: { not: serie.id }, generos: { some: { generoId: { in: generoIds } } } },
       take: 20,
-      select: { id: true, titulo: true, poster: true, ano: true, nota: true, tipo: true },
+      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, tipo: true },
     });
     recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
@@ -214,7 +214,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         {/* Recomendações */}
         {recCards.length > 0 && (
           <div className="mt-10">
-            <ContentRow titulo="Você Também Pode Gostar" items={recCards} />
+            <LandscapeRow titulo="Você Também Pode Gostar" items={recCards} />
           </div>
         )}
       </div>

@@ -12,6 +12,7 @@ interface Item {
   poster: string | null;
   urlDub?: string | null;
   urlLeg?: string | null;
+  isNew?: boolean;
 }
 
 interface Props {
@@ -28,11 +29,11 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
   if (!items.length) return null;
 
   return (
-    <section className="mb-8">
-      <div className="flex items-center gap-3 mb-3 px-4 md:px-8">
-        <h2 className="text-white font-semibold text-lg">{titulo}</h2>
+    <section className="mb-2 md:mb-6">
+      <div className="flex items-center gap-3 mb-2 px-4 md:px-14">
+        <h2 className="text-white font-semibold text-sm md:text-[15px] tracking-wide">{titulo}</h2>
         {verTodosHref && (
-          <Link href={verTodosHref} className="text-xs text-zinc-400 hover:text-white transition ml-1">
+          <Link href={verTodosHref} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors flex-none">
             Ver todos →
           </Link>
         )}
@@ -41,23 +42,23 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
       <div className="relative group/row">
         <button
           onClick={() => scroll("left")}
-          className="absolute left-0 top-0 bottom-0 z-10 w-10 bg-black/60 text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
+          className="absolute left-0 top-0 bottom-0 z-10 w-12 md:w-14 bg-gradient-to-r from-zinc-950 to-transparent text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
         >
-          <ChevronLeft size={24} />
+          <ChevronLeft size={22} />
         </button>
 
         <div
           ref={ref}
-          className="flex gap-2 overflow-x-auto scrollbar-hide px-4 md:px-8 pb-4 pt-2 scroll-smooth"
+          className="flex gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 pb-4 pt-1 scroll-smooth"
         >
           {items.slice(0, 10).map((item, i) => (
-            <RankCard key={item.id} rank={i + 1} {...item} />
+            <RankCard key={item.id} rank={i + 1} isNew={item.isNew} {...item} />
           ))}
         </div>
 
         <button
           onClick={() => scroll("right")}
-          className="absolute right-0 top-0 bottom-0 z-10 w-10 bg-black/60 text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
+          className="absolute right-0 top-0 bottom-0 z-10 w-12 md:w-14 bg-gradient-to-l from-zinc-950 to-transparent text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
         >
           <ChevronRight size={24} />
         </button>
