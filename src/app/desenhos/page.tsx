@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-const NEW_MS = 14 * 24 * 60 * 60 * 1000;
+const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 
 const sel = {
   id: true, titulo: true, poster: true, background: true, logo: true,

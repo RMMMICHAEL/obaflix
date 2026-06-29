@@ -14,8 +14,8 @@ import {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// Content added within the last 14 days is flagged as "Recém Adicionado"
-const NEW_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000;
+// Content added within the last 3 days is flagged as "Recém Adicionado"
+const NEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
 function isRecent(date?: Date | null): boolean {
   if (!date) return false;
   return Date.now() - new Date(date).getTime() < NEW_THRESHOLD_MS;
