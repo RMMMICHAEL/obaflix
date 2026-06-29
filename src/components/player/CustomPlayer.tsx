@@ -502,7 +502,7 @@ export function CustomPlayer({
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col select-none">
       {/* ── Top bar – above JW Player ── */}
-      <div className="absolute top-0 inset-x-0 z-30 flex items-center gap-2 px-4 pt-3 pb-10 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
+      <div className="absolute top-0 inset-x-0 z-[9999] flex items-center gap-2 px-4 pt-3 pb-10 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
         <button
           className="pointer-events-auto text-white/80 hover:text-white transition-colors p-1 rounded-full hover:bg-white/10 flex-shrink-0"
           onClick={() => { saveProgress(); router.back(); }}
