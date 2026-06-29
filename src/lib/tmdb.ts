@@ -95,33 +95,72 @@ export const getMovieSimilar = (tmdbId: string | number) =>
 export const getTVSimilar = (tmdbId: string | number) =>
   tmdbFetch<TmdbPage>(`/tv/${tmdbId}/similar`);
 
-// ── Images / Logos ─────────────────────────────────────────────────────────
+// ── Images / Logos / Backdrops ─────────────────────────────────────────────
 
-interface TmdbImageEntry {
+export interface TmdbImageEntry {
   file_path: string;
   iso_639_1: string | null;
   width: number;
+  height: number;
   vote_average: number;
+  vote_count: number;
 }
-interface TmdbImages {
+
+export interface TmdbImages {
+  backdrops?: TmdbImageEntry[];
+  posters?: TmdbImageEntry[];
   logos?: TmdbImageEntry[];
 }
 
+/**
+ * Busca imagens do filme com preferência por conteúdo pt-BR.
+ * include_image_language=pt,null,en → retorna: pt (banner c/ texto em PT)
+ * depois null (banner sem texto, neutro) e en como fallback final.
+ * language=pt-BR → metadados em português.
+ */
 export const getMovieImages = (tmdbId: string | number) =>
-  tmdbFetch<TmdbImages>(`/movie/${tmdbId}/images?include_image_language=pt,en,null`);
+  tmdbFetch<TmdbImages>(
+    `/movie/${tmdbId}/images?include_image_language=pt,null,en`
+  );
 
 export const getTVImages = (tmdbId: string | number) =>
-  tmdbFetch<TmdbImages>(`/tv/${tmdbId}/images?include_image_language=pt,en,null`);
+  tmdbFetch<TmdbImages>(
+    `/tv/${tmdbId}/images?include_image_language=pt,null,en`
+  );
 
-/** Retorna o file_path do melhor logo disponível (pt-BR > en > qualquer) */
+/**
+ * Escolhe o melhor backdrop para pt-BR.
+ * Prioridade: pt (texto em português) > null (sem texto, neutro) > en
+ * Dentro de cada idioma, ordena por vote_average desc para pegar o melhor.
+ */
+export function pickBackdrop(images: TmdbImages | null | undefined): string | null {
+  const backdrops = images?.backdrops;
+  if (!backdrops?.length) return null;
+
+  const byLang = (lang: string | null) =>
+    backdrops
+      .filter((b) => b.iso_639_1 === lang)
+      .sort((a, b) => b.vote_average - a.vote_average)[0];
+
+  return (
+    byLang("pt")?.file_path ??
+    byLang(null)?.file_path ??
+    byLang("en")?.file_path ??
+    backdrops[0].file_path
+  );
+}
+
+/** Escolhe o melhor logo: pt > en > qualquer */
 export function pickLogo(images: TmdbImages | null | undefined): string | null {
   const logos = images?.logos;
   if (!logos?.length) return null;
-  const pt = logos.find((l) => l.iso_639_1 === "pt");
-  if (pt) return pt.file_path;
-  const en = logos.find((l) => l.iso_639_1 === "en");
-  if (en) return en.file_path;
-  return logos[0].file_path;
+  const byLang = (lang: string | null) =>
+    logos.filter((l) => l.iso_639_1 === lang).sort((a, b) => b.vote_average - a.vote_average)[0];
+  return (
+    byLang("pt")?.file_path ??
+    byLang("en")?.file_path ??
+    logos[0].file_path
+  );
 }
 
 export function logoUrl(path: string | null | undefined): string | null {

@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
-import { getMovieImages, pickLogo } from "@/lib/tmdb";
+import { getMovieImages, pickLogo, pickBackdrop } from "@/lib/tmdb";
 
 // GET — lista filmes com busca
 export async function GET(req: NextRequest) {
@@ -40,18 +40,22 @@ export async function POST(req: NextRequest) {
 
   if (!id || !titulo) return NextResponse.json({ error: "id e titulo obrigatórios" }, { status: 400 });
 
-  // Busca logo do TMDB se tmdbId fornecido
+  // Busca imagens TMDB (logo + backdrop pt-BR) se tmdbId fornecido
   let logo: string | null = null;
+  let backgroundPT: string | null = background ?? null;
   if (tmdbId) {
     const imgs = await getMovieImages(tmdbId).catch(() => null);
     logo = pickLogo(imgs) ?? null;
+    // Usa backdrop pt-BR se disponível, caso contrário mantém o enviado
+    const bd = pickBackdrop(imgs);
+    if (bd) backgroundPT = bd;
   }
 
   const filme = await prisma.filme.upsert({
     where: { id: String(id) },
     update: {
       tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background, sinopse,
+      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
       ano: ano ? Number(ano) : undefined,
       nota: nota ? Number(nota) : undefined,
       duracao: duracao ? Number(duracao) : undefined,
@@ -62,7 +66,7 @@ export async function POST(req: NextRequest) {
     create: {
       id: String(id),
       tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background, sinopse,
+      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
       ano: ano ? Number(ano) : undefined,
       nota: nota ? Number(nota) : undefined,
       duracao: duracao ? Number(duracao) : undefined,
