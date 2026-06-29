@@ -95,6 +95,41 @@ export const getMovieSimilar = (tmdbId: string | number) =>
 export const getTVSimilar = (tmdbId: string | number) =>
   tmdbFetch<TmdbPage>(`/tv/${tmdbId}/similar`);
 
+// ── Images / Logos ─────────────────────────────────────────────────────────
+
+interface TmdbImageEntry {
+  file_path: string;
+  iso_639_1: string | null;
+  width: number;
+  vote_average: number;
+}
+interface TmdbImages {
+  logos?: TmdbImageEntry[];
+}
+
+export const getMovieImages = (tmdbId: string | number) =>
+  tmdbFetch<TmdbImages>(`/movie/${tmdbId}/images?include_image_language=pt,en,null`);
+
+export const getTVImages = (tmdbId: string | number) =>
+  tmdbFetch<TmdbImages>(`/tv/${tmdbId}/images?include_image_language=pt,en,null`);
+
+/** Retorna o file_path do melhor logo disponível (pt-BR > en > qualquer) */
+export function pickLogo(images: TmdbImages | null | undefined): string | null {
+  const logos = images?.logos;
+  if (!logos?.length) return null;
+  const pt = logos.find((l) => l.iso_639_1 === "pt");
+  if (pt) return pt.file_path;
+  const en = logos.find((l) => l.iso_639_1 === "en");
+  if (en) return en.file_path;
+  return logos[0].file_path;
+}
+
+export function logoUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (path.startsWith("http")) return path;
+  return `${IMG}/w300${path}`;
+}
+
 // ── Search ─────────────────────────────────────────────────────────────────
 export const searchFilme = (query: string) =>
   tmdbFetch<TmdbPage>(`/search/movie?query=${encodeURIComponent(query)}`);

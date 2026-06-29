@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, withCors } from "@/lib/auth";
+import { getTVImages, pickLogo } from "@/lib/tmdb";
 
 export async function OPTIONS(req: NextRequest) {
   const guard = await requireAdmin(req); return guard ?? new NextResponse(null, { status: 204 });
@@ -44,6 +45,13 @@ export async function POST(req: NextRequest) {
 
   if (!id || !titulo) return NextResponse.json({ error: "id e titulo obrigatórios" }, { status: 400 });
 
+  // Busca logo do TMDB se tmdbId fornecido
+  let logo: string | null = null;
+  if (tmdbId) {
+    const imgs = await getTVImages(tmdbId).catch(() => null);
+    logo = pickLogo(imgs) ?? null;
+  }
+
   const serie = await prisma.serie.upsert({
     where: { id: String(id) },
     update: {
@@ -53,6 +61,7 @@ export async function POST(req: NextRequest) {
       nota: nota ? Number(nota) : undefined,
       temporadas: temporadas ? Number(temporadas) : undefined,
       tipo: tipo || "serie",
+      ...(logo ? { logo } : {}),
     },
     create: {
       id: String(id),
@@ -62,6 +71,7 @@ export async function POST(req: NextRequest) {
       nota: nota ? Number(nota) : undefined,
       temporadas: temporadas ? Number(temporadas) : undefined,
       tipo: tipo || "serie",
+      logo,
     },
   });
 

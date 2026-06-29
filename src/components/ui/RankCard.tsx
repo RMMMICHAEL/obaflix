@@ -17,10 +17,10 @@ interface Props {
 
 export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew }: Props) {
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
-  const POSTER_W = 80;
-  const POSTER_H = 120;
-  const CONT_W = 124;
-  const fontSize = rank >= 10 ? "4.5rem" : "5.75rem";
+  const POSTER_W = 110;
+  const POSTER_H = 165;
+  const CONT_W = 170;
+  const fontSize = rank >= 10 ? "6rem" : "8rem";
 
   return (
     <div className="flex-none relative" style={{ width: `${CONT_W}px`, height: `${POSTER_H}px` }}>

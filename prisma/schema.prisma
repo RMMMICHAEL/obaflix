@@ -16,6 +16,7 @@ model Filme {
   tituloOriginal String?
   poster         String?
   background     String?
+  logo           String?
   sinopse        String?       @db.Text
   ano            Int?
   nota           Float?
@@ -37,6 +38,7 @@ model Serie {
   tituloOriginal String?
   poster         String?
   background     String?
+  logo           String?
   sinopse        String?       @db.Text
   ano            Int?
   nota           Float?

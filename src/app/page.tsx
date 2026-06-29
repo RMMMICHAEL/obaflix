@@ -27,6 +27,7 @@ type CardItem = {
   titulo: string;
   poster: string | null;
   background?: string | null;
+  logo?: string | null;
   ano: number | null;
   nota: number | null;
   urlDub?: string | null;
@@ -39,6 +40,7 @@ function dbToCard(r: any, tipo: CardItem["tipo"]): CardItem {
     id: r.id, tipo,
     titulo: r.titulo, poster: r.poster,
     background: r.background ?? null,
+    logo: r.logo ?? null,
     ano: r.ano, nota: r.nota,
     urlDub: r.urlDub ?? null, urlLeg: r.urlLeg ?? null,
     isNew: isRecent(r.createdAt),
@@ -59,6 +61,7 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
     titulo: db?.titulo ?? item.title ?? item.name ?? "",
     poster: db?.poster ?? item.poster_path ?? null,
     background: db?.background ?? item.backdrop_path ?? null,
+    logo: db?.logo ?? null,
     ano: db?.ano ?? (Number((item.release_date ?? item.first_air_date ?? "").slice(0, 4)) || null),
     nota: db?.nota ?? item.vote_average ?? null,
     urlDub: db.urlDub ?? null, urlLeg: db.urlLeg ?? null,
@@ -66,8 +69,8 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
   };
 }
 
-// createdAt incluído para computar badge "Recém Adicionado"
-const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, ano: true, nota: true, createdAt: true } as const;
+// createdAt + logo incluídos nas queries
+const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, createdAt: true } as const;
 const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
 const selSerie  = { ...selDB, tipo: true } as const;
 

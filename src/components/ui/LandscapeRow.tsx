@@ -11,6 +11,7 @@ interface Item {
   titulo: string;
   poster: string | null;
   background?: string | null;
+  logo?: string | null;
   ano: number | null;
   nota: number | null;
   urlDub?: string | null;

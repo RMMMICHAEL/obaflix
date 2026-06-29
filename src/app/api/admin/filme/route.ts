@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { getMovieImages, pickLogo } from "@/lib/tmdb";
 
 // GET — lista filmes com busca
 export async function GET(req: NextRequest) {
@@ -39,6 +40,13 @@ export async function POST(req: NextRequest) {
 
   if (!id || !titulo) return NextResponse.json({ error: "id e titulo obrigatórios" }, { status: 400 });
 
+  // Busca logo do TMDB se tmdbId fornecido
+  let logo: string | null = null;
+  if (tmdbId) {
+    const imgs = await getMovieImages(tmdbId).catch(() => null);
+    logo = pickLogo(imgs) ?? null;
+  }
+
   const filme = await prisma.filme.upsert({
     where: { id: String(id) },
     update: {
@@ -49,6 +57,7 @@ export async function POST(req: NextRequest) {
       duracao: duracao ? Number(duracao) : undefined,
       urlDub: urlDub || null,
       urlLeg: urlLeg || null,
+      ...(logo ? { logo } : {}),
     },
     create: {
       id: String(id),
@@ -59,6 +68,7 @@ export async function POST(req: NextRequest) {
       duracao: duracao ? Number(duracao) : undefined,
       urlDub: urlDub || null,
       urlLeg: urlLeg || null,
+      logo,
     },
   });
 

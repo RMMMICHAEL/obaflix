@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const NEW_MS = 14 * 24 * 60 * 60 * 1000;
 
 const sel = {
-  id: true, titulo: true, poster: true, background: true,
+  id: true, titulo: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, tipo: true, createdAt: true,
 } as const;
 
@@ -21,6 +21,7 @@ function toCard(s: any) {
     titulo: s.titulo,
     poster: s.poster ?? null,
     background: s.background ?? null,
+    logo: s.logo ?? null,
     ano: s.ano ?? null,
     nota: s.nota ?? null,
     isNew: s.createdAt ? Date.now() - new Date(s.createdAt).getTime() < NEW_MS : false,
