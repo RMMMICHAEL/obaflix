@@ -250,14 +250,19 @@ export function CustomPlayer({
     setError("");
     setStreamUrl(null);
     try {
+      const isRola34 = /\/(rola3|rola4)\//.test(embedUrl) || /embedplayer/.test(embedUrl);
+      const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
       let data: { stream?: string; tipo?: string; referer?: string; error?: string };
 
-      // Em Electron, rola3/rola4 é interceptado pelo onBeforeRequest do main.js e
-      // redirecionado para o servidor local (extração com IP residencial do usuário).
-      // Não usa IPC direto — o intercept HTTP cuida do roteamento.
-      const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
-      data = await res.json();
-      if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
+      if (desktop && isRola34) {
+        // No Electron: extração nativa via IPC → main.js usa Node.js fetch com IP do usuário
+        data = await desktop.extractStream(embedUrl);
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+      } else {
+        const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
+        data = await res.json();
+        if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
+      }
 
       setStreamTipo((data.tipo ?? "hls") as StreamTipo);
       directStreamRef.current = data.stream!;
