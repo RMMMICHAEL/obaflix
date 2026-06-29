@@ -266,26 +266,54 @@ export function CustomPlayer({
     setStreamUrl(null);
     try {
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
-      let data: { stream?: string; tipo?: string; referer?: string; error?: string };
+      let tipo: string;
+      let playerUrl: string;
 
       if (desktop && isRola34Url(embedUrl)) {
-        // No Electron: extração nativa via IPC → main.js usa Node.js fetch com IP do usuário
-        data = await desktop.extractStream(embedUrl);
+        // Electron: extração nativa via IPC (IP residencial do usuário)
+        const data: { stream?: string; tipo?: string; referer?: string; error?: string } =
+          await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        tipo = data.tipo ?? "hls";
+        // No Electron, usamos a URL direta (DevTools do Electron é local, não exposto)
+        playerUrl = tipo === "iframe" ? data.stream! : `/api/player/proxy?url=${encodeURIComponent(data.stream!)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
+        streamRefererRef.current = data.referer ?? null;
+        directStreamRef.current = data.stream!;
       } else {
-        const res = await fetch(`/api/player/extract?url=${encodeURIComponent(embedUrl)}`, { signal: ctrl.signal });
-        data = await res.json();
-        if (!res.ok || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        // Web: obtém play token primeiro, depois extrai
+        const tokenRes = await fetch("/api/player/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embedUrl }),
+          signal: ctrl.signal,
+        });
+        if (!tokenRes.ok) throw new Error("Falha ao obter autorização de reprodução");
+        const { playToken } = await tokenRes.json();
+
+        const extractRes = await fetch(
+          `/api/player/extract?url=${encodeURIComponent(embedUrl)}&playToken=${encodeURIComponent(playToken)}`,
+          { signal: ctrl.signal },
+        );
+        const data = await extractRes.json();
+        if (!extractRes.ok) throw new Error(data.error || "Stream não encontrado");
+
+        tipo = data.tipo ?? "hls";
+        if (tipo === "iframe") {
+          playerUrl = data.stream!;
+        } else {
+          if (!data.streamToken) throw new Error("Stream não encontrado");
+          // Stream token opaco → CDN URL nunca exposta no browser
+          playerUrl = `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
+        }
+        directStreamRef.current = playerUrl;
       }
 
-      setStreamTipo((data.tipo ?? "hls") as StreamTipo);
-      directStreamRef.current = data.stream!;
-      streamRefererRef.current = data.referer ?? null;
-      if (data.tipo === "iframe") {
-        setStreamUrl(data.stream!);
+      setStreamTipo(tipo as StreamTipo);
+      if (tipo === "iframe") {
+        setStreamUrl(playerUrl);
         setStatus("playing");
       } else {
-        setStreamUrl(data.stream!);
+        setStreamUrl(playerUrl);
         setStatus("loading");
       }
     } catch (e: any) {
@@ -319,22 +347,11 @@ export function CustomPlayer({
     if (!container) return;
     container.innerHTML = "";
 
-    const direct = directStreamRef.current || streamUrl;
-    const ref = streamRefererRef.current;
-    const proxyUrl = direct
-      ? `/api/player/proxy?url=${encodeURIComponent(direct)}${ref ? `&ref=${encodeURIComponent(ref)}` : ""}`
-      : null;
+    // streamUrl já é /api/player/proxy?t=<token> (stream token opaco) ou URL do Electron
+    const fileType = streamTipo === "mp4" ? "mp4" : "hls";
 
-    const isHls = streamUrl.includes(".m3u8") || streamUrl.includes(".txt") || streamUrl.includes("/proxy");
-    const fileType = isHls || streamTipo === "hls" ? "hls" : "mp4";
-
-    // Tenta direto primeiro; proxy como fallback para ambos tipos.
-    // Nota: CDNs com IP-block (ex: jvrkt.online) rejeitam o proxy com 403 —
-    // mas o request direto do browser (IP residencial) funciona.
-    const sources: any[] = [
-      { file: streamUrl, type: fileType },
-      ...(proxyUrl ? [{ file: proxyUrl, type: fileType }] : []),
-    ];
+    // Fonte única pelo proxy autenticado — CDN URL nunca exposta ao browser
+    const sources: any[] = [{ file: streamUrl, type: fileType }];
 
     const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
 
@@ -431,7 +448,8 @@ export function CustomPlayer({
           desktop.extractStream(embedUrl)
             .then((data: any) => {
               if (!data?.stream || !jwRef.current) return;
-              jwRef.current.load([{ file: data.stream, type: "hls" }]);
+              const newUrl = `/api/player/proxy?url=${encodeURIComponent(data.stream)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
+              jwRef.current.load([{ file: newUrl, type: "hls" }]);
               if (pos > 5) {
                 jwRef.current.once("firstFrame", () => { jwRef.current?.seek(pos); });
               }

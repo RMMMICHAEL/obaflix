@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertSafeUrl } from "@/lib/ssrf";
+import { verifyPlayToken, createStreamToken } from "@/lib/playTokens";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
@@ -28,7 +29,6 @@ async function fetchHtml(url: string, referer = ""): Promise<string> {
   return res.text();
 }
 
-// Envia script ofuscado para moon.php (exatamente como o app Megaflix faz)
 async function moon(obfuscatedScript: string): Promise<string> {
   const encoded = Buffer.from(obfuscatedScript).toString("base64");
   const res = await fetch(MOON, {
@@ -46,7 +46,6 @@ async function moon(obfuscatedScript: string): Promise<string> {
   return res.text();
 }
 
-// POST para API interna do player (rola / rola3 style)
 async function postPlayer(url: string, id: string): Promise<string> {
   const form = new URLSearchParams();
   form.append("hash", id);
@@ -66,13 +65,10 @@ async function postPlayer(url: string, id: string): Promise<string> {
   return json.videoSource || json.src || "";
 }
 
-// POST para players embedplayer2/rola4 via Cloudflare Worker (IP não-datacenter)
-// ou direto como fallback. Retorna securedLink ou videoSource.
 async function postEmbedPlayer(embedUrl: string): Promise<string> {
   const workerUrl = process.env.EMBED_WORKER_URL;
   const workerSecret = process.env.EMBED_WORKER_SECRET ?? "";
 
-  // Rota preferencial: Cloudflare Worker (evita bloqueio de datacenter IPs)
   if (workerUrl) {
     try {
       const res = await fetch(workerUrl, {
@@ -95,7 +91,6 @@ async function postEmbedPlayer(embedUrl: string): Promise<string> {
     } catch { /* fallback para direto */ }
   }
 
-  // Fallback direto (pode ser bloqueado por CDNs que rejeitam datacenter IPs)
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
@@ -125,12 +120,8 @@ async function postEmbedPlayer(embedUrl: string): Promise<string> {
   return json.securedLink || json.videoSource || json.src || "";
 }
 
-// ── Extratores por plataforma ─────────────────────────────────────────────────
+// ── Extratores ────────────────────────────────────────────────────────────────
 
-// Voltz player: GET na URL → URL do stream no body e em const stream = "..."
-// O servidor Voltz às vezes gera a URL de stream de forma assíncrona — primeira req retorna HTML
-// sem o stream, segunda (após ~1s) já tem. Retry único resolve o problema sem aumentar latência
-// na maioria dos casos onde a URL está disponível imediatamente.
 async function extractVoltz(url: string): Promise<string | null> {
   function parse(html: string): string | null {
     const m = html.match(/const\s+stream\s*=\s*["']([^"']+)["']/);
@@ -140,27 +131,15 @@ async function extractVoltz(url: string): Promise<string | null> {
   const html = await fetchHtml(url, "https://megaflix.lat/");
   const first = parse(html);
   if (first) return first;
-  // Retry: servidor Voltz pode não ter a URL pronta na primeira requisição
   await new Promise((r) => setTimeout(r, 1200));
   const html2 = await fetchHtml(url, "https://megaflix.lat/");
   return parse(html2);
 }
 
-async function extractLulu(html: string): Promise<string | null> {
-  // Pega o eval(function(p,a,c,k,e,d)) → manda para moon.php → split em [{file:"
-  const evalScript = extractEvalScript(html);
-  if (!evalScript) return null;
-  const decoded = await moon(evalScript);
-  const src = decoded.split('[{file:"')[1]?.split('"')[0];
-  return src?.startsWith("http") ? src : null;
-}
-
 async function extractHide(html: string, embedUrl: string): Promise<string | null> {
-  // Pega o eval(function(p,a,c,k,e,d)) → moon.php → links.hls3 || hls2
   const evalScript = extractEvalScript(html);
   if (!evalScript) return null;
   const decoded = await moon(evalScript);
-  // Tenta pegar links.hls3 ou hls2
   const linksMatch = decoded.match(/var\s+links\s*=\s*(\{[^;]+\})/);
   if (linksMatch) {
     try {
@@ -169,7 +148,6 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
       if (src) return src.startsWith("http") ? src : new URL(embedUrl).origin + src;
     } catch { /**/ }
   }
-  // fallback: procura m3u8 direto
   return findM3u8(decoded);
 }
 
@@ -177,7 +155,6 @@ async function extractWish(html: string, embedUrl: string): Promise<string | nul
   const parsed = new URL(embedUrl);
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
 
-  // 1. API POST direta — igual ao rola, mais rápida que parsing de HTML
   if (id) {
     try {
       const form = new URLSearchParams({ hash: id, r: "", do: "getVideo" });
@@ -195,7 +172,6 @@ async function extractWish(html: string, embedUrl: string): Promise<string | nul
       if (res.ok) {
         const json = await res.json().catch(() => null);
         if (json) {
-          // Formato: { sources: [{file:"..."}] } ou { videoSource: "..." }
           const src =
             json.sources?.[0]?.file ||
             json.source?.[0]?.file ||
@@ -208,28 +184,22 @@ async function extractWish(html: string, embedUrl: string): Promise<string | nul
     } catch { /* tenta próximo método */ }
   }
 
-  // 2. Tenta direto no HTML sem ofuscação
   const direct = findM3u8(html);
   if (direct) return direct;
 
-  // 3. Padrão {file:"..."} sem deofuscar
   const fileSplit = html.split('[{file:"')[1]?.split('"')[0];
   if (fileSplit?.startsWith("http")) return fileSplit;
 
-  // 4. JW Player sources: [{file: "..."}]
   const jwMatch = html.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i);
   if (jwMatch?.[1]?.startsWith("http")) return jwMatch[1];
 
-  // 5. JSON "file":"...m3u8..."
   const jsonFile = html.match(/"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i);
   if (jsonFile?.[1]) return jsonFile[1];
 
-  // 6. Último recurso: moon.php
   return extractHide(html, embedUrl);
 }
 
 async function extractRola(id: string): Promise<string | null> {
-  // POST para llanfairpwllgwyngy.com (rola) ou embedplayer1.xyz (rola3)
   try {
     const src = await postPlayer("https://llanfairpwllgwyngy.com/player/index.php", id);
     return src || null;
@@ -249,13 +219,11 @@ async function extractBig(html: string): Promise<string | null> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractEvalScript(html: string): string | null {
-  // Pega o primeiro bloco eval(function(p,a,c,k,e,d){...}) da página
   const idx = html.indexOf("eval(function(p,a,c,k,e,d)");
   if (idx === -1) return null;
-  // Encontra o fechamento — procura pelo padrão final .split('|'),0,{}))
   const chunk = html.slice(idx, idx + 50000);
   const endIdx = chunk.search(/\.split\('\|'\)\s*,\s*0\s*,\s*\{\s*\}\s*\)\s*\)/);
-  if (endIdx === -1) return chunk; // retorna o que tiver
+  if (endIdx === -1) return chunk;
   return chunk.slice(0, endIdx + 30);
 }
 
@@ -285,7 +253,6 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   let streamUrl: string | null = null;
   let referer: string | undefined;
 
-  // vast.php: decodifica o param 'link' (base64) e delega ao extrator correto
   if (pathname.includes("vast.php")) {
     const linkParam = parsed.searchParams.get("link");
     if (!linkParam) return { stream: url, tipo: "iframe" };
@@ -294,7 +261,6 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   }
 
   if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
-    // Voltz player — GET retorna URL no body e em const stream = "..."
     streamUrl = await extractVoltz(url);
 
   } else if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
@@ -314,11 +280,10 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     hostname.includes("embedplayer") ||
     hostname.includes("rola3")
   ) {
-    // Delega ao Worker /stream: extração + M3U8 acontecem no mesmo request do browser
-    // → mesmo PoP Cloudflare → mesmo IP de saída → sem 403 IP-bound.
+    // Retorna URL do Worker — será armazenada no stream token e nunca exposta ao browser
     const workerUrl = process.env.EMBED_WORKER_URL;
     if (!workerUrl) return { stream: url, tipo: "iframe" };
-    return { stream: `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`, tipo: "hls" };
+    streamUrl = `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`;
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
@@ -353,24 +318,40 @@ export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
+  const userId = (session.user as { id: string }).id;
+  if (!userId) return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
+
   const url = req.nextUrl.searchParams.get("url");
+  const playToken = req.nextUrl.searchParams.get("playToken");
+
   if (!url) return NextResponse.json({ error: "url obrigatória" }, { status: 400 });
 
+  // Valida play token — prova que o servidor emitiu uma autorização para esta sessão
+  if (!playToken || !verifyPlayToken(playToken, userId, url)) {
+    return NextResponse.json({ error: "Token de reprodução inválido ou expirado" }, { status: 403 });
+  }
+
   try {
-    // Corrida entre a extração e um timeout global
     const result = await Promise.race([
       doExtract(url),
-      new Promise<{ stream: string; tipo: string }>((resolve) =>
+      new Promise<{ stream: string; tipo: string; referer?: string }>((resolve) =>
         setTimeout(() => resolve({ stream: url, tipo: "iframe" }), EXTRACT_TIMEOUT_MS)
       ),
     ]);
 
-    return NextResponse.json(result);
+    // Tipo iframe: retorna a URL do embed (não é o CDN stream, é a página do player)
+    if (result.tipo === "iframe") {
+      return NextResponse.json({ tipo: "iframe", stream: result.stream });
+    }
+
+    // Tipos hls/mp4: criptografa a URL CDN num stream token — browser nunca vê a URL real
+    const streamToken = createStreamToken(userId, result.stream, result.referer ?? null);
+    return NextResponse.json({ tipo: result.tipo, streamToken });
+
   } catch (err: any) {
-    // Erro de extração (hash expirado etc) → CustomPlayer detecta !res.ok e auto-pula a fonte
     if (err?.message?.includes("expirado") || err?.message?.includes("failed")) {
       return NextResponse.json({ error: err.message }, { status: 422 });
     }
-    return NextResponse.json({ stream: url, tipo: "iframe" });
+    return NextResponse.json({ tipo: "iframe", stream: url });
   }
 }
