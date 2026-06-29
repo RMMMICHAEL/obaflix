@@ -61,6 +61,25 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
+  cookies: {
+    sessionToken: {
+      name: "__Secure-next-auth.session-token",
+      options: {
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        path: "/",
+      },
+    },
+    callbackUrl: {
+      name: "__Secure-next-auth.callback-url",
+      options: { httpOnly: true, secure: true, sameSite: "strict", path: "/" },
+    },
+    csrfToken: {
+      name: "__Host-next-auth.csrf-token",
+      options: { httpOnly: true, secure: true, sameSite: "strict", path: "/" },
+    },
+  },
   providers: [
     ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? [

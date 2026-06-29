@@ -10,6 +10,9 @@ import {
   isIpBlocked,
   recordAbuseAttempt,
 } from "@/lib/playTokens";
+import { audit } from "@/lib/auditLog";
+
+const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -28,9 +31,9 @@ function clientUa(req: NextRequest): string {
 }
 
 /** Nega silenciosamente com erro genérico */
-function deny(reason: string, ip: string, status = 403): NextResponse {
-  console.warn("[player/proxy] acesso negado:", reason, { ip });
-  return new NextResponse("Acesso negado", { status });
+function deny(reason: string, ip: string, event: Parameters<typeof audit>[0] = "stream_rejected", status = 403): NextResponse {
+  audit(event, { ip, detail: reason });
+  return new NextResponse("Acesso negado", { status, headers: NO_STORE });
 }
 
 // ── Reescrita de segmentos com HMAC ──────────────────────────────────────────
@@ -61,10 +64,10 @@ async function resolveTarget(
   // Modo 1: stream token opaco (primeira requisição do player — busca o M3U8 mestre)
   const streamToken = params.get("t");
   if (streamToken) {
-    const resolved = resolveStreamToken(streamToken, userId, ip, ua);
+    const resolved = await resolveStreamToken(streamToken, userId, ip, ua);
     if (!resolved) return { denied: "stream token inválido, expirado ou já consumido" };
     if (resolved.ipMismatch) {
-      console.info("[player/proxy] IP mismatch no stream token (rede móvel?)", { userId, ip });
+      audit("stream_started", { userId, ip, ua, detail: "IP mismatch (rede móvel — permitido)" });
     }
     return { url: resolved.streamUrl, ref: resolved.referer ?? "" };
   }
@@ -89,8 +92,8 @@ export async function GET(req: NextRequest) {
   const ip = clientIp(req);
   const ua = clientUa(req);
 
-  if (isIpBlocked(ip)) {
-    return deny("IP bloqueado temporariamente", ip, 429);
+  if (await isIpBlocked(ip)) {
+    return deny("IP bloqueado temporariamente", ip, "ip_blocked", 429);
   }
 
   // Valida Origin: requisições de fora do nosso domínio são rejeitadas.
@@ -98,31 +101,29 @@ export async function GET(req: NextRequest) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !origin.includes(host)) {
-    recordAbuseAttempt(ip);
-    return deny(`origin inválida: ${origin}`, ip);
+    await recordAbuseAttempt(ip);
+    return deny(`origin inválida: ${origin}`, ip, "origin_rejected");
   }
 
-  // Valida Referer quando presente: deve apontar para nosso domínio.
   const refererHeader = req.headers.get("referer");
   if (refererHeader && host && !refererHeader.includes(host)) {
-    recordAbuseAttempt(ip);
-    return deny(`referer externo: ${refererHeader.slice(0, 80)}`, ip);
+    await recordAbuseAttempt(ip);
+    return deny(`referer externo: ${refererHeader.slice(0, 80)}`, ip, "origin_rejected");
   }
 
   const session = await getServerSession(authOptions);
   if (!session?.user) {
-    recordAbuseAttempt(ip);
-    return deny("não autenticado", ip, 401);
+    await recordAbuseAttempt(ip);
+    return deny("não autenticado", ip, "stream_rejected", 401);
   }
 
   const userId = (session.user as { id: string }).id;
-  if (!userId) return deny("sessão inválida", ip, 401);
+  if (!userId) return deny("sessão inválida", ip, "stream_rejected", 401);
 
   const target = await resolveTarget(req, userId, ip, ua);
   if ("denied" in target) {
-    recordAbuseAttempt(ip);
-    console.warn("[player/proxy] token rejeitado:", target.denied, { userId, ip, ua: ua.slice(0, 80) });
-    return deny(target.denied, ip);
+    await recordAbuseAttempt(ip);
+    return deny(target.denied, ip, "stream_rejected");
   }
 
   const { url, ref } = target;
@@ -131,8 +132,8 @@ export async function GET(req: NextRequest) {
   try {
     parsed = await assertSafeUrl(url);
   } catch (e: any) {
-    console.error("[player/proxy] URL inválida na SSRF check:", e?.message);
-    return deny("URL inválida", ip, 400);
+    audit("stream_rejected", { ip, detail: `SSRF: ${String(e?.message).slice(0, 80)}` });
+    return deny("URL inválida", ip, "stream_rejected", 400);
   }
 
   const referer = ref || parsed.origin + "/";
@@ -215,7 +216,7 @@ export async function GET(req: NextRequest) {
         status: 200,
         headers: {
           "Content-Type": "application/vnd.apple.mpegurl",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-store, no-cache, must-revalidate, private",
         },
       });
     }

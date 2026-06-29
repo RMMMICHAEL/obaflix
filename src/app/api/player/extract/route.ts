@@ -10,6 +10,9 @@ import {
   isIpBlocked,
   recordAbuseAttempt,
 } from "@/lib/playTokens";
+import { audit } from "@/lib/auditLog";
+
+const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
 function clientIp(req: NextRequest): string {
   return (
@@ -335,43 +338,44 @@ export async function GET(req: NextRequest) {
   const ip = clientIp(req);
   const ua = clientUa(req);
 
-  if (isIpBlocked(ip)) {
-    return NextResponse.json({ error: "Acesso negado" }, { status: 429 });
+  if (await isIpBlocked(ip)) {
+    audit("ip_blocked", { ip, ua, detail: "bloqueado em /extract" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 429, headers: NO_STORE });
   }
 
-  // Origin deve ser nosso próprio domínio
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !origin.includes(host)) {
-    recordAbuseAttempt(ip);
-    return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
+    await recordAbuseAttempt(ip);
+    audit("origin_rejected", { ip, ua, detail: `origin=${origin}` });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
   const session = await getServerSession(authOptions);
   if (!session?.user) {
-    recordAbuseAttempt(ip);
-    return NextResponse.json({ error: "Acesso negado" }, { status: 401 });
+    await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { ip, ua, detail: "não autenticado em /extract" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 
   const userId = (session.user as { id: string }).id;
-  if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
   const url = req.nextUrl.searchParams.get("url");
   const playToken = req.nextUrl.searchParams.get("playToken");
 
   if (!url || !playToken) {
-    return NextResponse.json({ error: "Acesso negado" }, { status: 400 });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 400, headers: NO_STORE });
   }
 
   const tokenCheck = verifyPlayToken(playToken, userId, url, ip);
   if (!tokenCheck.ok) {
-    recordAbuseAttempt(ip);
-    // Log interno (nunca exposto ao cliente)
-    console.warn("[player/extract] play token inválido", { userId, ip, ua: ua.slice(0, 80) });
-    return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
+    await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: "token inválido ou expirado" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
   if (tokenCheck.ipMismatch) {
-    console.info("[player/extract] IP mismatch no play token (rede móvel?)", { userId, ip });
+    audit("play_token_rejected", { userId, ip, ua, detail: "IP mismatch (rede móvel — permitido)" });
   }
 
   try {
@@ -383,10 +387,10 @@ export async function GET(req: NextRequest) {
     ]);
 
     if (result.tipo === "iframe") {
-      return NextResponse.json({ tipo: "iframe", stream: result.stream });
+      return NextResponse.json({ tipo: "iframe", stream: result.stream }, { headers: NO_STORE });
     }
 
-    const { token: streamToken, accepted } = createStreamToken(
+    const { token: streamToken, accepted } = await createStreamToken(
       userId,
       result.stream,
       result.referer ?? null,
@@ -395,15 +399,13 @@ export async function GET(req: NextRequest) {
     );
 
     if (!accepted) {
-      console.warn("[player/extract] limite de streams simultâneos atingido", { userId });
-      return NextResponse.json({ error: "Limite de reproduções simultâneas atingido" }, { status: 429 });
+      return NextResponse.json({ error: "Limite de reproduções simultâneas atingido" }, { status: 429, headers: NO_STORE });
     }
 
-    return NextResponse.json({ tipo: result.tipo, streamToken });
+    return NextResponse.json({ tipo: result.tipo, streamToken }, { headers: NO_STORE });
 
   } catch (err: any) {
-    // Detalhe do erro apenas no log; cliente recebe mensagem genérica
-    console.error("[player/extract] erro na extração", { url: url.slice(0, 100), err: err?.message });
-    return NextResponse.json({ tipo: "iframe", stream: url });
+    audit("stream_rejected", { userId, ip, ua, detail: `extração falhou: ${String(err?.message).slice(0, 80)}` });
+    return NextResponse.json({ tipo: "iframe", stream: url }, { headers: NO_STORE });
   }
 }

@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createPlayToken, checkRateLimit, isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
+import { audit } from "@/lib/auditLog";
+
+const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
 function clientIp(req: NextRequest): string {
   return (
@@ -18,30 +21,33 @@ function clientUa(req: NextRequest): string {
 
 export async function POST(req: NextRequest) {
   const ip = clientIp(req);
+  const ua = clientUa(req);
 
-  if (isIpBlocked(ip)) {
-    return NextResponse.json({ error: "Acesso temporariamente bloqueado" }, { status: 429 });
+  if (await isIpBlocked(ip)) {
+    audit("ip_blocked", { ip, ua, detail: "bloqueado em /token" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 429, headers: NO_STORE });
   }
 
-  // Origin deve ser nosso próprio domínio
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !origin.includes(host)) {
-    recordAbuseAttempt(ip);
-    return NextResponse.json({ error: "Origem inválida" }, { status: 403 });
+    await recordAbuseAttempt(ip);
+    audit("origin_rejected", { ip, ua, detail: `origin=${origin}` });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
   const session = await getServerSession(authOptions);
   if (!session?.user) {
-    recordAbuseAttempt(ip);
-    return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+    await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { ip, ua, detail: "não autenticado" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 
   const userId = (session.user as { id: string }).id;
-  if (!userId) return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
-  if (!checkRateLimit(userId)) {
-    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
+  if (!(await checkRateLimit(userId))) {
+    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429, headers: NO_STORE });
   }
 
   let embedUrl: string;
@@ -51,9 +57,9 @@ export async function POST(req: NextRequest) {
     if (!embedUrl || typeof embedUrl !== "string") throw new Error();
     new URL(embedUrl);
   } catch {
-    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400 });
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
   const playToken = createPlayToken(userId, embedUrl, ip);
-  return NextResponse.json({ playToken });
+  return NextResponse.json({ playToken }, { headers: NO_STORE });
 }
