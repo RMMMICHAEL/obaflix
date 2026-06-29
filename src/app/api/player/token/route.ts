@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     await recordAbuseAttempt(ip);
-    audit("play_token_rejected", { ip, ua, detail: "não autenticado" });
+    audit("auth_failure", { ip, ua, detail: "/token sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 

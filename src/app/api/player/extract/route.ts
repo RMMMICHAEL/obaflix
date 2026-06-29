@@ -354,7 +354,7 @@ export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     await recordAbuseAttempt(ip);
-    audit("play_token_rejected", { ip, ua, detail: "não autenticado em /extract" });
+    audit("auth_failure", { ip, ua, detail: "/extract sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 

@@ -114,6 +114,7 @@ export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     await recordAbuseAttempt(ip);
+    audit("auth_failure", { ip, ua, detail: "/proxy sem sessão" });
     return deny("não autenticado", ip, "stream_rejected", 401);
   }
 
