@@ -4,7 +4,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertSafeUrl } from "@/lib/ssrf";
-import { verifyPlayToken, createStreamToken } from "@/lib/playTokens";
+import {
+  verifyPlayToken,
+  createStreamToken,
+  isIpBlocked,
+  recordAbuseAttempt,
+} from "@/lib/playTokens";
+
+function clientIp(req: NextRequest): string {
+  return (
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown"
+  );
+}
+
+function clientUa(req: NextRequest): string {
+  return req.headers.get("user-agent") || "unknown";
+}
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
@@ -315,20 +332,46 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
 }
 
 export async function GET(req: NextRequest) {
+  const ip = clientIp(req);
+  const ua = clientUa(req);
+
+  if (isIpBlocked(ip)) {
+    return NextResponse.json({ error: "Acesso negado" }, { status: 429 });
+  }
+
+  // Origin deve ser nosso próprio domínio
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("host");
+  if (origin && host && !origin.includes(host)) {
+    recordAbuseAttempt(ip);
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  if (!session?.user) {
+    recordAbuseAttempt(ip);
+    return NextResponse.json({ error: "Acesso negado" }, { status: 401 });
+  }
 
   const userId = (session.user as { id: string }).id;
-  if (!userId) return NextResponse.json({ error: "Sessão inválida" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401 });
 
   const url = req.nextUrl.searchParams.get("url");
   const playToken = req.nextUrl.searchParams.get("playToken");
 
-  if (!url) return NextResponse.json({ error: "url obrigatória" }, { status: 400 });
+  if (!url || !playToken) {
+    return NextResponse.json({ error: "Acesso negado" }, { status: 400 });
+  }
 
-  // Valida play token — prova que o servidor emitiu uma autorização para esta sessão
-  if (!playToken || !verifyPlayToken(playToken, userId, url)) {
-    return NextResponse.json({ error: "Token de reprodução inválido ou expirado" }, { status: 403 });
+  const tokenCheck = verifyPlayToken(playToken, userId, url, ip);
+  if (!tokenCheck.ok) {
+    recordAbuseAttempt(ip);
+    // Log interno (nunca exposto ao cliente)
+    console.warn("[player/extract] play token inválido", { userId, ip, ua: ua.slice(0, 80) });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
+  }
+  if (tokenCheck.ipMismatch) {
+    console.info("[player/extract] IP mismatch no play token (rede móvel?)", { userId, ip });
   }
 
   try {
@@ -339,19 +382,28 @@ export async function GET(req: NextRequest) {
       ),
     ]);
 
-    // Tipo iframe: retorna a URL do embed (não é o CDN stream, é a página do player)
     if (result.tipo === "iframe") {
       return NextResponse.json({ tipo: "iframe", stream: result.stream });
     }
 
-    // Tipos hls/mp4: criptografa a URL CDN num stream token — browser nunca vê a URL real
-    const streamToken = createStreamToken(userId, result.stream, result.referer ?? null);
+    const { token: streamToken, accepted } = createStreamToken(
+      userId,
+      result.stream,
+      result.referer ?? null,
+      ip,
+      ua,
+    );
+
+    if (!accepted) {
+      console.warn("[player/extract] limite de streams simultâneos atingido", { userId });
+      return NextResponse.json({ error: "Limite de reproduções simultâneas atingido" }, { status: 429 });
+    }
+
     return NextResponse.json({ tipo: result.tipo, streamToken });
 
   } catch (err: any) {
-    if (err?.message?.includes("expirado") || err?.message?.includes("failed")) {
-      return NextResponse.json({ error: err.message }, { status: 422 });
-    }
+    // Detalhe do erro apenas no log; cliente recebe mensagem genérica
+    console.error("[player/extract] erro na extração", { url: url.slice(0, 100), err: err?.message });
     return NextResponse.json({ tipo: "iframe", stream: url });
   }
 }
