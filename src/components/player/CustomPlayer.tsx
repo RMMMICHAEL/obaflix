@@ -683,6 +683,20 @@ export function CustomPlayer({
         // rola3/rola4 no Electron: token CDN expirou → re-extrai silenciosamente
         // sem destruir o player (sem overlay, sem troca de fonte).
         if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+          // Se o episódio ainda não começou a reproduzir (pos < 5s), o erro provavelmente
+          // não é token expirado (que só ocorre no meio do stream após minutos/horas), mas
+          // sim fonte inválida para este episódio (URL inexistente, CDN offline, etc.).
+          // Re-extrair a mesma URL retornaria o mesmo CDN com o mesmo problema e apenas
+          // adicionaria 500ms+ de overlay de erro antes de falhar de novo. Vai direto para
+          // a próxima fonte para recuperação mais rápida — cobre o caso de auto-avanço de
+          // episódio onde o primeiro frame ainda não chegou.
+          if (progressoRef.current < 5) {
+            console.log(`[reextract] pos=${progressoRef.current}s — sem progresso de reprodução; provável fonte inválida, não token expirado → próxima fonte`);
+            if (fi < len - 1) switchFonteRef.current(fi + 1);
+            else { setError("Erro no stream"); setStatus("error"); }
+            return;
+          }
+
           // Cooldown mínimo: se o erro aconteceu poucos segundos depois da última renovação
           // bem-sucedida, provavelmente não é token expirado de novo — é outro problema
           // (ex.: CDN instável). Renovar de imediato aqui só alimentaria um loop. Escala
