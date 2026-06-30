@@ -81,6 +81,32 @@ function parseFontes(urls: string | null, prefix: string, includeRola34: boolean
     .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u }));
 }
 
+// Emite um log de recuperação padronizado com prefixo único [recovery].
+// Campos fixos em todos os caminhos: reason, gen, attempt, fi, pos, sinceRenewal, detail.
+function recoveryLog(
+  level: "log" | "warn",
+  reason: string,
+  gen: number | null,
+  attempt: number | null,
+  fi: number,
+  len: number,
+  pos: number,
+  sinceRenewal: number,
+  detail: string,
+) {
+  const msg = [
+    "[recovery]",
+    `reason=${reason}`,
+    `gen=${gen ?? "-"}`,
+    `attempt=${attempt ?? "-"}`,
+    `fi=${fi}/${len - 1}`,
+    `pos=${pos}s`,
+    `sinceRenewal=${sinceRenewal >= 0 ? `${sinceRenewal}ms` : "never"}`,
+    `→ ${detail}`,
+  ].join("  ");
+  level === "warn" ? console.warn(msg) : console.log(msg);
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
   urlDub, urlLeg, titulo, thumbUrl, conteudoId, conteudoTipo,
@@ -108,9 +134,12 @@ export function CustomPlayer({
   const lastReExtractSuccessAtRef = useRef(0); // timestamp (ms) da última renovação bem-sucedida — usado pro cooldown mínimo
   const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
   const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
-  // Ciclo de vida de carga: true desde a montagem/switchFonte até o primeiro firstFrame ou play.
-  // Enquanto true, qualquer erro de JW Player é classificado como "initial-load-fallback" e
-  // pula direto para a próxima fonte — renovação de token só faz sentido durante a reprodução.
+  // Representa "nenhum frame válido foi exibido ainda" para esta fonte.
+  // Definido true na montagem e em cada switchFonte; definido false pelo evento firstFrame
+  // (sinal definitivo de frame exibido). O evento play serve apenas como fallback para
+  // provedores que não disparem firstFrame.
+  // Enquanto true: erros → initial-load-fallback (fonte inválida, não token expirado).
+  // Enquanto false: erros → lógica normal de token-renewal.
   const initialLoadRef = useRef(true);
   // Stable refs to avoid stale closures in JW Player callbacks
   const saveProgressRef = useRef<() => Promise<void>>(async () => {});
@@ -440,15 +469,15 @@ export function CustomPlayer({
         }
       }, 8000);
 
-      // Primeiro frame decodificado: carga inicial confirmada — a partir daqui qualquer erro
-      // é candidato a token expirado e passa pela lógica de renovação.
+      // firstFrame: sinal definitivo de que um frame válido foi exibido.
+      // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
       player.on("firstFrame", () => { initialLoadRef.current = false; });
 
       player.on("play", () => {
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         setShowRetry(false);
         setStatus("playing");
-        initialLoadRef.current = false; // play confirma carga inicial concluída
+        initialLoadRef.current = false; // fallback: garante transição caso firstFrame não dispare
         // Renovação anterior teve sucesso (player voltou a reproduzir) — reseta o contador
         // de falhas consecutivas. Sem isso, um episódio longo com várias renovações bem-sucedidas
         // ao longo de horas estouraria o cap de 5 e cairia em erro mesmo sem nenhuma falha real.
@@ -560,23 +589,30 @@ export function CustomPlayer({
         reExtractCountRef.current += 1;
         const attempt = reExtractCountRef.current;
         const pos = progressoRef.current;
+        const sinceRenewal = lastReExtractSuccessAtRef.current > 0
+          ? Date.now() - lastReExtractSuccessAtRef.current
+          : -1;
         const desktop = (window as any).obaflixDesktop;
 
-        // requestId da renovação + identidade do player no início da chamada. Se, enquanto
-        // extractStream() está em voo, o efeito for limpo (troca de fonte/episódio recria o
-        // player), tanto a geração quanto a referência ficam desatualizadas — a resposta tardia
-        // é descartada e NUNCA é aplicada sobre o player/conteúdo errado.
+        // Geração monotônica + referência ao player atual. Se o efeito for limpo durante
+        // a extração (troca de fonte ou episódio), a resposta chega com geração/player
+        // desatualizados e é descartada — nunca aplicada sobre conteúdo errado.
         const myGeneration = ++reExtractGenerationRef.current;
         const playerAtStart = jwRef.current;
 
-        console.log(`[reextract] #${attempt} (gen=${myGeneration}) iniciando renovação de token — pos=${pos}s`);
+        recoveryLog("log", "token-renewal", myGeneration, attempt, fi, len, pos, sinceRenewal,
+          "extração iniciada");
 
         let settled = false;
-        const fail = (reason: "token-renewal-failed" | "token-renewal-timeout" | "token-renewal-stale") => {
+
+        // Encapsula a decisão de fallback após falha: loga em [recovery] e aciona
+        // source-switch ou tela de erro conforme o número de fontes restantes.
+        const fail = (detail: string) => {
           if (unmountedRef.current) return;
-          if (reExtractGenerationRef.current !== myGeneration) return; // superado por nova tentativa/troca
+          if (reExtractGenerationRef.current !== myGeneration) return;
           const next = fi < len - 1 ? fi + 1 : -1;
-          console.warn(`[recovery] reason=${reason} attempt=#${attempt} gen=${myGeneration} → ${next >= 0 ? `source-switch fi=${fi}→${next}` : "error"}`);
+          recoveryLog("warn", "token-renewal-failed", myGeneration, attempt, fi, len, pos, sinceRenewal,
+            `${detail} → ${next >= 0 ? `source-switch fi=${fi}→${next}` : "error"}`);
           if (next >= 0) switchFonteRef.current(next);
           else { setError("Erro no stream"); setStatus("error"); }
         };
@@ -585,8 +621,7 @@ export function CustomPlayer({
           if (settled) return;
           settled = true;
           reExtractingRef.current = false;
-          console.warn(`[reextract] #${attempt} (gen=${myGeneration}) timeout de segurança (${REEXTRACT_SAFETY_TIMEOUT_MS}ms) — extractStream não respondeu`);
-          fail("token-renewal-timeout");
+          fail(`extractStream excedeu ${REEXTRACT_SAFETY_TIMEOUT_MS}ms sem resposta`);
         }, REEXTRACT_SAFETY_TIMEOUT_MS);
 
         desktop.extractStream(embedUrl)
@@ -596,52 +631,51 @@ export function CustomPlayer({
             clearTimeout(safetyTimer);
             if (unmountedRef.current) return;
 
-            // Resposta obsoleta: ou uma geração mais nova já assumiu, ou o player desta
-            // chamada não é mais o player ativo (fonte/episódio mudou nesse meio-tempo).
-            // Mesmo conteúdo == mesmo embedUrl (fixo nesta chamada) + mesma instância do player.
+            // Resposta obsoleta: geração mais nova assumiu ou o player foi trocado
+            // (fonte/episódio mudou durante o voo do IPC). Descarta sem aplicar.
             if (reExtractGenerationRef.current !== myGeneration || jwRef.current !== playerAtStart) {
-              console.log(`[reextract] #${attempt} (gen=${myGeneration}) descartado — player/geração mudou durante a extração`);
+              recoveryLog("log", "token-renewal-discarded", myGeneration, attempt, fi, len, pos, sinceRenewal,
+                "player ou geração mudou durante a extração; resposta descartada");
               return;
             }
 
+            // extractStream resolve sempre (nunca rejeita) — stream ausente = falha real.
             if (!data?.stream) {
-              // extractStream nunca rejeita (sempre resolve, com {error} em caso de falha) —
-              // sem este tratamento explícito o player ficava travado sem nenhum fallback.
-              console.warn(`[reextract] #${attempt} falhou: ${data?.error || "stream vazio"}`);
-              fail("token-renewal-failed");
+              fail(data?.error || "stream vazio");
               return;
             }
 
-            console.log(`[recovery] reason=token-renewal-success attempt=#${attempt} gen=${myGeneration} → retomando em ${pos}s`);
             const newUrl = buildElectronProxyUrl(data.stream, data.referer);
+            const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
 
             // [DIAG] Contexto da renovação — remover após confirmar causa dos 500 em .woff
             const prevItem = jwRef.current.getPlaylistItem?.();
             const prevRawUrl: string = prevItem?.file || prevItem?.sources?.[0]?.file || "desconhecido";
-            const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
             console.log(`[diag/renewal] URL anterior (proxy): ${prevRawUrl.slice(0, 120)}`);
             console.log(`[diag/renewal] URL nova (proxy):     ${newUrl.slice(0, 120)}`);
             console.log(`[diag/renewal] Domínio CDN novo:     ${newManifestDomain}`);
-            console.log(`[diag/renewal] gen=${myGeneration} pos=${pos}s attempt=${attempt}`);
 
-            // Ignora "error" pelos próximos instantes: hls.js pode emitir eventos atrasados
-            // da instância anterior (ligada à mídia antiga) logo depois do load().
+            recoveryLog("log", "token-renewal-success", myGeneration, attempt, fi, len, pos, sinceRenewal,
+              `domínio=${newManifestDomain}; load+${pos > 5 ? `seek(${pos}s)` : "play"}`);
+
+            // Suprime "error" por 2s: hls.js pode emitir eventos atrasados da instância
+            // anterior logo após load() trocar a fonte.
             suppressErrorUntilRef.current = Date.now() + 2000;
             lastReExtractSuccessAtRef.current = Date.now();
-            lastLoadAtRef.current = Date.now(); // [DIAG] marca timestamp do load() para medir latência até o primeiro erro
+            lastLoadAtRef.current = Date.now(); // [DIAG]
             jwRef.current.load([{ file: newUrl, type: "hls" }]);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
                 if (!jwRef.current) return;
-                // Alguns provedores retornam playlist com duração levemente diferente após
-                // renovar o token — um seek() além da duração real pode gerar comportamento
-                // inesperado no hls.js. Só restaura a posição se ela couber no novo stream.
+                // Alguns provedores retornam duração levemente diferente após renovar o token;
+                // seek além da duração real gera comportamento inesperado no hls.js.
                 const dur = jwRef.current.getDuration?.();
                 const validDuration = typeof dur === "number" && isFinite(dur) && dur > 0;
                 if (!validDuration || pos < dur) {
                   jwRef.current.seek(pos);
                 } else {
-                  console.warn(`[reextract] posição salva (${pos}s) >= duração do novo stream (${dur}s) — seek ignorado`);
+                  recoveryLog("warn", "token-renewal-success", myGeneration, attempt, fi, len, pos, sinceRenewal,
+                    `seek ignorado: pos=${pos}s >= dur=${dur}s`);
                 }
               });
             }
@@ -651,8 +685,7 @@ export function CustomPlayer({
             if (settled) return;
             settled = true;
             clearTimeout(safetyTimer);
-            console.warn(`[reextract] #${attempt} (gen=${myGeneration}) erro inesperado:`, err?.message);
-            fail("token-renewal-failed");
+            fail(`erro inesperado: ${err?.message ?? String(err)}`);
           })
           .finally(() => {
             reExtractingRef.current = false;
@@ -683,7 +716,7 @@ export function CustomPlayer({
         // poucos instantes depois do load() já ter trocado a fonte. Ignorar evita reextrações
         // desnecessárias disparadas por uma falha que não pertence mais à mídia atual.
         if (Date.now() < suppressErrorUntilRef.current) {
-          console.log("[reextract] ignorando error tardio (eco da mídia anterior pós-load)");
+          console.log("[recovery] reason=suppressed — eco tardio da mídia anterior pós-load(); ignorando");
           return;
         }
 
@@ -691,43 +724,45 @@ export function CustomPlayer({
         const len = allFontes.length;
         const embedUrl = fonte?.embedUrl ?? "";
         const inElectron = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
+        const pos = progressoRef.current;
+        const sinceRenewal = lastReExtractSuccessAtRef.current > 0
+          ? Date.now() - lastReExtractSuccessAtRef.current
+          : -1;
 
-        // rola3/rola4 no Electron: decide entre renovação de token (mid-stream) ou
-        // troca de fonte (carga inicial falhou), com base no ciclo de vida do player.
         if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
 
           // ── initial-load-fallback ────────────────────────────────────────────
-          // Player ainda não exibiu o primeiro frame desta fonte: o erro é causado por
-          // fonte inválida para este episódio (CDN offline, URL inexistente, conteúdo
-          // removido) — não por token expirado, que só ocorre durante a reprodução.
-          // Re-extrair a mesma URL devolveria o mesmo CDN com o mesmo problema.
-          // Vai direto para a próxima fonte para recuperação imediata.
+          // Nenhum frame válido foi exibido ainda (initialLoadRef=true): o erro indica
+          // fonte inválida para este episódio — CDN offline, URL inexistente, conteúdo
+          // removido. Renovação de token não se aplica antes do primeiro frame.
           if (initialLoadRef.current) {
-            console.log(`[recovery] reason=initial-load-fallback — primeiro frame ainda não chegou; fonte inválida → source-switch fi=${fi}→${fi + 1}`);
+            recoveryLog("log", "initial-load-fallback", null, null, fi, len, pos, sinceRenewal,
+              `nenhum frame exibido; fonte inválida → source-switch fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
             if (fi < len - 1) switchFonteRef.current(fi + 1);
             else { setError("Erro no stream"); setStatus("error"); }
             return;
           }
 
           // ── cooldown-fallback ────────────────────────────────────────────────
-          // Erro chegou muito rápido após uma renovação bem-sucedida: provavelmente
-          // instabilidade do CDN (network-error), não expiração de token.
-          // Nova extração aqui apenas alimentaria um loop sem resolver o problema.
-          const sinceLastSuccess = Date.now() - lastReExtractSuccessAtRef.current;
-          if (lastReExtractSuccessAtRef.current > 0 && sinceLastSuccess < REEXTRACT_MIN_COOLDOWN_MS) {
-            console.warn(`[recovery] reason=cooldown-fallback — erro ${sinceLastSuccess}ms após renovação (< ${REEXTRACT_MIN_COOLDOWN_MS}ms); provável network-error → source-switch fi=${fi}→${fi + 1}`);
+          // Erro logo após renovação bem-sucedida: provavelmente instabilidade do CDN
+          // (network-error transitório), não expiração de token. Nova extração aqui
+          // apenas alimentaria um loop sem resolver o problema.
+          if (lastReExtractSuccessAtRef.current > 0 && sinceRenewal < REEXTRACT_MIN_COOLDOWN_MS) {
+            recoveryLog("warn", "cooldown-fallback", null, null, fi, len, pos, sinceRenewal,
+              `erro ${sinceRenewal}ms após renovação (<${REEXTRACT_MIN_COOLDOWN_MS}ms); network-error provável → source-switch fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
             if (fi < len - 1) switchFonteRef.current(fi + 1);
             else { setError("Erro no stream"); setStatus("error"); }
             return;
           }
 
           // ── token-renewal ────────────────────────────────────────────────────
-          // Player estava reproduzindo (initialLoad=false) e o token do CDN expirou.
-          // Debounce com backoff exponencial: hls.js dispara "error" várias vezes em
-          // sequência rápida para a mesma falha — aguarda silêncio antes de re-extrair.
+          // Reprodução confirmada (initialLoad=false) e token do CDN expirou.
+          // Debounce exponencial: hls.js dispara "error" em rajada para a mesma falha;
+          // aguarda silêncio antes de iniciar a re-extração.
           if (reExtractDebounceRef.current) clearTimeout(reExtractDebounceRef.current);
           const delay = getReExtractDelay();
-          console.log(`[recovery] reason=token-renewal — token expirado mid-stream; tentativa #${reExtractCountRef.current + 1} em ${delay}ms`);
+          recoveryLog("log", "token-renewal", null, reExtractCountRef.current + 1, fi, len, pos, sinceRenewal,
+            `token expirado mid-stream; debounce ${delay}ms antes da extração`);
           reExtractDebounceRef.current = setTimeout(() => {
             reExtractDebounceRef.current = null;
             if (unmountedRef.current || reExtractingRef.current) return;
@@ -736,8 +771,10 @@ export function CustomPlayer({
           return;
         }
 
-        // ── source-switch (max-retries ou não-rola34) ────────────────────────
-        console.log(`[recovery] reason=source-switch — ${isRola34Url(embedUrl) ? `max-retries(${reExtractCountRef.current})` : "non-rola34"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+        // ── source-switch ────────────────────────────────────────────────────
+        // Max-retries atingido ou fonte não suporta renovação (não-rola34).
+        recoveryLog("log", "source-switch", null, reExtractCountRef.current, fi, len, pos, sinceRenewal,
+          `${isRola34Url(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-rola34"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
         if (fi < len - 1) {
           switchFonteRef.current(fi + 1);
         } else {
