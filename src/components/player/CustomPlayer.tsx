@@ -631,7 +631,6 @@ export function CustomPlayer({
             key={streamUrl}
             src={streamUrl}
             className="absolute inset-0 w-full h-full border-0"
-            allowFullScreen
             allow="autoplay; fullscreen; picture-in-picture"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
           />

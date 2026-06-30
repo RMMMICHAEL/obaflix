@@ -10,13 +10,21 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
 
-const EMBED_URL_PATTERNS = [
-  "*://*.embedplayer2.xyz/*", "*://*.embedplayer1.xyz/*",
-  "*://*.xn--kcksk7a2bl5le7b6doc1h3f.com/*", "*://*.llanfairpwllgwyngy.com/*",
-  "*://*.playhide.shop/*", "*://*.streamwish.com/*", "*://*.hlswish.com/*",
-  "*://*.playerwish.com/*", "*://*.jvrkt.online/*", "*://*.beamy.online/*",
-  "*://*.boltcdn.xyz/*", "*://*.bigshare.link/*", "*://*.luluvdo.com/*",
+// Hostnames dos embed players (sem wildcards — usados no handler unificado)
+const EMBED_HOSTNAMES = [
+  "embedplayer2.xyz", "embedplayer1.xyz",
+  "xn--kcksk7a2bl5le7b6doc1h3f.com", "llanfairpwllgwyngy.com",
+  "playhide.shop", "streamwish.com", "hlswish.com",
+  "playerwish.com", "jvrkt.online", "beamy.online",
+  "boltcdn.xyz", "bigshare.link", "luluvdo.com",
 ];
+
+// Estado do player ativo — atualizado pelo servidor local após extração bem-sucedida.
+// O handler de onBeforeSendHeaders lê esse objeto em tempo de execução (closure por referência).
+const playerState = {
+  cdnHostname: null,   // hostname do CDN onde ficam os segmentos HLS (ex: cdn.boltcdn.xyz)
+  embedReferer: null,  // Referer que o CDN espera em todo request (ex: https://embedplayer2.xyz/)
+};
 
 let mainWindow = null;
 let localPort = null;
@@ -30,7 +38,7 @@ else {
   });
 }
 
-// ── Extração com IP do usuário (sem CORS, processo Node.js) ──────────────────
+// ── Extração com IP do usuário (Node.js, sem CORS) ────────────────────────────
 async function extractSecuredLink(embedUrl) {
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
@@ -60,14 +68,10 @@ async function extractSecuredLink(embedUrl) {
   const data = JSON.parse(text);
   const stream = data.securedLink || data.videoSource || data.src;
   if (!stream) throw new Error("securedLink não encontrado");
-  return stream;
+  return { stream, embedOrigin: base };
 }
 
 // ── Servidor local ─────────────────────────────────────────────────────────────
-// Único endpoint: /extract?embedUrl=...
-// Retorna { stream: securedLink, tipo: "hls" } — o IP do securedLink é o do usuário.
-// Com webSecurity: false no renderer, JW Player busca os segmentos direto da CDN
-// sem restrição de CORS, igual ao WebView do Megaflix Android.
 function startLocalServer() {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
@@ -87,10 +91,23 @@ function startLocalServer() {
 
         console.log(`[local] extract: ${embedUrl.slice(0, 80)}`);
         try {
-          const stream = await extractSecuredLink(embedUrl);
+          const { stream, embedOrigin } = await extractSecuredLink(embedUrl);
           console.log(`[local] stream: ${stream.slice(0, 80)}`);
+
+          // Atualiza playerState: o CDN valida Referer = URL completa da página embed
+          // (não apenas a origem). O mesmo Referer usado na extração POST.
+          try {
+            playerState.cdnHostname = new URL(stream).hostname;
+            playerState.embedReferer = embedUrl;
+            console.log(`[local] CDN: ${playerState.cdnHostname} | Referer: ${playerState.embedReferer}`);
+          } catch { /**/ }
+
           res.writeHead(200, { ...CORS, "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stream, tipo: stream.includes(".mp4") ? "mp4" : "hls" }));
+          res.end(JSON.stringify({
+            stream,
+            tipo: stream.includes(".mp4") ? "mp4" : "hls",
+            referer: embedUrl,
+          }));
         } catch (err) {
           console.error(`[local] erro: ${err.message}`);
           res.writeHead(422, { ...CORS, "Content-Type": "application/json" });
@@ -123,7 +140,7 @@ function createWindow() {
       nodeIntegration: false,
       autoplayPolicy: "no-user-gesture-required",
       partition: "persist:obaflix",
-      // Desativa CORS no renderer — idêntico ao comportamento do WebView Android do Megaflix
+      // Desativa CORS no renderer — idêntico ao WebView do MegaFlix Android
       webSecurity: false,
     },
   });
@@ -140,7 +157,7 @@ function createWindow() {
 function configureSession() {
   const ses = session.fromPartition("persist:obaflix");
 
-  // Intercepta /api/player/extract para rola3/rola4 → servidor local (IP do usuário)
+  // ── Intercept: /api/player/extract para rola3/rola4 → servidor local ──────
   ses.webRequest.onBeforeRequest(
     { urls: [`${OBAFLIX_URL}/api/player/extract*`] },
     (details, callback) => {
@@ -163,19 +180,40 @@ function configureSession() {
     }
   );
 
-  // Headers para players embed externos
-  ses.webRequest.onBeforeSendHeaders({ urls: EMBED_URL_PATTERNS }, (details, callback) => {
-    const h = { ...details.requestHeaders };
-    if (!h["Referer"] && !h["referer"]) h["Referer"] = OBAFLIX_URL + "/";
-    h["User-Agent"] = UA;
-    if (details.method === "POST") h["X-Requested-With"] = "XMLHttpRequest";
-    callback({ requestHeaders: h });
-  });
-
-  // User-Agent global
+  // ── ÚNICO handler de onBeforeSendHeaders — injeta User-Agent, Referer, Origin ──
+  // Nota: Electron permite apenas UM listener por evento por sessão.
+  // Registrar dois substituiria o anterior — por isso tudo está unificado aqui.
   ses.webRequest.onBeforeSendHeaders({ urls: ["*://*/*"] }, (details, callback) => {
     const h = { ...details.requestHeaders };
+
+    // 1. User-Agent em todos os requests
     h["User-Agent"] = UA;
+
+    // 2. Requests para os embed players (extração, página do player)
+    const reqHostname = (() => { try { return new URL(details.url).hostname; } catch { return ""; } })();
+    const isEmbedReq = EMBED_HOSTNAMES.some((host) => reqHostname.endsWith(host));
+    if (isEmbedReq) {
+      if (!h["Referer"] && !h["referer"]) h["Referer"] = OBAFLIX_URL + "/";
+      if (details.method === "POST") h["X-Requested-With"] = "XMLHttpRequest";
+    }
+
+    // 3. Requests para o CDN (segmentos HLS / manifest) — injeta Referer do embed
+    // Equivale ao que o ExoPlayer do MegaFlix faz: envia Referer em todo request de mídia.
+    // playerState é atualizado pelo servidor local após extração bem-sucedida.
+    // Usa endsWith para cobrir subdomínios do CDN (ex: cdn.dahds13.xyz).
+    const isCdnReq =
+      playerState.cdnHostname &&
+      playerState.embedReferer &&
+      (reqHostname === playerState.cdnHostname ||
+        reqHostname.endsWith("." + playerState.cdnHostname));
+    if (isCdnReq) {
+      const embedOriginForCdn = (() => {
+        try { const u = new URL(playerState.embedReferer); return u.origin; } catch { return ""; }
+      })();
+      h["Referer"] = playerState.embedReferer;
+      if (embedOriginForCdn) h["Origin"] = embedOriginForCdn;
+    }
+
     callback({ requestHeaders: h });
   });
 }
@@ -193,9 +231,7 @@ function setupWebContents() {
     try {
       if (!url.startsWith(OBAFLIX_URL) && !url.startsWith("http://127.0.0.1")) {
         const parsed = new URL(url);
-        const isEmbed = EMBED_URL_PATTERNS.some((p) =>
-          parsed.hostname.endsWith(p.replace("*://", "").replace("*.", "").split("/")[0])
-        );
+        const isEmbed = EMBED_HOSTNAMES.some((host) => parsed.hostname.endsWith(host));
         if (!isEmbed) { event.preventDefault(); shell.openExternal(url); }
       }
     } catch { }
@@ -218,6 +254,23 @@ function setupWebContents() {
 ipcMain.handle("toggle-fullscreen", () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()));
 ipcMain.handle("get-version", () => app.getVersion());
 ipcMain.handle("install-update", () => require("electron-updater").autoUpdater.quitAndInstall(false, true));
+
+// Extração nativa para rola3/rola4: o site chama window.obaflixDesktop.extractStream()
+// → ipcRenderer.invoke("extract-stream") → aqui → Node.js fetch com IP do usuário
+ipcMain.handle("extract-stream", async (_event, embedUrl) => {
+  try {
+    const { stream, embedOrigin } = await extractSecuredLink(embedUrl);
+    // CDN valida Referer = URL completa da página embed (não só a origem)
+    try {
+      playerState.cdnHostname = new URL(stream).hostname;
+      playerState.embedReferer = embedUrl;
+      console.log(`[ipc] CDN: ${playerState.cdnHostname} | Referer: ${embedUrl}`);
+    } catch { /**/ }
+    return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", referer: embedUrl };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
