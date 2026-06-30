@@ -65,6 +65,14 @@ function isRola34Url(url: string) {
   return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f/.test(url);
 }
 
+// Monta a URL do proxy para o path nativo Electron (rola3/4 via IPC, CDN com IP do usuário).
+// "native=1" identifica explicitamente esse path para o interceptor do main.js, que precisa
+// diferenciá-lo do path web/W3 (URLs assinadas com "sig", que devem passar pelo Vercel).
+function buildElectronProxyUrl(cdnUrl: string, referer?: string | null) {
+  const ref = referer ? `&ref=${encodeURIComponent(referer)}` : "";
+  return `/api/player/proxy?url=${encodeURIComponent(cdnUrl)}&native=1${ref}`;
+}
+
 function parseFontes(urls: string | null, prefix: string, includeRola34: boolean): Fonte[] {
   if (!urls) return [];
   return urls.split(",")
@@ -90,7 +98,13 @@ export function CustomPlayer({
   const isProxiedRef = useRef(false);
   const directStreamRef = useRef<string | null>(null);
   const streamRefererRef = useRef<string | null>(null);
-  const reExtractCountRef = useRef(0); // re-extrações por fonte (renova token CDN)
+  const reExtractCountRef = useRef(0); // falhas consecutivas de renovação por fonte (reseta a cada play bem-sucedido)
+  const reExtractingRef = useRef(false); // impede re-extrações concorrentes (vários "error" do hls.js em sequência)
+  const reExtractDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null); // debounce antes de iniciar renovação
+  const reExtractGenerationRef = useRef(0); // monotônico — identifica cada chamada de runReExtract; resposta com geração antiga é descartada
+  const suppressErrorUntilRef = useRef(0); // timestamp (ms) até quando "error" do JW deve ser ignorado (eco tardio da mídia anterior pós-load())
+  const lastReExtractSuccessAtRef = useRef(0); // timestamp (ms) da última renovação bem-sucedida — usado pro cooldown mínimo
+  const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
   // Stable refs to avoid stale closures in JW Player callbacks
   const saveProgressRef = useRef<() => Promise<void>>(async () => {});
   const switchFonteRef = useRef<(idx: number) => void>(() => {});
@@ -242,6 +256,7 @@ export function CustomPlayer({
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number) => {
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+    if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
     if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     setFonteIdx(idx);
     setStatus("idle");
@@ -258,6 +273,9 @@ export function CustomPlayer({
     directStreamRef.current = null;
     streamRefererRef.current = null;
     reExtractCountRef.current = 0;
+    reExtractingRef.current = false;
+    suppressErrorUntilRef.current = 0;
+    lastReExtractSuccessAtRef.current = 0;
   }, []);
 
   switchFonteRef.current = switchFonte;
@@ -286,7 +304,7 @@ export function CustomPlayer({
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         tipo = data.tipo ?? "hls";
         // No Electron, usamos a URL direta (DevTools do Electron é local, não exposto)
-        playerUrl = tipo === "iframe" ? data.stream! : `/api/player/proxy?url=${encodeURIComponent(data.stream!)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
+        playerUrl = tipo === "iframe" ? data.stream! : buildElectronProxyUrl(data.stream!, data.referer);
         streamRefererRef.current = data.referer ?? null;
         directStreamRef.current = data.stream!;
       } else {
@@ -417,6 +435,10 @@ export function CustomPlayer({
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         setShowRetry(false);
         setStatus("playing");
+        // Renovação anterior teve sucesso (player voltou a reproduzir) — reseta o contador
+        // de falhas consecutivas. Sem isso, um episódio longo com várias renovações bem-sucedidas
+        // ao longo de horas estouraria o cap de 5 e cairia em erro mesmo sem nenhuma falha real.
+        reExtractCountRef.current = 0;
       });
       player.on("pause", () => { saveProgressRef.current(); });
       player.on("complete", () => { saveProgressRef.current(); });
@@ -446,11 +468,21 @@ export function CustomPlayer({
         }
       });
 
-      // ── Auto-seleciona áudio em português (Dub 3 e qualquer fonte com PT+EN) ──
+      // ── Auto-seleciona áudio em português, exceto se o usuário já escolheu manualmente ──
+      // Esse evento volta a disparar após cada load() (renovação de token) — sem o check de
+      // userAudioTrackRef, uma troca manual para outro idioma seria revertida para PT na
+      // próxima renovação. A escolha manual vale para todo o episódio (refs resetam só na
+      // remontagem do componente via key={episodio.id}, nunca em re-extração).
       player.on("audioTracks", () => {
         if (unmountedRef.current) return;
         const tracks: any[] = player.getAudioTracks() ?? [];
         if (tracks.length <= 1) return;
+
+        if (userAudioTrackRef.current !== null && userAudioTrackRef.current < tracks.length) {
+          player.setCurrentAudioTrack(userAudioTrackRef.current);
+          return;
+        }
+
         const ptIdx = tracks.findIndex((t: any) => {
           const n = (t.name || t.label || t.language || "").toLowerCase();
           return n.includes("pt") || n.includes("por") || n.includes("portugu");
@@ -464,11 +496,129 @@ export function CustomPlayer({
         const tracks: any[] = player.getAudioTracks() ?? [];
         if (tracks.length <= 1) return;
         const cur = player.getCurrentAudioTrack();
-        player.setCurrentAudioTrack((cur + 1) % tracks.length);
+        const next = (cur + 1) % tracks.length;
+        userAudioTrackRef.current = next;
+        player.setCurrentAudioTrack(next);
       }, "obaflix-audio-toggle");
+
+      // Renova o token CDN (rola3/4 no Electron) de forma transparente: extrai uma nova
+      // URL via IPC nativo e troca a fonte do player sem destruí-lo, preservando posição,
+      // faixa de áudio e legenda. Protegida por debounce + lock + timeout de segurança.
+      const REEXTRACT_BASE_DELAY_MS = 500;
+      const REEXTRACT_MAX_DELAY_MS = 8000; // backoff exponencial: 500ms → 1s → 2s → 4s → 8s (cap)
+      const REEXTRACT_SAFETY_TIMEOUT_MS = 18000; // > timeout interno do main.js (15s)
+      const REEXTRACT_MAX_CONSECUTIVE_FAILURES = 5;
+      const REEXTRACT_MIN_COOLDOWN_MS = 5000; // erro tão pouco tempo após uma renovação bem-sucedida provavelmente não é token expirado
+
+      // Delay antes da próxima tentativa, crescendo com o nº de falhas consecutivas já
+      // ocorridas nesta sequência (reExtractCountRef ainda não foi incrementado p/ esta tentativa).
+      function getReExtractDelay() {
+        const failedAttempts = reExtractCountRef.current;
+        return Math.min(REEXTRACT_BASE_DELAY_MS * 2 ** failedAttempts, REEXTRACT_MAX_DELAY_MS);
+      }
+
+      function runReExtract(embedUrl: string, fi: number, len: number) {
+        reExtractingRef.current = true;
+        reExtractCountRef.current += 1;
+        const attempt = reExtractCountRef.current;
+        const pos = progressoRef.current;
+        const desktop = (window as any).obaflixDesktop;
+
+        // requestId da renovação + identidade do player no início da chamada. Se, enquanto
+        // extractStream() está em voo, o efeito for limpo (troca de fonte/episódio recria o
+        // player), tanto a geração quanto a referência ficam desatualizadas — a resposta tardia
+        // é descartada e NUNCA é aplicada sobre o player/conteúdo errado.
+        const myGeneration = ++reExtractGenerationRef.current;
+        const playerAtStart = jwRef.current;
+
+        console.log(`[reextract] #${attempt} (gen=${myGeneration}) iniciando renovação de token — pos=${pos}s`);
+
+        let settled = false;
+        const fail = () => {
+          if (unmountedRef.current) return;
+          if (reExtractGenerationRef.current !== myGeneration) return; // superado por nova tentativa/troca
+          if (fi < len - 1) switchFonteRef.current(fi + 1);
+          else { setError("Erro no stream"); setStatus("error"); }
+        };
+
+        const safetyTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reExtractingRef.current = false;
+          console.warn(`[reextract] #${attempt} (gen=${myGeneration}) timeout de segurança (${REEXTRACT_SAFETY_TIMEOUT_MS}ms) — extractStream não respondeu`);
+          fail();
+        }, REEXTRACT_SAFETY_TIMEOUT_MS);
+
+        desktop.extractStream(embedUrl)
+          .then((data: any) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(safetyTimer);
+            if (unmountedRef.current) return;
+
+            // Resposta obsoleta: ou uma geração mais nova já assumiu, ou o player desta
+            // chamada não é mais o player ativo (fonte/episódio mudou nesse meio-tempo).
+            // Mesmo conteúdo == mesmo embedUrl (fixo nesta chamada) + mesma instância do player.
+            if (reExtractGenerationRef.current !== myGeneration || jwRef.current !== playerAtStart) {
+              console.log(`[reextract] #${attempt} (gen=${myGeneration}) descartado — player/geração mudou durante a extração`);
+              return;
+            }
+
+            if (!data?.stream) {
+              // extractStream nunca rejeita (sempre resolve, com {error} em caso de falha) —
+              // sem este tratamento explícito o player ficava travado sem nenhum fallback.
+              console.warn(`[reextract] #${attempt} falhou: ${data?.error || "stream vazio"}`);
+              fail();
+              return;
+            }
+
+            console.log(`[reextract] #${attempt} sucesso — retomando em ${pos}s`);
+            const newUrl = buildElectronProxyUrl(data.stream, data.referer);
+            // Ignora "error" pelos próximos instantes: hls.js pode emitir eventos atrasados
+            // da instância anterior (ligada à mídia antiga) logo depois do load().
+            suppressErrorUntilRef.current = Date.now() + 2000;
+            lastReExtractSuccessAtRef.current = Date.now();
+            jwRef.current.load([{ file: newUrl, type: "hls" }]);
+            if (pos > 5) {
+              jwRef.current.once("firstFrame", () => {
+                if (!jwRef.current) return;
+                // Alguns provedores retornam playlist com duração levemente diferente após
+                // renovar o token — um seek() além da duração real pode gerar comportamento
+                // inesperado no hls.js. Só restaura a posição se ela couber no novo stream.
+                const dur = jwRef.current.getDuration?.();
+                const validDuration = typeof dur === "number" && isFinite(dur) && dur > 0;
+                if (!validDuration || pos < dur) {
+                  jwRef.current.seek(pos);
+                } else {
+                  console.warn(`[reextract] posição salva (${pos}s) >= duração do novo stream (${dur}s) — seek ignorado`);
+                }
+              });
+            }
+            jwRef.current.play();
+          })
+          .catch((err: any) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(safetyTimer);
+            console.warn(`[reextract] #${attempt} (gen=${myGeneration}) erro inesperado:`, err?.message);
+            fail();
+          })
+          .finally(() => {
+            reExtractingRef.current = false;
+          });
+      }
 
       player.on("error", () => {
         if (unmountedRef.current) return;
+
+        // Eco tardio da mídia anterior: hls.js às vezes dispara "error" da instância antiga
+        // poucos instantes depois do load() já ter trocado a fonte. Ignorar evita reextrações
+        // desnecessárias disparadas por uma falha que não pertence mais à mídia atual.
+        if (Date.now() < suppressErrorUntilRef.current) {
+          console.log("[reextract] ignorando error tardio (eco da mídia anterior pós-load)");
+          return;
+        }
+
         const fi = fonteIdx;
         const len = allFontes.length;
         const embedUrl = fonte?.embedUrl ?? "";
@@ -476,26 +626,29 @@ export function CustomPlayer({
 
         // rola3/rola4 no Electron: token CDN expirou → re-extrai silenciosamente
         // sem destruir o player (sem overlay, sem troca de fonte).
-        // Usa player.load() com a nova URL e retoma do ponto salvo.
-        if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < 5) {
-          reExtractCountRef.current += 1;
-          const pos = progressoRef.current;
-          const desktop = (window as any).obaflixDesktop;
-          desktop.extractStream(embedUrl)
-            .then((data: any) => {
-              if (unmountedRef.current || !data?.stream || !jwRef.current) return;
-              const newUrl = `/api/player/proxy?url=${encodeURIComponent(data.stream)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
-              jwRef.current.load([{ file: newUrl, type: "hls" }]);
-              if (pos > 5) {
-                jwRef.current.once("firstFrame", () => { jwRef.current?.seek(pos); });
-              }
-              jwRef.current.play();
-            })
-            .catch(() => {
-              if (unmountedRef.current) return;
-              if (fi < len - 1) switchFonteRef.current(fi + 1);
-              else { setError("Erro no stream"); setStatus("error"); }
-            });
+        if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+          // Cooldown mínimo: se o erro aconteceu poucos segundos depois da última renovação
+          // bem-sucedida, provavelmente não é token expirado de novo — é outro problema
+          // (ex.: CDN instável). Renovar de imediato aqui só alimentaria um loop. Escala
+          // direto para o fallback em vez de gastar outra extração.
+          const sinceLastSuccess = Date.now() - lastReExtractSuccessAtRef.current;
+          if (lastReExtractSuccessAtRef.current > 0 && sinceLastSuccess < REEXTRACT_MIN_COOLDOWN_MS) {
+            console.warn(`[reextract] erro ${sinceLastSuccess}ms após última renovação bem-sucedida — não parece token expirado, pulando nova extração`);
+            if (fi < len - 1) switchFonteRef.current(fi + 1);
+            else { setError("Erro no stream"); setStatus("error"); }
+            return;
+          }
+
+          // Debounce com backoff exponencial: hls.js dispara "error" várias vezes em sequência
+          // rápida para a mesma falha (oscilação do CDN) — aguarda um silêncio crescente a cada
+          // falha consecutiva antes de tentar de novo, em vez de bater no servidor repetidamente.
+          if (reExtractDebounceRef.current) clearTimeout(reExtractDebounceRef.current);
+          const delay = getReExtractDelay();
+          reExtractDebounceRef.current = setTimeout(() => {
+            reExtractDebounceRef.current = null;
+            if (unmountedRef.current || reExtractingRef.current) return;
+            runReExtract(embedUrl, fi, len);
+          }, delay);
           return;
         }
 
@@ -510,6 +663,7 @@ export function CustomPlayer({
 
     return () => {
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+      if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
