@@ -94,6 +94,8 @@ export function CustomPlayer({
   const progressoRef = useRef(0);
   const durationRef = useRef(duracaoSeg ?? 0);
   const autoSkipDoneRef = useRef(false);
+  // [DIAG] timestamp do último load() — para medir intervalo até o primeiro erro/warning pós-renovação
+  const lastLoadAtRef = useRef(0);
   const extractAbortRef = useRef<AbortController | null>(null);
   const isProxiedRef = useRef(false);
   const directStreamRef = useRef<string | null>(null);
@@ -600,10 +602,21 @@ export function CustomPlayer({
 
             console.log(`[reextract] #${attempt} sucesso — retomando em ${pos}s`);
             const newUrl = buildElectronProxyUrl(data.stream, data.referer);
+
+            // [DIAG] Contexto da renovação — remover após confirmar causa dos 500 em .woff
+            const prevItem = jwRef.current.getPlaylistItem?.();
+            const prevRawUrl: string = prevItem?.file || prevItem?.sources?.[0]?.file || "desconhecido";
+            const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
+            console.log(`[diag/renewal] URL anterior (proxy): ${prevRawUrl.slice(0, 120)}`);
+            console.log(`[diag/renewal] URL nova (proxy):     ${newUrl.slice(0, 120)}`);
+            console.log(`[diag/renewal] Domínio CDN novo:     ${newManifestDomain}`);
+            console.log(`[diag/renewal] gen=${myGeneration} pos=${pos}s attempt=${attempt}`);
+
             // Ignora "error" pelos próximos instantes: hls.js pode emitir eventos atrasados
             // da instância anterior (ligada à mídia antiga) logo depois do load().
             suppressErrorUntilRef.current = Date.now() + 2000;
             lastReExtractSuccessAtRef.current = Date.now();
+            lastLoadAtRef.current = Date.now(); // [DIAG] marca timestamp do load() para medir latência até o primeiro erro
             jwRef.current.load([{ file: newUrl, type: "hls" }]);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
@@ -634,8 +647,25 @@ export function CustomPlayer({
           });
       }
 
-      player.on("error", () => {
+      // [DIAG] Captura warnings do JW Player (333500/334001/330000) com URL do recurso que falhou
+      // Ajuda a confirmar se .woff 500 são de fontes do manifesto HLS ou do skin do JW Player
+      // Remover após confirmar causa raiz dos erros de renovação
+      player.on("warning", (e: any) => {
         if (unmountedRef.current) return;
+        const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
+        const srcUrl: string = e?.sourceError?.url || e?.url || "";
+        const domain = srcUrl ? (() => { try { return new URL(srcUrl).hostname; } catch { return srcUrl.slice(0, 40); } })() : "n/a";
+        console.warn(`[diag/warning] JW ${e?.code} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
+      });
+
+      player.on("error", (e: any) => {
+        if (unmountedRef.current) return;
+
+        // [DIAG] Timing e detalhe do erro — remover após confirmar causa raiz
+        const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
+        const srcUrl: string = e?.sourceError?.url || e?.url || "";
+        const domain = srcUrl ? (() => { try { return new URL(srcUrl).hostname; } catch { return srcUrl.slice(0, 40); } })() : "n/a";
+        console.warn(`[diag/error] JW ${e?.code || "?"} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
 
         // Eco tardio da mídia anterior: hls.js às vezes dispara "error" da instância antiga
         // poucos instantes depois do load() já ter trocado a fonte. Ignorar evita reextrações
