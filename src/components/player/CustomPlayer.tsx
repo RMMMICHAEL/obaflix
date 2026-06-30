@@ -105,6 +105,7 @@ export function CustomPlayer({
   const suppressErrorUntilRef = useRef(0); // timestamp (ms) até quando "error" do JW deve ser ignorado (eco tardio da mídia anterior pós-load())
   const lastReExtractSuccessAtRef = useRef(0); // timestamp (ms) da última renovação bem-sucedida — usado pro cooldown mínimo
   const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
+  const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
   // Stable refs to avoid stale closures in JW Player callbacks
   const saveProgressRef = useRef<() => Promise<void>>(async () => {});
   const switchFonteRef = useRef<(idx: number) => void>(() => {});
@@ -276,6 +277,7 @@ export function CustomPlayer({
     reExtractingRef.current = false;
     suppressErrorUntilRef.current = 0;
     lastReExtractSuccessAtRef.current = 0;
+    isChangingAudioTrackRef.current = false;
   }, []);
 
   switchFonteRef.current = switchFonte;
@@ -468,26 +470,50 @@ export function CustomPlayer({
         }
       });
 
+      // ── Wrapper seguro para setCurrentAudioTrack ───────────────────────────
+      // setCurrentAudioTrack() dispara "audioTracks" de forma síncrona dentro
+      // da própria chamada — sem isChangingAudioTrackRef, o handler seria
+      // re-entrado antes de retornar, causando recursão infinita (RangeError:
+      // Maximum call stack size exceeded). O finally garante que a flag é
+      // sempre liberada mesmo que setCurrentAudioTrack lance.
+      function safeSetAudioTrack(desired: number) {
+        if (isChangingAudioTrackRef.current) return; // re-entrada: o JW disparou o evento dentro de setCurrentAudioTrack — ignora
+        if (player.getCurrentAudioTrack() === desired) return; // já está na faixa certa — não dispara o evento desnecessariamente
+        isChangingAudioTrackRef.current = true;
+        try {
+          player.setCurrentAudioTrack(desired);
+        } finally {
+          isChangingAudioTrackRef.current = false;
+        }
+      }
+
       // ── Auto-seleciona áudio em português, exceto se o usuário já escolheu manualmente ──
-      // Esse evento volta a disparar após cada load() (renovação de token) — sem o check de
-      // userAudioTrackRef, uma troca manual para outro idioma seria revertida para PT na
-      // próxima renovação. A escolha manual vale para todo o episódio (refs resetam só na
-      // remontagem do componente via key={episodio.id}, nunca em re-extração).
+      // Dispara na carga inicial e após cada load() de renovação de token.
+      // userAudioTrackRef = null → nenhuma escolha manual ainda → aplica preferência PT.
+      // userAudioTrackRef = N   → usuário escolheu manualmente → restaura exatamente
+      //                          essa faixa, sem jamais sobrescrever por PT novamente
+      //                          durante o mesmo episódio.
       player.on("audioTracks", () => {
         if (unmountedRef.current) return;
         const tracks: any[] = player.getAudioTracks() ?? [];
         if (tracks.length <= 1) return;
 
-        if (userAudioTrackRef.current !== null && userAudioTrackRef.current < tracks.length) {
-          player.setCurrentAudioTrack(userAudioTrackRef.current);
+        if (userAudioTrackRef.current !== null) {
+          // Escolha manual já registrada — restaura sem sobrescrever.
+          // Índice pode ser inválido se o novo stream tiver menos faixas (ex.: renovação
+          // com playlist diferente); nesse caso mantém o que o player escolheu.
+          if (userAudioTrackRef.current < tracks.length) {
+            safeSetAudioTrack(userAudioTrackRef.current);
+          }
           return;
         }
 
+        // Sem escolha manual: auto-seleciona PT como padrão inicial do episódio.
         const ptIdx = tracks.findIndex((t: any) => {
           const n = (t.name || t.label || t.language || "").toLowerCase();
           return n.includes("pt") || n.includes("por") || n.includes("portugu");
         });
-        if (ptIdx > 0) player.setCurrentAudioTrack(ptIdx);
+        if (ptIdx > 0) safeSetAudioTrack(ptIdx);
       });
 
       // ── Botão de alternância de áudio na barra de controles ────────────────
@@ -497,8 +523,8 @@ export function CustomPlayer({
         if (tracks.length <= 1) return;
         const cur = player.getCurrentAudioTrack();
         const next = (cur + 1) % tracks.length;
-        userAudioTrackRef.current = next;
-        player.setCurrentAudioTrack(next);
+        userAudioTrackRef.current = next; // registra escolha manual para este episódio
+        safeSetAudioTrack(next);
       }, "obaflix-audio-toggle");
 
       // Renova o token CDN (rola3/4 no Electron) de forma transparente: extrai uma nova
