@@ -100,6 +100,16 @@ export function CustomPlayer({
   const autoRetryDoneRef = useRef(false);
   const extractRef = useRef<(url: string) => void>(() => {});
   const castContextRef = useRef<any>(null);
+  // Guarda desmontagem: impede setState/callbacks após unmount e durante navegação auto-skip
+  const unmountedRef = useRef(false);
+
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      extractAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => { nextUrlRef.current = nextUrl; }, [nextUrl]);
 
@@ -356,6 +366,8 @@ export function CustomPlayer({
     const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
 
     loadJW(() => {
+      // Componente pode ter desmontado enquanto o script JW carregava
+      if (unmountedRef.current) return;
       const jw = (window as any).jwplayer;
       if (!jw) return;
       jw.key = JW_KEY;
@@ -390,6 +402,7 @@ export function CustomPlayer({
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       setShowRetry(false);
       retryTimerRef.current = setTimeout(() => {
+        if (unmountedRef.current) return;
         const state = jwRef.current?.getState?.();
         if (!state || state === "playing" || state === "paused") return;
         if (!autoRetryDoneRef.current) {
@@ -409,6 +422,7 @@ export function CustomPlayer({
       player.on("complete", () => { saveProgressRef.current(); });
 
       player.on("time", ({ position, duration }: any) => {
+        if (unmountedRef.current) return;
         progressoRef.current = Math.floor(position);
         if (isFinite(duration) && duration > 0) durationRef.current = duration;
 
@@ -432,7 +446,29 @@ export function CustomPlayer({
         }
       });
 
+      // ── Auto-seleciona áudio em português (Dub 3 e qualquer fonte com PT+EN) ──
+      player.on("audioTracks", () => {
+        if (unmountedRef.current) return;
+        const tracks: any[] = player.getAudioTracks() ?? [];
+        if (tracks.length <= 1) return;
+        const ptIdx = tracks.findIndex((t: any) => {
+          const n = (t.name || t.label || t.language || "").toLowerCase();
+          return n.includes("pt") || n.includes("por") || n.includes("portugu");
+        });
+        if (ptIdx > 0) player.setCurrentAudioTrack(ptIdx);
+      });
+
+      // ── Botão de alternância de áudio na barra de controles ────────────────
+      const audioSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>`;
+      player.addButton(audioSvg, "Alternar áudio", () => {
+        const tracks: any[] = player.getAudioTracks() ?? [];
+        if (tracks.length <= 1) return;
+        const cur = player.getCurrentAudioTrack();
+        player.setCurrentAudioTrack((cur + 1) % tracks.length);
+      }, "obaflix-audio-toggle");
+
       player.on("error", () => {
+        if (unmountedRef.current) return;
         const fi = fonteIdx;
         const len = allFontes.length;
         const embedUrl = fonte?.embedUrl ?? "";
@@ -447,7 +483,7 @@ export function CustomPlayer({
           const desktop = (window as any).obaflixDesktop;
           desktop.extractStream(embedUrl)
             .then((data: any) => {
-              if (!data?.stream || !jwRef.current) return;
+              if (unmountedRef.current || !data?.stream || !jwRef.current) return;
               const newUrl = `/api/player/proxy?url=${encodeURIComponent(data.stream)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
               jwRef.current.load([{ file: newUrl, type: "hls" }]);
               if (pos > 5) {
@@ -456,6 +492,7 @@ export function CustomPlayer({
               jwRef.current.play();
             })
             .catch(() => {
+              if (unmountedRef.current) return;
               if (fi < len - 1) switchFonteRef.current(fi + 1);
               else { setError("Erro no stream"); setStatus("error"); }
             });
