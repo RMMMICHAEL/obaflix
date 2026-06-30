@@ -275,11 +275,8 @@ export function CustomPlayer({
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         tipo = data.tipo ?? "hls";
-        // Electron com webSecurity:false: JW Player busca CDN diretamente.
-        // NÃO usar o proxy do Vercel — o token CDN é IP-bound ao IP do usuário;
-        // passar pelo proxy (Vercel IP) causa 403 no CDN.
-        // O Referer é injetado pelo onBeforeSendHeaders do main.js.
-        playerUrl = data.stream!;
+        // No Electron, usamos a URL direta (DevTools do Electron é local, não exposto)
+        playerUrl = tipo === "iframe" ? data.stream! : `/api/player/proxy?url=${encodeURIComponent(data.stream!)}${data.referer ? `&ref=${encodeURIComponent(data.referer)}` : ""}`;
         streamRefererRef.current = data.referer ?? null;
         directStreamRef.current = data.stream!;
       } else {

@@ -157,23 +157,41 @@ function createWindow() {
 function configureSession() {
   const ses = session.fromPartition("persist:obaflix");
 
-  // ── Intercept: /api/player/extract para rola3/rola4 → servidor local ──────
+  // ── Intercept: rola3/4 e bypass do proxy Vercel ─────────────────────────
+  // Electron só permite UM onBeforeRequest por sessão — tudo unificado aqui.
   ses.webRequest.onBeforeRequest(
-    { urls: [`${OBAFLIX_URL}/api/player/extract*`] },
+    { urls: [`${OBAFLIX_URL}/api/player/extract*`, `${OBAFLIX_URL}/api/player/proxy*`] },
     (details, callback) => {
       try {
         const url = new URL(details.url);
-        const embedUrl = url.searchParams.get("url") || "";
-        const isRola34 =
-          /\/(rola3|rola4)\//.test(embedUrl) ||
-          /embedplayer/.test(embedUrl) ||
-          /xn--kcksk7a2bl5le7b6doc1h3f/.test(embedUrl);
 
-        if (isRola34 && localPort) {
-          const redirect = `http://127.0.0.1:${localPort}/extract?embedUrl=${encodeURIComponent(embedUrl)}`;
-          console.log(`[intercept] → local: ${embedUrl.slice(0, 60)}`);
-          callback({ redirectURL: redirect });
-          return;
+        // 1. /api/player/extract para rola3/rola4 → servidor local (extrai com IP do usuário)
+        if (url.pathname === "/api/player/extract") {
+          const embedUrl = url.searchParams.get("url") || "";
+          const isRola34 =
+            /\/(rola3|rola4)\//.test(embedUrl) ||
+            /embedplayer/.test(embedUrl) ||
+            /xn--kcksk7a2bl5le7b6doc1h3f/.test(embedUrl);
+
+          if (isRola34 && localPort) {
+            const redirect = `http://127.0.0.1:${localPort}/extract?embedUrl=${encodeURIComponent(embedUrl)}`;
+            console.log(`[intercept/extract] → local: ${embedUrl.slice(0, 60)}`);
+            callback({ redirectURL: redirect });
+            return;
+          }
+        }
+
+        // 2. /api/player/proxy?url=CDN_URL → redireciona direto ao CDN (bypassa Vercel)
+        //    O token CDN é IP-bound ao IP do usuário; passar pelo Vercel causa 403.
+        //    Com webSecurity:false o Electron pode buscar o CDN diretamente.
+        //    onBeforeSendHeaders injeta Referer/Origin nos requests subsequentes.
+        if (url.pathname === "/api/player/proxy") {
+          const cdnUrl = url.searchParams.get("url");
+          if (cdnUrl) {
+            console.log(`[intercept/proxy] → CDN direto: ${cdnUrl.slice(0, 80)}`);
+            callback({ redirectURL: cdnUrl });
+            return;
+          }
         }
       } catch (e) { console.error("[intercept]", e.message); }
       callback({});
