@@ -157,10 +157,26 @@ function createWindow() {
 function configureSession() {
   const ses = session.fromPartition("persist:obaflix");
 
+  // ── Strip CSP do Vercel ─────────────────────────────────────────────────
+  // O header Content-Security-Policy (connect-src 'self') bloqueia requests do
+  // renderer para CDNs externos mesmo com webSecurity:false (CSP é independente de SOP).
+  // Removemos o CSP das respostas do Vercel para que o redirect proxy→CDN funcione.
+  ses.webRequest.onHeadersReceived(
+    { urls: [`${OBAFLIX_URL}/*`] },
+    (details, callback) => {
+      const rh = { ...details.responseHeaders };
+      delete rh["content-security-policy"];
+      delete rh["Content-Security-Policy"];
+      delete rh["content-security-policy-report-only"];
+      callback({ responseHeaders: rh });
+    }
+  );
+
   // ── Intercept: rola3/4 e bypass do proxy Vercel ─────────────────────────
   // Electron só permite UM onBeforeRequest por sessão — tudo unificado aqui.
+  // Padrão único /api/player/* cobre extract e proxy; pathname filtrado no handler.
   ses.webRequest.onBeforeRequest(
-    { urls: [`${OBAFLIX_URL}/api/player/extract*`, `${OBAFLIX_URL}/api/player/proxy*`] },
+    { urls: [`${OBAFLIX_URL}/api/player/*`] },
     (details, callback) => {
       try {
         const url = new URL(details.url);
@@ -182,9 +198,8 @@ function configureSession() {
         }
 
         // 2. /api/player/proxy?url=CDN_URL → redireciona direto ao CDN (bypassa Vercel)
-        //    O token CDN é IP-bound ao IP do usuário; passar pelo Vercel causa 403.
-        //    Com webSecurity:false o Electron pode buscar o CDN diretamente.
-        //    onBeforeSendHeaders injeta Referer/Origin nos requests subsequentes.
+        //    Token CDN é IP-bound ao IP do usuário; Vercel tem IP diferente → 403.
+        //    CSP foi removido por onHeadersReceived — redirect ao CDN é permitido.
         if (url.pathname === "/api/player/proxy") {
           const cdnUrl = url.searchParams.get("url");
           if (cdnUrl) {
