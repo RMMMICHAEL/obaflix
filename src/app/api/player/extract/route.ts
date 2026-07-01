@@ -289,6 +289,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   } else if (hostname.includes("hide") || hostname.includes("playhide")) {
     const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/");
     streamUrl = await extractHide(html, url);
+    referer = `https://playhide.shop/v/${id}`;
 
   } else if (hostname.includes("wish") || hostname.includes("hlswish") || hostname.includes("streamwish") || hostname.includes("playerwish")) {
     const html = await fetchHtml(url, "https://megaflix.lat/");
