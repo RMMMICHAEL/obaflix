@@ -491,7 +491,7 @@ export function CustomPlayer({
       player.on("time", ({ position, duration }: any) => {
         if (unmountedRef.current) return;
         progressoRef.current = Math.floor(position);
-        if (isFinite(duration) && duration > 0) durationRef.current = duration;
+        if (isFinite(duration) && duration > 0) durationRef.current = Math.round(duration);
 
         const url = nextUrlRef.current;
         if (!url || autoSkipDoneRef.current || !isFinite(duration) || duration <= 0) return;
@@ -827,7 +827,7 @@ export function CustomPlayer({
       const ct = video.currentTime;
       const dur = video.duration;
       progressoRef.current = Math.floor(ct);
-      if (isFinite(dur)) durationRef.current = dur;
+      if (isFinite(dur)) durationRef.current = Math.round(dur);
 
       const url = nextUrl;
       if (!url || autoSkipDoneRef.current || !isFinite(dur) || dur <= 0) return;

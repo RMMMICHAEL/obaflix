@@ -10,7 +10,9 @@ export async function POST(req: NextRequest) {
 
   const userId = (session.user as { id: string }).id;
   const body = await req.json();
-  const { conteudoId, conteudoTipo, episodioId, temporada, numeroEp, progressoSeg, duracaoSeg } = body;
+  const { conteudoId, conteudoTipo, episodioId, temporada, numeroEp } = body;
+  const progressoSeg = Math.round(Number(body.progressoSeg) || 0);
+  const duracaoSeg = body.duracaoSeg != null ? Math.round(Number(body.duracaoSeg)) : null;
 
   if (!conteudoId || !conteudoTipo) {
     return NextResponse.json({ error: "conteudoId e conteudoTipo são obrigatórios" }, { status: 400 });
