@@ -59,9 +59,11 @@ interface Props {
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
 type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
-interface Fonte { label: string; embedUrl: string; }
+interface Fonte { label: string; embedUrl: string; tokenized: boolean; }
 
-function isRola34Url(url: string) {
+// Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
+// Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação.
+function isTokenizedUrl(url: string) {
   return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f/.test(url);
 }
 
@@ -73,12 +75,12 @@ function buildElectronProxyUrl(cdnUrl: string, referer?: string | null) {
   return `/api/player/proxy?url=${encodeURIComponent(cdnUrl)}&native=1${ref}`;
 }
 
-function parseFontes(urls: string | null, prefix: string, includeRola34: boolean): Fonte[] {
+function parseFontes(urls: string | null, prefix: string, includeTokenized: boolean): Fonte[] {
   if (!urls) return [];
   return urls.split(",")
     .map((u) => u.trim())
-    .filter((u) => u && (includeRola34 || !isRola34Url(u)))
-    .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u }));
+    .filter((u) => u && (includeTokenized || !isTokenizedUrl(u)))
+    .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u, tokenized: isTokenizedUrl(u) }));
 }
 
 // Emite um log de recuperação padronizado com prefixo único [recovery].
@@ -335,7 +337,7 @@ export function CustomPlayer({
       let tipo: string;
       let playerUrl: string;
 
-      if (desktop && isRola34Url(embedUrl)) {
+      if (desktop && fonte?.tokenized) {
         // Electron: extração nativa via IPC (IP residencial do usuário)
         const data: { stream?: string; tipo?: string; referer?: string; error?: string } =
           await desktop.extractStream(embedUrl);
@@ -735,9 +737,9 @@ export function CustomPlayer({
 
         const inElectron = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
 
-        // Renovação de token: apenas rola3/4 em Electron com tentativas restantes.
+        // Renovação de token: apenas fontes tokenizadas em Electron com tentativas restantes.
         // Qualquer outro player vai direto para fallback.
-        if (inElectron && isRola34Url(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+        if (inElectron && fonte?.tokenized && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
 
           // Nenhum frame exibido ainda: fonte inválida para este episódio, não token expirado
           if (initialLoadRef.current) {
@@ -766,9 +768,9 @@ export function CustomPlayer({
           return;
         }
 
-        // Fallback direto: não-rola34, não-Electron, ou max-retries atingido
+        // Fallback direto: fonte não-tokenizada, não-Electron, ou max-retries atingido
         fallback("source-switch", "log",
-          `${isRola34Url(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-rola34"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+          `${fonte?.tokenized ? `max-retries=${reExtractCountRef.current}` : "non-tokenized"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
       });
     });
 
