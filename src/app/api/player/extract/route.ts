@@ -31,7 +31,7 @@ const MOON = "https://app.megafrixapi.com/moon.php";
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
-async function fetchHtml(url: string, referer = ""): Promise<string> {
+async function fetchHtml(url: string, referer = "", timeoutMs = 8000): Promise<string> {
   const res = await fetch(url, {
     headers: {
       "User-Agent": UA,
@@ -43,7 +43,7 @@ async function fetchHtml(url: string, referer = ""): Promise<string> {
       "Sec-Fetch-Site": "cross-site",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} em ${url}`);
   return res.text();
@@ -156,10 +156,25 @@ async function extractVoltz(url: string): Promise<string | null> {
   return parse(html2);
 }
 
-async function extractHide(html: string, embedUrl: string): Promise<string | null> {
-  const evalScript = extractEvalScript(html);
-  if (!evalScript) return null;
-  const decoded = await moon(evalScript);
+// Decode Dean Edwards packer (eval(function(p,a,c,k,e,d){...})) localmente via vm.
+// Elimina o RTT para moon.php no caso comum. Fallback: moon() se o VM falhar.
+function unpackPacker(script: string): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createContext, runInContext } = require("vm") as typeof import("vm");
+    let decoded: string | null = null;
+    runInContext(
+      script,
+      createContext({ eval: (s: string) => { decoded = s; } }),
+      { timeout: 500 },
+    );
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function parseDecodedHide(decoded: string, embedUrl: string): string | null {
   const linksMatch = decoded.match(/var\s+links\s*=\s*(\{[^;]+\})/);
   if (linksMatch) {
     try {
@@ -169,6 +184,22 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
     } catch { /**/ }
   }
   return findM3u8(decoded);
+}
+
+async function extractHide(html: string, embedUrl: string): Promise<string | null> {
+  const evalScript = extractEvalScript(html);
+  if (!evalScript) return null;
+
+  // Caminho rápido: decoder local (sem chamada de rede para moon.php)
+  const localDecoded = unpackPacker(evalScript);
+  if (localDecoded) {
+    const result = parseDecodedHide(localDecoded, embedUrl);
+    if (result) return result;
+  }
+
+  // Fallback: moon.php para formatos não-padrão ou se vm falhar
+  const decoded = await moon(evalScript);
+  return parseDecodedHide(decoded, embedUrl);
 }
 
 async function extractWish(html: string, embedUrl: string): Promise<string | null> {
@@ -287,7 +318,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("hide") || hostname.includes("playhide")) {
-    const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/");
+    const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/", 15000);
     streamUrl = await extractHide(html, url);
     referer = `https://playhide.shop/v/${id}`;
 
