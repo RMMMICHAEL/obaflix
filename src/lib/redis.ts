@@ -22,7 +22,9 @@ export interface RedisClient {
   del(key: string): Promise<number>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
+  ttl(key: string): Promise<number>;
   zadd(key: string, score: number, member: string): Promise<number>;
+  zrem(key: string, ...members: string[]): Promise<number>;
   zremrangebyscore(key: string, min: number, max: number): Promise<number>;
   zcard(key: string): Promise<number>;
 }
@@ -90,8 +92,24 @@ class MemoryStore implements RedisClient {
     return removed;
   }
 
+  async zrem(key: string, ...members: string[]): Promise<number> {
+    const zset = this.zsets.get(key);
+    if (!zset) return 0;
+    let removed = 0;
+    for (const m of members) { if (zset.delete(m)) removed++; }
+    return removed;
+  }
+
   async zcard(key: string): Promise<number> {
     return this.zsets.get(key)?.size ?? 0;
+  }
+
+  async ttl(key: string): Promise<number> {
+    const entry = this.kv.get(key);
+    if (!entry) return -2;
+    if (entry.expiresAt === undefined) return -1;
+    const remaining = Math.ceil((entry.expiresAt - Date.now()) / 1000);
+    return remaining > 0 ? remaining : -2;
   }
 }
 
@@ -121,7 +139,9 @@ function buildUpstashClient(): RedisClient | null {
       return client.zadd(key, { score, member });
     },
     zremrangebyscore: (key, min, max) => client.zremrangebyscore(key, min, max),
+    zrem: (key, ...members) => client.zrem(key, ...members),
     zcard: (key) => client.zcard(key),
+    ttl: (key) => client.ttl(key),
   };
 }
 
