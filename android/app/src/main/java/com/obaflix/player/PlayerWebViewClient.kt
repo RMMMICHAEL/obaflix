@@ -21,7 +21,14 @@ import java.net.URL
  *
  * shouldInterceptRequest é chamado em background thread — operações bloqueantes são seguras.
  */
-class PlayerWebViewClient : WebViewClient() {
+class PlayerWebViewClient(
+    private val onPageReady: ((WebView) -> Unit)? = null,
+) : WebViewClient() {
+
+    override fun onPageFinished(view: WebView, url: String) {
+        super.onPageFinished(view, url)
+        onPageReady?.invoke(view)
+    }
 
     private val UA =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +

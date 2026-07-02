@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
             "_obaflixBridge",
         )
 
-        webView.webViewClient = PlayerWebViewClient()
+        webView.webViewClient = PlayerWebViewClient { view -> injectBridgeShim(view) }
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
@@ -69,14 +69,6 @@ class MainActivity : AppCompatActivity() {
                 fullscreenView = null
                 webView.visibility = View.VISIBLE
                 showSystemUi()
-            }
-        }
-
-        // Injeta shim após cada página carregar para criar window.obaflixDesktop
-        webView.webViewClient = object : PlayerWebViewClient() {
-            override fun onPageFinished(view: WebView, url: String) {
-                super.onPageFinished(view, url)
-                injectBridgeShim(view)
             }
         }
     }
