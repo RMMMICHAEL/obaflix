@@ -43,9 +43,20 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-      # Build Release apenas quando keystore estiver configurada
+      # Detecta se o keystore foi configurado (secrets não podem ser usados em if:)
+      - name: Check keystore
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build Release APK
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: steps.keystore.outputs.available == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -53,7 +64,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > android/obaflix.jks
-          cat > android/key.properties <<EOF
+          cat > android/key.properties << EOF
           storeFile=../obaflix.jks
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
@@ -62,7 +73,7 @@ jobs:
           cd android && ./gradlew assembleRelease --no-daemon
 
       - name: Upload Release APK
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: steps.keystore.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: obaflix-release-${{ github.sha }}
@@ -70,7 +81,7 @@ jobs:
           retention-days: 90
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.release == 'true' && secrets.KEYSTORE_BASE64 != '' }}
+        if: steps.keystore.outputs.available == 'true' && github.event.inputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-v${{ github.run_number }}
