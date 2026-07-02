@@ -25,6 +25,19 @@ const KEY = {
   activeStreams:(id: string) => `play:streams:${id}`,
 };
 
+// ── Diagnóstico de ciclo de vida dos tokens ───────────────────────────────────
+// Logs estruturados para validar ZADD/ZREM e consistência do sorted set.
+// Prefixo [token/<fase>] uid=...XXXX — pesquisável nos logs do Vercel.
+// Remover quando a correção do ZREM estiver confirmada.
+
+function tlog(phase: string, userId: string, data: Record<string, string | number | boolean | null | undefined>) {
+  const parts = Object.entries(data)
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ");
+  console.log(`[token/${phase}] uid=...${userId.slice(-8)} ${parts}`);
+}
+
 // ── Rotação semanal de chave ──────────────────────────────────────────────────
 
 function weekNumber(): number {
@@ -110,11 +123,14 @@ const TOKEN_USED_TTL_SEC = 30 * 60;
 /** Retorna true se o token ainda não foi consumido (e o marca como usado) */
 async function markUsed(token: string): Promise<boolean> {
   const redis = getRedis();
-  const result = await redis.set(KEY.usedToken(hashToken(token)), "1", {
+  const h = hashToken(token);
+  const result = await redis.set(KEY.usedToken(h), "1", {
     ex: TOKEN_USED_TTL_SEC,
     nx: true, // SET NX → falha se a chave já existir (atômico no Redis)
   });
-  return result === "OK";
+  const firstUse = result === "OK";
+  console.log(`[token/markUsed] th=${h.slice(0, 8)} firstUse=${firstUse}`);
+  return firstUse;
 }
 
 // ── Limite de streams simultâneos (Redis sorted set por expiresAt) ────────────
@@ -127,17 +143,35 @@ async function registerStream(userId: string, tokenHash: string, expiresAt: numb
   const now = Date.now();
 
   // Remove streams expirados do sorted set antes de contar
-  await redis.zremrangebyscore(key, 0, now);
+  const expiredRemoved = await redis.zremrangebyscore(key, 0, now);
 
-  const active = await redis.zcard(key);
-  if (active >= MAX_CONCURRENT) {
-    audit("concurrent_limit", { userId, detail: `${active} streams ativos` });
+  const before = await redis.zcard(key);
+  if (before >= MAX_CONCURRENT) {
+    const ttlSec = await redis.ttl(key);
+    tlog("register/rejected", userId, {
+      th: tokenHash.slice(0, 8),
+      before,
+      max: MAX_CONCURRENT,
+      expiredRemoved: expiredRemoved ?? null,
+      ttlSec,
+    });
+    audit("concurrent_limit", { userId, detail: `${before} streams ativos` });
     return false;
   }
 
   await redis.zadd(key, expiresAt, tokenHash);
   // TTL do sorted set = expiração do token mais longo possível + margem
   await redis.expire(key, Math.ceil((expiresAt - now) / 1000) + 60);
+  const after = await redis.zcard(key);
+  const ttlSec = await redis.ttl(key);
+  tlog("register/ok", userId, {
+    th: tokenHash.slice(0, 8),
+    before,
+    after,
+    expiresInSec: Math.round((expiresAt - now) / 1000),
+    ttlSec,
+    expiredRemoved: expiredRemoved ?? null,
+  });
   return true;
 }
 
@@ -217,6 +251,7 @@ export async function createStreamToken(
 
   const accepted = await registerStream(userId, th, expiresAt);
   if (!accepted) return { token: "", accepted: false };
+  tlog("create", userId, { th: th.slice(0, 8), expiresInSec: Math.round(STREAM_TOKEN_TTL_MS / 1000) });
 
   const [key] = keys();
   const payload: StreamTokenPayload = {
@@ -276,7 +311,18 @@ export async function resolveStreamToken(
       // Libera o slot no sorted set de streams ativos agora que o manifest foi
       // consumido. Segmentos subsequentes usam HMAC (signSegmentUrl), não o slot.
       // Isso permite troca de fonte sem acumular slots por 20 min (TTL do token).
-      await redis.zrem(KEY.activeStreams(p.uid), p.th);
+      const streamKey = KEY.activeStreams(p.uid);
+      const beforeZrem = await redis.zcard(streamKey);
+      const zremCount = await redis.zrem(streamKey, p.th);
+      const afterZrem = await redis.zcard(streamKey);
+      const ttlSec = await redis.ttl(streamKey);
+      tlog("zrem", p.uid, {
+        th: p.th.slice(0, 8),
+        removed: zremCount,   // 1 = ok, 0 = membro não encontrado (bug)
+        before: beforeZrem,
+        after: afterZrem,
+        ttlSec,
+      });
       return { streamUrl: p.url, referer: p.ref, ipMismatch };
     } catch { /* tenta próxima chave */ }
   }
