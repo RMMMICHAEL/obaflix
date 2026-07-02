@@ -200,9 +200,24 @@ function configureSession() {
         // 2. /api/player/proxy?url=CDN_URL → redireciona direto ao CDN (bypassa Vercel)
         //    Token CDN é IP-bound ao IP do usuário; Vercel tem IP diferente → 403.
         //    CSP foi removido por onHeadersReceived — redirect ao CDN é permitido.
+        //
+        //    Identificação do path: o CustomPlayer.tsx marca explicitamente as URLs do path
+        //    nativo Electron (rola3/4 via IPC) com "native=1" (ver buildElectronProxyUrl).
+        //    URLs com "sig" são segmentos reescritos pelo proxy Vercel (path web/warez2/W3) —
+        //    o token deles é IP-bound ao IP do VERCEL, não do usuário; redirecionar direto
+        //    para o CDN nesse caso causa 403/404. Por isso NUNCA bypassamos quando há "sig".
+        //    Fallback (!hasSig sem "native" presente) cobre janela de deploy com bundle do
+        //    site ainda em cache sem o marcador — não depende de versão nova do exe nem do site.
+        //    TODO: remover o fallback (hasNativeParam ? ... : true) quando todos os usuários
+        //    estiverem em uma versão do site que sempre envia "native=1" — manter o fallback
+        //    indefinidamente é mais um caminho implícito a testar/manter sem necessidade.
         if (url.pathname === "/api/player/proxy") {
           const cdnUrl = url.searchParams.get("url");
-          if (cdnUrl) {
+          const hasSig = url.searchParams.has("sig");
+          const hasNativeParam = url.searchParams.has("native");
+          const isNativeRola34 = url.searchParams.get("native") === "1";
+          const shouldBypassToCdn = !!cdnUrl && !hasSig && (hasNativeParam ? isNativeRola34 : true);
+          if (shouldBypassToCdn) {
             console.log(`[intercept/proxy] → CDN direto: ${cdnUrl.slice(0, 80)}`);
             callback({ redirectURL: cdnUrl });
             return;

@@ -4,7 +4,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
 import com.obaflix.bridge.StreamExtractor
 import kotlinx.coroutines.runBlocking
@@ -17,7 +16,6 @@ import java.net.URL
  * Substitui os handlers Electron em um único WebViewClient:
  *   - onBeforeRequest: intercept extract rola3/4 + CDN bypass (native=1)
  *   - onBeforeSendHeaders: injeção de Referer/UA nos requests CDN
- *   - onHeadersReceived: remoção do CSP
  *
  * shouldInterceptRequest é chamado em background thread — operações bloqueantes são seguras.
  */
@@ -52,9 +50,7 @@ class PlayerWebViewClient(
         view: WebView,
         request: WebResourceRequest,
     ): WebResourceResponse? {
-        val urlStr = request.url.toString()
         val path = request.url.path ?: ""
-        val host = request.url.host ?: ""
 
         // 1. Extração rola3/4 → StreamExtractor (usa OkHttp com IP do usuário)
         if (path == "/api/player/extract") {
@@ -92,11 +88,6 @@ class PlayerWebViewClient(
             }
         }
 
-        // 3. Remove CSP das respostas do Vercel
-        if (host.contains("obaflix") || host.contains("vercel")) {
-            return fetchWithoutCsp(urlStr, request)
-        }
-
         return null
     }
 
@@ -128,31 +119,6 @@ class PlayerWebViewClient(
                 "Access-Control-Allow-Origin" to "*",
             )
             response.header("Content-Range")?.let { headers["Content-Range"] = it }
-
-            WebResourceResponse(
-                contentType, "UTF-8", response.code, response.message,
-                headers, ByteArrayInputStream(body),
-            )
-        } catch (_: Exception) { null }
-    }
-
-    private fun fetchWithoutCsp(urlStr: String, original: WebResourceRequest): WebResourceResponse? {
-        return try {
-            val reqBuilder = Request.Builder().url(urlStr)
-            original.requestHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
-            reqBuilder.removeHeader("User-Agent").addHeader("User-Agent", UA)
-
-            val response = ObaflixApp.httpClient.newCall(reqBuilder.build()).execute()
-            val contentType = response.header("Content-Type", "text/html")!!
-            val body = response.body?.bytes() ?: return null
-
-            val headers = response.headers.toMultimap()
-                .filterKeys { key ->
-                    !key.equals("content-security-policy", ignoreCase = true) &&
-                    !key.equals("content-security-policy-report-only", ignoreCase = true)
-                }
-                .mapValues { it.value.joinToString(", ") }
-                .toMutableMap()
 
             WebResourceResponse(
                 contentType, "UTF-8", response.code, response.message,
