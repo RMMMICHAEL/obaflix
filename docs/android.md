@@ -95,14 +95,21 @@ shouldInterceptRequest(view, request)
   │   → retorna WebResourceResponse com JSON local
   │
   ├── SE url.path == /api/player/proxy && native=1 && !sig:
-  │   → OkHttp fetch(cdnUrl) com Referer injetado
-  │   → retorna WebResourceResponse (bytes do CDN)
+  │   → OkHttp fetch(cdnUrl) com Referer/Origin injetado
+  │   → retorna WebResourceResponse (bytes do CDN) — cobre o manifest
   │
-  └── SE url.host == obaflix.vercel.app:
-      → fetch normal, mas remove CSP da resposta
+  ├── SE url.host == playerState.cdnHostname (ou subdomínio):
+  │   → mesmo fetchCdnDirect() acima — cobre segmentos/sub-playlists/chaves
+  │     buscados com URL absoluta pelo hls.js, fora do path /api/player/proxy
+  │
+  └── SE request.isForMainFrame && url.host contém obaflix/vercel:
+      → refaz o fetch via OkHttp com cookies do CookieManager injetados
+      → remove CSP da resposta, sincroniza Set-Cookie de volta no CookieManager
 ```
 
-**Remoção do CSP:** `WebViewClient.shouldInterceptRequest` retorna `WebResourceResponse` com headers modificados — a resposta com `Content-Security-Policy` é substituída por uma versão sem esse header.
+Ver seção "Rola3/Rola4 — Divergência de Comportamento vs Electron e Correção" abaixo para o
+raciocínio completo por trás dos branches 3 e 4 (por que existem, e a limitação de WebView
+que motivou a implementação do branch 4).
 
 ## StreamExtractor — Extração com IP do Usuário
 
@@ -201,13 +208,87 @@ webView.webChromeClient = object : WebChromeClient() {
 
 Apenas INTERNET é necessário. Sem acesso a câmera, microfone ou storage.
 
+## Rola3/Rola4 (Embv/Xnn) — Divergência de Comportamento vs Electron e Correção
+
+### Sintoma
+
+Os players tokenizados (rola3/rola4, exibidos como "Embv"/"Xnn") extraíam o stream com
+sucesso (a chamada `extractStream` retornava `stream`/`referer`), mas o vídeo falhava ao
+carregar ou travava logo após o primeiro frame — enquanto no Electron (`.exe`) os mesmos
+players funcionavam normalmente.
+
+### Causa raiz nº 1 — CDN bypass cobria só a primeira requisição
+
+`buildElectronProxyUrl()` (em `CustomPlayer.tsx`, compartilhado entre as duas plataformas)
+monta a URL do manifest como `/api/player/proxy?url=<cdnUrl>&native=1`. O manifest (HLS
+`master.m3u8`) referencia segmentos, sub-playlists de áudio e chaves de criptografia com
+**URLs absolutas apontando direto para o CDN** — o player (hls.js dentro do JW Player) busca
+esses recursos diretamente, fora do path `/api/player/proxy`.
+
+- **Electron:** `onBeforeSendHeaders` é registrado para `*://*/*` — cobre **qualquer**
+  requisição da sessão, incluindo essas buscas diretas ao CDN, injetando `Referer`/`Origin`
+  sempre que o host bate com `playerState.cdnHostname`.
+- **Android (antes da correção):** `shouldInterceptRequest` só reagia a
+  `path == "/api/player/proxy"` — ou seja, só a primeira requisição (o manifest) recebia
+  `Referer`/`Origin`/CORS. Os segmentos e sub-playlists buscados depois, com URL absoluta do
+  CDN, caíam em `return null` (sem interceptação) e saíam pela rede nativa da WebView sem
+  nenhum header injetado → o CDN rejeitava (403) por Referer ausente/incorreto.
+
+**Fix:** novo branch 3 em `PlayerWebViewClient.shouldInterceptRequest()` — qualquer requisição
+cujo host seja igual a `ObaflixApp.playerState.cdnHostname` (ou subdomínio dele) passa pelo
+mesmo `fetchCdnDirect()` usado pelo manifest, reproduzindo o comportamento universal do
+`onBeforeSendHeaders` do Electron.
+
+### Causa raiz nº 2 — CSP bloqueia o fetch cross-origin antes mesmo da interceptação
+
+Mesmo com o branch 3 acima, o fetch para o CDN é iniciado pelo **JavaScript da própria
+página** (`hls.js` faz `fetch()`/XHR para a URL absoluta do CDN). O header
+`Content-Security-Policy: connect-src 'self'`, enviado pelo Vercel em toda resposta HTML, é
+avaliado pelo motor de renderização **antes** da requisição chegar à camada de rede — ou
+seja, antes de `shouldInterceptRequest` ter qualquer chance de interceptá-la. Sem remover o
+CSP, o próprio browser (Chromium embutido na WebView) bloqueia a tentativa de fetch
+cross-origin ao CDN, e o branch 3 nunca é sequer alcançado.
+
+O Electron sofre exatamente do mesmo problema e por isso remove o CSP via
+`onHeadersReceived` (ver [electron.md](electron.md)). A tentativa anterior de replicar isso
+no Android (`fetchWithoutCsp`, removida em 2026-07-01 — ver `android_session_notes.md`) quebrou
+a autenticação porque **`WebResourceRequest.requestHeaders` nunca inclui o header `Cookie`**
+(nem `User-Agent`) — é uma omissão deliberada da API do Android, não um bug: refazer o fetch
+do documento via OkHttp sem repor esse header manualmente resulta numa página carregada sem
+sessão (NextAuth), causando erro de hidratação do Next.js.
+
+**Fix:** `fetchDocumentWithoutCsp()`, restrito a `request.isForMainFrame == true` (só a
+navegação de topo — o CSP vale para toda a vida do documento; navegação client-side do
+Next.js não refaz a requisição de documento, então não precisa reinterceptar):
+
+1. Lê os cookies atuais do domínio via `CookieManager.getInstance().getCookie(url)` — a mesma
+   fonte que a WebView usa nativamente — e os injeta manualmente como header `Cookie` na
+   requisição OkHttp.
+2. Após a resposta, sincroniza qualquer `Set-Cookie` de volta no `CookieManager` (a resposta
+   veio via OkHttp, fora do fluxo nativo da WebView; nada faria essa sincronização
+   automaticamente).
+3. Remove os headers `Content-Security-Policy`/`-Report-Only` da resposta antes de devolvê-la.
+
+### Limitação de WebView documentada
+
+`WebResourceRequest.requestHeaders` (Android WebView API) **nunca** expõe os headers `Cookie`
+e `User-Agent` reais da requisição a `shouldInterceptRequest`, mesmo que a WebView os envie
+normalmente pela rede. Isso é documentado no comportamento da API (não há flag para mudar
+isso). Qualquer interceptação que refaça uma requisição autenticada via um cliente HTTP
+próprio (OkHttp, neste caso) **precisa repor manualmente** essas credenciais lendo-as de
+`CookieManager` — não existe forma de "herdar" o contexto de rede da WebView diretamente.
+Isso não tem equivalente no Electron: `session.webRequest.onHeadersReceived`/
+`onBeforeSendHeaders` operam **dentro da mesma sessão de rede do Chromium**, sem nunca
+precisar refazer a requisição por fora — por isso o Electron não tem esse problema.
+
 ## Diferenças de Comportamento vs Electron
 
 | Funcionalidade | Electron | Android |
 |----------------|----------|---------|
 | Extração rola3/4 | IPC → Node.js `fetch` | `shouldInterceptRequest` → OkHttp |
-| CDN bypass | `onBeforeRequest` redirect | `shouldInterceptRequest` OkHttp proxy |
-| CSP removal | `onHeadersReceived` delete | `shouldInterceptRequest` headers filtrados |
+| CDN bypass (manifest) | `onBeforeRequest` redirect real | `shouldInterceptRequest` → OkHttp, resposta sintetizada |
+| CDN bypass (segmentos/sub-playlists) | `onBeforeSendHeaders` universal (`*://*/*`) | `shouldInterceptRequest` branch dedicado por hostname (`cdnHostname`) |
+| CSP removal | `onHeadersReceived`, dentro da mesma sessão de rede | `shouldInterceptRequest` refaz fetch via OkHttp + `CookieManager` (só `isForMainFrame`) |
 | Fullscreen | `mainWindow.setFullScreen()` | `WebChromeClient.onShowCustomView` |
 | Auto-update | `electron-updater` | Download do APK via browser |
 | Instância única | `requestSingleInstanceLock` | `android:launchMode="singleTask"` |

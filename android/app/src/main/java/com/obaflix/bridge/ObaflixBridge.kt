@@ -1,10 +1,13 @@
 package com.obaflix.bridge
 
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+
+private const val TAG = "Obaflix"
 
 /**
  * Exposta ao JavaScript como `window._obaflixBridge`.
@@ -20,6 +23,7 @@ class ObaflixBridge(
 
     @JavascriptInterface
     fun extractStream(callbackId: String, embedUrl: String) {
+        Log.d(TAG, "[bridge] extractStream chamado: id=$callbackId url=${embedUrl.take(80)}")
         scope.launch {
             try {
                 val result = StreamExtractor.extract(embedUrl)
@@ -28,8 +32,10 @@ class ObaflixBridge(
                     put("tipo", if (result.stream.contains(".mp4")) "mp4" else "hls")
                     put("referer", result.referer)
                 }.toString()
+                Log.d(TAG, "[bridge] extractStream resolvido: id=$callbackId")
                 resolveCallback(callbackId, json)
             } catch (e: Exception) {
+                Log.e(TAG, "[bridge] extractStream falhou: id=$callbackId erro=${e.message}")
                 val json = JSONObject().put("error", e.message ?: "Erro desconhecido").toString()
                 resolveCallback(callbackId, json)
             }
