@@ -29,6 +29,79 @@ function clientUa(req: NextRequest): string {
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
 
+// ── Diagnóstico de extração ───────────────────────────────────────────────────
+// Logs estruturados por etapa: [extract/<provider>/<fase>] k=v k=v
+// Pesquisável nos logs do Vercel. Removível quando a causa raiz for confirmada.
+
+function xlog(tag: string, data: Record<string, string | number | boolean | null | undefined>) {
+  const parts = Object.entries(data)
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ");
+  console.log(`[extract/${tag}] ${parts}`);
+}
+
+// Detecta sinais de bloqueio no HTML — distingue CloudFlare/403/conteúdo curto de HTML normal.
+function detectHtmlHint(html: string): string | null {
+  if (html.length < 500) return `short_${html.length}b`;
+  if (/just a moment|cf-browser-verification|cf_captcha_container/i.test(html)) return "cloudflare_challenge";
+  if (/access.?denied|403 forbidden/i.test(html)) return "access_denied";
+  if (/challenges\.cloudflare\.com/i.test(html)) return "cloudflare_turnstile";
+  if (!html.includes("<html") && !html.includes("<!DOCTYPE")) return "no_html_tag";
+  return null;
+}
+
+// Versão de fetchHtml com logging diagnóstico completo: status HTTP, tempo, redirect, hint.
+// Usar apenas para PlayHide e StreamWish — demais providers não precisam da sobrecarga.
+async function fetchHtmlDiag(tag: string, url: string, referer: string, timeoutMs = 8000): Promise<string> {
+  const t0 = Date.now();
+  let statusCode = 0;
+  let logged = false;
+
+  const log = (extra: Record<string, string | number | boolean | null | undefined>) => {
+    logged = true;
+    xlog(`${tag}/fetch`, { ms: Date.now() - t0, status: statusCode || null, ...extra });
+  };
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.5",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    statusCode = res.status;
+    if (!res.ok) {
+      log({ error: `http_${statusCode}`, redirected: res.redirected || null });
+      throw new Error(`HTTP ${statusCode} em ${url}`);
+    }
+    const html = await res.text();
+    const originHost = (() => { try { return new URL(url).hostname; } catch { return null; } })();
+    const finalHost = (() => { try { return new URL(res.url).hostname; } catch { return null; } })();
+    log({
+      htmlLen: html.length,
+      redirected: res.redirected || null,
+      domainChanged: finalHost !== originHost ? finalHost : null,
+      hint: detectHtmlHint(html),
+    });
+    return html;
+  } catch (e: any) {
+    if (!logged) {
+      const ms = Date.now() - t0;
+      const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError" || ms >= timeoutMs - 50;
+      log({ error: isTimeout ? `timeout_${timeoutMs}ms` : String(e?.name ?? e?.message).slice(0, 80) });
+    }
+    throw e;
+  }
+}
+
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 async function fetchHtml(url: string, referer = "", timeoutMs = 8000): Promise<string> {
@@ -50,20 +123,37 @@ async function fetchHtml(url: string, referer = "", timeoutMs = 8000): Promise<s
 }
 
 async function moon(obfuscatedScript: string): Promise<string> {
+  const t = Date.now();
   const encoded = Buffer.from(obfuscatedScript).toString("base64");
-  const res = await fetch(MOON, {
-    method: "POST",
-    headers: {
-      "User-Agent": UA,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Origin": "https://megaflix.lat",
-      "Referer": "https://megaflix.lat/",
-    },
-    body: `data=${encodeURIComponent(encoded)}`,
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw new Error(`moon.php HTTP ${res.status}`);
-  return res.text();
+  let statusCode = 0;
+  try {
+    const res = await fetch(MOON, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://megaflix.lat",
+        "Referer": "https://megaflix.lat/",
+      },
+      body: `data=${encodeURIComponent(encoded)}`,
+      signal: AbortSignal.timeout(8000),
+    });
+    statusCode = res.status;
+    const text = await res.text();
+    if (!res.ok) {
+      xlog("moon", { ms: Date.now() - t, status: statusCode, error: `http_${statusCode}` });
+      throw new Error(`moon.php HTTP ${res.status}`);
+    }
+    xlog("moon", { ms: Date.now() - t, status: statusCode, resultLen: text.length });
+    return text;
+  } catch (e: any) {
+    const ms = Date.now() - t;
+    if (!String(e?.message ?? "").includes("moon.php HTTP")) {
+      const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+      xlog("moon", { ms, status: statusCode || null, error: isTimeout ? "timeout_8000ms" : String(e?.message).slice(0, 60) });
+    }
+    throw e;
+  }
 }
 
 async function postPlayer(url: string, id: string): Promise<string> {
@@ -156,9 +246,10 @@ async function extractVoltz(url: string): Promise<string | null> {
   return parse(html2);
 }
 
-// Decode Dean Edwards packer (eval(function(p,a,c,k,e,d){...})) localmente via vm.
-// Elimina o RTT para moon.php no caso comum. Fallback: moon() se o VM falhar.
-function unpackPacker(script: string): string | null {
+// Decode Dean Edwards packer localmente via vm — usado como probe de diagnóstico
+// em extractHide para comparar resultado com moon.php antes de substituí-lo.
+function unpackPacker(script: string): { decoded: string | null; ms: number; error: string | null } {
+  const t = Date.now();
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createContext, runInContext } = require("vm") as typeof import("vm");
@@ -168,9 +259,9 @@ function unpackPacker(script: string): string | null {
       createContext({ eval: (s: string) => { decoded = s; } }),
       { timeout: 500 },
     );
-    return decoded;
-  } catch {
-    return null;
+    return { decoded, ms: Date.now() - t, error: null };
+  } catch (e: any) {
+    return { decoded: null, ms: Date.now() - t, error: String(e?.message).slice(0, 60) };
   }
 }
 
@@ -188,25 +279,46 @@ function parseDecodedHide(decoded: string, embedUrl: string): string | null {
 
 async function extractHide(html: string, embedUrl: string): Promise<string | null> {
   const evalScript = extractEvalScript(html);
-  if (!evalScript) return null;
+  if (!evalScript) {
+    xlog("hide/packer", { found: false, htmlLen: html.length, hint: detectHtmlHint(html) });
+    return null;
+  }
+  xlog("hide/packer", { found: true, scriptLen: evalScript.length });
 
-  // Caminho rápido: decoder local (sem chamada de rede para moon.php)
-  const localDecoded = unpackPacker(evalScript);
-  if (localDecoded) {
-    const result = parseDecodedHide(localDecoded, embedUrl);
-    if (result) return result;
+  // Probe: vm.runInContext — valida se cobre o formato do packer atual.
+  // NÃO altera comportamento: moon.php continua sendo o método primário.
+  const { decoded: vmDecoded, ms: vmMs, error: vmError } = unpackPacker(evalScript);
+  const vmStream = vmDecoded ? parseDecodedHide(vmDecoded, embedUrl) : null;
+  xlog("hide/vm", { ms: vmMs, decoded: !!vmDecoded, resultLen: vmDecoded?.length ?? 0, streamFound: !!vmStream, error: vmError });
+
+  // Primário: moon.php (moon() já loga timing e erros internamente)
+  let decoded: string;
+  try {
+    decoded = await moon(evalScript);
+  } catch {
+    // moon.php falhou — usa resultado do VM como fallback se disponível
+    if (vmStream) { xlog("hide/fallback_vm", { used: true }); return vmStream; }
+    return null;
   }
 
-  // Fallback: moon.php para formatos não-padrão ou se vm falhar
-  const decoded = await moon(evalScript);
-  return parseDecodedHide(decoded, embedUrl);
+  const moonStream = parseDecodedHide(decoded, embedUrl);
+
+  // Compara VM vs moon.php para validar futura substituição sem moon.php
+  const cmp = vmStream !== null && moonStream !== null
+    ? (vmStream === moonStream ? "match" : "differ")
+    : vmStream !== null ? "vm_only" : moonStream !== null ? "moon_only" : "none";
+  xlog("hide/vm_vs_moon", { result: cmp });
+
+  return moonStream;
 }
 
 async function extractWish(html: string, embedUrl: string): Promise<string | null> {
   const parsed = new URL(embedUrl);
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
 
+  // Método 1: POST à API do player
   if (id) {
+    const postT = Date.now();
     try {
       const form = new URLSearchParams({ hash: id, r: "", do: "getVideo" });
       const res = await fetch(embedUrl, {
@@ -229,24 +341,45 @@ async function extractWish(html: string, embedUrl: string): Promise<string | nul
             json.videoSource ||
             json.src ||
             null;
+          xlog("wish/post", { ms: Date.now() - postT, status: res.status, jsonKeys: Object.keys(json).slice(0, 6).join(","), found: !!src });
           if (src?.startsWith("http")) return src;
+        } else {
+          xlog("wish/post", { ms: Date.now() - postT, status: res.status, error: "json_null_or_invalid" });
         }
+      } else {
+        xlog("wish/post", { ms: Date.now() - postT, status: res.status, error: `http_${res.status}` });
       }
-    } catch { /* tenta próximo método */ }
+    } catch (e: any) {
+      const ms = Date.now() - postT;
+      const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+      xlog("wish/post", { ms, error: isTimeout ? "timeout_10000ms" : String(e?.message).slice(0, 60) });
+    }
   }
 
+  // Método 2: m3u8 direto no HTML (regex)
   const direct = findM3u8(html);
+  xlog("wish/m3u8_regex", { found: !!direct });
   if (direct) return direct;
 
+  // Método 3: split por [{file:"
   const fileSplit = html.split('[{file:"')[1]?.split('"')[0];
-  if (fileSplit?.startsWith("http")) return fileSplit;
+  const fileSplitOk = fileSplit?.startsWith("http") ?? false;
+  xlog("wish/file_split", { found: fileSplitOk });
+  if (fileSplitOk) return fileSplit!;
 
+  // Método 4: regex JW sources
   const jwMatch = html.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i);
-  if (jwMatch?.[1]?.startsWith("http")) return jwMatch[1];
+  const jwOk = !!(jwMatch?.[1]?.startsWith("http"));
+  xlog("wish/jw_sources", { found: jwOk });
+  if (jwOk) return jwMatch![1];
 
+  // Método 5: "file":"https://...m3u8" no JSON
   const jsonFile = html.match(/"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]*)"/i);
+  xlog("wish/json_file", { found: !!jsonFile?.[1] });
   if (jsonFile?.[1]) return jsonFile[1];
 
+  // Método 6: fallback packer (pode chamar moon.php se encontrar eval())
+  xlog("wish/fallback_hide", { attempt: true, htmlLen: html.length });
   return extractHide(html, embedUrl);
 }
 
@@ -318,13 +451,25 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     return { stream: url, tipo: "iframe" };
 
   } else if (hostname.includes("hide") || hostname.includes("playhide")) {
-    const html = await fetchHtml(`https://playhide.shop/v/${id}`, "https://megaflix.lat/", 15000);
-    streamUrl = await extractHide(html, url);
-    referer = `https://playhide.shop/v/${id}`;
+    const t = Date.now();
+    xlog("hide/start", { id, hostname });
+    try {
+      const html = await fetchHtmlDiag("hide", `https://playhide.shop/v/${id}`, "https://megaflix.lat/");
+      streamUrl = await extractHide(html, url);
+      referer = `https://playhide.shop/v/${id}`;
+    } finally {
+      xlog("hide/total", { ms: Date.now() - t, found: !!streamUrl });
+    }
 
   } else if (hostname.includes("wish") || hostname.includes("hlswish") || hostname.includes("streamwish") || hostname.includes("playerwish")) {
-    const html = await fetchHtml(url, "https://megaflix.lat/");
-    streamUrl = await extractWish(html, url);
+    const t = Date.now();
+    xlog("wish/start", { id, hostname });
+    try {
+      const html = await fetchHtmlDiag("wish", url, "https://megaflix.lat/");
+      streamUrl = await extractWish(html, url);
+    } finally {
+      xlog("wish/total", { ms: Date.now() - t, found: !!streamUrl });
+    }
 
   } else if (
     pathname.includes("/rola4/") ||
