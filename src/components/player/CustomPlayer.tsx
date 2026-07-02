@@ -83,6 +83,20 @@ function parseFontes(urls: string | null, prefix: string, includeTokenized: bool
     .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u, tokenized: isTokenizedUrl(u) }));
 }
 
+// Extrai o hostname real de uma URL de erro do JW Player.
+// No path Electron (native=1), srcUrl tem forma https://obaflix.vercel.app/api/player/proxy?url=<cdnUrl>&native=1 —
+// o hostname relevante está dentro do parâmetro url=, não no proxy.
+function diagDomain(srcUrl: string): string {
+  if (!srcUrl) return "n/a";
+  try {
+    const u = new URL(srcUrl);
+    const inner = u.searchParams.get("url");
+    return new URL(inner || srcUrl).hostname;
+  } catch {
+    return srcUrl.slice(0, 40);
+  }
+}
+
 // Emite um log de recuperação padronizado com prefixo único [recovery].
 // Campos fixos em todos os caminhos: reason, gen, attempt, fi, pos, sinceRenewal, detail.
 function recoveryLog(
@@ -701,7 +715,7 @@ export function CustomPlayer({
         if (unmountedRef.current) return;
         const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
         const srcUrl: string = e?.sourceError?.url || e?.url || "";
-        const domain = srcUrl ? (() => { try { return new URL(srcUrl).hostname; } catch { return srcUrl.slice(0, 40); } })() : "n/a";
+        const domain = diagDomain(srcUrl);
         console.warn(`[diag/warning] JW ${e?.code} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
       });
 
@@ -711,8 +725,10 @@ export function CustomPlayer({
         // [DIAG] Timing e detalhe do erro — remover após confirmar causa raiz
         const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
         const srcUrl: string = e?.sourceError?.url || e?.url || "";
-        const domain = srcUrl ? (() => { try { return new URL(srcUrl).hostname; } catch { return srcUrl.slice(0, 40); } })() : "n/a";
-        console.warn(`[diag/error] JW ${e?.code || "?"} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
+        const httpStatus: number | undefined = e?.sourceError?.response?.status;
+        const domain = diagDomain(srcUrl);
+        const statusTag = httpStatus ? ` HTTP ${httpStatus}` : "";
+        console.warn(`[diag/error] JW ${e?.code || "?"}${statusTag} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
 
         if (Date.now() < suppressErrorUntilRef.current) {
           console.log("[recovery] reason=suppressed — eco tardio da mídia anterior pós-load(); ignorando");
