@@ -121,7 +121,13 @@ export async function GET(req: NextRequest) {
   const userId = (session.user as { id: string }).id;
   if (!userId) return deny("sessão inválida", ip, "stream_rejected", 401);
 
-  const target = await resolveTarget(req, userId, ip, ua);
+  let target: Awaited<ReturnType<typeof resolveTarget>>;
+  try {
+    target = await resolveTarget(req, userId, ip, ua);
+  } catch (err: any) {
+    console.error("[player/proxy] erro ao resolver alvo:", err?.message);
+    return new NextResponse("Erro interno ao resolver stream", { status: 500, headers: NO_STORE });
+  }
   if ("denied" in target) {
     await recordAbuseAttempt(ip);
     return deny(target.denied, ip, "stream_rejected");
