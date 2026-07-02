@@ -246,22 +246,47 @@ async function extractVoltz(url: string): Promise<string | null> {
   return parse(html2);
 }
 
-// Decode Dean Edwards packer localmente via vm — usado como probe de diagnóstico
-// em extractHide para comparar resultado com moon.php antes de substituí-lo.
-function unpackPacker(script: string): { decoded: string | null; ms: number; error: string | null } {
+// Decoder direto de Dean Edwards packer — pura análise de string, zero execução de JS.
+// Elimina a dependência de vm.runInContext (que falha com regex inválida no packer do PlayHide)
+// e de moon.php (que leva ~7s). Cobre o formato padrão:
+//   eval(function(p,a,c,k,e,d){...}('packed', base, n, 'w1|w2'.split('|'), 0, {}))
+function directDecodePacker(script: string): string | null {
+  // Extrai packed (aspas simples ou duplas), base e lista de palavras
+  const sq = /\('((?:[^'\\]|\\[\s\S])*)'\s*,\s*(\d+)\s*,\s*\d+\s*,\s*'((?:[^'\\]|\\[\s\S])*)'\s*\.split\('\|'\)/;
+  const dq = /\("((?:[^"\\]|\\[\s\S])*)"\s*,\s*(\d+)\s*,\s*\d+\s*,\s*"((?:[^"\\]|\\[\s\S])*)"\s*\.split\("\|"\)/;
+  const m = script.match(sq) || script.match(dq);
+  if (!m) return null;
+
+  const packed = m[1].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  const base = parseInt(m[2], 10);
+  const words = m[3].split("|");
+  if (base < 2 || base > 36 || words.length === 0) return null;
+
+  return packed.replace(/\b\w+\b/g, (token) => {
+    const i = parseInt(token, base);
+    return (Number.isFinite(i) && i >= 0 && i < words.length && words[i]) ? words[i] : token;
+  });
+}
+
+// Tenta decodificar o packer em dois estágios antes de cair no moon.php (7s):
+//   1. directDecodePacker: parse de string puro — <1ms, sem rede, sem vm
+//   2. vm.runInContext: fallback para variantes não-padrão — pode falhar com regex inválida
+function unpackPacker(script: string): { decoded: string | null; ms: number; error: string | null; method: string } {
   const t = Date.now();
+
+  // Estágio 1: decode direto (zero overhead)
+  const direct = directDecodePacker(script);
+  if (direct) return { decoded: direct, ms: Date.now() - t, error: null, method: "direct" };
+
+  // Estágio 2: vm.runInContext (para variantes não-padrão)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createContext, runInContext } = require("vm") as typeof import("vm");
     let decoded: string | null = null;
-    runInContext(
-      script,
-      createContext({ eval: (s: string) => { decoded = s; } }),
-      { timeout: 500 },
-    );
-    return { decoded, ms: Date.now() - t, error: null };
+    runInContext(script, createContext({ eval: (s: string) => { decoded = s; } }), { timeout: 500 });
+    return { decoded, ms: Date.now() - t, error: null, method: "vm" };
   } catch (e: any) {
-    return { decoded: null, ms: Date.now() - t, error: String(e?.message).slice(0, 60) };
+    return { decoded: null, ms: Date.now() - t, error: String(e?.message).slice(0, 60), method: "vm_failed" };
   }
 }
 
@@ -285,30 +310,26 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
   }
   xlog("hide/packer", { found: true, scriptLen: evalScript.length });
 
-  // Probe: vm.runInContext — valida se cobre o formato do packer atual.
-  // NÃO altera comportamento: moon.php continua sendo o método primário.
-  const { decoded: vmDecoded, ms: vmMs, error: vmError } = unpackPacker(evalScript);
+  // Decode local (directDecodePacker → vm.runInContext): zero rede, <2ms.
+  // Se encontrar o stream, retorna imediatamente sem chamar moon.php (~7s de RTT economizados).
+  const { decoded: vmDecoded, ms: vmMs, error: vmError, method: vmMethod } = unpackPacker(evalScript);
   const vmStream = vmDecoded ? parseDecodedHide(vmDecoded, embedUrl) : null;
-  xlog("hide/vm", { ms: vmMs, decoded: !!vmDecoded, resultLen: vmDecoded?.length ?? 0, streamFound: !!vmStream, error: vmError });
+  xlog("hide/vm", { ms: vmMs, method: vmMethod, decoded: !!vmDecoded, resultLen: vmDecoded?.length ?? 0, streamFound: !!vmStream, error: vmError });
 
-  // Primário: moon.php (moon() já loga timing e erros internamente)
+  if (vmStream) return vmStream;
+
+  // Fallback: moon.php — só chega aqui se o decode local falhar
+  // (packer não-padrão ou erro de parsing). moon() já loga timing internamente.
   let decoded: string;
   try {
     decoded = await moon(evalScript);
   } catch {
-    // moon.php falhou — usa resultado do VM como fallback se disponível
-    if (vmStream) { xlog("hide/fallback_vm", { used: true }); return vmStream; }
     return null;
   }
 
   const moonStream = parseDecodedHide(decoded, embedUrl);
-
-  // Compara VM vs moon.php para validar futura substituição sem moon.php
-  const cmp = vmStream !== null && moonStream !== null
-    ? (vmStream === moonStream ? "match" : "differ")
-    : vmStream !== null ? "vm_only" : moonStream !== null ? "moon_only" : "none";
-  xlog("hide/vm_vs_moon", { result: cmp });
-
+  // Se moon.php funcionou mas o decode local falhou, loga para diagnóstico futuro
+  if (moonStream) xlog("hide/moon_only", { vmMethod, note: "local_decode_missed" });
   return moonStream;
 }
 
