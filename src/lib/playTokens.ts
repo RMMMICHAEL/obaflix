@@ -254,6 +254,7 @@ export async function resolveStreamToken(
   }
 
   const [kCurr, kPrev] = keys();
+  const redis = getRedis();
 
   for (const key of [kCurr, kPrev]) {
     try {
@@ -272,6 +273,10 @@ export async function resolveStreamToken(
       if (p.uah !== hashUrl(userAgent)) { audit("stream_rejected", { userId, ip: clientIp, ua: userAgent, detail: "UA mismatch" }); return null; }
 
       const ipMismatch = p.ih !== hashUrl(clientIp);
+      // Libera o slot no sorted set de streams ativos agora que o manifest foi
+      // consumido. Segmentos subsequentes usam HMAC (signSegmentUrl), não o slot.
+      // Isso permite troca de fonte sem acumular slots por 20 min (TTL do token).
+      await redis.zrem(KEY.activeStreams(p.uid), p.th);
       return { streamUrl: p.url, referer: p.ref, ipMismatch };
     } catch { /* tenta próxima chave */ }
   }
