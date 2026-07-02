@@ -27,8 +27,8 @@ private const val TAG = "Obaflix"
  * Divergência vs Electron (ver docs/android.md "Limitações de WebView"):
  * Electron usa `onBeforeRequest` com `redirectURL`, que é um redirect real de rede — o browser
  * refaz a requisição contra o novo host e a CSP não é reavaliada nesse caso específico, e
- * `onBeforeSendHeaders` (registrado para `*://*/*`) injeta Referer/Origin em QUALQUER request
- * subsequente ao CDN (segmentos, sub-playlists, chaves), não só na primeira requisição.
+ * `onBeforeSendHeaders` (registrado para todas as URLs da sessão) injeta Referer/Origin em
+ * QUALQUER request subsequente ao CDN (segmentos, sub-playlists, chaves), não só na primeira.
  * WebView não expõe um hook equivalente a `onBeforeSendHeaders` global; a única forma de
  * interceptar e modificar headers é via `shouldInterceptRequest`, que precisa então cobrir
  * explicitamente: (1) a requisição inicial ao manifest, (2) qualquer requisição direta ao
