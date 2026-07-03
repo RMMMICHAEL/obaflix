@@ -33,7 +33,13 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
 });
 ```
 
-## Por que o Electron é Necessário para rola3/rola4
+## Por que o Electron é Necessário
+
+> Esta seção foi escrita quando só rola3/rola4 tinham extração nativa. O mecanismo hoje é
+> genérico (PlayHide, LuluVid, Rola2, Wish, Bolt e Big também) — ver
+> [player-native-extraction.md](player-native-extraction.md) para o mapa completo. O raciocínio
+> de IP-bound abaixo continua válido para rola3/rola4; para os demais providers o ganho
+> principal é evitar o proxy de segmentos pela Vercel (latência/timeout), não o bloqueio de IP.
 
 Os streams do rola3/rola4 usam CDN com tokens IP-bound. O token é válido apenas para o IP que fez a requisição de extração.
 
@@ -74,20 +80,23 @@ renderer recebe data
 
 Electron permite apenas **um** `onBeforeRequest` por sessão. O handler unificado em `configureSession()` cobre dois casos:
 
-### Caso 1: Extração rola3/4 → Servidor Local
+### Caso 1: Extração nativa → Servidor Local
 
 ```javascript
 if (url.pathname === "/api/player/extract") {
   const embedUrl = url.searchParams.get("url");
-  const isRola34 = /\/(rola3|rola4)\//.test(embedUrl) || /embedplayer/.test(embedUrl) || ...;
-  if (isRola34 && localPort) {
+  const hasNativeExtractor = !!detectProvider(embedUrl); // extractors.js — qualquer provider suportado
+  if (hasNativeExtractor && localPort) {
     callback({ redirectURL: `http://127.0.0.1:${localPort}/extract?embedUrl=...` });
     return;
   }
 }
 ```
 
-Redireciona `/api/player/extract` para o servidor local Node.js (porta aleatória) quando a URL é rola3/4. O servidor local usa `fetch()` nativo do Node.js (IP do usuário).
+Redireciona `/api/player/extract` para o servidor local Node.js (porta aleatória) quando
+`detectProvider()` (em `extractors.js`) reconhece o provider — rola3/rola4, PlayHide, LuluVid,
+Rola2, Wish, Bolt ou Big. O servidor local usa `fetch()` nativo do Node.js (IP do usuário). Ver
+[player-native-extraction.md](player-native-extraction.md).
 
 ### Caso 2: Proxy → CDN Direto
 
@@ -218,4 +227,6 @@ const EMBED_HOSTNAMES = [
 ];
 ```
 
-Ao adicionar um novo provider: adicionar o hostname aqui **e** em `isTokenizedUrl()` no CustomPlayer (se tokenizado).
+Ver [player-native-extraction.md](player-native-extraction.md) para o passo a passo completo de
+como adicionar um novo provider (4 arquivos: `route.ts`, `extractors.js`, `PlayerExtractors.kt`,
+`CustomPlayer.tsx`). Adicionar apenas o hostname aqui não é suficiente.

@@ -62,9 +62,33 @@ type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 interface Fonte { label: string; embedUrl: string; tokenized: boolean; }
 
 // Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
-// Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação.
+// Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
+// essas fontes só aparecem quando isDesktop=true (não funcionam com IP de datacenter).
 function isTokenizedUrl(url: string) {
   return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f/.test(url);
+}
+
+// Providers com extrator nativo no Electron/Android (desktop/electron/extractors.js e
+// StreamExtractor.kt) — reproduzem direto do CDN com IP residencial do usuário, sem
+// proxy de segmentos pela Vercel. Superset de isTokenizedUrl: cobre também PlayHide,
+// LuluVid, Rola2 (legado /rola/), Wish, Bolt e Big. Ao contrário de isTokenizedUrl, NÃO
+// afeta quais fontes aparecem no site web — só decide, quando isDesktop=true, se a
+// extração usa o bridge nativo (desktop.extractStream) em vez do fluxo web via Vercel.
+// Ver docs/player-native-extraction.md para o mapa completo e como adicionar um novo player.
+function supportsNativeDesktopExtraction(url: string) {
+  if (isTokenizedUrl(url)) return true;
+  try {
+    const { hostname, pathname } = new URL(url);
+    if (hostname.includes("lulu")) return true;
+    if (hostname.includes("hide")) return true;
+    if (hostname.includes("wish")) return true;
+    if (hostname.includes("llanfair") || pathname.includes("/rola/")) return true;
+    if (hostname.includes("bolt")) return true;
+    if (hostname.includes("bigshare") || hostname.includes("big")) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 // Monta a URL do proxy para o path nativo Electron (rola3/4 via IPC, CDN com IP do usuário).
@@ -351,8 +375,8 @@ export function CustomPlayer({
       let tipo: string;
       let playerUrl: string;
 
-      if (desktop && fonte?.tokenized) {
-        // Electron: extração nativa via IPC (IP residencial do usuário)
+      if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
+        // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const data: { stream?: string; tipo?: string; referer?: string; error?: string } =
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
@@ -757,9 +781,9 @@ export function CustomPlayer({
 
         const inElectron = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
 
-        // Renovação de token: apenas fontes tokenizadas em Electron com tentativas restantes.
-        // Qualquer outro player vai direto para fallback.
-        if (inElectron && fonte?.tokenized && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+        // Renovação de token: apenas fontes com extração nativa em Electron/Android, com
+        // tentativas restantes. Qualquer outro player vai direto para fallback.
+        if (inElectron && supportsNativeDesktopExtraction(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
 
           // Nenhum frame exibido ainda: fonte inválida para este episódio, não token expirado
           if (initialLoadRef.current) {
@@ -788,9 +812,9 @@ export function CustomPlayer({
           return;
         }
 
-        // Fallback direto: fonte não-tokenizada, não-Electron, ou max-retries atingido
+        // Fallback direto: fonte sem extração nativa, não-Electron, ou max-retries atingido
         fallback("source-switch", "log",
-          `${fonte?.tokenized ? `max-retries=${reExtractCountRef.current}` : "non-tokenized"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+          `${supportsNativeDesktopExtraction(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-native"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
       });
     });
 

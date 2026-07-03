@@ -4,6 +4,7 @@ const { app, BrowserWindow, session, ipcMain, shell, Menu } = require("electron"
 const http = require("http");
 const path = require("path");
 const { setupUpdater } = require("./updater");
+const { detectProvider, extractStream: extractStreamNative } = require("./extractors");
 
 const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
 const UA =
@@ -39,36 +40,12 @@ else {
 }
 
 // ── Extração com IP do usuário (Node.js, sem CORS) ────────────────────────────
+// Dispatcher genérico (rola3/rola4, PlayHide, Lulu, Rola2, Wish, Bolt, Big) —
+// ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
-  const parsed = new URL(embedUrl);
-  const base = `${parsed.protocol}//${parsed.hostname}`;
-  const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
-  if (!id) throw new Error("ID não encontrado");
-
-  const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
-  const body = new URLSearchParams({ hash: id, r: OBAFLIX_URL + "/" });
-
-  const res = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "User-Agent": UA,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "X-Requested-With": "XMLHttpRequest",
-      "Referer": embedUrl,
-      "Origin": base,
-    },
-    body: body.toString(),
-    signal: AbortSignal.timeout(15000),
-  });
-
-  const text = await res.text();
-  console.log(`[extract] ${res.status} → ${text.slice(0, 120)}`);
-  if (!text.trimStart().startsWith("{")) throw new Error("Resposta inválida do player");
-
-  const data = JSON.parse(text);
-  const stream = data.securedLink || data.videoSource || data.src;
-  if (!stream) throw new Error("securedLink não encontrado");
-  return { stream, embedOrigin: base };
+  const { stream, tipo, provider } = await extractStreamNative(embedUrl);
+  console.log(`[extract] provider=${provider} → ${stream.slice(0, 120)}`);
+  return { stream, tipo };
 }
 
 // ── Servidor local ─────────────────────────────────────────────────────────────
@@ -79,6 +56,12 @@ function startLocalServer() {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
+        // Chromium Private Network Access: sem este header, um fetch vindo de um site
+        // "público" (obaflix.vercel.app) para 127.0.0.1 é bloqueado no preflight com
+        // "Request had no target IP address space, yet the resource is in address
+        // space 'local'" — mesmo com Access-Control-Allow-Origin: "*". Necessário para
+        // o fallback via onBeforeRequest (redirect de /api/player/extract) funcionar.
+        "Access-Control-Allow-Private-Network": "true",
       };
 
       if (req.method === "OPTIONS") { res.writeHead(204, CORS); res.end(); return; }
@@ -91,7 +74,7 @@ function startLocalServer() {
 
         console.log(`[local] extract: ${embedUrl.slice(0, 80)}`);
         try {
-          const { stream, embedOrigin } = await extractSecuredLink(embedUrl);
+          const { stream, tipo } = await extractSecuredLink(embedUrl);
           console.log(`[local] stream: ${stream.slice(0, 80)}`);
 
           // Atualiza playerState: o CDN valida Referer = URL completa da página embed
@@ -103,11 +86,7 @@ function startLocalServer() {
           } catch { /**/ }
 
           res.writeHead(200, { ...CORS, "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            stream,
-            tipo: stream.includes(".mp4") ? "mp4" : "hls",
-            referer: embedUrl,
-          }));
+          res.end(JSON.stringify({ stream, tipo, referer: embedUrl }));
         } catch (err) {
           console.error(`[local] erro: ${err.message}`);
           res.writeHead(422, { ...CORS, "Content-Type": "application/json" });
@@ -181,15 +160,14 @@ function configureSession() {
       try {
         const url = new URL(details.url);
 
-        // 1. /api/player/extract para rola3/rola4 → servidor local (extrai com IP do usuário)
+        // 1. /api/player/extract para providers com extração nativa → servidor local
+        //    (extrai com IP do usuário). Cobre rola3/rola4/hide/lulu/rola2/wish/bolt/big —
+        //    ver desktop/electron/extractors.js e docs/player-native-extraction.md.
         if (url.pathname === "/api/player/extract") {
           const embedUrl = url.searchParams.get("url") || "";
-          const isRola34 =
-            /\/(rola3|rola4)\//.test(embedUrl) ||
-            /embedplayer/.test(embedUrl) ||
-            /xn--kcksk7a2bl5le7b6doc1h3f/.test(embedUrl);
+          const hasNativeExtractor = !!detectProvider(embedUrl);
 
-          if (isRola34 && localPort) {
+          if (hasNativeExtractor && localPort) {
             const redirect = `http://127.0.0.1:${localPort}/extract?embedUrl=${encodeURIComponent(embedUrl)}`;
             console.log(`[intercept/extract] → local: ${embedUrl.slice(0, 60)}`);
             callback({ redirectURL: redirect });
@@ -202,7 +180,8 @@ function configureSession() {
         //    CSP foi removido por onHeadersReceived — redirect ao CDN é permitido.
         //
         //    Identificação do path: o CustomPlayer.tsx marca explicitamente as URLs do path
-        //    nativo Electron (rola3/4 via IPC) com "native=1" (ver buildElectronProxyUrl).
+        //    nativo Electron/Android (qualquer provider com extração nativa, via IPC/bridge)
+        //    com "native=1" (ver buildElectronProxyUrl).
         //    URLs com "sig" são segmentos reescritos pelo proxy Vercel (path web/warez2/W3) —
         //    o token deles é IP-bound ao IP do VERCEL, não do usuário; redirecionar direto
         //    para o CDN nesse caso causa 403/404. Por isso NUNCA bypassamos quando há "sig".
@@ -303,18 +282,21 @@ ipcMain.handle("toggle-fullscreen", () => mainWindow?.setFullScreen(!mainWindow.
 ipcMain.handle("get-version", () => app.getVersion());
 ipcMain.handle("install-update", () => require("electron-updater").autoUpdater.quitAndInstall(false, true));
 
-// Extração nativa para rola3/rola4: o site chama window.obaflixDesktop.extractStream()
-// → ipcRenderer.invoke("extract-stream") → aqui → Node.js fetch com IP do usuário
+// Extração nativa multi-provider: o site chama window.obaflixDesktop.extractStream()
+// → ipcRenderer.invoke("extract-stream") → aqui → Node.js fetch com IP do usuário.
+// Cobre qualquer provider com extrator em desktop/electron/extractors.js — a decisão de
+// QUANDO chamar este caminho (em vez do fluxo web via Vercel) é feita no site por
+// supportsNativeDesktopExtraction() (src/components/player/CustomPlayer.tsx).
 ipcMain.handle("extract-stream", async (_event, embedUrl) => {
   try {
-    const { stream, embedOrigin } = await extractSecuredLink(embedUrl);
+    const { stream, tipo } = await extractSecuredLink(embedUrl);
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
       playerState.cdnHostname = new URL(stream).hostname;
       playerState.embedReferer = embedUrl;
       console.log(`[ipc] CDN: ${playerState.cdnHostname} | Referer: ${embedUrl}`);
     } catch { /**/ }
-    return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", referer: embedUrl };
+    return { stream, tipo, referer: embedUrl };
   } catch (err) {
     return { error: err.message };
   }

@@ -7,6 +7,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.obaflix.ObaflixApp
+import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
 import kotlinx.coroutines.runBlocking
 import okhttp3.Request
@@ -50,12 +51,6 @@ class PlayerWebViewClient(
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
 
-    private fun isRola34Url(url: String): Boolean {
-        return Regex("/(rola3|rola4)/").containsMatchIn(url)
-            || url.contains("embedplayer")
-            || url.contains("xn--kcksk7a2bl5le7b6doc1h3f")
-    }
-
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest,
@@ -63,10 +58,11 @@ class PlayerWebViewClient(
         val path = request.url.path ?: ""
         val host = request.url.host ?: ""
 
-        // 1. Extração rola3/4 → StreamExtractor (usa OkHttp com IP do usuário)
+        // 1. Extração nativa (rola3/rola4/hide/lulu/rola2/wish/bolt/big) → StreamExtractor
+        //    (usa OkHttp com IP do usuário) — ver PlayerExtractors.detectProvider().
         if (path == "/api/player/extract") {
             val embedUrl = request.url.getQueryParameter("url") ?: return null
-            if (isRola34Url(embedUrl)) {
+            if (PlayerExtractors.detectProvider(embedUrl) != null) {
                 Log.d(TAG, "[intercept/extract] → nativo: ${embedUrl.take(80)}")
                 return try {
                     val result = runBlocking { StreamExtractor.extract(embedUrl) }

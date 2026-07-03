@@ -4,8 +4,14 @@
 
 ```
 src/app/api/player/extract/route.ts   ← Web/API path
-desktop/electron/main.js              ← Electron/local server path
+desktop/electron/extractors.js        ← Electron/local server path (Node.js)
+android/.../bridge/PlayerExtractors.kt ← Android path (Kotlin/OkHttp)
 ```
+
+> Electron e Android portam os mesmos algoritmos deste arquivo para rodar com o IP residencial
+> do usuário, para todos os providers abaixo (não só rola3/rola4). Ver
+> [player-native-extraction.md](player-native-extraction.md) para o dispatcher genérico e como
+> adicionar um novo provider.
 
 ## Visão Geral
 
@@ -19,7 +25,7 @@ A extração converte uma URL de embed de terceiros em uma URL de stream direta 
 |----------|----------|----------|
 | `pathname.includes("vast.php")` | Redirect | Recursivo com URL decodificada |
 | `hostname.includes("voltz.php")` | Voltz | `extractVoltz()` — scraping HTML |
-| `hostname.includes("lulu\|luluvdo")` | Luluvdo | Retorna `tipo: "iframe"` (embed direto) |
+| `hostname.includes("lulu\|luluvdo")` | Luluvdo | `extractLulu()` via moon.php — fallback `iframe` só se a extração falhar |
 | `hostname.includes("hide\|playhide")` | PlayHide | `extractHide()` via moon.php |
 | `hostname.includes("wish\|streamwish\|hlswish\|playerwish")` | StreamWish | `extractWish()` — API POST + fallback HTML |
 | `pathname.includes("/rola4/\|/rola3/")` ou `embedplayer` | Rola3/4 | Cloudflare Worker URL |

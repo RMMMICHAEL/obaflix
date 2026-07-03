@@ -25,6 +25,7 @@
 | [`architecture.md`](architecture.md) | Visão geral do sistema, diagrama de fluxo completo |
 | [`player.md`](player.md) | CustomPlayer: Web, Electron, IPC, JW Player, fontes, áudio |
 | [`stream-extraction.md`](stream-extraction.md) | Extratores por provedor (rola3/4, playhide, streamwish…) |
+| [`player-native-extraction.md`](player-native-extraction.md) | Extração nativa multi-provider no Electron/Android — qual player usa fluxo nativo vs web, como adicionar um novo |
 | [`token-system.md`](token-system.md) | PlayToken, StreamToken, SegmentSig, Redis, limites |
 | [`proxy.md`](proxy.md) | Proxy HLS, reescrita de M3U8, segurança |
 | [`recovery.md`](recovery.md) | Fallback, renovação de token, auto-avanço, recuperação de erros |
@@ -73,6 +74,9 @@ npm run start   # inicia o app Electron apontando para localhost:3000
 ## Convenções de Código
 
 - Logs de recovery: sempre via `recoveryLog()` em `CustomPlayer.tsx`
-- Tipos de fonte: determinados por `fonte.tokenized` (nunca por nome de domínio)
-- Novos providers tokenizados: adicionar pattern em `isTokenizedUrl()` em `CustomPlayer.tsx`
-  **e** em `StreamExtractor.kt` no Android
+- Filtro de fontes visíveis no site web: `fonte.tokenized` / `isTokenizedUrl()` — só rola3/rola4
+- Extração nativa no Electron/Android (independente do filtro acima):
+  `supportsNativeDesktopExtraction()` em `CustomPlayer.tsx` — ver
+  [`player-native-extraction.md`](player-native-extraction.md) para o mapa completo de
+  providers e o passo a passo de como adicionar um novo (sempre 4 arquivos em conjunto:
+  `route.ts`, `extractors.js`, `PlayerExtractors.kt`, `CustomPlayer.tsx`)

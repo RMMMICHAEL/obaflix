@@ -90,8 +90,8 @@ Substitui os três handlers do Electron em um único método:
 ```
 shouldInterceptRequest(view, request)
   │
-  ├── SE url.path == /api/player/extract && isRola34Url:
-  │   → StreamExtractor.extract(embedUrl) via OkHttp
+  ├── SE url.path == /api/player/extract && PlayerExtractors.detectProvider(embedUrl) != null:
+  │   → StreamExtractor.extract(embedUrl) via OkHttp (rola3/4, hide, lulu, rola2, wish, bolt, big)
   │   → retorna WebResourceResponse com JSON local
   │
   ├── SE url.path == /api/player/proxy && native=1 && !sig:
@@ -112,6 +112,12 @@ raciocínio completo por trás dos branches 3 e 4 (por que existem, e a limitaç
 que motivou a implementação do branch 4).
 
 ## StreamExtractor — Extração com IP do Usuário
+
+> `StreamExtractor.extract()` hoje é um dispatcher fino sobre `PlayerExtractors.extract()`
+> (`bridge/PlayerExtractors.kt`), que roteia por provider (rola3/4, PlayHide, LuluVid, Rola2,
+> Wish, Bolt, Big) via `detectProvider()`. O trecho abaixo mostra a lógica original,
+> específica de rola3/4 (`extractEmbedPlayer` em `PlayerExtractors.kt` hoje) — mantido aqui
+> como exemplo do padrão de requisição. Ver [player-native-extraction.md](player-native-extraction.md).
 
 ```kotlin
 object StreamExtractor {
