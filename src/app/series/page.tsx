@@ -29,6 +29,33 @@ function toCard(s: any) {
 }
 
 export default async function SeriesPage() {
+  // "Mais Populares": séries mais assistidas no histórico dos usuários.
+  // Fallback para nota DESC quando há poucos registros (plataforma nova).
+  const popularHistRaw = await prisma.watchHistory.groupBy({
+    by: ["conteudoId"],
+    where: { conteudoTipo: "serie" },
+    _count: { id: true },
+    orderBy: { _count: { id: "desc" } },
+    take: 48,
+  });
+  const popularIds = popularHistRaw.map((p) => p.conteudoId);
+  let populares: any[];
+  if (popularIds.length >= 6) {
+    const byId = await prisma.serie.findMany({
+      where: { id: { in: popularIds }, tipo: "serie" },
+      select: sel,
+    });
+    const idxMap = Object.fromEntries(popularIds.map((id, i) => [id, i]));
+    populares = byId.sort((a: any, b: any) => (idxMap[a.id] ?? 999) - (idxMap[b.id] ?? 999));
+  } else {
+    populares = await prisma.serie.findMany({
+      where: { tipo: "serie" },
+      orderBy: [{ nota: "desc" }, { createdAt: "desc" }],
+      take: 24,
+      select: sel,
+    });
+  }
+
   const [heroRaw, recentes, avaliadas, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
       prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { nota: "desc" }, take: 8, select: selHero }),
@@ -56,8 +83,9 @@ export default async function SeriesPage() {
 
       <div className={`mt-3 ${!heroItems.length ? "pt-20" : ""}`}>
         <ContinuarAssistindo />
-        {recentes.length > 0  && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toCard)} />}
-        {avaliadas.length > 0 && <LandscapeRow titulo="Mais Bem Avaliadas"       items={avaliadas.map(toCard)} />}
+        {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toCard)}   />}
+        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"           items={populares.map(toCard)}  />}
+        {avaliadas.length > 0  && <LandscapeRow titulo="Mais Bem Avaliadas"       items={avaliadas.map(toCard)}  />}
         {drama.length > 0     && <LandscapeRow titulo="Drama"                    items={drama.map(toCard)}    verTodosHref="/genero/18" />}
         {crime.length > 0     && <LandscapeRow titulo="Crime"                    items={crime.map(toCard)}    verTodosHref="/genero/80" />}
         {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toCard)}  verTodosHref="/genero/35" />}

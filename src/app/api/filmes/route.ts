@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
 
     const orderBy: any =
       ordem === "nota" ? { nota: "desc" }
+      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
       : ordem === "az" ? { titulo: "asc" }
       : { createdAt: "desc" };
 

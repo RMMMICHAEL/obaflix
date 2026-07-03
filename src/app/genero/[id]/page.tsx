@@ -6,6 +6,7 @@ import { ContentCard } from "@/components/ui/ContentCard";
 
 const ORDENS = [
   { value: "recente", label: "Mais Recente" },
+  { value: "popular", label: "Mais Populares" },
   { value: "nota", label: "Melhor Nota" },
   { value: "az", label: "A-Z" },
 ];
