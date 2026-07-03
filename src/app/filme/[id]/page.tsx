@@ -2,6 +2,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Play, Star, Clock, User } from "lucide-react";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -16,6 +18,9 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
 }
 
 export default async function FilmePage({ params }: { params: { id: string } }) {
+  const session = await getServerSession(authOptions);
+  const userId = (session?.user as any)?.id as string | undefined;
+
   const filme = await prisma.filme.findUnique({
     where: { id: params.id },
     include: { generos: { include: { genero: true } } },
@@ -26,7 +31,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   const generoIds = filme.generos.map((g: any) => g.generoId);
 
   // Fetch TMDB data + DB similares in parallel
-  const [videos, credits, tmdbRecs, dbSimilares] = await Promise.all([
+  const [videos, credits, tmdbRecs, dbSimilares, continueFilme] = await Promise.all([
     filme.tmdbId ? getMovieVideos(filme.tmdbId) : null,
     filme.tmdbId ? getMovieCredits(filme.tmdbId) : null,
     filme.tmdbId ? getMovieRecommendations(filme.tmdbId) : null,
@@ -35,6 +40,13 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
       take: 20,
       select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, urlDub: true, urlLeg: true },
     }),
+    userId
+      ? prisma.watchHistory.findFirst({
+          where: { userId, conteudoId: filme.id, episodioId: null, concluido: false, progressoSeg: { gt: 30 } },
+          orderBy: { updatedAt: "desc" },
+          select: { progressoSeg: true },
+        })
+      : Promise.resolve(null),
   ]);
 
   const trailer = pickTrailer(videos?.results);
@@ -126,7 +138,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
                 href={`/assistir/filme/${filme.id}`}
                 className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
               >
-                <Play size={18} fill="black" /> Assistir
+                <Play size={18} fill="black" /> {continueFilme ? "Continuar assistindo" : "Assistir"}
               </Link>
               {trailer && (
                 <TrailerButton videoKey={trailer.key} titulo={filme.titulo} />

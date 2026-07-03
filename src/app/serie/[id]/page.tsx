@@ -153,7 +153,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
                   href={`/assistir/serie/${serie.id}/t${continueEp.temporada}/ep${continueEp.numeroEp}`}
                   className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
                 >
-                  <Play size={18} fill="black" /> Continuar
+                  <Play size={18} fill="black" /> Continuar assistindo
                 </Link>
               ) : episodios[0] ? (
                 <Link
