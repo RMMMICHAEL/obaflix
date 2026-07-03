@@ -593,6 +593,10 @@ function GerenciarEpisodios({ headers, initialSerieId, onLoaded }: {
   const [bulkMsg, setBulkMsg] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [showConsole, setShowConsole] = useState(false);
+  const [editingEp, setEditingEp] = useState<string | null>(null);
+  const [editEpData, setEditEpData] = useState({ temporada: "", numeroEp: "", titulo: "", urlDub: "", urlLeg: "" });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editMsg, setEditMsg] = useState("");
 
   // Auto-load quando vem de "Add Série" ou catálogo
   useEffect(() => {
@@ -663,6 +667,25 @@ function GerenciarEpisodios({ headers, initialSerieId, onLoaded }: {
   const delEp = async (id: string) => {
     await fetch("/api/admin/episodio", { method: "DELETE", headers, body: JSON.stringify({ id }) });
     loadEps(serieId);
+  };
+
+  const saveEdit = async () => {
+    if (!editingEp) return;
+    setEditSaving(true);
+    const r = await fetch("/api/admin/episodio", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: editingEp, serieId, ...editEpData }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      setEditMsg("✓ Salvo");
+      loadEps(serieId);
+      setTimeout(() => { setEditingEp(null); setEditMsg(""); }, 800);
+    } else {
+      setEditMsg(`Erro: ${d.error}`);
+    }
+    setEditSaving(false);
   };
 
   const byTemp = episodios.reduce((acc, ep) => {
@@ -795,15 +818,67 @@ function GerenciarEpisodios({ headers, initialSerieId, onLoaded }: {
               <h4 className="text-sm font-semibold text-zinc-400 mb-2">Temporada {t}</h4>
               <div className="space-y-1.5">
                 {byTemp[Number(t)].map((ep) => (
-                  <div key={ep.id} className="flex items-center gap-3 bg-zinc-900 rounded-lg px-3 py-2.5">
-                    <span className="text-xs text-zinc-500 w-8 shrink-0">EP{ep.numeroEp}</span>
-                    <span className="flex-1 text-sm truncate">{ep.titulo || <span className="text-zinc-500">Sem título</span>}</span>
-                    <span className="text-xs text-zinc-500 hidden md:block">
-                      {[ep.urlDub ? "Dub" : null, ep.urlLeg ? "Leg" : null].filter(Boolean).join(" · ") || "—"}
-                    </span>
-                    <button onClick={() => delEp(ep.id)} className="p-1 text-zinc-500 hover:text-red-400 transition">
-                      <Trash2 size={13} />
-                    </button>
+                  <div key={ep.id} className="bg-zinc-900 rounded-lg overflow-hidden">
+                    <div className="flex items-center gap-3 px-3 py-2.5">
+                      <span className="text-xs text-zinc-500 w-8 shrink-0">EP{ep.numeroEp}</span>
+                      <span className="flex-1 text-sm truncate">{ep.titulo || <span className="text-zinc-500">Sem título</span>}</span>
+                      <span className="text-xs text-zinc-500 hidden md:block">
+                        {[ep.urlDub ? "Dub" : null, ep.urlLeg ? "Leg" : null].filter(Boolean).join(" · ") || "—"}
+                      </span>
+                      <button
+                        onClick={() => {
+                          if (editingEp === ep.id) {
+                            setEditingEp(null);
+                          } else {
+                            setEditingEp(ep.id);
+                            setEditEpData({
+                              temporada: String(ep.temporada),
+                              numeroEp: String(ep.numeroEp),
+                              titulo: ep.titulo || "",
+                              urlDub: ep.urlDub || "",
+                              urlLeg: ep.urlLeg || "",
+                            });
+                            setEditMsg("");
+                          }
+                        }}
+                        className={`p-1 transition ${editingEp === ep.id ? "text-yellow-400" : "text-zinc-500 hover:text-yellow-400"}`}
+                      >
+                        <Edit2 size={13} />
+                      </button>
+                      <button onClick={() => delEp(ep.id)} className="p-1 text-zinc-500 hover:text-red-400 transition">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                    {editingEp === ep.id && (
+                      <div className="border-t border-white/10 px-3 py-3 space-y-2">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          <Field label="Temporada" value={editEpData.temporada} onChange={(v) => setEditEpData((p) => ({ ...p, temporada: v }))} />
+                          <Field label="Ep. Nº" value={editEpData.numeroEp} onChange={(v) => setEditEpData((p) => ({ ...p, numeroEp: v }))} />
+                          <Field label="Título" value={editEpData.titulo} onChange={(v) => setEditEpData((p) => ({ ...p, titulo: v }))} className="md:col-span-2" />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <Field label="URL Dub" value={editEpData.urlDub} onChange={(v) => setEditEpData((p) => ({ ...p, urlDub: v }))} mono />
+                          <Field label="URL Leg" value={editEpData.urlLeg} onChange={(v) => setEditEpData((p) => ({ ...p, urlLeg: v }))} mono />
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={saveEdit}
+                            disabled={editSaving}
+                            className="flex items-center gap-1.5 bg-[#E50914] hover:bg-red-700 text-white font-bold px-4 py-1.5 rounded-lg transition disabled:opacity-50 text-xs"
+                          >
+                            {editSaving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                            Salvar
+                          </button>
+                          <button
+                            onClick={() => { setEditingEp(null); setEditMsg(""); }}
+                            className="text-xs px-4 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition"
+                          >
+                            Cancelar
+                          </button>
+                          {editMsg && <p className={`text-xs ${editMsg.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{editMsg}</p>}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
