@@ -475,7 +475,7 @@ function Catalogo({ headers, onEditEp }: { headers: Record<string, string>; onEd
       {/* Filters */}
       <div className="flex gap-2 mb-4">
         {(["filme", "serie"] as const).map((t) => (
-          <button key={t} onClick={() => { setTipo(t); setPage(1); }}
+          <button key={t} onClick={() => { setTipo(t); setPage(1); setData(null); }}
             className={`text-sm px-4 py-1.5 rounded-lg transition ${tipo === t ? "bg-[#E50914] text-white font-bold" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}>
             {t === "filme" ? "Filmes" : "Séries"}
           </button>
