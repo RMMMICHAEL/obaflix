@@ -511,8 +511,12 @@ export function CustomPlayer({
         if (!url || autoSkipDoneRef.current || !isFinite(duration) || duration <= 0) return;
 
         const remaining = duration - position;
-        if (remaining <= 20) {
-          const secs = Math.ceil(remaining);
+        // credits: tempo estimado de créditos finais antes do fim do episódio.
+        // Sem banco de timestamps por título, usamos heurístico por duração.
+        const credits = duration > 30 * 60 ? 90 : duration > 15 * 60 ? 60 : 20;
+        const triggerAt = credits + 20; // começa a mostrar 20s antes de navegar
+        if (remaining <= triggerAt && duration > triggerAt + 30) {
+          const secs = Math.max(0, Math.ceil(remaining - credits));
           setNextEpCountdown(secs);
           nextEpCountdownActiveRef.current = true;
           if (secs <= 0) {
@@ -848,8 +852,10 @@ export function CustomPlayer({
       const url = nextUrl;
       if (!url || autoSkipDoneRef.current || !isFinite(dur) || dur <= 0) return;
       const remaining = dur - ct;
-      if (remaining <= 20) {
-        const secs = Math.ceil(remaining);
+      const credits = dur > 30 * 60 ? 90 : dur > 15 * 60 ? 60 : 20;
+      const triggerAt = credits + 20;
+      if (remaining <= triggerAt && dur > triggerAt + 30) {
+        const secs = Math.max(0, Math.ceil(remaining - credits));
         setNextEpCountdown(secs);
         nextEpCountdownActiveRef.current = true;
         if (secs <= 0) {
@@ -888,7 +894,7 @@ export function CustomPlayer({
       <div className="absolute top-0 inset-x-0 z-[9999] flex items-center gap-2 px-4 pt-3 pb-10 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
         <button
           className="pointer-events-auto text-white/80 hover:text-white transition-colors p-1 rounded-full hover:bg-white/10 flex-shrink-0"
-          onClick={() => { saveProgress(); router.back(); }}
+          onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
         >
           <X size={22} strokeWidth={1.5} />
         </button>
