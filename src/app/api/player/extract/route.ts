@@ -291,6 +291,17 @@ function unpackPacker(script: string): { decoded: string | null; ms: number; err
 }
 
 function parseDecodedHide(decoded: string, embedUrl: string): string | null {
+  // Primary: string-split approach (same as MegaFlix extractor — more robust than regex)
+  const linksSplit = decoded.split("var links=")[1];
+  if (linksSplit) {
+    try {
+      const linksJson = linksSplit.split(";")[0].trim();
+      const links = JSON.parse(linksJson);
+      const src = links.hls3 || links.hls2 || links.hls4 || null;
+      if (src) return src.startsWith("http") ? src : new URL(embedUrl).origin + src;
+    } catch { /**/ }
+  }
+  // Fallback: regex (catches space variants like "var links = {")
   const linksMatch = decoded.match(/var\s+links\s*=\s*(\{[^;]+\})/);
   if (linksMatch) {
     try {
@@ -411,6 +422,47 @@ async function extractRola(id: string): Promise<string | null> {
   } catch { return null; }
 }
 
+async function extractRola3(id: string): Promise<string | null> {
+  // Direct POST to embedplayer1.xyz — same approach MegaFlix uses for rola3
+  try {
+    const form = new URLSearchParams();
+    form.append("hash", id);
+    form.append("r", "");
+    const apiUrl = `https://embedplayer1.xyz/player/index.php?data=${id}&do=getVideo`;
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": `https://embedplayer1.xyz/v/${id}`,
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: form.toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!text.trim().startsWith("{")) return null;
+    const json = JSON.parse(text);
+    return json.videoSource || json.src || null;
+  } catch { return null; }
+}
+
+async function extractLulu(url: string): Promise<string | null> {
+  // MegaFlix approach: fetch HTML from luluvdo → extract packer → moon.php → parse [{ file:"
+  try {
+    const html = await fetchHtml(url, "https://megaflix.lat/");
+    const evalScript = extractEvalScript(html);
+    if (!evalScript) return null;
+    const decoded = await moon(evalScript);
+    // Same parse as MegaFlix: data.split('[{file:"')[1].split('"')[0]
+    const src = decoded.split('[{file:"')[1]?.split('"')[0] ?? null;
+    if (src?.startsWith("http")) return src;
+    // Fallback: JW sources or m3u8 regex
+    return findM3u8(decoded);
+  } catch { return null; }
+}
+
 async function extractBolt(html: string): Promise<string | null> {
   const src = html.split('[{file:"')[1]?.split('"')[0];
   return src?.startsWith("http") ? src : null;
@@ -427,9 +479,13 @@ function extractEvalScript(html: string): string | null {
   const idx = html.indexOf("eval(function(p,a,c,k,e,d)");
   if (idx === -1) return null;
   const chunk = html.slice(idx, idx + 50000);
+  // Try to find exact packer end
   const endIdx = chunk.search(/\.split\('\|'\)\s*,\s*0\s*,\s*\{\s*\}\s*\)\s*\)/);
-  if (endIdx === -1) return chunk;
-  return chunk.slice(0, endIdx + 30);
+  if (endIdx !== -1) return chunk.slice(0, endIdx + 30);
+  // Fallback: cut at </script> (same approach the MegaFlix extractor uses)
+  const scriptEnd = chunk.indexOf("</script>");
+  if (scriptEnd !== -1) return chunk.slice(0, scriptEnd);
+  return chunk;
 }
 
 function findM3u8(text: string): string | null {
@@ -469,7 +525,13 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     streamUrl = await extractVoltz(url);
 
   } else if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
-    return { stream: url, tipo: "iframe" };
+    const t = Date.now();
+    xlog("lulu/start", { id, hostname });
+    try {
+      streamUrl = await extractLulu(url);
+    } finally {
+      xlog("lulu/total", { ms: Date.now() - t, found: !!streamUrl });
+    }
 
   } else if (hostname.includes("hide") || hostname.includes("playhide")) {
     const t = Date.now();
@@ -498,10 +560,19 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     hostname.includes("embedplayer") ||
     hostname.includes("rola3")
   ) {
-    // Retorna URL do Worker — será armazenada no stream token e nunca exposta ao browser
-    const workerUrl = process.env.EMBED_WORKER_URL;
-    if (!workerUrl) return { stream: url, tipo: "iframe" };
-    streamUrl = `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`;
+    // Direct extraction via embedplayer1.xyz (same as MegaFlix rola3 approach)
+    const t = Date.now();
+    xlog("rola3/start", { id, hostname });
+    streamUrl = await extractRola3(id);
+    xlog("rola3/total", { ms: Date.now() - t, found: !!streamUrl });
+
+    // Fallback: worker URL if direct extraction failed
+    if (!streamUrl) {
+      const workerUrl = process.env.EMBED_WORKER_URL;
+      if (workerUrl) {
+        streamUrl = `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`;
+      }
+    }
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
     streamUrl = await extractRola(id);
