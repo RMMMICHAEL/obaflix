@@ -110,6 +110,7 @@ export default async function AssistirEpPage({
       thumbUrl={imgUrl(episodio.thumbnail || serie.background || serie.poster || null, "original")}
       conteudoId={serie.id}
       conteudoTipo="serie"
+      tmdbId={serie.tmdbId}
       episodioId={episodio.id}
       temporada={temporada}
       numeroEp={numeroEp}

@@ -47,6 +47,7 @@ interface Props {
   thumbUrl?: string;
   conteudoId: string;
   conteudoTipo: "filme" | "serie";
+  tmdbId?: string | null;
   episodioId?: string;
   temporada?: number;
   numeroEp?: number;
@@ -85,6 +86,7 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("llanfair") || pathname.includes("/rola/")) return true;
     if (hostname.includes("bolt")) return true;
     if (hostname.includes("bigshare") || hostname.includes("big")) return true;
+    if (hostname.includes("watchplayer")) return true;
     return false;
   } catch {
     return false;
@@ -149,7 +151,7 @@ function recoveryLog(
 
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
-  urlDub, urlLeg, titulo, thumbUrl, conteudoId, conteudoTipo,
+  urlDub, urlLeg, titulo, thumbUrl, conteudoId, conteudoTipo, tmdbId,
   episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
   const router = useRouter();
@@ -211,6 +213,16 @@ export function CustomPlayer({
     ...parseFontes(urlDub, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
   ];
+
+  // WatchPlayer: fonte sintética, não vem de urlDub/urlLeg — construída a partir do
+  // tmdbId. Só no Electron/Android por enquanto (isDesktop), como opção extra ao final
+  // da lista, sem prioridade sobre as fontes do banco. Ver docs/player-native-extraction.md.
+  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
+    const watchplayerUrl = conteudoTipo === "filme"
+      ? `https://watchplayer.xyz/movie/${tmdbId}`
+      : `https://watchplayer.xyz/tvshow/${tmdbId}/${temporada}/${numeroEp}`;
+    allFontes.push({ label: "WatchPlayer", embedUrl: watchplayerUrl, tokenized: false });
+  }
 
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");

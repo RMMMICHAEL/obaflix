@@ -279,6 +279,53 @@ async function extractBig(embedUrl) {
   return src;
 }
 
+// WatchPlayer: fonte sintética (não vem do banco — ver supportsNativeDesktopExtraction()
+// em CustomPlayer.tsx). API própria sem packer/moon.php/CSP — a mais simples de todas.
+// Filme: /movie/{tmdbId} → data-id já vem pronto no HTML → POST getPlayer direto.
+// Série: /tvshow/{tmdbId}/{season}/{episode} → precisa achar o data-contentid do
+// episódio certo, resolver as opções via POST getOptions, e só então POST getPlayer.
+async function extractWatchplayer(embedUrl) {
+  const parsed = new URL(embedUrl);
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  const html = await fetchHtml(embedUrl, REFERER_DEFAULT);
+
+  const callApi = async (body) => {
+    const res = await fetch("https://watchplayer.xyz/api", {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": embedUrl,
+      },
+      body,
+      signal: AbortSignal.timeout(10000),
+    });
+    return res.json();
+  };
+
+  let videoId;
+  if (parts[0] === "tvshow") {
+    const [, , season, episode] = parts;
+    const re = new RegExp(`data-contentid="(\\d+)"\\s+data-season="${season}"\\s+data-episode="${episode}"`);
+    const contentId = html.match(re)?.[1];
+    if (!contentId) throw new Error("episódio não encontrado (WatchPlayer)");
+
+    const optionsJson = await callApi(`action=getOptions&contentid=${contentId}`);
+    const options = optionsJson?.data?.options;
+    if (!options?.length) throw new Error("opções não encontradas (WatchPlayer)");
+    videoId = options[0].ID;
+  } else {
+    videoId = html.match(/class="player_select_item"\s+data-id="(\d+)"/)?.[1];
+    if (!videoId) throw new Error("player não encontrado (WatchPlayer)");
+  }
+
+  const playerJson = await callApi(`action=getPlayer&video_id=${videoId}`);
+  const src = playerJson?.data?.video_url;
+  if (!src) throw new Error("stream não encontrado (WatchPlayer)");
+  return src;
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 // Detecta o provider a partir da URL do embed. Mantido em sincronia com
@@ -304,6 +351,7 @@ function detectProvider(embedUrl) {
   if (hostname.includes("llanfair") || pathname.includes("/rola/")) return "rola2";
   if (hostname.includes("boltcdn") || hostname.includes("bolt")) return "bolt";
   if (hostname.includes("bigshare") || hostname.includes("big")) return "big";
+  if (hostname.includes("watchplayer")) return "watchplayer";
   return null;
 }
 
@@ -325,6 +373,7 @@ async function extractStream(embedUrl) {
     case "wish": stream = await extractWish(embedUrl, id); break;
     case "bolt": stream = await extractBolt(embedUrl); break;
     case "big": stream = await extractBig(embedUrl); break;
+    case "watchplayer": stream = await extractWatchplayer(embedUrl); break;
     default: throw new Error(`Provider sem extrator: ${provider}`);
   }
 

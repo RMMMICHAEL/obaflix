@@ -26,12 +26,39 @@ residencial do usuário + CDN direto, sem proxy Vercel) para **todos os provider
 | Wish (Streamwish/Hlswish/Playerwish) | `wish` no hostname | `extractWish` | `route.ts extractWish` |
 | Bolt | `bolt` no hostname | `extractBolt` | `route.ts extractBolt` |
 | Big (Bigshare) | `bigshare`/`big` no hostname | `extractBig` | `route.ts extractBig` |
+| WatchPlayer | `watchplayer` no hostname | `extractWatchplayer` | **não implementado** (só Electron/Android por enquanto) |
 | VOD | — | **não implementado** | não implementado (MegaFlix usa `vods.faz-o-eli.online`, nunca portado) |
 
 O site web (não-Electron/Android) continua **sempre** usando o fluxo `route.ts` +
 `/api/player/proxy` para todos os providers — nada mudou para usuários web. A única mudança é
 **quando `isDesktop === true`**, o player passa a preferir o bridge nativo para qualquer
 provider da tabela acima, em vez de só rola3/rola4.
+
+### WatchPlayer — provider diferente dos demais
+
+WatchPlayer não vem do banco (`urlDub`/`urlLeg`) como todos os outros — é uma **fonte
+sintética**, montada em `CustomPlayer.tsx` a partir do `tmdbId` do filme/série (prop nova,
+passada pelas páginas `assistir/filme/[id]` e `assistir/serie/.../[ep]`), só quando
+`isDesktop === true`. É adicionada ao final de `allFontes`, sem prioridade sobre as fontes reais
+do catálogo — hoje aparece como uma opção extra, não como fonte principal.
+
+Descoberto via engenharia reversa do MegaFlix (cadeia `myembed.biz` → `playerflix.ink` →
+`ajax.php`, que expõe as opções reais de player em base64). É o provider mais simples de todos:
+API JSON própria, sem packer/moon.php, sem Cloudflare, e o CDN final (`*.hclod.qzz.io`) não
+exige nenhum header especial.
+
+```
+Filme:  GET  /movie/{tmdbId}                              → data-id já vem pronto no HTML
+        POST /api  action=getPlayer&video_id={id}          → { data: { video_url } }
+
+Série:  GET  /tvshow/{tmdbId}/{season}/{episode}            → data-contentid do episódio certo
+        POST /api  action=getOptions&contentid={contentId} → { data: { options: [{ID, type}] } }
+        POST /api  action=getPlayer&video_id={options[0].ID} → { data: { video_url } }
+```
+
+Ainda não implementado: fluxo web (`route.ts`) e Android (`PlayerExtractors.kt`) — só Electron
+por enquanto, a pedido explícito. Se for promovido a fonte principal ou portado pros outros
+dois lados, seguir o mesmo padrão dos demais providers (seção "Como adicionar um novo player").
 
 ## Arquivos
 

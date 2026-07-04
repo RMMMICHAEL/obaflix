@@ -1,6 +1,6 @@
 {
   "name": "obaflix",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Obaflix - Aplicativo Desktop",
   "main": "electron/main.js",
   "author": "Obaflix",

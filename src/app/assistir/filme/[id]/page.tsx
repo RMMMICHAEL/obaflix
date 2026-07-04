@@ -60,6 +60,7 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
       thumbUrl={imgUrl(filme.background || filme.poster || null, "original")}
       conteudoId={filme.id}
       conteudoTipo="filme"
+      tmdbId={filme.tmdbId}
       duracaoSeg={filme.duracao ? filme.duracao * 60 : undefined}
       initialProgressoSeg={historico?.progressoSeg ?? 0}
     />
