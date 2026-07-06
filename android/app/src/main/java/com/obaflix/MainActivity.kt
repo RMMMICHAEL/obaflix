@@ -2,8 +2,10 @@ package com.obaflix
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -11,6 +13,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.obaflix.bridge.ObaflixBridge
 import com.obaflix.player.PlayerWebViewClient
+
+private const val TAG = "Obaflix"
 
 class MainActivity : AppCompatActivity() {
 
@@ -20,6 +24,8 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros)
+        WebView.setWebContentsDebuggingEnabled(true)
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
@@ -53,6 +59,16 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = PlayerWebViewClient { view -> injectBridgeShim(view) }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                val level = when (msg.messageLevel()) {
+                    ConsoleMessage.MessageLevel.ERROR -> Log.ERROR
+                    ConsoleMessage.MessageLevel.WARNING -> Log.WARN
+                    else -> Log.DEBUG
+                }
+                Log.println(level, TAG, "[JS] ${msg.message()} — ${msg.sourceId()}:${msg.lineNumber()}")
+                return false
+            }
+
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
                 fullscreenView = view
                 val container = findViewById<ViewGroup>(R.id.container)

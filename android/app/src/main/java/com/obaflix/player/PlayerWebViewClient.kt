@@ -201,6 +201,11 @@ class PlayerWebViewClient(
      * nativamente) e os injeta manualmente como header Cookie na requisição OkHttp. Qualquer
      * Set-Cookie devolvido pela resposta é sincronizado de volta no CookieManager, para que a
      * sessão do WebView permaneça consistente após esta requisição sintética.
+     *
+     * Accept-Encoding: o header é removido antes de enviar ao OkHttp para que o BridgeInterceptor
+     * adicione seu próprio "Accept-Encoding: gzip" e faça a descompressão transparente. Isso é
+     * necessário porque WebResourceResponse não aplica Content-Encoding ao body — se passarmos
+     * bytes brotli/gzip crus, o WebView os trata como HTML literal e o React falha na hidratação.
      */
     private fun fetchDocumentWithoutCsp(original: WebResourceRequest): WebResourceResponse? {
         val urlStr = original.url.toString()
@@ -210,6 +215,9 @@ class PlayerWebViewClient(
 
             val reqBuilder = Request.Builder().url(urlStr)
             original.requestHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+            // Remove Accept-Encoding para que o OkHttp BridgeInterceptor adicione gzip e
+            // descomprima o body automaticamente — WebResourceResponse não decodifica Content-Encoding.
+            reqBuilder.removeHeader("Accept-Encoding")
             reqBuilder.removeHeader("User-Agent").addHeader("User-Agent", UA)
             if (!cookies.isNullOrEmpty()) {
                 reqBuilder.removeHeader("Cookie").addHeader("Cookie", cookies)
@@ -224,19 +232,49 @@ class PlayerWebViewClient(
             // fora do fluxo nativo do WebView, então nada faria isso automaticamente.
             val setCookies = response.headers("Set-Cookie")
             if (setCookies.isNotEmpty()) {
+                // Sinc para a URL original E para a URL final (caso OkHttp tenha seguido redirect)
+                val finalUrl = response.request.url.toString()
                 setCookies.forEach { cookieManager.setCookie(urlStr, it) }
+                if (finalUrl != urlStr) setCookies.forEach { cookieManager.setCookie(finalUrl, it) }
                 cookieManager.flush()
                 Log.d(TAG, "[intercept/csp] ${setCookies.size} cookie(s) sincronizado(s)")
             }
 
             val contentType = response.header("Content-Type", "text/html")!!
-            val body = response.body?.byteStream() ?: return null
+
+            // OkHttp descomprimiu o body (gzip transparente via BridgeInterceptor).
+            // Lemos como String para injetar o script de diagnóstico de erros JS.
+            val bodyStr = response.body?.string() ?: return null
+
+            // Script de diagnóstico: captura erros JS e exibe overlay vermelho na tela.
+            // Remove quando o bug estiver identificado e corrigido.
+            val debugScript = """<script>(function(){var _e=[];var _o=console.error;""" +
+                """console.error=function(){_o.apply(console,arguments);try{_e.push(""" +
+                """Array.from(arguments).map(function(x){return x&&x.stack?x.stack:String(x);}).join(' '));}catch(ex){}};""" +
+                """window.onerror=function(m,s,l){_e.push('ERR:'+m+' @'+l);return false;};""" +
+                """window.addEventListener('unhandledrejection',function(e){_e.push('REJ:'+String(e.reason));});""" +
+                """setInterval(function(){if(!_e.length)return;var d=document.getElementById('__obd');""" +
+                """if(!d){d=document.createElement('div');d.id='__obd';""" +
+                """d.style='position:fixed;bottom:0;left:0;right:0;z-index:999999;background:rgba(140,0,0,0.97);""" +
+                """color:#fff;padding:6px 8px;font:11px/1.4 monospace;max-height:200px;overflow:auto;""" +
+                """white-space:pre-wrap;word-break:break-all;';""" +
+                """(document.body||document.documentElement).appendChild(d);}""" +
+                """d.textContent=_e.slice(-5).join('\n---\n');},1000);})();</script>"""
+
+            val modifiedHtml = Regex("<head>", RegexOption.IGNORE_CASE)
+                .replaceFirst(bodyStr) { m -> "${m.value}$debugScript" }
+
+            val body = modifiedHtml.toByteArray(Charsets.UTF_8).inputStream()
 
             val headers = response.headers.toMultimap()
                 .filterKeys { key ->
                     !key.equals("content-security-policy", ignoreCase = true) &&
                     !key.equals("content-security-policy-report-only", ignoreCase = true) &&
-                    !key.equals("set-cookie", ignoreCase = true) // já sincronizado acima via CookieManager
+                    !key.equals("set-cookie", ignoreCase = true) &&
+                    // Content-Length muda após injeção do script; Content-Encoding já foi
+                    // removido pelo OkHttp (decompressão transparente), mas filtramos por segurança.
+                    !key.equals("content-length", ignoreCase = true) &&
+                    !key.equals("content-encoding", ignoreCase = true)
                 }
                 .mapValues { it.value.joinToString(", ") }
                 .toMutableMap()
