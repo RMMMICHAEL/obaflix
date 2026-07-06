@@ -243,8 +243,10 @@ export function CustomPlayer({
   // ── Chromecast SDK ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (typeof window === "undefined") return;
-    // Chromecast não funciona no Electron — evita session_error no .exe
-    if ((window as any).obaflixDesktop) return;
+    // Chromecast não funciona no Electron/Android — evita session_error
+    // _obaflixBridge é injetado via addJavascriptInterface antes da página carregar (Android)
+    // obaflixDesktop é injetado via preload (Electron)
+    if ((window as any).obaflixDesktop || (window as any)._obaflixBridge) return;
     // __onGCastApiAvailable é chamado pelo SDK assim que ele carrega
     (window as any).__onGCastApiAvailable = (isAvailable: boolean) => {
       if (!isAvailable) return;

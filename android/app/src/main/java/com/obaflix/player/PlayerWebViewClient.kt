@@ -173,8 +173,11 @@ class PlayerWebViewClient(
             response.header("Content-Range")?.let { headers["Content-Range"] = it }
             response.header("Content-Length")?.let { headers["Content-Length"] = it }
 
+            // HTTP/2 não tem reasonPhrase — response.message é "" no OkHttp/H2,
+            // e WebResourceResponse lança IllegalArgumentException se vazio.
+            val reason = response.message.ifEmpty { "OK" }
             WebResourceResponse(
-                contentType.substringBefore(";").trim(), "UTF-8", response.code, response.message,
+                contentType.substringBefore(";").trim(), "UTF-8", response.code, reason,
                 headers, body,
             )
         } catch (e: Exception) {
@@ -238,8 +241,9 @@ class PlayerWebViewClient(
                 .mapValues { it.value.joinToString(", ") }
                 .toMutableMap()
 
+            val reasonPhrase = response.message.ifEmpty { "OK" }
             WebResourceResponse(
-                contentType.substringBefore(";").trim(), "UTF-8", response.code, response.message,
+                contentType.substringBefore(";").trim(), "UTF-8", response.code, reasonPhrase,
                 headers, body,
             )
         } catch (e: Exception) {
