@@ -101,7 +101,9 @@ class MainActivity : AppCompatActivity() {
                             window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
                             window._obaflixBridge.extractStream(id, embedUrl);
                         });
-                    }
+                    },
+                    onUpdateReady: function(cb) { /* no-op: atualizações Android chegam via Play Store */ },
+                    installUpdate: function() { /* no-op */ }
                 };
                 window.__OBAFLIX_DESKTOP__ = true;
             })();
