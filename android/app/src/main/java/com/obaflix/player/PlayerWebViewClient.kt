@@ -274,8 +274,11 @@ class PlayerWebViewClient(
                 """  report('REJ:'+String(e.reason));});""" +
                 """})();</script>"""
 
-            val modifiedHtml = Regex("<head>", RegexOption.IGNORE_CASE)
-                .replaceFirst(bodyStr) { m -> "${m.value}$debugScript" }
+            // Kotlin Regex.replaceFirst só aceita String, não lambda — usa replace com flag.
+            var headReplaced = false
+            val modifiedHtml = Regex("<head>", RegexOption.IGNORE_CASE).replace(bodyStr) { m ->
+                if (!headReplaced) { headReplaced = true; m.value + debugScript } else m.value
+            }
 
             val body = modifiedHtml.toByteArray(Charsets.UTF_8).inputStream()
 
