@@ -246,20 +246,33 @@ class PlayerWebViewClient(
             // Lemos como String para injetar o script de diagnóstico de erros JS.
             val bodyStr = response.body?.string() ?: return null
 
-            // Script de diagnóstico: captura erros JS e exibe overlay vermelho na tela.
+            // Script de diagnóstico: captura erros JS e exibe via Toast nativo Android
+            // (_obaflixBridge.logError) + overlay vermelho na tela como backup.
             // Remove quando o bug estiver identificado e corrigido.
-            val debugScript = """<script>(function(){var _e=[];var _o=console.error;""" +
-                """console.error=function(){_o.apply(console,arguments);try{_e.push(""" +
-                """Array.from(arguments).map(function(x){return x&&x.stack?x.stack:String(x);}).join(' '));}catch(ex){}};""" +
-                """window.onerror=function(m,s,l){_e.push('ERR:'+m+' @'+l);return false;};""" +
-                """window.addEventListener('unhandledrejection',function(e){_e.push('REJ:'+String(e.reason));});""" +
-                """setInterval(function(){if(!_e.length)return;var d=document.getElementById('__obd');""" +
-                """if(!d){d=document.createElement('div');d.id='__obd';""" +
-                """d.style='position:fixed;bottom:0;left:0;right:0;z-index:999999;background:rgba(140,0,0,0.97);""" +
-                """color:#fff;padding:6px 8px;font:11px/1.4 monospace;max-height:200px;overflow:auto;""" +
-                """white-space:pre-wrap;word-break:break-all;';""" +
-                """(document.body||document.documentElement).appendChild(d);}""" +
-                """d.textContent=_e.slice(-5).join('\n---\n');},1000);})();</script>"""
+            val debugScript = """<script>(function(){""" +
+                """var _done=false;""" +
+                """function report(msg){""" +
+                """  if(_done)return;_done=true;""" +
+                """  var s=msg.slice(0,300);""" +
+                """  try{window._obaflixBridge&&window._obaflixBridge.logError(s);}catch(ex){}""" +
+                """  console.error('[OBADEBUG]',s);""" +
+                """  try{var d=document.createElement('div');""" +
+                """  d.style='all:initial;position:fixed;bottom:0;left:0;right:0;top:40%;""" +
+                """z-index:2147483647;background:#900;color:#fff;padding:10px;""" +
+                """font:12px/1.5 monospace;overflow:auto;white-space:pre-wrap;word-break:break-all;';""" +
+                """  d.textContent='=== OBAFLIX JS ERROR ===\n'+s;""" +
+                """  (document.documentElement||document.body).appendChild(d);}catch(ex2){}""" +
+                """}""" +
+                """var _o=console.error;""" +
+                """console.error=function(){_o.apply(console,arguments);""" +
+                """  try{var m=Array.from(arguments).map(function(x){return x&&x.stack?x.stack:String(x);}).join('\n');""" +
+                """  if(m&&m.length>5)report(m);}catch(ex){}};""" +
+                """window.onerror=function(m,s,l,c,e){""" +
+                """  report('ERR:'+m+' @'+s+':'+l+(e&&e.stack?'\n'+e.stack.slice(0,200):''));""" +
+                """  return false;};""" +
+                """window.addEventListener('unhandledrejection',function(e){""" +
+                """  report('REJ:'+String(e.reason));});""" +
+                """})();</script>"""
 
             val modifiedHtml = Regex("<head>", RegexOption.IGNORE_CASE)
                 .replaceFirst(bodyStr) { m -> "${m.value}$debugScript" }

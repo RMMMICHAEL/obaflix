@@ -3,6 +3,7 @@ package com.obaflix.bridge
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -20,6 +21,16 @@ class ObaflixBridge(
     private val webView: WebView,
     private val scope: CoroutineScope,
 ) {
+
+    /** Chamado pelo script de diagnóstico injetado — exibe Toast nativo com o erro JS. */
+    @JavascriptInterface
+    fun logError(msg: String) {
+        Log.e(TAG, "[bridge/debug] JS Error: $msg")
+        // Toast precisa rodar na main thread; webView.post() garante isso.
+        webView.post {
+            Toast.makeText(webView.context, msg.take(300), Toast.LENGTH_LONG).show()
+        }
+    }
 
     @JavascriptInterface
     fun extractStream(callbackId: String, embedUrl: String) {
