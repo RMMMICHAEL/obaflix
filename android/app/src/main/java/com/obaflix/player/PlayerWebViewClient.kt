@@ -140,6 +140,13 @@ class PlayerWebViewClient(
             val state = ObaflixApp.playerState
             val reqBuilder = Request.Builder().url(cdnUrl).get()
                 .addHeader("User-Agent", UA)
+                // Headers necessários para CDNs com bot-detection — sem eles, alguns CDNs
+                // retornam 403 porque a request não parece vir de um browser real.
+                .addHeader("Accept", "*/*")
+                .addHeader("Accept-Language", "pt-BR,pt;q=0.5,en-US;q=0.3,en;q=0.2")
+                .addHeader("Sec-Fetch-Dest", "empty")
+                .addHeader("Sec-Fetch-Mode", "cors")
+                .addHeader("Sec-Fetch-Site", "cross-site")
 
             // Injeta Referer e Origin do embed se o CDN hostname corresponder
             val cdnHost = try { URL(cdnUrl).host } catch (_: Exception) { "" }
@@ -246,32 +253,48 @@ class PlayerWebViewClient(
             // Lemos como String para injetar o script de diagnóstico de erros JS.
             val bodyStr = response.body?.string() ?: return null
 
-            // Script de diagnóstico: captura erros JS e exibe via Toast nativo Android
-            // (_obaflixBridge.logError) + overlay vermelho na tela como backup.
-            // Remove quando o bug estiver identificado e corrigido.
+            // Script de diagnóstico: captura erros JS fatais e exibe overlay vermelho.
+            // console.error (JW Player/hls.js) → só Toast, SEM overlay (para não bloquear o player).
+            // window.onerror / unhandledrejection → overlay + Toast (crash real do React/app).
             val debugScript = """<script>(function(){""" +
+                """var _o=console.error;""" +
+                """function sa(x){""" +
+                """  if(x==null)return String(x);""" +
+                """  if(typeof x==='string'||typeof x==='number'||typeof x==='boolean')return String(x);""" +
+                """  if(x.stack)return x.stack;""" +
+                """  try{return JSON.stringify(x);}catch(e){return String(x);}""" +
+                """}""" +
                 """var _done=false;""" +
                 """function report(msg){""" +
                 """  if(_done)return;_done=true;""" +
-                """  var s=msg.slice(0,300);""" +
+                """  var s=msg.slice(0,400);""" +
                 """  try{window._obaflixBridge&&window._obaflixBridge.logError(s);}catch(ex){}""" +
-                """  console.error('[OBADEBUG]',s);""" +
+                """  _o.call(console,'[OBADEBUG]',s);""" +
                 """  try{var d=document.createElement('div');""" +
                 """  d.style='all:initial;position:fixed;bottom:0;left:0;right:0;top:40%;""" +
                 """z-index:2147483647;background:#900;color:#fff;padding:10px;""" +
                 """font:12px/1.5 monospace;overflow:auto;white-space:pre-wrap;word-break:break-all;';""" +
-                """  d.textContent='=== OBAFLIX JS ERROR ===\n'+s;""" +
+                """  d.textContent='=== OBAFLIX FATAL ERROR ===\n'+s;""" +
                 """  (document.documentElement||document.body).appendChild(d);}catch(ex2){}""" +
                 """}""" +
-                """var _o=console.error;""" +
+                // console.error: apenas Toast/logcat — NÃO mostra overlay (JW Player e hls.js
+                // chamam console.error para erros de stream recuperáveis, o que bloqueava o player)
+                """var _b=false;""" +
                 """console.error=function(){_o.apply(console,arguments);""" +
-                """  try{var m=Array.from(arguments).map(function(x){return x&&x.stack?x.stack:String(x);}).join('\n');""" +
-                """  if(m&&m.length>5)report(m);}catch(ex){}};""" +
+                """  if(_b)return;_b=true;""" +
+                """  try{var m=Array.from(arguments).map(sa).join(' | ');""" +
+                """  if(m&&m.length>2)try{window._obaflixBridge&&window._obaflixBridge.logError('[JS:err] '+m.slice(0,300));}catch(ex){}""" +
+                """  }catch(ex2){}finally{_b=false;}""" +
+                """};""" +
+                // Erros fatais (crash React, erro JS não tratado) → overlay + Toast
                 """window.onerror=function(m,s,l,c,e){""" +
-                """  report('ERR:'+m+' @'+s+':'+l+(e&&e.stack?'\n'+e.stack.slice(0,200):''));""" +
+                """  report('ERR:'+m+' @'+s+':'+l+(e&&e.stack?'\n'+e.stack.slice(0,300):''));""" +
                 """  return false;};""" +
+                // Promise rejections não tratadas → overlay + Toast
                 """window.addEventListener('unhandledrejection',function(e){""" +
-                """  report('REJ:'+String(e.reason));});""" +
+                """  var r=e.reason;""" +
+                """  var s=r&&r.stack?r.stack:(typeof r==='object'&&r!==null?JSON.stringify(r):String(r));""" +
+                """  report('REJ:'+s.slice(0,300));});""" +
                 """})();</script>"""
 
             // Kotlin Regex.replaceFirst só aceita String, não lambda — usa replace com flag.
