@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { href: "/series", label: "Séries" },
   { href: "/animes", label: "Animes" },
   { href: "/desenhos", label: "Desenhos" },
+  { href: "/melhores", label: "Melhores" },
 ];
 
 export function Navbar() {
