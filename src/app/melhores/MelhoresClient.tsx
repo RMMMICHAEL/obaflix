@@ -103,7 +103,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
         </p>
 
         {/* Chart list */}
-        <div className="divide-y divide-zinc-800/50">
+        <div className="divide-y divide-zinc-800/40">
           {filtered.map((item, i) => {
             const rank = search ? null : i + 1;
             const href = item.catalogId ? `/${tipoPath}/${item.catalogId}` : null;
@@ -111,29 +111,29 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
             return (
               <div
                 key={item.tmdbId}
-                className={`flex items-center gap-3 py-2.5 px-2 rounded-lg transition-colors group ${
-                  href ? "hover:bg-zinc-800/50" : "opacity-40"
+                className={`flex items-center gap-4 py-4 px-3 rounded-xl transition-colors group ${
+                  href ? "hover:bg-zinc-800/60" : "opacity-40"
                 }`}
               >
                 {/* Rank number */}
                 <div
-                  className={`w-9 text-right shrink-0 font-bold tabular-nums leading-none ${
+                  className={`w-12 text-right shrink-0 font-black tabular-nums leading-none ${
                     rank == null
                       ? "invisible"
                       : rank <= 10
-                      ? "text-yellow-400 text-xl"
+                      ? "text-yellow-400 text-3xl"
                       : rank <= 50
-                      ? "text-zinc-300 text-base"
+                      ? "text-zinc-300 text-2xl"
                       : rank <= 100
-                      ? "text-zinc-500 text-sm"
-                      : "text-zinc-700 text-xs"
+                      ? "text-zinc-500 text-xl"
+                      : "text-zinc-700 text-lg"
                   }`}
                 >
                   {rank ?? "–"}
                 </div>
 
                 {/* Poster */}
-                <div className="w-9 h-14 shrink-0 rounded-md overflow-hidden bg-zinc-800">
+                <div className="w-16 h-24 shrink-0 rounded-lg overflow-hidden bg-zinc-800 shadow-lg">
                   {item.poster ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -143,7 +143,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
                       loading="lazy"
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs">
+                    <div className="w-full h-full flex items-center justify-center text-zinc-600 text-sm">
                       ?
                     </div>
                   )}
@@ -154,27 +154,27 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
                   {href ? (
                     <Link
                       href={href}
-                      className="text-white text-sm font-medium hover:text-red-400 transition-colors line-clamp-1 block"
+                      className="text-white text-base md:text-lg font-semibold hover:text-red-400 transition-colors line-clamp-2 block leading-snug"
                     >
                       {item.titulo}
                     </Link>
                   ) : (
-                    <span className="text-zinc-400 text-sm font-medium line-clamp-1 block">
+                    <span className="text-zinc-400 text-base md:text-lg font-semibold line-clamp-2 block leading-snug">
                       {item.titulo}
                     </span>
                   )}
-                  <div className="flex items-center gap-2 mt-0.5">
+                  <div className="flex items-center gap-3 mt-1.5">
                     {item.ano && (
-                      <span className="text-zinc-600 text-xs">{item.ano}</span>
+                      <span className="text-zinc-500 text-sm">{item.ano}</span>
                     )}
                     {item.nota > 0 && (
-                      <span className="flex items-center gap-0.5 text-yellow-400 text-xs font-semibold">
-                        <Star size={9} fill="currentColor" />
+                      <span className="flex items-center gap-1 text-yellow-400 text-sm font-bold">
+                        <Star size={13} fill="currentColor" />
                         {item.nota.toFixed(1)}
                       </span>
                     )}
                     {!item.catalogId && (
-                      <span className="text-zinc-700 text-[10px]">indisponível</span>
+                      <span className="text-zinc-600 text-xs">indisponível</span>
                     )}
                   </div>
                 </div>
@@ -183,9 +183,9 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
                 {href && (
                   <Link
                     href={href}
-                    className="shrink-0 flex items-center gap-1 bg-red-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 hover:bg-red-500"
+                    className="shrink-0 flex items-center gap-1.5 bg-red-600 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all opacity-0 group-hover:opacity-100 hover:bg-red-500"
                   >
-                    <Play size={10} fill="white" strokeWidth={0} />
+                    <Play size={13} fill="white" strokeWidth={0} />
                     Assistir
                   </Link>
                 )}
