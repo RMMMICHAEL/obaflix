@@ -77,6 +77,9 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
   };
 }
 
+// Janela de 30 dias para o ranking de visualizações
+const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
 // createdAt + logo incluídos nas queries
 const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, createdAt: true } as const;
 const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
@@ -99,9 +102,11 @@ export default async function HomePage() {
     dbRecSeries,
     dbAnimes,
     dbDesenhos,
-    // Top 10 direto do banco — garante 10 itens (focado no catálogo brasileiro)
-    dbTop10Filmes,
-    dbTop10Series,
+    // Top 10 por visualizações + fallback por nota
+    top10FilmesHistory,
+    top10SeriesHistory,
+    dbTop10FilmesFallback,
+    dbTop10SeriesFallback,
     dbEpsRecentes,
     ...dbGeneroFilmes
   ] = await Promise.all([
@@ -121,7 +126,22 @@ export default async function HomePage() {
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
-    // Top 10 do banco por nota — sem depender do TMDB airing today (era vazio por ser série americana)
+    // Top 10 por visualizações — últimos 30 dias (atualiza sozinho com o uso)
+    prisma.watchHistory.groupBy({
+      by: ["filmeId"],
+      where: { filmeId: { not: null }, updatedAt: { gte: THIRTY_DAYS_AGO } },
+      _count: { userId: true },
+      orderBy: { _count: { userId: "desc" } },
+      take: 15,
+    }),
+    prisma.watchHistory.groupBy({
+      by: ["serieId"],
+      where: { serieId: { not: null }, updatedAt: { gte: THIRTY_DAYS_AGO } },
+      _count: { userId: true },
+      orderBy: { _count: { userId: "desc" } },
+      take: 15,
+    }),
+    // Fallback por nota (usado quando não há histórico suficiente)
     prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 10, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 10, select: selSerie }),
     // Episódios recentes — últimos 24 adicionados com info da série
@@ -176,10 +196,25 @@ export default async function HomePage() {
     ...(tmdbCrime?.results ?? []),
   ].map((i) => String(i.id));
 
-  const [[dbFilmesMap_raw, dbSeriesMap_raw], heroTrailerResults] = await Promise.all([
+  // Extrai IDs ordenados pelo ranking de visualizações
+  const top10FilmesIds = (top10FilmesHistory as any[])
+    .map((r) => r.filmeId as string | null)
+    .filter((id): id is string => id !== null);
+  const top10SeriesIds = (top10SeriesHistory as any[])
+    .map((r) => r.serieId as string | null)
+    .filter((id): id is string => id !== null);
+
+  const [[dbFilmesMap_raw, dbSeriesMap_raw, top10FilmesDb, top10SeriesDb], heroTrailerResults] = await Promise.all([
     Promise.all([
       prisma.filme.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selFilme }),
       prisma.serie.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selSerie }),
+      // Busca detalhes dos filmes/séries mais assistidos (para montar os cards)
+      top10FilmesIds.length > 0
+        ? prisma.filme.findMany({ where: { id: { in: top10FilmesIds } }, select: selFilme })
+        : Promise.resolve([] as typeof dbTop10FilmesFallback),
+      top10SeriesIds.length > 0
+        ? prisma.serie.findMany({ where: { id: { in: top10SeriesIds }, tipo: "serie" }, select: selSerie })
+        : Promise.resolve([] as typeof dbTop10SeriesFallback),
     ]),
     Promise.all(
       heroRaw.slice(0, 5).map((item: any) =>
@@ -211,9 +246,26 @@ export default async function HomePage() {
   const romanceList = tmdbList(tmdbRomance?.results ?? [], "filme").slice(0, 24);
   const crimeList   = tmdbList(tmdbCrime?.results ?? [], "filme").slice(0, 24);
 
-  // Top 10 direto do banco — sempre tem itens
-  const top10FilmesCards = dbTop10Filmes.map((f) => dbToCard(f, "filme"));
-  const top10SeriesCards = dbTop10Series.map((s) => dbToCard(s, "serie"));
+  // Constrói Top 10 priorizando visualizações; preenche com nota se faltar itens
+  function buildTop10Cards(
+    historyIds: string[],
+    historyData: any[],
+    fallback: any[],
+    tipo: CardItem["tipo"],
+  ): CardItem[] {
+    if (historyIds.length === 0) return fallback.slice(0, 10).map((f) => dbToCard(f, tipo));
+    const byId = new Map(historyData.map((d) => [d.id, d]));
+    const ranked = historyIds.map((id) => byId.get(id)).filter(Boolean) as any[];
+    if (ranked.length < 10) {
+      const seen = new Set(ranked.map((f) => f.id));
+      const extra = fallback.filter((f) => !seen.has(f.id)).slice(0, 10 - ranked.length);
+      return [...ranked, ...extra].map((f) => dbToCard(f, tipo));
+    }
+    return ranked.slice(0, 10).map((f) => dbToCard(f, tipo));
+  }
+
+  const top10FilmesCards = buildTop10Cards(top10FilmesIds, top10FilmesDb, dbTop10FilmesFallback, "filme");
+  const top10SeriesCards = buildTop10Cards(top10SeriesIds, top10SeriesDb, dbTop10SeriesFallback, "serie");
 
   const heroItems = heroRaw.map((item: any, i: number) => {
     const db = mergeMap(item).get(String(item.id));
