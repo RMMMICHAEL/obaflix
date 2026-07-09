@@ -549,9 +549,7 @@ export function CustomPlayer({
         if (!url || autoSkipDoneRef.current || !isFinite(duration) || duration <= 0) return;
 
         const remaining = duration - position;
-        // credits: tempo estimado de créditos finais antes do fim do episódio.
-        // Sem banco de timestamps por título, usamos heurístico por duração.
-        const credits = duration > 30 * 60 ? 90 : duration > 15 * 60 ? 60 : 20;
+        const credits = 30; // pula 30s antes do fim
         const triggerAt = credits + 20; // começa a mostrar 20s antes de navegar
         if (remaining <= triggerAt && duration > triggerAt + 30) {
           const secs = Math.max(0, Math.ceil(remaining - credits));
@@ -890,7 +888,7 @@ export function CustomPlayer({
       const url = nextUrl;
       if (!url || autoSkipDoneRef.current || !isFinite(dur) || dur <= 0) return;
       const remaining = dur - ct;
-      const credits = dur > 30 * 60 ? 90 : dur > 15 * 60 ? 60 : 20;
+      const credits = 30; // pula 30s antes do fim
       const triggerAt = credits + 20;
       if (remaining <= triggerAt && dur > triggerAt + 30) {
         const secs = Math.max(0, Math.ceil(remaining - credits));
