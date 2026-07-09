@@ -107,6 +107,7 @@ export default async function AssistirEpPage({
       urlDub={urlDub}
       urlLeg={urlLeg}
       titulo={serie.titulo}
+      nomeEpisodio={episodio.titulo ?? undefined}
       thumbUrl={imgUrl(episodio.thumbnail || serie.background || serie.poster || null, "original")}
       conteudoId={serie.id}
       conteudoTipo="serie"

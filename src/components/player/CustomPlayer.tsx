@@ -44,6 +44,7 @@ interface Props {
   urlDub: string | null;
   urlLeg: string | null;
   titulo: string;
+  nomeEpisodio?: string;
   thumbUrl?: string;
   conteudoId: string;
   conteudoTipo: "filme" | "serie";
@@ -151,7 +152,7 @@ function recoveryLog(
 
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
-  urlDub, urlLeg, titulo, thumbUrl, conteudoId, conteudoTipo, tmdbId,
+  urlDub, urlLeg, titulo, nomeEpisodio, thumbUrl, conteudoId, conteudoTipo, tmdbId,
   episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
   const router = useRouter();
@@ -492,7 +493,7 @@ export function CustomPlayer({
         displaytitle: true,
         displaydescription: true,
         title: titleText,
-        description: "Você está assistindo",
+        description: nomeEpisodio || "Você está assistindo",
         skin: { name: "netflix" },
         hls: { bufferingGoal: 80 },
         width: "100%",
@@ -1029,7 +1030,12 @@ export function CustomPlayer({
                 <p className="text-white/40 text-[10px] uppercase tracking-[0.25em] font-medium">
                   Você está assistindo
                 </p>
-                <p className="text-white font-bold text-lg md:text-xl leading-snug">{titleText}</p>
+                <p className="text-white font-bold text-lg md:text-xl leading-snug">{titulo}</p>
+                {(temporada && numeroEp) && (
+                  <p className="text-white/60 text-sm mt-0.5">
+                    T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
+                  </p>
+                )}
               </div>
               <BouncingDots />
             </div>
