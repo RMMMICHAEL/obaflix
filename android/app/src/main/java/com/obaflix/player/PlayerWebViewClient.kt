@@ -172,7 +172,6 @@ class PlayerWebViewClient(
             }
 
             val contentType = response.header("Content-Type", "application/octet-stream")!!
-            val body = response.body?.byteStream() ?: return null
             val headers = mutableMapOf(
                 "Cache-Control" to "public, max-age=3600",
                 "Access-Control-Allow-Origin" to "*",
@@ -183,10 +182,55 @@ class PlayerWebViewClient(
             // HTTP/2 não tem reasonPhrase — response.message é "" no OkHttp/H2,
             // e WebResourceResponse lança IllegalArgumentException se vazio.
             val reason = response.message.ifEmpty { "OK" }
-            WebResourceResponse(
-                contentType.substringBefore(";").trim(), "UTF-8", response.code, reason,
-                headers, body,
-            )
+
+            // Detecta M3U8 pelo Content-Type ou pela extensão na URL.
+            // O hls.js resolve URIs relativas do manifesto contra a URL do documento
+            // (obaflix.vercel.app), não contra a origem real do CDN. Por isso linhas como
+            // "/hls/<token>" viram "https://obaflix.vercel.app/hls/<token>" → 404 →
+            // levelLoadError. A correção: reescrever URIs relativas para absolutas (CDN)
+            // antes de entregar o M3U8 ao hls.js. Depois de reescritas, as requisições
+            // aos níveis/segmentos caem no branch 3 (host CDN) e seguem pelo fetchCdnDirect.
+            val ct = contentType.lowercase()
+            val urlLower = cdnUrl.lowercase()
+            val isM3u8 = ct.contains("mpegurl") || ct.contains("m3u") ||
+                urlLower.contains(".m3u8") || urlLower.contains(".txt")
+
+            if (isM3u8) {
+                val bodyText = response.body?.string() ?: return null
+                val normalized = bodyText.replace("\r\n", "\n").replace("\r", "\n")
+                val cdnBase = cdnUrl.substring(0, cdnUrl.lastIndexOf("/") + 1)
+                val cdnOrigin = try {
+                    URL(cdnUrl).let { "${it.protocol}://${it.host}" }
+                } catch (_: Exception) { "" }
+
+                val rewritten = normalized.split("\n").joinToString("\n") { line ->
+                    val trimmed = line.trim()
+                    when {
+                        // Linhas vazias, comentários e tags EXT-X: inalteradas
+                        trimmed.isEmpty() || trimmed.startsWith("#") -> line
+                        // URI já absoluta: mantém (branch 3 vai interceptar se for CDN)
+                        trimmed.startsWith("http://") || trimmed.startsWith("https://") -> line
+                        // Protocol-relative: força https
+                        trimmed.startsWith("//") -> "https:$trimmed"
+                        // Root-relative (/hls/<token> etc): resolve contra a origem do CDN
+                        trimmed.startsWith("/") -> cdnOrigin + trimmed
+                        // Path-relative (segment.ts etc): resolve contra a base do CDN
+                        else -> cdnBase + trimmed
+                    }
+                }
+                Log.d(TAG, "[intercept/cdn] m3u8 reescrito (${normalized.lines().size} linhas): base=$cdnBase")
+                headers.remove("Content-Length") // tamanho mudou após reescrita
+                WebResourceResponse(
+                    "application/vnd.apple.mpegurl", "UTF-8", response.code, reason,
+                    headers, rewritten.toByteArray(Charsets.UTF_8).inputStream(),
+                )
+            } else {
+                val body = response.body?.byteStream() ?: return null
+                WebResourceResponse(
+                    contentType.substringBefore(";").trim(), "UTF-8", response.code, reason,
+                    headers, body,
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "[intercept/cdn] erro ao buscar $cdnUrl: ${e.message}")
             null
