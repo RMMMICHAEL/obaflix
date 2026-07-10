@@ -476,7 +476,7 @@ async function extractBig(html: string): Promise<string | null> {
 // ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
 // Pipeline: GET ajax.php (base64 embeds) → decode → POST getVideo → securedLink
 // Logging: resolution time, server, hash, expires, HLS URL, failure reason.
-async function extractPlayerflix(parsed: URL): Promise<string | null> {
+async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; referer: string } | null> {
   const tmdbId = parsed.searchParams.get("id") ?? "";
   const type = parsed.searchParams.get("type") ?? "tv";
   const season = parsed.searchParams.get("season") ?? "1";
@@ -602,7 +602,8 @@ async function extractPlayerflix(parsed: URL): Promise<string | null> {
     failReason: streamUrl ? null : "securedLink_and_videoSource_empty",
   });
 
-  return streamUrl ?? null;
+  if (!streamUrl) return null;
+  return { streamUrl, referer: `https://${server}/video/${hash}` };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -720,7 +721,9 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   } else if (hostname.includes("playerflix.ink")) {
     const t = Date.now();
     xlog("playerflix/start", { id: parsed.searchParams.get("id") ?? "", type: parsed.searchParams.get("type") ?? "tv", season: parsed.searchParams.get("season") ?? "", episode: parsed.searchParams.get("episode") ?? "" });
-    streamUrl = await extractPlayerflix(parsed);
+    const pfResult = await extractPlayerflix(parsed);
+    streamUrl = pfResult?.streamUrl ?? null;
+    if (pfResult?.referer) referer = pfResult.referer;
     xlog("playerflix/total", { ms: Date.now() - t, found: !!streamUrl });
 
   } else {
