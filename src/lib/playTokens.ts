@@ -235,6 +235,7 @@ interface StreamTokenPayload {
   uah: string;  // hash do User-Agent
   exp: number;
   th: string;   // token hash para o sorted set de streams ativos
+  mfst?: string; // manifest HLS inline (CDNs com IP-bound signing)
 }
 
 const STREAM_TOKEN_TTL_MS = 5 * 60 * 1000; // slot liberado pelo zrem no proxy; TTL é só fallback p/ "nunca reproduziu"
@@ -245,13 +246,14 @@ export async function createStreamToken(
   referer: string | null,
   clientIp: string,
   userAgent: string,
+  manifest?: string,
 ): Promise<{ token: string; accepted: boolean }> {
   const expiresAt = Date.now() + STREAM_TOKEN_TTL_MS;
   const th = crypto.randomBytes(12).toString("hex");
 
   const accepted = await registerStream(userId, th, expiresAt);
   if (!accepted) return { token: "", accepted: false };
-  tlog("create", userId, { th: th.slice(0, 8), expiresInSec: Math.round(STREAM_TOKEN_TTL_MS / 1000) });
+  tlog("create", userId, { th: th.slice(0, 8), expiresInSec: Math.round(STREAM_TOKEN_TTL_MS / 1000), hasManifest: !!manifest });
 
   const [key] = keys();
   const payload: StreamTokenPayload = {
@@ -262,6 +264,7 @@ export async function createStreamToken(
     uah: hashUrl(userAgent),
     exp: expiresAt,
     th,
+    ...(manifest ? { mfst: manifest } : {}),
   };
 
   const plain = JSON.stringify(payload);
@@ -271,7 +274,7 @@ export async function createStreamToken(
   const tag = cipher.getAuthTag();
   const token = `${iv.toString("base64url")}.${enc.toString("base64url")}.${tag.toString("base64url")}`;
 
-  audit("stream_started", { userId, ip: clientIp, ua: userAgent, detail: `tipo: ${streamUrl.includes(".mp4") ? "mp4" : "hls"}` });
+  audit("stream_started", { userId, ip: clientIp, ua: userAgent, detail: `tipo: ${streamUrl.includes(".mp4") ? "mp4" : "hls"}${manifest ? " manifest_inline" : ""}` });
   return { token, accepted: true };
 }
 
@@ -280,7 +283,7 @@ export async function resolveStreamToken(
   userId: string,
   clientIp: string,
   userAgent: string,
-): Promise<{ streamUrl: string; referer: string | null; ipMismatch?: boolean } | null> {
+): Promise<{ streamUrl: string; referer: string | null; ipMismatch?: boolean; manifest?: string } | null> {
   const tokenParts = token.split(".");
   console.log(`[token/resolve] uid=...${userId.slice(-8)} parts=${tokenParts.length} tokenLen=${token.length}`);
 
@@ -341,8 +344,8 @@ export async function resolveStreamToken(
         after: afterZrem,
         ttlSec,
       });
-      console.log(`[token/resolve] OK uid=...${userId.slice(-8)} ipMismatch=${ipMismatch} referer=${(p.ref ?? "null").slice(0, 60)}`);
-      return { streamUrl: p.url, referer: p.ref, ipMismatch };
+      console.log(`[token/resolve] OK uid=...${userId.slice(-8)} ipMismatch=${ipMismatch} hasManifest=${!!p.mfst} referer=${(p.ref ?? "null").slice(0, 60)}`);
+      return { streamUrl: p.url, referer: p.ref, ipMismatch, manifest: p.mfst };
     } catch (e: any) {
       console.log(`[token/resolve] decrypt_failed keyIndex=${keyIndex} err=${String(e?.message ?? "").slice(0, 60)}`);
     }

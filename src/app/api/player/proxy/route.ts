@@ -64,7 +64,7 @@ async function resolveTarget(
   userId: string,
   ip: string,
   ua: string,
-): Promise<{ url: string; ref: string } | { denied: string }> {
+): Promise<{ url: string; ref: string; manifest?: string } | { denied: string }> {
   const params = req.nextUrl.searchParams;
 
   // Modo 1: stream token opaco (primeira requisição do player — busca o M3U8 mestre)
@@ -75,7 +75,7 @@ async function resolveTarget(
     if (resolved.ipMismatch) {
       audit("stream_started", { userId, ip, ua, detail: "IP mismatch (rede móvel — permitido)" });
     }
-    return { url: resolved.streamUrl, ref: resolved.referer ?? "" };
+    return { url: resolved.streamUrl, ref: resolved.referer ?? "", manifest: resolved.manifest };
   }
 
   // Modo 2: segmento HMAC assinado (reescrita interna do M3U8)
@@ -152,8 +152,37 @@ export async function GET(req: NextRequest) {
     return deny(target.denied, ip, "stream_rejected");
   }
 
-  const { url, ref } = target;
-  plog(id, "resolved", { url: url.slice(0, 80), ref: (ref || "").slice(0, 60) });
+  const { url, ref, manifest } = target;
+  plog(id, "resolved", { url: url.slice(0, 80), ref: (ref || "").slice(0, 60), hasManifest: !!manifest });
+
+  // Manifest inline: extraído durante o extract na mesma instância/IP do CDN.
+  // Serve direto sem ir ao CDN, evitando falha de IP-bound md5 (403 upstream).
+  if (manifest) {
+    plog(id, "manifest_inline", { bytes: manifest.length });
+    let parsed2: URL;
+    try { parsed2 = new URL(url); } catch { parsed2 = new URL("https://unknown.invalid"); }
+    const base = url.endsWith("/") ? url : url.substring(0, url.lastIndexOf("/") + 1);
+    const proxyOrigin = req.nextUrl.origin;
+    const nextRef = ref || base;
+    const rewritten = manifest
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        let segUrl: string;
+        if (trimmed.startsWith("http")) segUrl = trimmed;
+        else if (trimmed.startsWith("/")) segUrl = parsed2.origin + trimmed;
+        else segUrl = base + trimmed;
+        const sig = signSegmentUrl(segUrl, userId);
+        const refParam = nextRef ? `&ref=${encodeURIComponent(nextRef)}` : "";
+        return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(segUrl)}&sig=${sig}${refParam}`;
+      })
+      .join("\n");
+    return new NextResponse(rewritten, {
+      status: 200,
+      headers: { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store, no-cache, must-revalidate, private" },
+    });
+  }
 
   let parsed: URL;
   try {

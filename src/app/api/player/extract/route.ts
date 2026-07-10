@@ -476,7 +476,7 @@ async function extractBig(html: string): Promise<string | null> {
 // ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
 // Pipeline: GET ajax.php (base64 embeds) → decode → POST getVideo → securedLink
 // Logging: resolution time, server, hash, expires, HLS URL, failure reason.
-async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; referer: string } | null> {
+async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; referer: string; manifest?: string } | null> {
   const tmdbId = parsed.searchParams.get("id") ?? "";
   const type = parsed.searchParams.get("type") ?? "tv";
   const season = parsed.searchParams.get("season") ?? "1";
@@ -603,7 +603,36 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
   });
 
   if (!streamUrl) return null;
-  return { streamUrl, referer: `https://${server}/video/${hash}` };
+
+  // Busca o manifest agora, na mesma instância/IP que gerou o securedLink.
+  // O CDN usa IP-bound md5 — o proxy rodaria em IP diferente e levaria 403.
+  const embedReferer = `https://${server}/video/${hash}`;
+  let manifest: string | undefined;
+  try {
+    const mRes = await fetch(streamUrl, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Referer": embedReferer,
+        "Origin": `https://${server}`,
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (mRes.ok) {
+      const ct = mRes.headers.get("content-type") ?? "";
+      if (ct.includes("mpegurl") || ct.includes("text") || mRes.url.includes(".m3u8") || mRes.url.includes(".txt")) {
+        manifest = await mRes.text();
+        xlog("playerflix/manifest", { ms: Date.now() - t0, server, hash, bytes: manifest.length, finalUrl: mRes.url.slice(0, 80) });
+      }
+    } else {
+      xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, hash, status: mRes.status });
+    }
+  } catch (e: any) {
+    xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, hash, err: String(e?.message ?? "").slice(0, 60) });
+  }
+
+  return { streamUrl, referer: embedReferer, manifest };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -638,7 +667,7 @@ function findM3u8(text: string): string | null {
 
 const EXTRACT_TIMEOUT_MS = 25000;
 
-async function doExtract(url: string): Promise<{ stream: string; tipo: string; referer?: string }> {
+async function doExtract(url: string): Promise<{ stream: string; tipo: string; referer?: string; manifest?: string }> {
   const parsed = await assertSafeUrl(url);
   const hostname = parsed.hostname;
   const pathname = parsed.pathname;
@@ -646,6 +675,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
 
   let streamUrl: string | null = null;
   let referer: string | undefined;
+  let manifest: string | undefined;
 
   if (pathname.includes("vast.php")) {
     const linkParam = parsed.searchParams.get("link");
@@ -724,7 +754,8 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     const pfResult = await extractPlayerflix(parsed);
     streamUrl = pfResult?.streamUrl ?? null;
     if (pfResult?.referer) referer = pfResult.referer;
-    xlog("playerflix/total", { ms: Date.now() - t, found: !!streamUrl });
+    if (pfResult?.manifest) manifest = pfResult.manifest;
+    xlog("playerflix/total", { ms: Date.now() - t, found: !!streamUrl, manifestBytes: pfResult?.manifest?.length ?? 0 });
 
   } else {
     const html = await fetchHtml(url, "https://megaflix.lat/");
@@ -741,7 +772,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   if (!streamUrl) return { stream: url, tipo: "iframe" };
 
   const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
-  return { stream: streamUrl, tipo, referer };
+  return { stream: streamUrl, tipo, referer, manifest };
 }
 
 export async function GET(req: NextRequest) {
@@ -791,7 +822,7 @@ export async function GET(req: NextRequest) {
   try {
     const result = await Promise.race([
       doExtract(url),
-      new Promise<{ stream: string; tipo: string; referer?: string }>((resolve) =>
+      new Promise<{ stream: string; tipo: string; referer?: string; manifest?: string }>((resolve) =>
         setTimeout(() => resolve({ stream: url, tipo: "iframe" }), EXTRACT_TIMEOUT_MS)
       ),
     ]);
@@ -806,6 +837,7 @@ export async function GET(req: NextRequest) {
       result.referer ?? null,
       ip,
       ua,
+      result.manifest,
     );
 
     if (!accepted) {
