@@ -42,7 +42,7 @@ function deny(reason: string, ip: string, event: Parameters<typeof audit>[0] = "
   return new NextResponse("Acesso negado", { status, headers: NO_STORE });
 }
 
-// ── Reescrita de segmentos com HMAC ──────────────────────────────────────────
+// ── Reescrita HLS ────────────────────────────────────────────────────────────
 
 function rewriteAttrUri(
   line: string, attr: string, base: string, parsedOrigin: string,
@@ -55,6 +55,48 @@ function rewriteAttrUri(
     const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
     return `${pre}${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(absUri)}&sig=${sig}${refParam}${post}`;
   });
+}
+
+/**
+ * Reescreve todas as URLs de uma playlist HLS (master ou variant) para passar
+ * pelo proxy com HMAC. Reutilizável para inline e upstream — evita duplicação.
+ */
+function rewriteHlsPlaylist(
+  text: string,
+  sourceUrl: string,       // URL original da playlist (para resolver paths relativos)
+  parsedOrigin: string,    // origem do CDN (ex: "https://cdn.example.com")
+  proxyOrigin: string,     // origem do nosso app (req.nextUrl.origin)
+  ref: string,
+  userId: string,
+): string {
+  const base = sourceUrl.endsWith("/")
+    ? sourceUrl
+    : sourceUrl.substring(0, sourceUrl.lastIndexOf("/") + 1);
+
+  return text
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+
+      if (trimmed.startsWith("#EXT-X-KEY") || trimmed.startsWith("#EXT-X-SESSION-KEY")) {
+        return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
+      }
+      if (trimmed.startsWith("#EXT-X-MEDIA")) {
+        return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
+      }
+      if (trimmed.startsWith("#")) return line;
+
+      let segUrl: string;
+      if (trimmed.startsWith("http")) segUrl = trimmed;
+      else if (trimmed.startsWith("/")) segUrl = parsedOrigin + trimmed;
+      else segUrl = base + trimmed;
+
+      const sig = signSegmentUrl(segUrl, userId);
+      const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
+      return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(segUrl)}&sig=${sig}${refParam}`;
+    })
+    .join("\n");
 }
 
 // ── Resolução do alvo da requisição ──────────────────────────────────────────
@@ -158,26 +200,11 @@ export async function GET(req: NextRequest) {
   // Manifest inline: extraído durante o extract na mesma instância/IP do CDN.
   // Serve direto sem ir ao CDN, evitando falha de IP-bound md5 (403 upstream).
   if (manifest) {
-    plog(id, "manifest_inline", { bytes: manifest.length });
-    let parsed2: URL;
-    try { parsed2 = new URL(url); } catch { parsed2 = new URL("https://unknown.invalid"); }
-    const base = url.endsWith("/") ? url : url.substring(0, url.lastIndexOf("/") + 1);
-    const proxyOrigin = req.nextUrl.origin;
-    const nextRef = ref || base;
-    const rewritten = manifest
-      .split("\n")
-      .map((line) => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) return line;
-        let segUrl: string;
-        if (trimmed.startsWith("http")) segUrl = trimmed;
-        else if (trimmed.startsWith("/")) segUrl = parsed2.origin + trimmed;
-        else segUrl = base + trimmed;
-        const sig = signSegmentUrl(segUrl, userId);
-        const refParam = nextRef ? `&ref=${encodeURIComponent(nextRef)}` : "";
-        return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(segUrl)}&sig=${sig}${refParam}`;
-      })
-      .join("\n");
+    let cdnOrigin: string;
+    try { cdnOrigin = new URL(url).origin; } catch { cdnOrigin = "https://unknown.invalid"; }
+    const nextRef = ref || url.substring(0, url.lastIndexOf("/") + 1);
+    const rewritten = rewriteHlsPlaylist(manifest, url, cdnOrigin, req.nextUrl.origin, nextRef, userId);
+    plog(id, "MASTER_INLINE", { bytes: manifest.length, lines: rewritten.split("\n").length });
     return new NextResponse(rewritten, {
       status: 200,
       headers: { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store, no-cache, must-revalidate, private" },
@@ -240,39 +267,10 @@ export async function GET(req: NextRequest) {
 
     if (isM3u8) {
       const text = await res.text();
-      const base = url.substring(0, url.lastIndexOf("/") + 1);
-      const proxyOrigin = req.nextUrl.origin;
-      const nextRef = ref || base;
-
-      const rewritten = text
-        .split("\n")
-        .map((line) => {
-          const trimmed = line.trim();
-          if (!trimmed) return line;
-
-          if (trimmed.startsWith("#EXT-X-KEY") || trimmed.startsWith("#EXT-X-SESSION-KEY")) {
-            return rewriteAttrUri(line, "URI", base, parsed.origin, proxyOrigin, nextRef, userId);
-          }
-          if (trimmed.startsWith("#EXT-X-MEDIA")) {
-            return rewriteAttrUri(line, "URI", base, parsed.origin, proxyOrigin, nextRef, userId);
-          }
-          if (trimmed.startsWith("#")) return line;
-
-          let segUrl: string;
-          if (trimmed.startsWith("http")) {
-            segUrl = trimmed;
-          } else if (trimmed.startsWith("/")) {
-            segUrl = parsed.origin + trimmed;
-          } else {
-            segUrl = base + trimmed;
-          }
-
-          const sig = signSegmentUrl(segUrl, userId);
-          const refParam = nextRef ? `&ref=${encodeURIComponent(nextRef)}` : "";
-          return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(segUrl)}&sig=${sig}${refParam}`;
-        })
-        .join("\n");
-
+      const isMaster = text.includes("#EXT-X-STREAM-INF");
+      const nextRef = ref || url.substring(0, url.lastIndexOf("/") + 1);
+      plog(id, isMaster ? "MASTER_UPSTREAM" : "VARIANT_UPSTREAM", { host: parsed.hostname, bytes: text.length });
+      const rewritten = rewriteHlsPlaylist(text, url, parsed.origin, req.nextUrl.origin, nextRef, userId);
       return new NextResponse(rewritten, {
         status: 200,
         headers: {
@@ -281,6 +279,8 @@ export async function GET(req: NextRequest) {
         },
       });
     }
+
+    plog(id, "SEGMENT_UPSTREAM", { host: parsed.hostname, status: res.status, ct: contentType.slice(0, 40) });
 
     const responseHeaders: Record<string, string> = {
       "Content-Type": contentType,
