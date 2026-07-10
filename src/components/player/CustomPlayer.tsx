@@ -441,6 +441,8 @@ export function CustomPlayer({
 
         tipo = data.tipo ?? "hls";
         if (tipo === "iframe") {
+          // playerflix nunca serve um iframe válido — iframe fallback = extração falhou
+          if (embedUrl.includes("playerflix.ink")) throw new Error("Stream não encontrado");
           playerUrl = data.stream!;
         } else {
           if (!data.streamToken) throw new Error("Stream não encontrado");
