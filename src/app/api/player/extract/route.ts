@@ -473,6 +473,137 @@ async function extractBig(html: string): Promise<string | null> {
   return src?.startsWith("http") ? src : null;
 }
 
+// ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
+// Pipeline: GET ajax.php (base64 embeds) → decode → POST getVideo → securedLink
+// Logging: resolution time, server, hash, expires, HLS URL, failure reason.
+async function extractPlayerflix(parsed: URL): Promise<string | null> {
+  const tmdbId = parsed.searchParams.get("id") ?? "";
+  const type = parsed.searchParams.get("type") ?? "tv";
+  const season = parsed.searchParams.get("season") ?? "1";
+  const episode = parsed.searchParams.get("episode") ?? "1";
+  const t0 = Date.now();
+
+  const ajaxUrl = type === "tv"
+    ? `https://playerflix.ink/pages/ajax.php?id=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`
+    : `https://playerflix.ink/pages/ajax.php?id=${encodeURIComponent(tmdbId)}&type=movie`;
+
+  // 1. Fetch embed options from playerflix
+  let html: string;
+  try {
+    const res = await fetch(ajaxUrl, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.5",
+        "Referer": "https://myembed.biz/",
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      xlog("playerflix/ajax", { ms: Date.now() - t0, status: res.status, id: tmdbId, type, error: `http_${res.status}` });
+      return null;
+    }
+    html = await res.text();
+  } catch (e: any) {
+    const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+    xlog("playerflix/ajax", { ms: Date.now() - t0, id: tmdbId, type, error: isTimeout ? "timeout_8000ms" : String(e?.message ?? "").slice(0, 60) });
+    return null;
+  }
+
+  // 2. Extract and decode base64 data-embed attributes
+  const embedMatches = [...html.matchAll(/data-embed=["']([^"']+)["']/g)];
+  const embeds = embedMatches.map((m) => {
+    try { return Buffer.from(m[1], "base64").toString("utf-8"); } catch { return null; }
+  }).filter(Boolean) as string[];
+
+  xlog("playerflix/embeds", { ms: Date.now() - t0, id: tmdbId, type, total: embedMatches.length, decoded: embeds.length });
+
+  if (embeds.length === 0) {
+    xlog("playerflix/no_embeds", { ms: Date.now() - t0, id: tmdbId, type, htmlLen: html.length, failReason: "no_data_embed_found" });
+    return null;
+  }
+
+  // 3. Prioritize embedplayer2.xyz, fallback to any embedplayer server
+  let targetUrl = embeds.find((u) => u.includes("embedplayer2.xyz"))
+    ?? embeds.find((u) => u.includes("embedplayer"))
+    ?? null;
+  let server = "embedplayer2.xyz";
+  if (targetUrl && !targetUrl.includes("embedplayer2.xyz")) {
+    try { server = new URL(targetUrl).hostname; } catch { server = "unknown"; }
+  }
+
+  if (!targetUrl) {
+    const hosts = embeds.map((u) => { try { return new URL(u).hostname; } catch { return "?"; } }).join(",");
+    xlog("playerflix/no_ep2", { ms: Date.now() - t0, id: tmdbId, type, embedHosts: hosts.slice(0, 100), failReason: "no_embedplayer_found" });
+    return null;
+  }
+
+  // 4. Extract hash from /video/{hash}
+  const hashMatch = targetUrl.match(/\/video\/([a-f0-9]{16,})/i);
+  const hash = hashMatch?.[1] ?? "";
+  if (!hash) {
+    xlog("playerflix/no_hash", { ms: Date.now() - t0, server, failReason: "hash_not_found_in_url" });
+    return null;
+  }
+
+  xlog("playerflix/getVideo", { server, hash });
+
+  // 5. POST to getVideo
+  const form = new URLSearchParams();
+  form.append("hash", hash);
+  form.append("r", "");
+
+  let data: Record<string, unknown>;
+  try {
+    const r2 = await fetch(`https://${server}/player/index.php?data=${hash}&do=getVideo`, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": `https://${server}/video/${hash}`,
+        "Origin": `https://${server}`,
+      },
+      body: form.toString(),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r2.ok) {
+      xlog("playerflix/result", { ms: Date.now() - t0, server, hash, status: r2.status, found: false, failReason: `http_${r2.status}` });
+      return null;
+    }
+    const text = await r2.text();
+    data = JSON.parse(text);
+  } catch (e: any) {
+    const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+    xlog("playerflix/result", { ms: Date.now() - t0, server, hash, found: false, failReason: isTimeout ? "timeout_8000ms" : String(e?.message ?? "").slice(0, 60) });
+    return null;
+  }
+
+  const securedLink = data.securedLink as string | undefined;
+  const videoSource = data.videoSource as string | undefined;
+  const streamUrl = securedLink || videoSource || null;
+
+  let expires: number | null = null;
+  if (securedLink) {
+    try { expires = Number(new URLSearchParams(securedLink.split("?")[1]).get("expires")); } catch { /**/ }
+  }
+
+  xlog("playerflix/result", {
+    ms: Date.now() - t0,
+    server,
+    hash,
+    expires,
+    hls: !!securedLink,
+    found: !!streamUrl,
+    failReason: streamUrl ? null : "securedLink_and_videoSource_empty",
+  });
+
+  return streamUrl ?? null;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractEvalScript(html: string): string | null {
@@ -584,6 +715,12 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
   } else if (hostname.includes("big") || hostname.includes("bigshare")) {
     const html = await fetchHtml(url, "https://megaflix.lat/");
     streamUrl = await extractBig(html);
+
+  } else if (hostname.includes("playerflix.ink")) {
+    const t = Date.now();
+    xlog("playerflix/start", { id: parsed.searchParams.get("id") ?? "", type: parsed.searchParams.get("type") ?? "tv", season: parsed.searchParams.get("season") ?? "", episode: parsed.searchParams.get("episode") ?? "" });
+    streamUrl = await extractPlayerflix(parsed);
+    xlog("playerflix/total", { ms: Date.now() - t, found: !!streamUrl });
 
   } else {
     const html = await fetchHtml(url, "https://megaflix.lat/");

@@ -210,10 +210,31 @@ export function CustomPlayer({
   // No site: remove rola3/rola4 (só funcionam com IP residencial via app nativo)
   const isDesktop = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
 
-  const allFontes: Fonte[] = [
+  const allFontes: Fonte[] = [];
+
+  // Player 1: playerflix.ink → embedplayer2.xyz (série e filme, sempre primeiro na lista).
+  // A renovação de token usa o fluxo existente: erro JW → auto-retry → extract(embedUrl)
+  // → novo securedLink, sem criar lógica de renovação paralela.
+  if (tmdbId) {
+    if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 1",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 1",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
+        tokenized: false,
+      });
+    }
+  }
+
+  allFontes.push(
     ...parseFontes(urlDub, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
-  ];
+  );
 
   // WatchPlayer: fonte sintética, não vem de urlDub/urlLeg — construída a partir do
   // tmdbId. Só no Electron/Android por enquanto (isDesktop), como opção extra ao final
