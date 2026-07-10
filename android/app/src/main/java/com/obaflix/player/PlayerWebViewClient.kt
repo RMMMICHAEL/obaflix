@@ -253,48 +253,35 @@ class PlayerWebViewClient(
             // Lemos como String para injetar o script de diagnóstico de erros JS.
             val bodyStr = response.body?.string() ?: return null
 
-            // Script de diagnóstico: captura erros JS fatais e exibe overlay vermelho.
-            // console.error (JW Player/hls.js) → só Toast, SEM overlay (para não bloquear o player).
-            // window.onerror / unhandledrejection → overlay + Toast (crash real do React/app).
+            // Script de diagnóstico: captura erros JS e envia via Toast/logcat.
+            // SEM overlay — o overlay bloqueava o player quando window.onerror era acionado
+            // com um Event object (não uma string) por falhas de carregamento de recursos no
+            // Android WebView, resultando em 'ERR:[object Object]' sobre o vídeo.
             val debugScript = """<script>(function(){""" +
                 """var _o=console.error;""" +
                 """function sa(x){""" +
                 """  if(x==null)return String(x);""" +
                 """  if(typeof x==='string'||typeof x==='number'||typeof x==='boolean')return String(x);""" +
-                """  if(x.stack)return x.stack;""" +
-                """  try{return JSON.stringify(x);}catch(e){return String(x);}""" +
+                """  if(x&&x.stack)return x.stack;""" +
+                """  try{return JSON.stringify(x);}catch(_){return String(x);}""" +
                 """}""" +
-                """var _done=false;""" +
-                """function report(msg){""" +
-                """  if(_done)return;_done=true;""" +
-                """  var s=msg.slice(0,400);""" +
-                """  try{window._obaflixBridge&&window._obaflixBridge.logError(s);}catch(ex){}""" +
-                """  _o.call(console,'[OBADEBUG]',s);""" +
-                """  try{var d=document.createElement('div');""" +
-                """  d.style='all:initial;position:fixed;bottom:0;left:0;right:0;top:40%;""" +
-                """z-index:2147483647;background:#900;color:#fff;padding:10px;""" +
-                """font:12px/1.5 monospace;overflow:auto;white-space:pre-wrap;word-break:break-all;';""" +
-                """  d.textContent='=== OBAFLIX FATAL ERROR ===\n'+s;""" +
-                """  (document.documentElement||document.body).appendChild(d);}catch(ex2){}""" +
+                """function toast(msg){""" +
+                """  try{window._obaflixBridge&&window._obaflixBridge.logError(msg.slice(0,300));}catch(_){}""" +
                 """}""" +
-                // console.error: apenas Toast/logcat — NÃO mostra overlay (JW Player e hls.js
-                // chamam console.error para erros de stream recuperáveis, o que bloqueava o player)
+                // console.error: Toast + logcat original. Sem overlay, sem recursão.
                 """var _b=false;""" +
-                """console.error=function(){_o.apply(console,arguments);""" +
+                """console.error=function(){""" +
+                """  _o.apply(console,arguments);""" +
                 """  if(_b)return;_b=true;""" +
                 """  try{var m=Array.from(arguments).map(sa).join(' | ');""" +
-                """  if(m&&m.length>2)try{window._obaflixBridge&&window._obaflixBridge.logError('[JS:err] '+m.slice(0,300));}catch(ex){}""" +
-                """  }catch(ex2){}finally{_b=false;}""" +
+                """  if(m&&m.length>2)toast('[JS:err] '+m);}catch(_){}finally{_b=false;}""" +
                 """};""" +
-                // Erros fatais (crash React, erro JS não tratado) → overlay + Toast
+                // window.onerror: ignora resource errors (m não é string = ErrorEvent do WebView).
+                // Só envia Toast para erros JS reais (com source + Error object).
                 """window.onerror=function(m,s,l,c,e){""" +
-                """  report('ERR:'+m+' @'+s+':'+l+(e&&e.stack?'\n'+e.stack.slice(0,300):''));""" +
+                """  if(typeof m!=='string')return false;""" +
+                """  try{toast('[ERR] '+m+(s?' @'+s+':'+l:'')+(e&&e.stack?'\n'+e.stack.slice(0,150):''));}catch(_){}""" +
                 """  return false;};""" +
-                // Promise rejections não tratadas → overlay + Toast
-                """window.addEventListener('unhandledrejection',function(e){""" +
-                """  var r=e.reason;""" +
-                """  var s=r&&r.stack?r.stack:(typeof r==='object'&&r!==null?JSON.stringify(r):String(r));""" +
-                """  report('REJ:'+s.slice(0,300));});""" +
                 """})();</script>"""
 
             // Kotlin Regex.replaceFirst só aceita String, não lambda — usa replace com flag.
