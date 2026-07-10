@@ -259,11 +259,22 @@ class PlayerWebViewClient(
             // Android WebView, resultando em 'ERR:[object Object]' sobre o vídeo.
             val debugScript = """<script>(function(){""" +
                 """var _o=console.error;""" +
+                // sa(): serializa qualquer valor, com suporte a refs circulares via replacer.
+                // Evita "[object Object]" mesmo para objetos do hls.js/JW Player com ciclos.
                 """function sa(x){""" +
                 """  if(x==null)return String(x);""" +
                 """  if(typeof x==='string'||typeof x==='number'||typeof x==='boolean')return String(x);""" +
                 """  if(x&&x.stack)return x.stack;""" +
-                """  try{return JSON.stringify(x);}catch(_){return String(x);}""" +
+                """  try{""" +
+                """    var seen=[];""" +
+                """    return JSON.stringify(x,function(k,v){""" +
+                """      if(typeof v==='object'&&v!==null){""" +
+                """        if(seen.indexOf(v)>=0)return'[circ]';""" +
+                """        seen.push(v);""" +
+                """      }""" +
+                """      return v;""" +
+                """    });""" +
+                """  }catch(_){return'['+typeof x+']';}""" +
                 """}""" +
                 """function toast(msg){""" +
                 """  try{window._obaflixBridge&&window._obaflixBridge.logError(msg.slice(0,300));}catch(_){}""" +
@@ -277,7 +288,7 @@ class PlayerWebViewClient(
                 """  if(m&&m.length>2)toast('[JS:err] '+m);}catch(_){}finally{_b=false;}""" +
                 """};""" +
                 // window.onerror: ignora resource errors (m não é string = ErrorEvent do WebView).
-                // Só envia Toast para erros JS reais (com source + Error object).
+                // Só envia Toast para erros JS reais com source + Error object.
                 """window.onerror=function(m,s,l,c,e){""" +
                 """  if(typeof m!=='string')return false;""" +
                 """  try{toast('[ERR] '+m+(s?' @'+s+':'+l:'')+(e&&e.stack?'\n'+e.stack.slice(0,150):''));}catch(_){}""" +

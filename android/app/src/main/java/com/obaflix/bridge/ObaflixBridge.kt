@@ -1,5 +1,6 @@
 package com.obaflix.bridge
 
+import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -54,10 +55,11 @@ class ObaflixBridge(
     }
 
     private fun resolveCallback(id: String, json: String) {
-        val escaped = json.replace("\\", "\\\\").replace("'", "\\'")
+        // Base64 evita qualquer problema de escape em JS (aspas, barras,  , etc.)
+        val b64 = Base64.encodeToString(json.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         webView.post {
             webView.evaluateJavascript(
-                "(function(){ var cb = (window._obaflixCallbacks||{})['$id']; if(cb) cb.resolve(JSON.parse('$escaped')); })();",
+                "(function(){var cb=(window._obaflixCallbacks||{})['$id'];if(cb){try{cb.resolve(JSON.parse(atob('$b64')));}catch(e){cb.reject(e);}}})()",
                 null
             )
         }

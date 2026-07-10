@@ -344,6 +344,11 @@ export default async function HomePage() {
           <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
         )}
 
+        {/* Top 10 Filmes Populares (IMDb MovieMeter via TMDB) */}
+        {popMovies.length > 0 && (
+          <RankRow titulo="Top 10 Filmes Populares" items={popMovies.slice(0, 10)} verTodosHref="/melhores" />
+        )}
+
         {/* Filmes Mais Bem Avaliados */}
         {topMovies.length > 0 && (
           <LandscapeRow titulo="Filmes Mais Bem Avaliados" items={topMovies} verTodosHref="/filmes" />
@@ -352,6 +357,11 @@ export default async function HomePage() {
         {/* Séries Populares (TMDB) */}
         {popTV.length > 0 && (
           <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
+        )}
+
+        {/* Top 10 Séries Populares (IMDb TVMeter via TMDB) */}
+        {popTV.length > 0 && (
+          <RankRow titulo="Top 10 Séries Populares" items={popTV.slice(0, 10)} verTodosHref="/melhores" />
         )}
 
         {/* Top 10 Séries — direto do banco, sempre 10 itens */}
