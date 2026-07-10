@@ -135,7 +135,7 @@ async function markUsed(token: string): Promise<boolean> {
 
 // ── Limite de streams simultâneos (Redis sorted set por expiresAt) ────────────
 
-const MAX_CONCURRENT = 3;
+const MAX_CONCURRENT = 5;
 
 async function registerStream(userId: string, tokenHash: string, expiresAt: number): Promise<boolean> {
   const redis = getRedis();
@@ -237,7 +237,7 @@ interface StreamTokenPayload {
   th: string;   // token hash para o sorted set de streams ativos
 }
 
-const STREAM_TOKEN_TTL_MS = 20 * 60 * 1000;
+const STREAM_TOKEN_TTL_MS = 5 * 60 * 1000; // slot liberado pelo zrem no proxy; TTL é só fallback p/ "nunca reproduziu"
 
 export async function createStreamToken(
   userId: string,
