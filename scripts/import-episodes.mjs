@@ -144,13 +144,21 @@ async function main() {
     // Todas as séries com tmdbId
     series = await prisma.serie.findMany({ where: { tmdbId: { not: null } } });
   } else {
-    // Padrão: séries com tmdbId mas sem nenhum episódio
-    series = await prisma.serie.findMany({
-      where: {
-        tmdbId: { not: null },
-        episodios: { none: {} },
-      },
-    });
+    // Padrão: séries com tmdbId mas sem episódios
+    // Evita NOT EXISTS (timeout no Supabase) — duas queries rápidas + filtro em JS
+    process.stdout.write("  Consultando séries e episódios existentes...\n");
+    const [allSeries, seriesComEp] = await Promise.all([
+      prisma.serie.findMany({
+        where: { tmdbId: { not: null } },
+        select: { id: true, tmdbId: true, titulo: true },
+      }),
+      prisma.episodio.findMany({
+        select: { serieId: true },
+        distinct: ["serieId"],
+      }),
+    ]);
+    const comEpSet = new Set(seriesComEp.map((e) => e.serieId));
+    series = allSeries.filter((s) => !comEpSet.has(s.id));
   }
 
   if (LIMIT > 0) series = series.slice(0, LIMIT);
