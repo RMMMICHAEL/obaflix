@@ -305,7 +305,7 @@ export async function resolveStreamToken(
 
       if (p.exp < Date.now()) { audit("stream_rejected", { userId, ip: clientIp, detail: "token expirado" }); return null; }
       if (p.uid !== userId) { audit("stream_rejected", { userId, ip: clientIp, detail: "userId mismatch" }); return null; }
-      if (p.uah !== hashUrl(userAgent)) { audit("stream_rejected", { userId, ip: clientIp, ua: userAgent, detail: "UA mismatch" }); return null; }
+      // UA check removido — userId+IP já garantem unicidade; UA varia em alguns clientes HLS
 
       const ipMismatch = p.ih !== hashUrl(clientIp);
       // Libera o slot no sorted set de streams ativos agora que o manifest foi
