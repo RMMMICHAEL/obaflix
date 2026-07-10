@@ -526,12 +526,13 @@ async function extractPlayerflix(parsed: URL): Promise<string | null> {
     return null;
   }
 
-  // 3. Prioritize embedplayer2.xyz, fallback to any embedplayer server
+  // 3. Prioritize embedplayer2.xyz, fallback to qualquer servidor com /video/{hash}
   let targetUrl = embeds.find((u) => u.includes("embedplayer2.xyz"))
     ?? embeds.find((u) => u.includes("embedplayer"))
+    ?? embeds.find((u) => /\/video\/[a-f0-9]{16,}/i.test(u))
     ?? null;
   let server = "embedplayer2.xyz";
-  if (targetUrl && !targetUrl.includes("embedplayer2.xyz")) {
+  if (targetUrl) {
     try { server = new URL(targetUrl).hostname; } catch { server = "unknown"; }
   }
 
