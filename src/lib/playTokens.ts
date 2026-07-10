@@ -281,20 +281,30 @@ export async function resolveStreamToken(
   clientIp: string,
   userAgent: string,
 ): Promise<{ streamUrl: string; referer: string | null; ipMismatch?: boolean } | null> {
+  const tokenParts = token.split(".");
+  console.log(`[token/resolve] uid=...${userId.slice(-8)} parts=${tokenParts.length} tokenLen=${token.length}`);
+
   // Single-use: SET NX no Redis — atômico, funciona em múltiplas instâncias
   const used = await markUsed(token);
   if (!used) {
     audit("stream_rejected", { userId, ip: clientIp, detail: "token já consumido" });
+    console.log(`[token/resolve] REJECTED uid=...${userId.slice(-8)} reason=already_used`);
     return null;
   }
+  console.log(`[token/resolve] markUsed=ok uid=...${userId.slice(-8)}`);
 
   const [kCurr, kPrev] = keys();
   const redis = getRedis();
+  let keyIndex = 0;
 
   for (const key of [kCurr, kPrev]) {
+    keyIndex++;
     try {
       const parts = token.split(".");
-      if (parts.length !== 3) continue;
+      if (parts.length !== 3) {
+        console.log(`[token/resolve] REJECTED reason=bad_format parts=${parts.length}`);
+        continue;
+      }
       const iv = Buffer.from(parts[0], "base64url");
       const enc = Buffer.from(parts[1], "base64url");
       const tag = Buffer.from(parts[2], "base64url");
@@ -303,14 +313,22 @@ export async function resolveStreamToken(
       const plain = Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
       const p = JSON.parse(plain) as StreamTokenPayload;
 
-      if (p.exp < Date.now()) { audit("stream_rejected", { userId, ip: clientIp, detail: "token expirado" }); return null; }
-      if (p.uid !== userId) { audit("stream_rejected", { userId, ip: clientIp, detail: "userId mismatch" }); return null; }
+      console.log(`[token/resolve] decrypted keyIndex=${keyIndex} exp=${p.exp} now=${Date.now()} uid_ok=${p.uid === userId} url=${p.url.slice(0, 60)}`);
+
+      if (p.exp < Date.now()) {
+        const agoSec = Math.round((Date.now() - p.exp) / 1000);
+        console.log(`[token/resolve] REJECTED reason=expired agoSec=${agoSec}`);
+        audit("stream_rejected", { userId, ip: clientIp, detail: `token expirado há ${agoSec}s` });
+        return null;
+      }
+      if (p.uid !== userId) {
+        console.log(`[token/resolve] REJECTED reason=uid_mismatch token_uid=...${p.uid.slice(-8)} req_uid=...${userId.slice(-8)}`);
+        audit("stream_rejected", { userId, ip: clientIp, detail: "userId mismatch" });
+        return null;
+      }
       // UA check removido — userId+IP já garantem unicidade; UA varia em alguns clientes HLS
 
       const ipMismatch = p.ih !== hashUrl(clientIp);
-      // Libera o slot no sorted set de streams ativos agora que o manifest foi
-      // consumido. Segmentos subsequentes usam HMAC (signSegmentUrl), não o slot.
-      // Isso permite troca de fonte sem acumular slots por 20 min (TTL do token).
       const streamKey = KEY.activeStreams(p.uid);
       const beforeZrem = await redis.zcard(streamKey);
       const zremCount = await redis.zrem(streamKey, p.th);
@@ -318,16 +336,20 @@ export async function resolveStreamToken(
       const ttlSec = await redis.ttl(streamKey);
       tlog("zrem", p.uid, {
         th: p.th.slice(0, 8),
-        removed: zremCount,   // 1 = ok, 0 = membro não encontrado (bug)
+        removed: zremCount,
         before: beforeZrem,
         after: afterZrem,
         ttlSec,
       });
+      console.log(`[token/resolve] OK uid=...${userId.slice(-8)} ipMismatch=${ipMismatch} referer=${(p.ref ?? "null").slice(0, 60)}`);
       return { streamUrl: p.url, referer: p.ref, ipMismatch };
-    } catch { /* tenta próxima chave */ }
+    } catch (e: any) {
+      console.log(`[token/resolve] decrypt_failed keyIndex=${keyIndex} err=${String(e?.message ?? "").slice(0, 60)}`);
+    }
   }
 
-  audit("stream_rejected", { userId, ip: clientIp, detail: "descriptografia falhou" });
+  audit("stream_rejected", { userId, ip: clientIp, detail: "descriptografia falhou (ambas as chaves)" });
+  console.log(`[token/resolve] REJECTED reason=decrypt_failed_both_keys uid=...${userId.slice(-8)}`);
   return null;
 }
 

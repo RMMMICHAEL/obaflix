@@ -16,6 +16,12 @@ const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, privat
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
+function rid() { return Math.random().toString(36).slice(2, 10); }
+function plog(id: string, step: string, extra?: Record<string, unknown>) {
+  const parts = Object.entries(extra ?? {}).map(([k, v]) => `${k}=${String(v)}`).join(" ");
+  console.log(`[proxy/${step}] rid=${id}${parts ? " " + parts : ""}`);
+}
+
 // ── Helpers de contexto da requisição ────────────────────────────────────────
 
 function clientIp(req: NextRequest): string {
@@ -89,10 +95,14 @@ async function resolveTarget(
 // ── Handler principal ─────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  const id = rid();
   const ip = clientIp(req);
   const ua = clientUa(req);
+  const mode = req.nextUrl.searchParams.has("t") ? "token" : req.nextUrl.searchParams.has("url") ? "segment" : "unknown";
+  plog(id, "start", { mode, ip: ip.slice(0, 16) });
 
   if (await isIpBlocked(ip)) {
+    plog(id, "reject", { reason: "ip_blocked" });
     return deny("IP bloqueado temporariamente", ip, "ip_blocked", 429);
   }
 
@@ -101,44 +111,55 @@ export async function GET(req: NextRequest) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !origin.includes(host)) {
+    plog(id, "reject", { reason: "origin_mismatch", origin, host });
     await recordAbuseAttempt(ip);
     return deny(`origin inválida: ${origin}`, ip, "origin_rejected");
   }
 
   const refererHeader = req.headers.get("referer");
   if (refererHeader && host && !refererHeader.includes(host)) {
+    plog(id, "reject", { reason: "referer_external", referer: refererHeader.slice(0, 60) });
     await recordAbuseAttempt(ip);
     return deny(`referer externo: ${refererHeader.slice(0, 80)}`, ip, "origin_rejected");
   }
 
   const session = await getServerSession(authOptions);
   if (!session?.user) {
+    plog(id, "reject", { reason: "no_session" });
     await recordAbuseAttempt(ip);
     audit("auth_failure", { ip, ua, detail: "/proxy sem sessão" });
     return deny("não autenticado", ip, "stream_rejected", 401);
   }
 
   const userId = (session.user as { id: string }).id;
-  if (!userId) return deny("sessão inválida", ip, "stream_rejected", 401);
+  if (!userId) {
+    plog(id, "reject", { reason: "no_userid" });
+    return deny("sessão inválida", ip, "stream_rejected", 401);
+  }
+  plog(id, "auth_ok", { uid: userId.slice(-8) });
 
   let target: Awaited<ReturnType<typeof resolveTarget>>;
   try {
     target = await resolveTarget(req, userId, ip, ua);
   } catch (err: any) {
+    plog(id, "reject", { reason: "resolve_exception", err: String(err?.message).slice(0, 80) });
     console.error("[player/proxy] erro ao resolver alvo:", err?.message);
     return new NextResponse("Erro interno ao resolver stream", { status: 500, headers: NO_STORE });
   }
   if ("denied" in target) {
+    plog(id, "reject", { reason: "resolve_denied", detail: target.denied });
     await recordAbuseAttempt(ip);
     return deny(target.denied, ip, "stream_rejected");
   }
 
   const { url, ref } = target;
+  plog(id, "resolved", { url: url.slice(0, 80), ref: (ref || "").slice(0, 60) });
 
   let parsed: URL;
   try {
     parsed = await assertSafeUrl(url);
   } catch (e: any) {
+    plog(id, "reject", { reason: "ssrf", err: String(e?.message).slice(0, 60) });
     audit("stream_rejected", { ip, detail: `SSRF: ${String(e?.message).slice(0, 80)}` });
     return deny("URL inválida", ip, "stream_rejected", 400);
   }
@@ -166,14 +187,18 @@ export async function GET(req: NextRequest) {
     const rangeHeader = req.headers.get("range");
     if (rangeHeader) headers["Range"] = rangeHeader;
 
+    plog(id, "fetch_start", { host: parsed.hostname, referer: (headers["Referer"] ?? "—").slice(0, 60), origin: spoofedOrigin.slice(0, 60) });
+
     const res = await fetch(url, {
       headers,
       signal: AbortSignal.timeout(20000),
       redirect: "follow",
     });
 
+    plog(id, "fetch_done", { status: res.status, ct: res.headers.get("content-type")?.slice(0, 40) ?? "—" });
+
     if (!res.ok) {
-      console.warn("[player/proxy] upstream error", { status: res.status, url: url.slice(0, 100) });
+      plog(id, "upstream_error", { status: res.status, url: url.slice(0, 120) });
       return new NextResponse("Erro ao carregar conteúdo", { status: res.status });
     }
 
