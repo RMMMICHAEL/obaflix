@@ -1011,30 +1011,36 @@ export function CustomPlayer({
 
       {/* ── Main video area ── */}
       <div className="flex-1 relative">
-        {/* iframe */}
-        {streamTipo === "iframe" && streamUrl ? (
-          <iframe
-            key={streamUrl}
-            src={streamUrl}
-            className="absolute inset-0 w-full h-full border-0"
-            allow="autoplay; fullscreen; picture-in-picture"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-          />
-        ) : streamTipo === "native" ? (
-          /* Native video (rola4 em Safari/iOS sem CORS) */
+        {/* JW Player container — sempre no DOM para evitar removeChild do reconciliador React:
+            JW Player move/substitui o nó internamente; se React o desmontar ao trocar de
+            branch (hls → iframe), o nó original não é mais filho do pai esperado → erro.
+            Escondemos com CSS em vez de desmontar. */}
+        <div
+          id="jw-player-container"
+          className={`absolute inset-0 w-full h-full${
+            streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
+          }`}
+          dangerouslySetInnerHTML={{ __html: "" }}
+        />
+
+        {/* Native video (rola4 em Safari/iOS sem CORS) */}
+        {streamTipo === "native" && (
           <video
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-contain"
             playsInline
             preload="auto"
           />
-        ) : (
-          /* JW Player container — dangerouslySetInnerHTML previne conflito de removeChild
-             entre o reconciliador do React e as mutações de DOM do JW Player */
-          <div
-            id="jw-player-container"
-            className="absolute inset-0 w-full h-full"
-            dangerouslySetInnerHTML={{ __html: "" }}
+        )}
+
+        {/* iframe */}
+        {streamTipo === "iframe" && streamUrl && (
+          <iframe
+            key={streamUrl}
+            src={streamUrl}
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; fullscreen; picture-in-picture"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
           />
         )}
 
