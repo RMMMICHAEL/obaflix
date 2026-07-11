@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, Clock, User } from "lucide-react";
+import { Play, Star, Clock, Trophy, User } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickTrailer } from "@/lib/tmdb";
@@ -117,6 +117,11 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
               {filme.nota && (
                 <span className="flex items-center gap-1.5 text-yellow-400 font-semibold">
                   <Star size={14} fill="currentColor" /> {filme.nota.toFixed(1)}
+                </span>
+              )}
+              {filme.top250 && (
+                <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
+                  <Trophy size={14} fill="currentColor" /> Top {filme.top250}
                 </span>
               )}
             </div>

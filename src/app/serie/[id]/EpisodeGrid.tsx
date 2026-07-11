@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Check, Play } from "lucide-react";
+import { Check, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
 interface Ep {
@@ -29,11 +29,13 @@ export function EpisodeGrid({
   episodios,
   temporadas,
   progresso = {},
+  ratingMap = {},
 }: {
   serieId: string;
   episodios: Ep[];
   temporadas: number[];
   progresso?: Record<string, EpProgress>;
+  ratingMap?: Record<string, number>;
 }) {
   const [temp, setTemp] = useState(temporadas[0] ?? 1);
   const eps = episodios.filter((e) => e.temporada === temp);
@@ -66,6 +68,7 @@ export function EpisodeGrid({
             isWatching && p.duracaoSeg
               ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100)
               : 0;
+          const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
 
           return (
             <Link
@@ -107,8 +110,13 @@ export function EpisodeGrid({
 
               {/* Info */}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="text-zinc-500 text-xs">EP {ep.numeroEp}</span>
+                  {epRating && (
+                    <span className="flex items-center gap-0.5 text-[10px] text-yellow-400 font-semibold">
+                      <Star size={9} fill="currentColor" /> {epRating.toFixed(1)}
+                    </span>
+                  )}
                   {isNovo(ep.createdAt) && !isWatched && (
                     <span className="text-[10px] bg-red-600 text-white px-1.5 py-0.5 rounded font-bold">NOVO</span>
                   )}

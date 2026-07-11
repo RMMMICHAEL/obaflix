@@ -1,10 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, User } from "lucide-react";
+import { Play, Star, Trophy, User } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, pickTrailer } from "@/lib/tmdb";
+import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, getTVSeasonDetails, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -61,6 +61,22 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     );
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
+
+  // Notas por episódio via TMDB (uma chamada por temporada, cacheadas 1h)
+  const seasonDetailsArr = serie.tmdbId
+    ? await Promise.all(temporadas.map((t) => getTVSeasonDetails(serie.tmdbId!, t)))
+    : [];
+
+  const epRatingMap: Record<string, number> = {};
+  for (const season of seasonDetailsArr) {
+    if (!season?.episodes) continue;
+    for (const ep of season.episodes) {
+      if (ep.vote_average > 0) {
+        epRatingMap[`${ep.season_number}_${ep.episode_number}`] = ep.vote_average;
+      }
+    }
+  }
+
   const trailer = pickTrailer(videos?.results);
   const cast = (credits?.cast ?? []).slice(0, 16);
 
@@ -128,6 +144,11 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
               {serie.nota && (
                 <span className="flex items-center gap-1.5 text-yellow-400 font-semibold">
                   <Star size={14} fill="currentColor" /> {serie.nota.toFixed(1)}
+                </span>
+              )}
+              {serie.top250 && (
+                <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
+                  <Trophy size={14} fill="currentColor" /> Top {serie.top250}
                 </span>
               )}
               <span className="bg-zinc-800 text-zinc-300 text-xs px-2.5 py-1 rounded-full capitalize border border-zinc-700">
@@ -208,7 +229,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
         {/* Episódios */}
         <div className="mt-10">
-          <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} progresso={progressoMap} />
+          <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} progresso={progressoMap} ratingMap={epRatingMap} />
         </div>
 
         {/* Recomendações */}

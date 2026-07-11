@@ -95,6 +95,9 @@ export const getMovieSimilar = (tmdbId: string | number) =>
 export const getTVSimilar = (tmdbId: string | number) =>
   tmdbFetch<TmdbPage>(`/tv/${tmdbId}/similar`);
 
+export const getTVSeasonDetails = (tmdbId: string | number, season: number) =>
+  tmdbFetch<TmdbSeasonDetails>(`/tv/${tmdbId}/season/${season}`);
+
 // ── Images / Logos / Backdrops ─────────────────────────────────────────────
 
 export interface TmdbImageEntry {
@@ -236,4 +239,16 @@ export interface TmdbCast {
   roles?: { character: string }[];
   profile_path?: string | null;
   order?: number;
+}
+
+export interface TmdbEpisodeDetails {
+  episode_number: number;
+  season_number: number;
+  vote_average: number;
+  vote_count: number;
+}
+
+export interface TmdbSeasonDetails {
+  season_number: number;
+  episodes: TmdbEpisodeDetails[];
 }
