@@ -212,37 +212,35 @@ export function CustomPlayer({
 
   const allFontes: Fonte[] = [];
 
-  // Player 1: playerflix.ink → embedplayer2.xyz (série e filme, sempre primeiro na lista).
-  // A renovação de token usa o fluxo existente: erro JW → auto-retry → extract(embedUrl)
-  // → novo securedLink, sem criar lógica de renovação paralela.
+  // Player 1: webcinevs2.com — MP4 direto via Cloudflare CDN
   if (tmdbId) {
     if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
-        tokenized: false,
-      });
-    } else if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 1",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
-        tokenized: false,
-      });
-    }
-  }
-
-  // Player 2: webcinevs2.com — MP4 direto via Cloudflare CDN
-  if (tmdbId) {
-    if (conteudoTipo === "serie" && temporada && numeroEp) {
-      allFontes.push({
-        label: "Player 2",
         embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}&q=${encodeURIComponent(titulo)}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "filme") {
       allFontes.push({
-        label: "Player 2",
+        label: "Player 1",
         embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=movie&q=${encodeURIComponent(titulo)}`,
+        tokenized: false,
+      });
+    }
+  }
+
+  // Player 2: playerflix.ink → embedplayer2.xyz
+  if (tmdbId) {
+    if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 2",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 2",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
         tokenized: false,
       });
     }
