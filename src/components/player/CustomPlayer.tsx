@@ -231,6 +231,23 @@ export function CustomPlayer({
     }
   }
 
+  // Player 2: webcinevs2.com — MP4 direto via Cloudflare CDN
+  if (tmdbId) {
+    if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 2",
+        embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}&q=${encodeURIComponent(titulo)}`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 2",
+        embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=movie&q=${encodeURIComponent(titulo)}`,
+        tokenized: false,
+      });
+    }
+  }
+
   allFontes.push(
     ...parseFontes(urlDub, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
@@ -441,8 +458,8 @@ export function CustomPlayer({
 
         tipo = data.tipo ?? "hls";
         if (tipo === "iframe") {
-          // playerflix nunca serve um iframe válido — iframe fallback = extração falhou
-          if (embedUrl.includes("playerflix.ink")) throw new Error("Stream não encontrado");
+          // esses players nunca servem iframe válido — iframe fallback = extração falhou
+          if (embedUrl.includes("playerflix.ink") || embedUrl.includes("webcinevs2.com")) throw new Error("Stream não encontrado");
           playerUrl = data.stream!;
         } else {
           if (!data.streamToken) throw new Error("Stream não encontrado");

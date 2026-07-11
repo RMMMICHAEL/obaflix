@@ -473,6 +473,198 @@ async function extractBig(html: string): Promise<string | null> {
   return src?.startsWith("http") ? src : null;
 }
 
+// ── Webcine: webcinevs2.com ───────────────────────────────────────────────────
+// Pipeline: refresh JWT → search by title → verify tmdb_id → find episodeId
+//           → get videos → get encrypted URL → resolve-url → follow redirect
+
+let webcineTokenCache: { token: string; expiresAt: number } | null = null;
+
+async function getWebcineToken(): Promise<string> {
+  if (webcineTokenCache && Date.now() < webcineTokenCache.expiresAt - 300_000) {
+    return webcineTokenCache.token;
+  }
+  const refreshToken = process.env.WEBCINE_REFRESH_TOKEN;
+  if (!refreshToken) throw new Error("WEBCINE_REFRESH_TOKEN not set");
+  const deviceId = process.env.WEBCINE_DEVICE_ID ?? "";
+
+  const res = await fetch("https://webcinevs2.com/api/auth/refresh", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-device-id": deviceId,
+      "User-Agent": UA,
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`webcine refresh HTTP ${res.status}`);
+  const data = await res.json();
+  const token = data.token as string;
+  if (!token) throw new Error("webcine refresh: no token");
+
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+    webcineTokenCache = { token, expiresAt: (payload.exp as number) * 1000 };
+  } catch {
+    webcineTokenCache = { token, expiresAt: Date.now() + 25 * 24 * 60 * 60 * 1000 };
+  }
+  return token;
+}
+
+async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer: string } | null> {
+  const tmdbId = parsed.searchParams.get("id") ?? "";
+  const type = parsed.searchParams.get("type") ?? "tv";
+  const season = parseInt(parsed.searchParams.get("season") ?? "1", 10);
+  const episode = parseInt(parsed.searchParams.get("episode") ?? "1", 10);
+  const titleHint = parsed.searchParams.get("q") ?? "";
+
+  if (!tmdbId) return null;
+
+  const t0 = Date.now();
+  const deviceId = process.env.WEBCINE_DEVICE_ID ?? "";
+  const profileId = process.env.WEBCINE_PROFILE_ID ?? "";
+
+  const apiHeaders = (token: string) => ({
+    "Authorization": `Bearer ${token}`,
+    "x-device-id": deviceId,
+    "Accept": "application/json",
+    "User-Agent": UA,
+  });
+
+  try {
+    const token = await getWebcineToken();
+
+    // 1. Find internal series/movie ID by searching and verifying tmdb_id
+    const searchQ = titleHint || tmdbId;
+    const searchRes = await fetch(
+      `https://webcinevs2.com/api/search?q=${encodeURIComponent(searchQ)}`,
+      { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) },
+    );
+    if (!searchRes.ok) {
+      xlog("webcine/search_err", { ms: Date.now() - t0, status: searchRes.status });
+      return null;
+    }
+    const searchData = await searchRes.json();
+    const candidates: Array<{ id: number; title: string; type: string }> = searchData.data ?? [];
+
+    let internalId: number | null = null;
+    let episodeId: number | null = null;
+
+    for (const c of candidates.slice(0, 6)) {
+      const endpoint = type === "movie" ? "movies" : "series";
+      const detailRes = await fetch(
+        `https://webcinevs2.com/api/${endpoint}/${c.id}?profile_id=${profileId}`,
+        { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) },
+      );
+      if (!detailRes.ok) continue;
+      const detail = await detailRes.json();
+
+      if (String(detail.tmdb_id) !== String(tmdbId)) continue;
+      internalId = c.id;
+
+      if (type === "movie") {
+        // For movies, the video list uses "episodes" mapped to the movie itself
+        // Try getting the movie's video endpoint directly
+        const movVideosRes = await fetch(
+          `https://webcinevs2.com/api/streaming/movies/${c.id}/videos?platform=web&device_type=web&profile_id=${profileId}`,
+          { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) },
+        );
+        if (movVideosRes.ok) {
+          const movVideos = await movVideosRes.json();
+          const vid = (movVideos.videos ?? []).find((v: any) => !v.is_premium && !v.locked) ?? (movVideos.videos ?? [])[0];
+          if (vid) { episodeId = vid.id; break; }
+        }
+        break;
+      } else {
+        const seasons: Array<{ id: number; number: number; episodes: Array<{ id: number; number: number }> }> = detail.seasons ?? [];
+        const targetSeason = seasons.find((s) => s.number === season);
+        if (!targetSeason) break;
+        const targetEp = targetSeason.episodes.find((e) => e.number === episode);
+        if (targetEp) { episodeId = targetEp.id; }
+        break;
+      }
+    }
+
+    if (!internalId || !episodeId) {
+      xlog("webcine/not_found", { ms: Date.now() - t0, tmdbId, season, episode, type, q: searchQ.slice(0, 30) });
+      return null;
+    }
+
+    xlog("webcine/found", { ms: Date.now() - t0, tmdbId, internalId, episodeId, type });
+
+    // 2. Get video list
+    const videosUrl = type === "movie"
+      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/videos?platform=web&device_type=web&profile_id=${profileId}`
+      : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/videos?platform=web&device_type=web&profile_id=${profileId}`;
+
+    const videosRes = await fetch(videosUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
+    if (!videosRes.ok) {
+      xlog("webcine/videos_err", { ms: Date.now() - t0, episodeId, status: videosRes.status });
+      return null;
+    }
+    const videosData = await videosRes.json();
+    if (!videosData.has_subscription) {
+      xlog("webcine/no_sub", { ms: Date.now() - t0 });
+      return null;
+    }
+    const videos: Array<{ id: number; audio_type: string; is_premium: boolean; locked: boolean }> = videosData.videos ?? [];
+    const bestVideo = videos.find((v) => !v.is_premium && !v.locked) ?? videos[0];
+    if (!bestVideo) return null;
+
+    xlog("webcine/video_sel", { ms: Date.now() - t0, videoId: bestVideo.id, audio: bestVideo.audio_type });
+
+    // 3. Get encrypted video URL
+    const videoDetailUrl = type === "movie"
+      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/video/${bestVideo.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`
+      : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/video/${bestVideo.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`;
+
+    const videoDetailRes = await fetch(videoDetailUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
+    if (!videoDetailRes.ok) {
+      xlog("webcine/video_detail_err", { ms: Date.now() - t0, status: videoDetailRes.status });
+      return null;
+    }
+    const videoDetail = await videoDetailRes.json();
+    const encryptedUrl = videoDetail.video_url as string;
+    const sessionId = videoDetail.session_id as number;
+    if (!encryptedUrl || !sessionId) return null;
+
+    // 4. Resolve URL (decrypt)
+    const resolveRes = await fetch("https://webcinevs2.com/api/streaming/resolve-url", {
+      method: "POST",
+      headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: encryptedUrl, session_id: sessionId, device_id: deviceId, platform: "web", device_type: "web" }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resolveRes.ok) {
+      xlog("webcine/resolve_err", { ms: Date.now() - t0, status: resolveRes.status });
+      return null;
+    }
+    const resolveData = await resolveRes.json();
+    const rawUrl = resolveData.url as string;
+    if (!rawUrl) return null;
+
+    // 5. Follow redirect to get final play-amz URL
+    let finalUrl = rawUrl;
+    try {
+      const headRes = await fetch(rawUrl, {
+        method: "HEAD",
+        headers: { "User-Agent": UA, "Referer": "https://webcinevs2.com/" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(8000),
+      });
+      const loc = headRes.headers.get("location");
+      if (loc && (headRes.status === 301 || headRes.status === 302)) finalUrl = loc;
+    } catch { /* use rawUrl */ }
+
+    xlog("webcine/ok", { ms: Date.now() - t0, tmdbId, type, season, episode, host: (() => { try { return new URL(finalUrl).hostname; } catch { return "?"; } })() });
+    return { streamUrl: finalUrl, referer: "https://webcinevs2.com/" };
+
+  } catch (e: any) {
+    xlog("webcine/error", { ms: Date.now() - t0, tmdbId, err: String(e?.message ?? "").slice(0, 80) });
+    return null;
+  }
+}
+
 // ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
 // Pipeline: GET ajax.php (base64 embeds) → decode → POST getVideo → securedLink
 // Logging: resolution time, server, hash, expires, HLS URL, failure reason.
@@ -756,6 +948,14 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     if (pfResult?.referer) referer = pfResult.referer;
     if (pfResult?.manifest) manifest = pfResult.manifest;
     xlog("playerflix/total", { ms: Date.now() - t, found: !!streamUrl, manifestBytes: pfResult?.manifest?.length ?? 0 });
+
+  } else if (hostname.includes("webcinevs2.com")) {
+    const t = Date.now();
+    xlog("webcine/start", { id: parsed.searchParams.get("id") ?? "", type: parsed.searchParams.get("type") ?? "tv", season: parsed.searchParams.get("season") ?? "", episode: parsed.searchParams.get("episode") ?? "" });
+    const wcResult = await extractWebcine(parsed);
+    streamUrl = wcResult?.streamUrl ?? null;
+    if (wcResult?.referer) referer = wcResult.referer;
+    xlog("webcine/total", { ms: Date.now() - t, found: !!streamUrl });
 
   } else {
     const html = await fetchHtml(url, "https://megaflix.lat/");
