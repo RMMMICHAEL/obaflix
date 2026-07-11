@@ -21,30 +21,42 @@ export async function POST(req: NextRequest) {
   const concluido = duracaoSeg ? progressoSeg > duracaoSeg * 0.9 : false;
   const epId: string | null = episodioId ?? null;
 
+  const updateData = {
+    progressoSeg, duracaoSeg, concluido, temporada, numeroEp, queued: false,
+    conteudoTipo,
+    filmeId: conteudoTipo === "filme" ? conteudoId : undefined,
+    serieId: conteudoTipo === "serie" ? conteudoId : undefined,
+  };
+  const createData = {
+    userId, conteudoId, conteudoTipo,
+    episodioId: epId,
+    temporada, numeroEp,
+    progressoSeg, duracaoSeg, concluido,
+    queued: false,
+    filmeId: conteudoTipo === "filme" ? conteudoId : undefined,
+    serieId: conteudoTipo === "serie" ? conteudoId : undefined,
+  };
+
   try {
-    await prisma.watchHistory.upsert({
-      where: { userId_conteudoId_episodioId: { userId, conteudoId, episodioId: epId } },
-      update: {
-        progressoSeg, duracaoSeg, concluido, temporada, numeroEp, queued: false,
-        conteudoTipo,
-        filmeId: conteudoTipo === "filme" ? conteudoId : undefined,
-        serieId: conteudoTipo === "serie" ? conteudoId : undefined,
-      },
-      create: {
-        userId,
-        conteudoId,
-        conteudoTipo,
-        episodioId: epId,
-        temporada,
-        numeroEp,
-        progressoSeg,
-        duracaoSeg,
-        concluido,
-        queued: false,
-        filmeId: conteudoTipo === "filme" ? conteudoId : undefined,
-        serieId: conteudoTipo === "serie" ? conteudoId : undefined,
-      },
-    });
+    if (epId === null) {
+      // filmes: episodioId=null — PostgreSQL não detecta conflito em unique com NULL,
+      // então upsert sempre faria INSERT duplicado. Usamos findFirst+update/create.
+      const existing = await prisma.watchHistory.findFirst({
+        where: { userId, conteudoId, episodioId: null },
+        select: { id: true },
+      });
+      if (existing) {
+        await prisma.watchHistory.update({ where: { id: existing.id }, data: updateData });
+      } else {
+        await prisma.watchHistory.create({ data: createData });
+      }
+    } else {
+      await prisma.watchHistory.upsert({
+        where: { userId_conteudoId_episodioId: { userId, conteudoId, episodioId: epId } },
+        update: updateData,
+        create: createData,
+      });
+    }
 
     // Quando um episódio é concluído, pré-enfileira o próximo na lista "Continuar Assistindo"
     if (concluido && conteudoTipo === "serie" && epId && temporada != null && numeroEp != null) {
