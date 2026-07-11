@@ -5,7 +5,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Film, Tv, LayoutDashboard, Search, Plus, Trash2, Edit2,
-  ChevronLeft, ChevronRight, Loader2, Check, X, ListVideo,
+  ChevronLeft, ChevronRight, Loader2, Check, X, ListVideo, Trophy,
 } from "lucide-react";
 import Image from "next/image";
 
@@ -147,6 +147,8 @@ export default function AdminPage() {
 
 function Dashboard({ headers }: { headers: Record<string, string> }) {
   const [stats, setStats] = useState<any>(null);
+  const [syncState, setSyncState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [syncResult, setSyncResult] = useState<string>("");
 
   useEffect(() => {
     fetch("/api/admin/stats", { headers })
@@ -154,6 +156,23 @@ function Dashboard({ headers }: { headers: Record<string, string> }) {
       .then((d) => { if (d && typeof d.filmes === "number") setStats(d); })
       .catch(() => {});
   }, []);
+
+  const syncTop250 = async () => {
+    setSyncState("loading");
+    setSyncResult("");
+    try {
+      const r = await fetch("/api/admin/sync-top250", { method: "POST", headers });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? "Erro desconhecido");
+      setSyncResult(
+        `${d.filmes.atualizados} filmes · ${d.series.atualizadas} séries atualizados`,
+      );
+      setSyncState("done");
+    } catch (e: any) {
+      setSyncResult(e.message);
+      setSyncState("error");
+    }
+  };
 
   const cards = stats ? [
     { label: "Filmes", value: stats.filmes ?? 0, color: "from-blue-600 to-blue-800" },
@@ -175,6 +194,32 @@ function Dashboard({ headers }: { headers: Record<string, string> }) {
             <p className="text-3xl font-black">{c.value.toLocaleString("pt-BR")}</p>
           </div>
         ))}
+      </div>
+
+      {/* Ações de manutenção */}
+      <div className="mt-8 border border-white/10 rounded-xl p-5">
+        <h3 className="text-white/60 text-xs uppercase tracking-wider mb-4">Manutenção</h3>
+        <div className="flex flex-wrap gap-3 items-center">
+          <button
+            onClick={syncTop250}
+            disabled={syncState === "loading"}
+            className="flex items-center gap-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg transition"
+          >
+            {syncState === "loading"
+              ? <Loader2 size={15} className="animate-spin" />
+              : <Trophy size={15} />}
+            Sincronizar Top 250
+          </button>
+          {syncResult && (
+            <span className={`text-sm ${syncState === "error" ? "text-red-400" : "text-green-400"}`}>
+              {syncState === "done" && <Check size={13} className="inline mr-1" />}
+              {syncResult}
+            </span>
+          )}
+        </div>
+        <p className="text-zinc-500 text-xs mt-2">
+          Usa os mesmos dados da página Melhores (TMDB top_rated) para atualizar o badge Top 250.
+        </p>
       </div>
     </div>
   );
