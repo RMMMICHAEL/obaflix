@@ -517,6 +517,7 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
   const season = parseInt(parsed.searchParams.get("season") ?? "1", 10);
   const episode = parseInt(parsed.searchParams.get("episode") ?? "1", 10);
   const titleHint = parsed.searchParams.get("q") ?? "";
+  const isMovie = type === "movie";
 
   if (!tmdbId) return null;
 
@@ -534,7 +535,7 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
   try {
     const token = await getWebcineToken();
 
-    // 1. Find internal series/movie ID by searching and verifying tmdb_id
+    // 1. Search and find internal ID — filter by type to avoid wrong endpoint calls
     const searchQ = titleHint || tmdbId;
     const searchRes = await fetch(
       `https://webcinevs2.com/api/search?q=${encodeURIComponent(searchQ)}`,
@@ -544,62 +545,54 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
       xlog("webcine/search_err", { ms: Date.now() - t0, status: searchRes.status });
       return null;
     }
-    const searchData = await searchRes.json();
-    const candidates: Array<{ id: number; title: string; type: string }> = searchData.data ?? [];
+    const candidates = ((await searchRes.json()).data ?? []) as Array<{ id: number; title: string; type: string }>;
 
     let internalId: number | null = null;
     let episodeId: number | null = null;
 
     for (const c of candidates.slice(0, 6)) {
-      const endpoint = type === "movie" ? "movies" : "series";
+      // "movie" → /api/movies/{id}   |   "series"/"anime" → /api/series/{id}
+      const cIsMovie = c.type === "movie";
+      if (isMovie !== cIsMovie) continue;
+
+      const endpoint = isMovie ? "movies" : "series";
       const detailRes = await fetch(
         `https://webcinevs2.com/api/${endpoint}/${c.id}?profile_id=${profileId}`,
         { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) },
       );
       if (!detailRes.ok) continue;
       const detail = await detailRes.json();
-
       if (String(detail.tmdb_id) !== String(tmdbId)) continue;
+
       internalId = c.id;
 
-      if (type === "movie") {
-        // For movies, the video list uses "episodes" mapped to the movie itself
-        // Try getting the movie's video endpoint directly
-        const movVideosRes = await fetch(
-          `https://webcinevs2.com/api/streaming/movies/${c.id}/videos?platform=web&device_type=web&profile_id=${profileId}`,
-          { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) },
-        );
-        if (movVideosRes.ok) {
-          const movVideos = await movVideosRes.json();
-          const vid = (movVideos.videos ?? []).find((v: any) => !v.is_premium && !v.locked) ?? (movVideos.videos ?? [])[0];
-          if (vid) { episodeId = vid.id; break; }
-        }
-        break;
-      } else {
-        const seasons: Array<{ id: number; number: number; episodes: Array<{ id: number; number: number }> }> = detail.seasons ?? [];
-        const targetSeason = seasons.find((s) => s.number === season);
-        if (!targetSeason) break;
-        const targetEp = targetSeason.episodes.find((e) => e.number === episode);
-        if (targetEp) { episodeId = targetEp.id; }
-        break;
+      if (!isMovie) {
+        // Series: find episodeId from seasons array embedded in detail response
+        const seasons = (detail.seasons ?? []) as Array<{
+          number: number;
+          episodes: Array<{ id: number; number: number }>;
+        }>;
+        const ep = seasons.find((s) => s.number === season)?.episodes.find((e) => e.number === episode);
+        if (ep) episodeId = ep.id;
       }
+      break;
     }
 
-    if (!internalId || !episodeId) {
-      xlog("webcine/not_found", { ms: Date.now() - t0, tmdbId, season, episode, type, q: searchQ.slice(0, 30) });
+    if (!internalId || (!isMovie && !episodeId)) {
+      xlog("webcine/not_found", { ms: Date.now() - t0, tmdbId, type, season: isMovie ? null : season, episode: isMovie ? null : episode });
       return null;
     }
-
-    xlog("webcine/found", { ms: Date.now() - t0, tmdbId, internalId, episodeId, type });
+    xlog("webcine/found", { ms: Date.now() - t0, tmdbId, internalId, episodeId: episodeId ?? "–", type });
 
     // 2. Get video list
-    const videosUrl = type === "movie"
-      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/videos?platform=web&device_type=web&profile_id=${profileId}`
+    // Series: needs profile_id  |  Movie: no profile_id (from HAR)
+    const videosUrl = isMovie
+      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/videos?platform=web&device_type=web`
       : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/videos?platform=web&device_type=web&profile_id=${profileId}`;
 
     const videosRes = await fetch(videosUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
     if (!videosRes.ok) {
-      xlog("webcine/videos_err", { ms: Date.now() - t0, episodeId, status: videosRes.status });
+      xlog("webcine/videos_err", { ms: Date.now() - t0, status: videosRes.status });
       return null;
     }
     const videosData = await videosRes.json();
@@ -607,15 +600,16 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
       xlog("webcine/no_sub", { ms: Date.now() - t0 });
       return null;
     }
-    const videos: Array<{ id: number; audio_type: string; is_premium: boolean; locked: boolean }> = videosData.videos ?? [];
+    const videos = (videosData.videos ?? []) as Array<{ id: number; audio_type: string; is_premium: boolean; locked: boolean }>;
     const bestVideo = videos.find((v) => !v.is_premium && !v.locked) ?? videos[0];
     if (!bestVideo) return null;
-
     xlog("webcine/video_sel", { ms: Date.now() - t0, videoId: bestVideo.id, audio: bestVideo.audio_type });
 
     // 3. Get encrypted video URL
-    const videoDetailUrl = type === "movie"
-      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/video/${bestVideo.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`
+    // Movie params from HAR: device_id, profile_id, device_name=Windows+(Web), device_type, platform
+    // Series params:         platform, device_type, profile_id, device_id
+    const videoDetailUrl = isMovie
+      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/video/${bestVideo.id}?device_id=${deviceId}&profile_id=${profileId}&device_name=Windows+(Web)&device_type=web&platform=web`
       : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/video/${bestVideo.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`;
 
     const videoDetailRes = await fetch(videoDetailUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
@@ -623,27 +617,30 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
       xlog("webcine/video_detail_err", { ms: Date.now() - t0, status: videoDetailRes.status });
       return null;
     }
-    const videoDetail = await videoDetailRes.json();
-    const encryptedUrl = videoDetail.video_url as string;
-    const sessionId = videoDetail.session_id as number;
+    const { video_url: encryptedUrl, session_id: sessionId } = await videoDetailRes.json();
     if (!encryptedUrl || !sessionId) return null;
 
-    // 4. Resolve URL (decrypt)
+    // 4. Resolve URL
+    // Movie body (from HAR): {payload, session_id} only
+    // Series body: {payload, session_id, device_id, platform, device_type}
+    const resolveBody = isMovie
+      ? { payload: encryptedUrl, session_id: sessionId }
+      : { payload: encryptedUrl, session_id: sessionId, device_id: deviceId, platform: "web", device_type: "web" };
+
     const resolveRes = await fetch("https://webcinevs2.com/api/streaming/resolve-url", {
       method: "POST",
       headers: { ...apiHeaders(token), "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: encryptedUrl, session_id: sessionId, device_id: deviceId, platform: "web", device_type: "web" }),
+      body: JSON.stringify(resolveBody),
       signal: AbortSignal.timeout(8000),
     });
     if (!resolveRes.ok) {
       xlog("webcine/resolve_err", { ms: Date.now() - t0, status: resolveRes.status });
       return null;
     }
-    const resolveData = await resolveRes.json();
-    const rawUrl = resolveData.url as string;
+    const rawUrl = (await resolveRes.json()).url as string;
     if (!rawUrl) return null;
 
-    // 5. Follow redirect to get final play-amz URL
+    // 5. Follow redirect (server-amz/utx → play-amz/utx)
     let finalUrl = rawUrl;
     try {
       const headRes = await fetch(rawUrl, {
@@ -654,9 +651,9 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
       });
       const loc = headRes.headers.get("location");
       if (loc && (headRes.status === 301 || headRes.status === 302)) finalUrl = loc;
-    } catch { /* use rawUrl */ }
+    } catch { /* use rawUrl as-is */ }
 
-    xlog("webcine/ok", { ms: Date.now() - t0, tmdbId, type, season, episode, host: (() => { try { return new URL(finalUrl).hostname; } catch { return "?"; } })() });
+    xlog("webcine/ok", { ms: Date.now() - t0, tmdbId, type, host: (() => { try { return new URL(finalUrl).hostname; } catch { return "?"; } })() });
     return { streamUrl: finalUrl, referer: "https://webcinevs2.com/" };
 
   } catch (e: any) {
