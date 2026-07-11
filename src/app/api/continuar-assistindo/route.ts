@@ -14,7 +14,7 @@ export async function GET() {
     where: {
       userId,
       concluido: false,
-      OR: [{ progressoSeg: { gt: 30 } }, { queued: true }],
+      OR: [{ progressoSeg: { gt: 10 } }, { queued: true }],
     },
     orderBy: { updatedAt: "desc" },
     take: 24,
