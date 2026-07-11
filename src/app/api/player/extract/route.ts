@@ -7,6 +7,7 @@ import { assertSafeUrl } from "@/lib/ssrf";
 import {
   verifyPlayToken,
   createStreamToken,
+  signSegmentUrl,
   isIpBlocked,
   recordAbuseAttempt,
 } from "@/lib/playTokens";
@@ -1026,6 +1027,16 @@ export async function GET(req: NextRequest) {
 
     if (result.tipo === "iframe") {
       return NextResponse.json({ tipo: "iframe", stream: result.stream }, { headers: NO_STORE });
+    }
+
+    // MP4: stream token is single-use (SET NX) — JW Player makes multiple range requests
+    // when seeking, so the second request always fails with "token já consumido".
+    // Use a HMAC-signed proxy URL instead; it's stateless and allows repeated range requests.
+    if (result.tipo === "mp4") {
+      const sig = signSegmentUrl(result.stream, userId);
+      const ref = result.referer ? `&ref=${encodeURIComponent(result.referer)}` : "";
+      const proxyUrl = `/api/player/proxy?url=${encodeURIComponent(result.stream)}&sig=${sig}${ref}`;
+      return NextResponse.json({ tipo: "mp4", streamToken: proxyUrl }, { headers: NO_STORE });
     }
 
     const { token: streamToken, accepted } = await createStreamToken(

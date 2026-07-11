@@ -461,8 +461,11 @@ export function CustomPlayer({
           playerUrl = data.stream!;
         } else {
           if (!data.streamToken) throw new Error("Stream não encontrado");
-          // Stream token opaco → CDN URL nunca exposta no browser
-          playerUrl = `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
+          // MP4: streamToken já é a URL proxy HMAC-assinada (permite range requests repetidos ao buscar posição)
+          // HLS: streamToken é um token AES-GCM single-use opaco
+          playerUrl = data.streamToken.startsWith("/")
+            ? data.streamToken
+            : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
         }
         directStreamRef.current = playerUrl;
       }
