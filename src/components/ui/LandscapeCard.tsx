@@ -22,14 +22,14 @@ interface Props {
 }
 
 export function LandscapeCard({
-  id, tipo, titulo, poster, ano, nota,
+  id, tipo, titulo, poster, background, logo, ano, nota,
   urlDub, urlLeg, progresso, episodeLabel, isNew,
 }: Props) {
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
 
-  const posterSrc = poster
-    ? imgUrl(poster, "w342")
-    : "/placeholder.jpg";
+  const posterSrc = poster ? imgUrl(poster, "w342") : "/placeholder.jpg";
+  const bgSrc = background ? imgUrl(background, "w500") : posterSrc;
+  const logoSrc = logo ? imgUrl(logo, "w300") : null;
 
   const pct = progresso?.duracaoSeg
     ? Math.min((progresso.progressoSeg / progresso.duracaoSeg) * 100, 100)
@@ -39,17 +39,44 @@ export function LandscapeCard({
     <div className="relative group/card shrink-0 w-[140px] sm:w-[160px] md:w-[200px]">
       <Link href={href}>
         <div className="relative aspect-[2/3] rounded-lg overflow-hidden bg-zinc-900 cursor-pointer">
-          <Image
-            src={posterSrc}
-            alt={titulo}
-            fill
-            className="w-full h-full object-cover transition-transform duration-300 group-hover/card:scale-105 opacity-100"
-            sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
-            loading="lazy"
-          />
 
-          {/* Hover gradient */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity duration-200" />
+          {logoSrc ? (
+            /* Logo mode — blurred backdrop + logo centralizado */
+            <>
+              <Image
+                src={bgSrc}
+                alt=""
+                fill
+                className="w-full h-full object-cover opacity-40 scale-110 blur-[2px] transition-opacity duration-300 group-hover/card:opacity-55"
+                sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
+                loading="lazy"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/50" />
+              <div className="absolute inset-0 flex items-center justify-center p-4 md:p-5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={logoSrc}
+                  alt={titulo}
+                  className="max-w-full max-h-[65%] object-contain drop-shadow-[0_2px_12px_rgba(0,0,0,0.9)] transition-transform duration-300 group-hover/card:scale-105"
+                />
+              </div>
+            </>
+          ) : (
+            /* Poster mode (fallback) */
+            <Image
+              src={posterSrc}
+              alt={titulo}
+              fill
+              className="w-full h-full object-cover transition-transform duration-300 group-hover/card:scale-105"
+              sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
+              loading="lazy"
+            />
+          )}
+
+          {/* Hover gradient (poster mode only) */}
+          {!logoSrc && (
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity duration-200" />
+          )}
 
           {/* Play button */}
           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
