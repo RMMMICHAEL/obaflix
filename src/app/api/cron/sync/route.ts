@@ -225,9 +225,30 @@ export async function GET(req: NextRequest) {
   const log: string[] = [];
   let totalFilmes = 0, totalSeries = 0, totalEps = 0;
 
+  // Modo debug: retorna snippet do HTML sem fazer upserts
+  const isDebug = req.nextUrl.searchParams.get("debug") === "1";
+
   try {
     log.push("📡 Buscando viewHome...");
     const homeHtml = await fetchApp("?page=viewHome");
+
+    if (isDebug) {
+      const filmesIds = parseUltimosFilmes(homeHtml);
+      const seriesIds = parseUltimasSeries(homeHtml);
+      const epsRecentes = parseEpsRecentes(homeHtml);
+      return NextResponse.json({
+        debug: true,
+        htmlLength: homeHtml.length,
+        htmlSnippet: homeHtml.slice(0, 1000),
+        hasUltimosFilmes: homeHtml.includes("Últimos Filmes"),
+        hasUltimasSeries: homeHtml.includes("Últimas Séries"),
+        hasEpisodiosRecentes: homeHtml.includes("Episodios Recentes"),
+        hasOpenMovie: homeHtml.includes("openMovie"),
+        filmesIds,
+        seriesIds,
+        epsRecentes,
+      });
+    }
 
     const filmesIds   = parseUltimosFilmes(homeHtml);
     const seriesIds   = parseUltimasSeries(homeHtml);
