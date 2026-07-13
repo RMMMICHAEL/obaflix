@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
-import { imgUrl } from "@/lib/tmdb";
+import { imgUrl, getTVImages, pickLogo, logoUrl as buildLogoUrl } from "@/lib/tmdb";
 
 // Busca URLs extras do warez2 para o episódio (voltz como player 1)
 async function getWarez2Ep(
@@ -60,7 +60,7 @@ export default async function AssistirEpPage({
 
   if (!serie || !episodio) notFound();
 
-  const [prevEp, nextEp, historico, warez] = await Promise.all([
+  const [prevEp, nextEp, historico, warez, images] = await Promise.all([
     prisma.episodio.findFirst({
       where: {
         serieId: params.id,
@@ -88,6 +88,7 @@ export default async function AssistirEpPage({
       : null,
     // Busca voltz e outros players extras via warez2 (em paralelo com o resto)
     getWarez2Ep(params.id, temporada, numeroEp),
+    serie.tmdbId ? getTVImages(serie.tmdbId) : null,
   ]);
 
   const prevUrl = prevEp
@@ -109,6 +110,8 @@ export default async function AssistirEpPage({
       titulo={serie.titulo}
       nomeEpisodio={episodio.titulo ?? undefined}
       thumbUrl={imgUrl(episodio.thumbnail || serie.background || serie.poster || null, "original")}
+      logoUrl={buildLogoUrl(pickLogo(images))}
+      sinopse={serie.sinopse ?? null}
       conteudoId={serie.id}
       conteudoTipo="serie"
       tmdbId={serie.tmdbId}

@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
-import { imgUrl } from "@/lib/tmdb";
+import { imgUrl, getMovieImages, pickLogo, logoUrl as buildLogoUrl } from "@/lib/tmdb";
 
 async function getWarez2Filme(
   filmeId: string
@@ -35,8 +35,10 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
 
-  const [filme, historico, warez] = await Promise.all([
-    prisma.filme.findUnique({ where: { id: params.id } }),
+  const filme = await prisma.filme.findUnique({ where: { id: params.id } });
+  if (!filme) notFound();
+
+  const [historico, warez, images] = await Promise.all([
     userId
       ? prisma.watchHistory.findFirst({
           where: { userId, conteudoId: params.id, episodioId: null },
@@ -44,9 +46,8 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
         })
       : null,
     getWarez2Filme(params.id),
+    filme.tmdbId ? getMovieImages(filme.tmdbId) : null,
   ]);
-
-  if (!filme) notFound();
 
   // Voltz (e outros players do warez2) ficam em primeiro na lista
   const urlDub = mergeFilmeUrls(warez.br, filme.urlDub);
@@ -58,6 +59,8 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
       urlLeg={urlLeg}
       titulo={filme.titulo}
       thumbUrl={imgUrl(filme.background || filme.poster || null, "original")}
+      logoUrl={buildLogoUrl(pickLogo(images))}
+      sinopse={filme.sinopse ?? null}
       conteudoId={filme.id}
       conteudoTipo="filme"
       tmdbId={filme.tmdbId}

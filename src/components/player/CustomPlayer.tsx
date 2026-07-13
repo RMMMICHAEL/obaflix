@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast, Film, Flag } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -46,6 +46,8 @@ interface Props {
   titulo: string;
   nomeEpisodio?: string;
   thumbUrl?: string;
+  logoUrl?: string | null;
+  sinopse?: string | null;
   conteudoId: string;
   conteudoTipo: "filme" | "serie";
   tmdbId?: string | null;
@@ -152,7 +154,8 @@ function recoveryLog(
 
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
-  urlDub, urlLeg, titulo, nomeEpisodio, thumbUrl, conteudoId, conteudoTipo, tmdbId,
+  urlDub, urlLeg, titulo, nomeEpisodio, thumbUrl, logoUrl, sinopse,
+  conteudoId, conteudoTipo, tmdbId,
   episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
   const router = useRouter();
@@ -274,6 +277,8 @@ export function CustomPlayer({
   // chromecast
   const [castAvailable, setCastAvailable] = useState(false);
   const [isCasting, setIsCasting] = useState(false);
+  // sources dropdown
+  const [showSources, setShowSources] = useState(false);
 
   const fonte = allFontes[fonteIdx];
 
@@ -975,254 +980,297 @@ export function CustomPlayer({
   }, [streamTipo, nextUrl, saveProgress]);
 
   const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
+  const btnCls = "flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 bg-white/10 text-white hover:bg-white hover:text-black active:bg-white active:text-black";
 
   return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col select-none">
-      {/* ── Top bar – above JW Player ── */}
-      <div className="absolute top-0 inset-x-0 z-[9999] bg-gradient-to-b from-black/85 via-black/30 to-transparent pointer-events-none">
-        <div className="flex items-center gap-3 px-4 pt-4 pb-16">
-          {/* Back button */}
-          <button
-            className="pointer-events-auto flex-shrink-0 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 flex items-center justify-center transition-all"
-            onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
-            aria-label="Voltar"
-          >
-            <ArrowLeft size={18} className="text-white" />
-          </button>
+    <div className="fixed inset-0 z-50 bg-black select-none touch-none">
 
-          {/* Title + episode */}
-          <div className="flex-1 min-w-0">
-            <p className="text-white font-semibold text-sm md:text-base leading-tight truncate drop-shadow-lg">
-              {titulo}
-            </p>
-            {temporada && numeroEp && (
-              <p className="text-white/55 text-xs mt-0.5 truncate">
-                T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
-              </p>
-            )}
-          </div>
+      {/* ── Video elements (fill entire screen) ── */}
+      <div
+        id="jw-player-container"
+        className={`absolute inset-0 w-full h-full${
+          streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
+        }`}
+        dangerouslySetInnerHTML={{ __html: "" }}
+      />
 
-          {/* Right controls */}
-          <div className="pointer-events-auto flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end max-w-[55%]">
-            {/* Source pills */}
-            {allFontes.map((f, i) => (
-              <button
-                key={i}
-                onClick={() => switchFonte(i)}
-                className={`text-[11px] px-3 py-1 rounded-full border transition-all whitespace-nowrap ${
-                  fonteIdx === i
-                    ? "bg-[#E50914] border-[#E50914] text-white font-semibold shadow-lg shadow-red-900/30"
-                    : "border-white/20 text-white/55 hover:border-white/40 hover:text-white bg-white/5 hover:bg-white/10"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-
-            {prevUrl && (
-              <button
-                className="p-1.5 rounded-full border border-white/20 text-white/55 hover:text-white hover:bg-white/10 transition-all"
-                onClick={() => { saveProgress(); router.push(prevUrl); }}
-                title="Episódio anterior"
-              >
-                <ChevronLeft size={16} strokeWidth={2} />
-              </button>
-            )}
-            {nextUrl && (
-              <button
-                className="flex items-center gap-1 text-[11px] text-white font-medium border border-white/25 hover:bg-white/10 px-3 py-1 rounded-full transition-all"
-                onClick={() => { saveProgress(); router.push(nextUrl); }}
-              >
-                Próximo <ChevronRight size={13} strokeWidth={2} />
-              </button>
-            )}
-
-            {castAvailable && (
-              <button
-                onClick={handleCast}
-                title={isCasting ? "Parar transmissão" : "Transmitir no Chromecast"}
-                className={`p-1.5 rounded-full border transition-all ${
-                  isCasting
-                    ? "border-[#E50914] text-[#E50914] bg-[#E50914]/10"
-                    : "border-white/20 text-white/55 hover:border-white/40 hover:text-white bg-white/5 hover:bg-white/10"
-                }`}
-              >
-                <Cast size={15} strokeWidth={1.5} />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Main video area ── */}
-      <div className="flex-1 relative">
-        {/* JW Player container — sempre no DOM para evitar removeChild do reconciliador React:
-            JW Player move/substitui o nó internamente; se React o desmontar ao trocar de
-            branch (hls → iframe), o nó original não é mais filho do pai esperado → erro.
-            Escondemos com CSS em vez de desmontar. */}
-        <div
-          id="jw-player-container"
-          className={`absolute inset-0 w-full h-full${
-            streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
-          }`}
-          dangerouslySetInnerHTML={{ __html: "" }}
+      {streamTipo === "native" && (
+        <video
+          ref={videoRef}
+          className="absolute inset-0 w-full h-full object-contain"
+          playsInline
+          preload="auto"
         />
+      )}
 
-        {/* Native video (rola4 em Safari/iOS sem CORS) */}
-        {streamTipo === "native" && (
-          <video
-            ref={videoRef}
-            className="absolute inset-0 w-full h-full object-contain"
-            playsInline
-            preload="auto"
-          />
-        )}
+      {streamTipo === "iframe" && streamUrl && (
+        <iframe
+          key={streamUrl}
+          src={streamUrl}
+          className="absolute inset-0 w-full h-full border-0"
+          allow="autoplay; fullscreen; picture-in-picture"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+        />
+      )}
 
-        {/* iframe */}
-        {streamTipo === "iframe" && streamUrl && (
-          <iframe
-            key={streamUrl}
-            src={streamUrl}
-            className="absolute inset-0 w-full h-full border-0"
-            allow="autoplay; fullscreen; picture-in-picture"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-          />
-        )}
+      {/* ── Main UI overlay (top / middle / bottom) ── */}
+      <div className="absolute inset-0 flex flex-col justify-between pointer-events-none z-[9999]">
 
-        {/* ── Extracting overlay: backdrop + título + dots ── */}
-        {status === "extracting" && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center">
-            {thumbUrl && (
-              <div
-                className="absolute inset-0 bg-cover bg-center scale-105"
-                style={{ backgroundImage: `url(${thumbUrl})` }}
-              />
-            )}
-            <div className="absolute inset-0 bg-black/75" />
-            <div className="relative z-10 flex flex-col items-center gap-5 text-center px-8">
-              <div className="flex flex-col items-center gap-1">
-                <p className="text-white/40 text-[10px] uppercase tracking-[0.25em] font-medium">
-                  Você está assistindo
-                </p>
-                <p className="text-white font-bold text-lg md:text-xl leading-snug">{titulo}</p>
-                {(temporada && numeroEp) && (
-                  <p className="text-white/60 text-sm mt-0.5">
-                    T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
+        {/* Top bar */}
+        <div className="pointer-events-auto px-3 pt-2 pb-6 bg-gradient-to-b from-black/70 via-black/30 to-transparent md:px-8 md:pt-4 md:pb-10 landscape:pb-3">
+          <div className="flex items-center justify-between gap-2">
+
+            {/* Left: back + title */}
+            <div className="flex items-center min-w-0 gap-2 md:gap-3">
+              <button
+                title="Voltar"
+                className={btnCls}
+                onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white truncate md:text-base">{titulo}</p>
+                {temporada && numeroEp && (
+                  <p className="text-gray-400 text-[10px] md:text-xs truncate">
+                    Temporada {temporada} · Episódio {numeroEp}{nomeEpisodio ? ` — ${nomeEpisodio}` : ""}
                   </p>
                 )}
               </div>
-              <BouncingDots />
+            </div>
+
+            {/* Right: sources, cast, prev/next, report */}
+            <div className="flex items-center gap-1.5 md:gap-2 flex-shrink-0">
+
+              {/* Sources dropdown (Film icon) */}
+              {allFontes.length > 0 && (
+                <div className="relative">
+                  <button
+                    title="Fonte / Qualidade"
+                    className={`${btnCls}${showSources ? " !bg-white !text-black" : ""}`}
+                    onClick={(e) => { e.stopPropagation(); setShowSources((s) => !s); }}
+                  >
+                    <Film className="w-5 h-5" />
+                  </button>
+                  {showSources && (
+                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[130px] shadow-2xl">
+                      {allFontes.map((f, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { switchFonte(i); setShowSources(false); }}
+                          className={`w-full text-left px-4 py-2.5 text-xs transition-all ${
+                            fonteIdx === i
+                              ? "bg-[#E50914] text-white font-semibold"
+                              : "text-white/70 hover:bg-white/10 hover:text-white"
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Chromecast */}
+              {castAvailable && (
+                <button
+                  title={isCasting ? "Parar transmissão" : "Transmitir no Chromecast"}
+                  className={`${btnCls}${isCasting ? " !bg-[#E50914] !text-white hover:!bg-red-600" : ""}`}
+                  onClick={handleCast}
+                >
+                  <Cast className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Prev episode */}
+              {prevUrl && (
+                <button
+                  title="Episódio anterior"
+                  className={btnCls}
+                  onClick={() => { saveProgress(); router.push(prevUrl); }}
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Next episode */}
+              {nextUrl && (
+                <button
+                  title="Próximo episódio"
+                  className={`${btnCls} !w-auto px-3 md:px-5 gap-1`}
+                  onClick={() => { saveProgress(); router.push(nextUrl); }}
+                >
+                  <span className="hidden sm:inline text-xs md:text-sm font-medium">Próximo</span>
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Report */}
+              <button title="Reportar problema" className={btnCls}>
+                <Flag className="w-5 h-5" />
+              </button>
             </div>
           </div>
-        )}
+        </div>
 
-        {/* ── Native buffering ── */}
-        {status === "loading" && streamTipo === "native" && !autoPlayBlocked && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center">
-            <BouncingDots size="sm" />
+        {/* Middle: title logo + episode info + description */}
+        <div className="self-start pointer-events-none px-3 sm:px-4 md:px-12 max-w-[240px] sm:max-w-sm md:max-w-3xl lg:max-w-4xl xl:max-w-5xl [@media(max-height:540px)]:max-w-[220px] [@media(max-height:540px)]:px-2.5">
+          {logoUrl ? (
+            <img
+              src={logoUrl}
+              alt={titulo}
+              className="object-contain object-left mb-2 max-h-9 max-w-[180px] sm:max-h-14 sm:max-w-[260px] md:mb-5 md:max-h-36 md:max-w-[520px] lg:max-h-44 lg:max-w-[640px] xl:max-h-52 xl:max-w-[760px] drop-shadow-lg [@media(max-height:540px)]:max-h-9 [@media(max-height:540px)]:max-w-[165px] [@media(max-height:540px)]:mb-1"
+            />
+          ) : (
+            <p className="text-white font-bold text-xl md:text-3xl mb-2 md:mb-4 drop-shadow-lg [@media(max-height:540px)]:text-base [@media(max-height:540px)]:mb-1">
+              {titulo}
+            </p>
+          )}
+          {temporada && numeroEp && (
+            <p className="mb-1.5 text-xs font-medium text-[#E50914] sm:text-sm md:text-lg drop-shadow [@media(max-height:540px)]:text-[9px] [@media(max-height:540px)]:mb-0.5">
+              Temporada {temporada} · Episódio {numeroEp}{nomeEpisodio ? ` — ${nomeEpisodio}` : ""}
+            </p>
+          )}
+          {sinopse && (
+            <p className="text-xs leading-relaxed text-gray-200/90 line-clamp-3 sm:text-sm md:text-lg md:leading-relaxed [@media(max-height:540px)]:text-[8px] [@media(max-height:540px)]:leading-tight">
+              {sinopse}
+            </p>
+          )}
+        </div>
+
+        {/* Bottom spacer — JW Player renders its own controls here */}
+        <div className="h-16 md:h-20 pointer-events-auto" />
+      </div>
+
+      {/* ── Status overlays (above main UI) ── */}
+
+      {/* Extracting */}
+      {status === "extracting" && (
+        <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center">
+          {thumbUrl && (
+            <div className="absolute inset-0 bg-cover bg-center scale-105" style={{ backgroundImage: `url(${thumbUrl})` }} />
+          )}
+          <div className="absolute inset-0 bg-black/75" />
+          <div className="relative z-10 flex flex-col items-center gap-5 text-center px-8">
+            <div className="flex flex-col items-center gap-1">
+              <p className="text-white/40 text-[10px] uppercase tracking-[0.25em] font-medium">Você está assistindo</p>
+              <p className="text-white font-bold text-lg md:text-xl leading-snug">{titulo}</p>
+              {temporada && numeroEp && (
+                <p className="text-white/60 text-sm mt-0.5">
+                  T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
+                </p>
+              )}
+            </div>
+            <BouncingDots />
           </div>
-        )}
+        </div>
+      )}
 
-        {/* ── +30s skip overlay (native video mode) ── */}
-        {streamTipo === "native" && status === "playing" && (
+      {/* Native buffering */}
+      {status === "loading" && streamTipo === "native" && !autoPlayBlocked && (
+        <div className="absolute inset-0 z-[99999] flex items-center justify-center">
+          <BouncingDots size="sm" />
+        </div>
+      )}
+
+      {/* +30s skip (native mode) */}
+      {streamTipo === "native" && status === "playing" && (
+        <button
+          onClick={() => {
+            const video = videoRef.current;
+            if (video) video.currentTime = Math.min(video.currentTime + 30, video.duration - 1);
+          }}
+          className="absolute bottom-24 right-4 z-[9999] flex items-center gap-1 px-3 py-1.5 rounded-full bg-black/60 border border-white/20 text-white text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
+        >
+          +30s
+        </button>
+      )}
+
+      {/* Autoplay blocked (native) */}
+      {autoPlayBlocked && streamTipo === "native" && (
+        <div
+          className="absolute inset-0 z-[99999] flex items-center justify-center cursor-pointer"
+          onClick={() => { videoRef.current?.play().then(() => setAutoPlayBlocked(false)).catch(() => {}); }}
+        >
+          <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center hover:bg-white/10 transition-colors">
+            <Play size={38} fill="white" strokeWidth={0} className="ml-1" />
+          </div>
+        </div>
+      )}
+
+      {/* Retry */}
+      {showRetry && status !== "error" && status !== "extracting" && (
+        <div className="absolute inset-0 z-[99999] flex items-center justify-center bg-black/50">
           <button
             onClick={() => {
-              const video = videoRef.current;
-              if (video) video.currentTime = Math.min(video.currentTime + 30, video.duration - 1);
+              setShowRetry(false);
+              if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+              extractRef.current(fonte?.embedUrl ?? "");
             }}
-            className="absolute bottom-20 right-4 z-30 flex items-center gap-1 px-3 py-1.5 rounded-full bg-black/60 border border-white/20 text-white text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
+            className="flex flex-col items-center gap-3 text-white/70 hover:text-white transition-colors group"
           >
-            +30s
-          </button>
-        )}
-
-        {/* ── Autoplay bloqueado (native) ── */}
-        {autoPlayBlocked && streamTipo === "native" && (
-          <div
-            className="absolute inset-0 z-20 flex items-center justify-center cursor-pointer"
-            onClick={() => {
-              videoRef.current?.play().then(() => setAutoPlayBlocked(false)).catch(() => {});
-            }}
-          >
-            <div className="w-20 h-20 rounded-full bg-black/50 backdrop-blur-sm border border-white/20 flex items-center justify-center hover:bg-white/10 transition-colors">
-              <Play size={38} fill="white" strokeWidth={0} className="ml-1" />
+            <div className="w-16 h-16 rounded-full bg-white/10 border border-white/20 flex items-center justify-center group-hover:bg-white/20 transition-colors">
+              <RotateCcw size={26} strokeWidth={1.5} />
             </div>
-          </div>
-        )}
+            <span className="text-sm font-medium">Tentar novamente</span>
+          </button>
+        </div>
+      )}
 
-        {/* ── Retry: player travou sem erro explícito ── */}
-        {showRetry && status !== "error" && status !== "extracting" && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50">
+      {/* Error */}
+      {status === "error" && (
+        <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center bg-black/75 gap-5">
+          <AlertCircle size={44} className="text-[#E50914]" strokeWidth={1.5} />
+          <p className="text-white/80 text-sm max-w-xs text-center leading-relaxed">{error}</p>
+          <button
+            onClick={() => extract(fonte?.embedUrl ?? "")}
+            className="bg-white text-black text-xs font-bold px-5 py-2.5 rounded-full hover:bg-zinc-200 transition"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
+      {/* No fontes */}
+      {status === "idle" && allFontes.length === 0 && (
+        <div className="absolute inset-0 z-[99999] flex items-center justify-center">
+          <p className="text-white/30 text-sm">Nenhuma fonte disponível</p>
+        </div>
+      )}
+
+      {/* Auto-skip next episode */}
+      {nextEpCountdown !== null && nextUrl && (
+        <div className="absolute bottom-24 right-6 z-[9999] flex items-center gap-3 bg-black/80 backdrop-blur border border-white/10 rounded-xl px-4 py-3 shadow-xl">
+          <div className="text-right">
+            <p className="text-white/60 text-[10px] uppercase tracking-wider">Próximo episódio em</p>
+            <p className="text-white font-bold text-2xl tabular-nums leading-none">{nextEpCountdown}s</p>
+          </div>
+          <div className="flex flex-col gap-1.5">
             <button
               onClick={() => {
-                setShowRetry(false);
-                if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
-                extractRef.current(fonte?.embedUrl ?? "");
+                autoSkipDoneRef.current = true;
+                setNextEpCountdown(null);
+                nextEpCountdownActiveRef.current = false;
+                saveProgress().then(() => router.push(nextUrl));
               }}
-              className="flex flex-col items-center gap-3 text-white/70 hover:text-white transition-colors group"
+              className="flex items-center gap-1.5 bg-[#E50914] hover:bg-[#f00] text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
             >
-              <div className="w-16 h-16 rounded-full bg-white/10 border border-white/20 flex items-center justify-center group-hover:bg-white/20 transition-colors">
-                <RotateCcw size={26} strokeWidth={1.5} />
-              </div>
-              <span className="text-sm font-medium">Tentar novamente</span>
+              Ir agora <ChevronRight size={14} />
             </button>
-          </div>
-        )}
-
-        {/* ── Error ── */}
-        {status === "error" && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/75 gap-5">
-            <AlertCircle size={44} className="text-[#E50914]" strokeWidth={1.5} />
-            <p className="text-white/80 text-sm max-w-xs text-center leading-relaxed">{error}</p>
             <button
-              onClick={() => extract(fonte?.embedUrl ?? "")}
-              className="bg-white text-black text-xs font-bold px-5 py-2.5 rounded-full hover:bg-zinc-200 transition"
+              onClick={() => {
+                autoSkipDoneRef.current = true;
+                setNextEpCountdown(null);
+                nextEpCountdownActiveRef.current = false;
+              }}
+              className="text-white/40 hover:text-white/70 text-[10px] text-center transition"
             >
-              Tentar novamente
+              Cancelar
             </button>
           </div>
-        )}
-
-        {/* ── No fontes ── */}
-        {status === "idle" && allFontes.length === 0 && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center">
-            <p className="text-white/30 text-sm">Nenhuma fonte disponível</p>
-          </div>
-        )}
-
-        {/* ── Auto-skip próximo episódio ── */}
-        {nextEpCountdown !== null && nextUrl && (
-          <div className="absolute bottom-20 right-6 z-30 flex items-center gap-3 bg-black/80 backdrop-blur border border-white/10 rounded-xl px-4 py-3 shadow-xl">
-            <div className="text-right">
-              <p className="text-white/60 text-[10px] uppercase tracking-wider">Próximo episódio em</p>
-              <p className="text-white font-bold text-2xl tabular-nums leading-none">{nextEpCountdown}s</p>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <button
-                onClick={() => {
-                  autoSkipDoneRef.current = true;
-                  setNextEpCountdown(null);
-                  nextEpCountdownActiveRef.current = false;
-                  saveProgress().then(() => router.push(nextUrl));
-                }}
-                className="flex items-center gap-1.5 bg-[#E50914] hover:bg-[#f00] text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
-              >
-                Ir agora <ChevronRight size={14} />
-              </button>
-              <button
-                onClick={() => {
-                  autoSkipDoneRef.current = true;
-                  setNextEpCountdown(null);
-                  nextEpCountdownActiveRef.current = false;
-                }}
-                className="text-white/40 hover:text-white/70 text-[10px] text-center transition"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
