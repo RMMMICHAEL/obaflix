@@ -211,6 +211,38 @@ async function syncSerie(id: string, novosEpsAlvo: Array<{ temp: number; ep: num
   return totalEps;
 }
 
+// ── Gap-fill: probe IDs beyond the DB max ────────────────────────────────────
+
+async function probeGap(
+  startId: number,
+  endId: number,
+  carouselFilmes: string[],
+  carouselSeries: string[],
+  log: string[],
+): Promise<{ filmes: number; series: number; eps: number }> {
+  let filmes = 0, series = 0, eps = 0;
+  for (let id = startId; id <= endId; id++) {
+    const idStr = String(id);
+    // Skip IDs already handled in the carousel pass
+    if (carouselFilmes.includes(idStr) || carouselSeries.includes(idStr)) continue;
+
+    await sleep(DELAY);
+    const html = await fetchApp(`?page=viewItem&id=${idStr}`);
+    const item = parseItem(html);
+    if (!item.id || !item.title) continue; // invalid / not found
+
+    if (item.temporadas != null) {
+      const added = await syncSerie(idStr, [], log);
+      series++;
+      eps += added;
+    } else {
+      const added = await syncFilme(idStr, log);
+      if (added) filmes++;
+    }
+  }
+  return { filmes, series, eps };
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
@@ -308,6 +340,34 @@ export async function GET(req: NextRequest) {
       await sleep(DELAY);
       const added = await syncSerie(serieId, eps, log);
       totalEps += added;
+    }
+
+    // ── Gap fill: probe IDs beyond our DB max ─────────────────────────────────
+    // viewHome only shows 15 items; new content pushed off the carousel is
+    // never seen. Probe numerically sequential IDs starting from db_max + 1.
+    const GAP_PROBE = 50; // max IDs to probe per run
+    try {
+      const [maxFilmeRow, maxSerieRow] = await Promise.all([
+        prisma.$queryRaw<{ max_id: string | null }[]>`
+          SELECT MAX(id::bigint)::text AS max_id FROM "Filme" WHERE id ~ '^[0-9]+$'`,
+        prisma.$queryRaw<{ max_id: string | null }[]>`
+          SELECT MAX(id::bigint)::text AS max_id FROM "Serie" WHERE id ~ '^[0-9]+$'`,
+      ]);
+      const dbMax = Math.max(
+        Number(maxFilmeRow[0]?.max_id ?? 0),
+        Number(maxSerieRow[0]?.max_id ?? 0),
+      );
+      if (dbMax > 0) {
+        const probeStart = dbMax + 1;
+        const probeEnd   = dbMax + GAP_PROBE;
+        log.push(`🔍 Gap fill: sondando IDs ${probeStart}–${probeEnd}`);
+        const gap = await probeGap(probeStart, probeEnd, filmesIds, seriesIds, log);
+        totalFilmes += gap.filmes;
+        totalSeries += gap.series;
+        totalEps    += gap.eps;
+      }
+    } catch (gapErr: any) {
+      log.push(`⚠️ Gap fill ignorado: ${gapErr.message}`);
     }
 
   } catch (err: any) {
