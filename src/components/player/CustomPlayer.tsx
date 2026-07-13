@@ -870,6 +870,16 @@ export function CustomPlayer({
         fallback("source-switch", "log",
           `${supportsNativeDesktopExtraction(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-native"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
       });
+
+      // ── Botão +30s no control bar (visível em fullscreen) ────────────────────
+      try {
+        const fwd30Icon = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='24' viewBox='0 0 32 24'><text x='0' y='18' font-size='14' font-weight='700' font-family='Arial,sans-serif' fill='white'>+30s</text></svg>`;
+        player.addButton(fwd30Icon, "Avançar 30 segundos", () => {
+          const pos = player.getPosition?.() ?? 0;
+          const dur = player.getDuration?.() ?? 0;
+          player.seek(Math.min(pos + 30, dur - 1));
+        }, "obaflix-fwd30");
+      } catch {}
     });
 
     return () => {
@@ -1111,6 +1121,19 @@ export function CustomPlayer({
           <div className="absolute inset-0 z-20 flex items-center justify-center">
             <BouncingDots size="sm" />
           </div>
+        )}
+
+        {/* ── +30s skip overlay (native video mode) ── */}
+        {streamTipo === "native" && status === "playing" && (
+          <button
+            onClick={() => {
+              const video = videoRef.current;
+              if (video) video.currentTime = Math.min(video.currentTime + 30, video.duration - 1);
+            }}
+            className="absolute bottom-20 right-4 z-30 flex items-center gap-1 px-3 py-1.5 rounded-full bg-black/60 border border-white/20 text-white text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
+          >
+            +30s
+          </button>
         )}
 
         {/* ── Autoplay bloqueado (native) ── */}

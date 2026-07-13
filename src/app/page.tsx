@@ -128,19 +128,44 @@ export default async function HomePage() {
     prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
     // Top 10 por visualizações — últimos 30 dias (atualiza sozinho com o uso)
+    // Só conta "view" genuína: ignora placeholders de fila (queued) e starts
+    // com poucos segundos assistidos, que não representam interesse real.
     prisma.watchHistory.groupBy({
       by: ["filmeId"],
-      where: { filmeId: { not: null }, updatedAt: { gte: THIRTY_DAYS_AGO } },
+      where: {
+        filmeId: { not: null },
+        updatedAt: { gte: THIRTY_DAYS_AGO },
+        queued: false,
+        progressoSeg: { gte: 60 },
+      },
       _count: { userId: true },
       orderBy: { _count: { userId: "desc" } },
       take: 15,
     }),
+    // Séries: uma linha por episódio assistido (userId, conteudoId, episodioId)
+    // é a unique key — então contar linhas conta "episódios vistos", não
+    // "pessoas que assistiram". Agrupamos por (serieId, userId) primeiro para
+    // colapsar em pares distintos e só então contamos quantos usuários únicos
+    // cada série teve, senão uma maratona de 1 pessoa parece "mais popular"
+    // que uma série vista por vários usuários uma vez só.
     prisma.watchHistory.groupBy({
-      by: ["serieId"],
-      where: { serieId: { not: null }, updatedAt: { gte: THIRTY_DAYS_AGO } },
-      _count: { userId: true },
-      orderBy: { _count: { userId: "desc" } },
-      take: 15,
+      by: ["serieId", "userId"],
+      where: {
+        serieId: { not: null },
+        updatedAt: { gte: THIRTY_DAYS_AGO },
+        queued: false,
+        progressoSeg: { gte: 60 },
+      },
+    }).then((rows) => {
+      const viewerCounts = new Map<string, number>();
+      for (const row of rows) {
+        const id = row.serieId!;
+        viewerCounts.set(id, (viewerCounts.get(id) ?? 0) + 1);
+      }
+      return [...viewerCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([serieId, count]) => ({ serieId, _count: { userId: count } }));
     }),
     // Fallback por nota (usado quando não há histórico suficiente)
     prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 10, select: selFilme }),
