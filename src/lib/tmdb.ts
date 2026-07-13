@@ -98,6 +98,9 @@ export const getTVSimilar = (tmdbId: string | number) =>
 export const getTVSeasonDetails = (tmdbId: string | number, season: number) =>
   tmdbFetch<TmdbSeasonDetails>(`/tv/${tmdbId}/season/${season}`);
 
+export const getCollection = (collectionId: number) =>
+  tmdbFetch<TmdbCollection>(`/collection/${collectionId}`);
+
 // ── Images / Logos / Backdrops ─────────────────────────────────────────────
 
 export interface TmdbImageEntry {
@@ -251,4 +254,13 @@ export interface TmdbEpisodeDetails {
 export interface TmdbSeasonDetails {
   season_number: number;
   episodes: TmdbEpisodeDetails[];
+}
+
+export interface TmdbCollection {
+  id: number;
+  name: string;
+  overview?: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  parts: TmdbItem[];
 }

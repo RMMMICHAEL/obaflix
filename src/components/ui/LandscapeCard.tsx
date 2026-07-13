@@ -2,7 +2,6 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
 import { Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
@@ -23,22 +22,13 @@ interface Props {
 }
 
 export function LandscapeCard({
-  id, tipo, titulo, poster, background, ano, nota,
+  id, tipo, titulo, poster, ano, nota,
   urlDub, urlLeg, progresso, episodeLabel, isNew,
 }: Props) {
-  const [hovered, setHovered] = useState(false);
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
-
-  const backdropSrc = background
-    ? imgUrl(background, "w780")
-    : poster
-    ? imgUrl(poster, "w342")
-    : "/placeholder-bg.jpg";
 
   const posterSrc = poster
     ? imgUrl(poster, "w342")
-    : background
-    ? imgUrl(background, "w780")
     : "/placeholder.jpg";
 
   const pct = progresso?.duracaoSeg
@@ -46,79 +36,80 @@ export function LandscapeCard({
     : 0;
 
   return (
-    <div
-      className="flex-none w-28 sm:w-32 md:w-40 group/card"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <Link href={href} className="block">
-        <div className="relative aspect-[2/3] rounded overflow-hidden bg-zinc-900 transition-transform duration-200 group-hover/card:scale-[1.03] active:scale-95 shadow-md group-hover/card:shadow-xl">
+    <div className="relative group/card shrink-0 w-[140px] sm:w-[160px] md:w-[200px]">
+      <Link href={href}>
+        <div className="relative aspect-[2/3] rounded-lg overflow-hidden bg-zinc-900 cursor-pointer">
           <Image
             src={posterSrc}
             alt={titulo}
             fill
-            className={`object-cover transition-opacity duration-200 ${hovered ? "brightness-75" : ""}`}
-            sizes="(max-width: 640px) 112px, (max-width: 768px) 128px, 160px"
+            className="w-full h-full object-cover transition-transform duration-300 group-hover/card:scale-105 opacity-100"
+            sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
+            loading="lazy"
           />
 
-          {/* Hover overlay */}
-          <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent flex flex-col justify-between p-2 transition-opacity duration-150 ${hovered ? "opacity-100" : "opacity-0"}`}>
-            <div className="flex gap-1">
-              {urlDub && <span className="bg-blue-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
-              {urlLeg && <span className="bg-zinc-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
-            </div>
-            <div className="flex items-center justify-center">
-              <div className="w-9 h-9 rounded-full bg-white/25 backdrop-blur-sm flex items-center justify-center border border-white/50">
-                <Play size={14} fill="white" className="text-white ml-0.5" />
-              </div>
-            </div>
-            <div>
-              <p className="text-white text-[11px] font-semibold line-clamp-2 mb-0.5">{titulo}</p>
-              <div className="flex items-center gap-2">
-                {episodeLabel && <span className="text-white/70 text-[9px]">{episodeLabel}</span>}
-                {ano && <span className="text-zinc-300 text-[9px]">{ano}</span>}
-                {nota && (
-                  <span className="flex items-center gap-0.5 text-yellow-400 text-[9px]">
-                    <Star size={7} fill="currentColor" /> {nota.toFixed(1)}
-                  </span>
-                )}
-              </div>
+          {/* Hover gradient */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity duration-200" />
+
+          {/* Play button */}
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
+            <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center">
+              <Play size={18} fill="black" className="text-black ml-0.5" />
             </div>
           </div>
 
-          {/* Badges estáticos */}
-          {!hovered && (
-            <>
-              {episodeLabel && (
-                <div className="absolute top-1.5 left-1.5 bg-black/70 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-sm backdrop-blur-sm">
-                  {episodeLabel}
-                </div>
-              )}
-              {!episodeLabel && (urlDub || urlLeg) && (
-                <div className="absolute top-1.5 left-1.5 flex gap-1">
-                  {urlDub && <span className="bg-blue-600/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
-                  {urlLeg && !urlDub && <span className="bg-zinc-700/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
-                </div>
-              )}
-            </>
-          )}
+          {/* Top-right badges */}
+          <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+            {isNew && !episodeLabel && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-emerald-300 bg-emerald-500/20 backdrop-blur">
+                NOVO
+              </span>
+            )}
+            {episodeLabel && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-semibold text-white bg-black/70 backdrop-blur">
+                {episodeLabel}
+              </span>
+            )}
+          </div>
 
-          {isNew && !progresso && (
-            <div className="absolute bottom-0 left-0 right-0 bg-red-600 text-white text-[9px] font-semibold text-center py-[3px] tracking-wide">
-              Recém Adicionado
+          {/* DUB/LEG badges top-left */}
+          {(urlDub || urlLeg) && !episodeLabel && (
+            <div className="absolute top-2 left-2 flex gap-1">
+              {urlDub && (
+                <span className="bg-blue-600/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded backdrop-blur">
+                  DUB
+                </span>
+              )}
+              {urlLeg && !urlDub && (
+                <span className="bg-zinc-700/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded backdrop-blur">
+                  LEG
+                </span>
+              )}
             </div>
           )}
+
+          {/* Progress bar */}
           {pct > 0 && (
             <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/20">
               <div className="h-full bg-red-500" style={{ width: `${pct}%` }} />
             </div>
           )}
         </div>
-      </Link>
 
-      <p className="text-zinc-300 text-[10px] font-medium mt-1 truncate leading-tight px-0.5">
-        {titulo}
-      </p>
+        <p className="mt-2 text-sm font-medium text-gray-200 truncate group-hover/card:text-white transition-colors duration-200">
+          {titulo}
+        </p>
+
+        {nota ? (
+          <div className="flex items-center gap-1 mt-0.5">
+            <Star size={9} fill="#facc15" className="text-yellow-400 flex-none" />
+            <span className="text-[11px] text-zinc-400">{nota.toFixed(1)}</span>
+            {ano && <span className="text-[11px] text-zinc-600">· {ano}</span>}
+          </div>
+        ) : ano ? (
+          <p className="text-[11px] text-zinc-600 mt-0.5">{ano}</p>
+        ) : null}
+      </Link>
     </div>
   );
 }

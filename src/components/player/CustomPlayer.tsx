@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -969,62 +969,79 @@ export function CustomPlayer({
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col select-none">
       {/* ── Top bar – above JW Player ── */}
-      <div className="absolute top-0 inset-x-0 z-[9999] flex items-center gap-2 px-4 pt-3 pb-10 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
-        <button
-          className="pointer-events-auto text-white/70 hover:text-white transition-colors text-sm font-medium px-3 py-1.5 rounded-lg hover:bg-white/10 flex-shrink-0"
-          onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
-        >
-          Fechar player
-        </button>
-        <div className="flex-1" />
-        {/* Fontes */}
-        {allFontes.length > 0 && (
-          <div className="pointer-events-auto flex items-center gap-1.5 flex-wrap justify-end">
+      <div className="absolute top-0 inset-x-0 z-[9999] bg-gradient-to-b from-black/85 via-black/30 to-transparent pointer-events-none">
+        <div className="flex items-center gap-3 px-4 pt-4 pb-16">
+          {/* Back button */}
+          <button
+            className="pointer-events-auto flex-shrink-0 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 flex items-center justify-center transition-all"
+            onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
+            aria-label="Voltar"
+          >
+            <ArrowLeft size={18} className="text-white" />
+          </button>
+
+          {/* Title + episode */}
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-semibold text-sm md:text-base leading-tight truncate drop-shadow-lg">
+              {titulo}
+            </p>
+            {temporada && numeroEp && (
+              <p className="text-white/55 text-xs mt-0.5 truncate">
+                T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
+              </p>
+            )}
+          </div>
+
+          {/* Right controls */}
+          <div className="pointer-events-auto flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end max-w-[55%]">
+            {/* Source pills */}
             {allFontes.map((f, i) => (
               <button
                 key={i}
                 onClick={() => switchFonte(i)}
-                className={`text-[11px] px-2.5 py-0.5 rounded-full border transition-all ${
+                className={`text-[11px] px-3 py-1 rounded-full border transition-all whitespace-nowrap ${
                   fonteIdx === i
-                    ? "bg-[#E50914] border-[#E50914] text-white font-semibold"
-                    : "border-white/20 text-white/50 hover:border-white/40 hover:text-white/80 bg-white/5"
+                    ? "bg-[#E50914] border-[#E50914] text-white font-semibold shadow-lg shadow-red-900/30"
+                    : "border-white/20 text-white/55 hover:border-white/40 hover:text-white bg-white/5 hover:bg-white/10"
                 }`}
               >
                 {f.label}
               </button>
             ))}
+
+            {prevUrl && (
+              <button
+                className="p-1.5 rounded-full border border-white/20 text-white/55 hover:text-white hover:bg-white/10 transition-all"
+                onClick={() => { saveProgress(); router.push(prevUrl); }}
+                title="Episódio anterior"
+              >
+                <ChevronLeft size={16} strokeWidth={2} />
+              </button>
+            )}
+            {nextUrl && (
+              <button
+                className="flex items-center gap-1 text-[11px] text-white font-medium border border-white/25 hover:bg-white/10 px-3 py-1 rounded-full transition-all"
+                onClick={() => { saveProgress(); router.push(nextUrl); }}
+              >
+                Próximo <ChevronRight size={13} strokeWidth={2} />
+              </button>
+            )}
+
+            {castAvailable && (
+              <button
+                onClick={handleCast}
+                title={isCasting ? "Parar transmissão" : "Transmitir no Chromecast"}
+                className={`p-1.5 rounded-full border transition-all ${
+                  isCasting
+                    ? "border-[#E50914] text-[#E50914] bg-[#E50914]/10"
+                    : "border-white/20 text-white/55 hover:border-white/40 hover:text-white bg-white/5 hover:bg-white/10"
+                }`}
+              >
+                <Cast size={15} strokeWidth={1.5} />
+              </button>
+            )}
           </div>
-        )}
-        {prevUrl && (
-          <button
-            className="pointer-events-auto flex items-center gap-0.5 text-[11px] text-white/50 hover:text-white transition-colors px-1 ml-1"
-            onClick={() => { saveProgress(); router.push(prevUrl); }}
-          >
-            <ChevronLeft size={13} strokeWidth={2} /> Ant.
-          </button>
-        )}
-        {nextUrl && (
-          <button
-            className="pointer-events-auto flex items-center gap-0.5 text-[11px] text-white/80 hover:text-white border border-white/20 hover:bg-white/10 px-2.5 py-1 rounded-full transition-all"
-            onClick={() => { saveProgress(); router.push(nextUrl); }}
-          >
-            Próximo <ChevronRight size={13} strokeWidth={2} />
-          </button>
-        )}
-        {/* Chromecast */}
-        {castAvailable && (
-          <button
-            onClick={handleCast}
-            title={isCasting ? "Parar transmissão" : "Transmitir no Chromecast"}
-            className={`pointer-events-auto p-1.5 rounded-full border transition-all ${
-              isCasting
-                ? "border-[#E50914] text-[#E50914] bg-[#E50914]/10"
-                : "border-white/20 text-white/50 hover:border-white/40 hover:text-white bg-white/5"
-            }`}
-          >
-            <Cast size={14} strokeWidth={1.5} />
-          </button>
-        )}
+        </div>
       </div>
 
       {/* ── Main video area ── */}

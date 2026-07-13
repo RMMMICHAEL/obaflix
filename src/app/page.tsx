@@ -3,6 +3,7 @@ import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { RankRow } from "@/components/ui/RankRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
+import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
 import {
   getTrending, getPopularMovies, getPopularTV,
@@ -325,7 +326,10 @@ export default async function HomePage() {
           <LandscapeRow titulo="Em Alta" items={trending} />
         )}
 
-        {/* Top 10 Filmes — direto do banco, sempre 10 itens */}
+        {/* Coleções */}
+        <CollectionsRow />
+
+        {/* Top 10 Filmes — baseado em histórico real de visualizações */}
         {top10FilmesCards.length > 0 && (
           <RankRow titulo="Top 10 Filmes" items={top10FilmesCards} verTodosHref="/filmes" />
         )}
@@ -339,32 +343,15 @@ export default async function HomePage() {
           />
         )}
 
-        {/* Filmes Populares (TMDB) */}
+        {/* Filmes Populares */}
         {popMovies.length > 0 && (
           <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
         )}
 
-        {/* Top 10 Filmes Populares (IMDb MovieMeter via TMDB) */}
-        {popMovies.length > 0 && (
-          <RankRow titulo="Top 10 Filmes Populares" items={popMovies.slice(0, 10)} verTodosHref="/melhores" />
-        )}
+        {/* Episódios Recentes */}
+        <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
 
-        {/* Filmes Mais Bem Avaliados */}
-        {topMovies.length > 0 && (
-          <LandscapeRow titulo="Filmes Mais Bem Avaliados" items={topMovies} verTodosHref="/filmes" />
-        )}
-
-        {/* Séries Populares (TMDB) */}
-        {popTV.length > 0 && (
-          <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
-        )}
-
-        {/* Top 10 Séries Populares (IMDb TVMeter via TMDB) */}
-        {popTV.length > 0 && (
-          <RankRow titulo="Top 10 Séries Populares" items={popTV.slice(0, 10)} verTodosHref="/melhores" />
-        )}
-
-        {/* Top 10 Séries — direto do banco, sempre 10 itens */}
+        {/* Top 10 Séries — baseado em histórico real de visualizações */}
         {top10SeriesCards.length > 0 && (
           <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/series" />
         )}
@@ -378,24 +365,14 @@ export default async function HomePage() {
           />
         )}
 
-        {/* Episódios Recentes */}
-        <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
-
-        {/* Séries Mais Bem Avaliadas */}
-        {topTV.length > 0 && (
-          <LandscapeRow titulo="Séries Mais Bem Avaliadas" items={topTV} verTodosHref="/series" />
+        {/* Séries Populares */}
+        {popTV.length > 0 && (
+          <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
         )}
 
         {/* Animes */}
         {animeList.length > 0 && (
-          <LandscapeRow titulo="Animes Populares" items={animeList} verTodosHref="/animes" />
-        )}
-        {dbAnimes.length > 0 && (
-          <LandscapeRow
-            titulo="Animes no Catálogo"
-            items={dbAnimes.map((s) => dbToCard(s, "anime"))}
-            verTodosHref="/animes"
-          />
+          <LandscapeRow titulo="Animes" items={animeList} verTodosHref="/animes" />
         )}
 
         {/* Desenhos */}
@@ -407,19 +384,12 @@ export default async function HomePage() {
           />
         )}
 
-        {/* Gêneros temáticos */}
+        {/* Gêneros */}
         {comediaList.length > 0 && <LandscapeRow titulo="Comédia" items={comediaList} verTodosHref="/genero/35" />}
         {terrorList.length > 0   && <LandscapeRow titulo="Terror"  items={terrorList}  verTodosHref="/genero/27" />}
         {ficcaoList.length > 0   && <LandscapeRow titulo="Ficção Científica" items={ficcaoList} verTodosHref="/genero/878" />}
         {romanceList.length > 0  && <LandscapeRow titulo="Romance" items={romanceList} verTodosHref="/genero/10749" />}
         {crimeList.length > 0    && <LandscapeRow titulo="Crime"   items={crimeList}   verTodosHref="/genero/80" />}
-
-        {/* Gêneros do banco */}
-        {generoRows.map((g) =>
-          g.filmes.length > 0 ? (
-            <LandscapeRow key={g.id} titulo={g.nome} items={g.filmes} verTodosHref={`/genero/${g.id}`} />
-          ) : null
-        )}
       </div>
     </div>
   );

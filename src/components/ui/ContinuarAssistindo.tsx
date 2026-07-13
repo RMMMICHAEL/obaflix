@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { ChevronLeft, ChevronRight, X, Play } from "lucide-react";
+import { ChevronRight, X, Play } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { imgUrl } from "@/lib/tmdb";
@@ -28,6 +28,13 @@ function pct(item: HistoryItem) {
   return Math.min(100, (item.progressoSeg / item.duracaoSeg) * 100);
 }
 
+function remainingMin(item: HistoryItem) {
+  if (!item.duracaoSeg || item.duracaoSeg <= 0) return null;
+  const rem = item.duracaoSeg - item.progressoSeg;
+  if (rem <= 0) return null;
+  return Math.ceil(rem / 60);
+}
+
 function watchUrl(item: HistoryItem) {
   if (item.tipo === "filme") return `/assistir/filme/${item.id}`;
   if (item.temporada && item.numeroEp)
@@ -36,7 +43,8 @@ function watchUrl(item: HistoryItem) {
 }
 
 function episodeLabel(item: HistoryItem) {
-  if (item.temporada && item.numeroEp) return `T${item.temporada} E${item.numeroEp}`;
+  if (item.temporada && item.numeroEp)
+    return `T${item.temporada} E${item.numeroEp}`;
   return null;
 }
 
@@ -62,25 +70,28 @@ export function ContinuarAssistindo() {
   };
 
   const scroll = (dir: "left" | "right") => {
-    rowRef.current?.scrollBy({ left: dir === "left" ? -700 : 700, behavior: "smooth" });
+    rowRef.current?.scrollBy({ left: dir === "left" ? -800 : 800, behavior: "smooth" });
   };
 
   if (!loaded || items.length === 0) return null;
 
   return (
-    <section className="mb-2 md:mb-4">
-      <h2 className="text-white font-semibold text-sm md:text-[15px] tracking-wide mb-2 px-4 md:px-14">
-        Continuar Assistindo
-      </h2>
-      <div className="relative group/row">
+    <section className="relative px-6 md:px-12 py-3 group/row">
+      <h2 className="text-lg md:text-xl font-bold mb-3">Continuar Assistindo</h2>
+
+      <div className="relative -mx-6 md:-mx-12">
         <button
-          onClick={() => scroll("left")}
-          className="absolute left-0 top-0 bottom-0 z-10 w-12 md:w-14 bg-gradient-to-r from-zinc-950 to-transparent text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
+          onClick={() => scroll("right")}
+          className="absolute right-0 top-0 bottom-0 z-20 w-12 md:w-16 flex items-center justify-center bg-gradient-to-l from-black to-transparent opacity-0 group-hover/row:opacity-100 transition-opacity"
+          aria-label="Próximo"
         >
-          <ChevronLeft size={22} />
+          <ChevronRight className="w-7 h-7" />
         </button>
 
-        <div ref={rowRef} className="flex gap-1.5 md:gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 pb-1 scroll-smooth">
+        <div
+          ref={rowRef}
+          className="flex gap-3 overflow-x-auto scrollbar-hide px-6 md:px-12 scroll-smooth"
+        >
           {items.map((item) => {
             const imgSrc = item.background
               ? imgUrl(item.background, "w780")
@@ -89,81 +100,88 @@ export function ContinuarAssistindo() {
               : "/placeholder-bg.jpg";
 
             const p = item.queued && item.progressoSeg === 0 ? 0 : pct(item);
+            const rem = remainingMin(item);
             const ep = episodeLabel(item);
 
             return (
-              <div key={item.historyId} className="flex-none w-36 sm:w-40 md:w-56 relative group/card">
-                {/* Card */}
+              <div
+                key={item.historyId}
+                className="group/card relative shrink-0 w-[220px] md:w-[280px]"
+              >
+                {/* Card thumbnail */}
                 <Link
                   href={watchUrl(item)}
-                  className="block relative aspect-video rounded overflow-hidden bg-zinc-900 shadow-md transition-transform duration-200 group-hover/card:scale-[1.04] group-hover/card:z-10"
+                  className="block relative aspect-video rounded-xl overflow-hidden bg-zinc-900 cursor-pointer"
                 >
                   <Image
                     src={imgSrc}
                     alt={item.titulo}
                     fill
-                    className="object-cover"
-                    sizes="(max-width: 640px) 176px, (max-width: 768px) 192px, 224px"
+                    className="object-cover transition-transform duration-300 group-hover/card:scale-105"
+                    sizes="(max-width: 768px) 220px, 280px"
                   />
 
-                  {/* Hover overlay */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-black/20 opacity-0 group-hover/card:opacity-100 transition-opacity duration-150 flex flex-col justify-between p-2">
-                    <div />
-                    <div className="flex items-center justify-center">
-                      <div className="w-8 h-8 rounded-full bg-white/25 backdrop-blur-sm flex items-center justify-center border border-white/40">
-                        <Play size={13} fill="white" className="text-white ml-0.5" />
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-white text-[11px] font-semibold line-clamp-1 mb-0.5">{item.titulo}</p>
-                      {ep && <p className="text-white/60 text-[9px]">{ep}</p>}
+                  {/* Permanent bottom gradient */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+
+                  {/* Play button on hover */}
+                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200 bg-black/30">
+                    <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
+                      <Play size={20} fill="black" className="text-black ml-0.5" />
                     </div>
                   </div>
 
-                  {/* Episode badge (static, hides on hover) */}
+                  {/* Episode badge */}
                   {ep && (
-                    <div className="group-hover/card:opacity-0 transition-opacity absolute top-1.5 left-1.5 bg-black/70 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-sm">
+                    <div className="absolute top-2 left-2 bg-black/70 text-white text-[10px] font-bold px-2 py-0.5 rounded backdrop-blur">
                       {ep}
                     </div>
                   )}
 
                   {/* PRÓXIMO badge */}
                   {item.queued && item.progressoSeg === 0 && (
-                    <div className="absolute bottom-0 left-0 bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-tr-sm">
+                    <span className="absolute top-2 right-2 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-yellow-300 bg-yellow-500/20 backdrop-blur">
                       PRÓXIMO
-                    </div>
+                    </span>
+                  )}
+
+                  {/* Time remaining */}
+                  {rem && (
+                    <p className="absolute bottom-4 right-2 text-[10px] font-medium text-white/70">
+                      {rem}min restantes
+                    </p>
                   )}
 
                   {/* Progress bar */}
-                  <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-white/20">
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20">
                     <div className="h-full bg-red-500" style={{ width: `${p}%` }} />
                   </div>
                 </Link>
 
+                {/* Info row below */}
+                <div className="mt-2 px-0.5 flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-gray-200 truncate group-hover/card:text-white transition-colors duration-200">
+                    {item.titulo}
+                  </p>
+                  {p > 0 && (
+                    <span className="text-[10px] text-zinc-500 flex-shrink-0">
+                      {Math.round(p)}%
+                    </span>
+                  )}
+                </div>
+
                 {/* Remove button */}
                 <button
                   onClick={() => remove(item.historyId)}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/80 text-white/70 hover:text-white hover:bg-black transition opacity-0 group-hover/card:opacity-100 flex items-center justify-center z-10"
+                  className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/80 text-white/70 hover:text-white hover:bg-black transition opacity-0 group-hover/card:opacity-100 flex items-center justify-center z-10"
                   title="Remover"
                 >
-                  <X size={10} />
+                  <X size={12} />
                 </button>
-
-                {/* Title: mobile only */}
-                <p className="md:hidden text-zinc-400 text-[11px] font-medium mt-1 truncate leading-tight px-0.5">
-                  {item.titulo}
-                </p>
               </div>
             );
           })}
         </div>
-
-        <button
-          onClick={() => scroll("right")}
-          className="absolute right-0 top-0 bottom-0 z-10 w-12 md:w-14 bg-gradient-to-l from-zinc-950 to-transparent text-white opacity-0 group-hover/row:opacity-100 transition flex items-center justify-center"
-        >
-          <ChevronRight size={20} />
-        </button>
       </div>
     </section>
   );
