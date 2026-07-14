@@ -11,6 +11,7 @@ export async function GET(req: NextRequest) {
     const ano = searchParams.get("ano");
     const ordem = searchParams.get("ordem") ?? "recente";
     const tipo = searchParams.get("tipo");
+    const q = searchParams.get("q");
     const limit = 24;
     const skip = (page - 1) * limit;
 
@@ -18,11 +19,13 @@ export async function GET(req: NextRequest) {
     if (tipo) where.tipo = tipo;
     if (genero) where.generos = { some: { generoId: Number(genero) } };
     if (ano) where.ano = Number(ano);
+    if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota" ? { nota: "desc" }
+      ordem === "nota"    ? { nota: "desc" }
       : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az" ? { titulo: "asc" }
+      : ordem === "az"      ? { titulo: "asc" }
+      : ordem === "antigo"  ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([

@@ -10,26 +10,27 @@ datasource db {
 }
 
 model Filme {
-  id             String        @id
-  tmdbId         String?
-  titulo         String
-  tituloOriginal String?
-  poster         String?
-  background     String?
-  logo           String?
-  sinopse        String?       @db.Text
-  ano            Int?
-  nota           Float?
-  duracao        Int?
-  top250         Int?
-  sagaId         Int?
-  urlDub         String?       @db.Text
-  urlLeg         String?       @db.Text
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  generos        FilmeGenero[]
-  progresso      WatchHistory[]
-  watchlist      Watchlist[]
+  id               String        @id
+  tmdbId           String?
+  titulo           String
+  tituloOriginal   String?
+  poster           String?
+  background       String?
+  logo             String?
+  sinopse          String?       @db.Text
+  ano              Int?
+  nota             Float?
+  duracao          Int?
+  top250           Int?
+  sagaId           Int?
+  originalLanguage String?
+  urlDub           String?       @db.Text
+  urlLeg           String?       @db.Text
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  generos          FilmeGenero[]
+  progresso        WatchHistory[]
+  watchlist        Watchlist[]
 }
 
 model Serie {
@@ -44,9 +45,10 @@ model Serie {
   ano            Int?
   nota           Float?
   temporadas     Int?
-  top250         Int?
-  tipo           String        @default("serie")
-  createdAt      DateTime      @default(now())
+  top250           Int?
+  tipo             String        @default("serie")
+  originalLanguage String?
+  createdAt        DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   episodios      Episodio[]
   generos        SerieGenero[]
