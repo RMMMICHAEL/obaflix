@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Play, AlertCircle, RotateCcw, Cast, Film, Flag } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, Headphones } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -152,6 +152,17 @@ function recoveryLog(
   level === "warn" ? console.warn(msg) : console.log(msg);
 }
 
+function formatTime(s: number): string {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const t = Math.floor(s);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
   urlDub, urlLeg, titulo, nomeEpisodio, thumbUrl, logoUrl, sinopse,
@@ -198,6 +209,11 @@ export function CustomPlayer({
   const castContextRef = useRef<any>(null);
   // Guarda desmontagem: impede setState/callbacks após unmount e durante navegação auto-skip
   const unmountedRef = useRef(false);
+  // UI controls
+  const containerRef = useRef<HTMLDivElement>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetControlsTimerRef = useRef<() => void>(() => {});
+  const toggleAudioTrackRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     unmountedRef.current = false;
@@ -269,8 +285,16 @@ export function CustomPlayer({
   const [error, setError] = useState("");
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamTipo, setStreamTipo] = useState<StreamTipo>("hls");
-  // native tipo states
-  const [nativePlaying, setNativePlaying] = useState(false);
+  // Unified playback state (JW + native)
+  const [playing, setPlaying] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1); // 0–1
+  const [muted, setMuted] = useState(false);
+  // Controls UI
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [hasMultiAudio, setHasMultiAudio] = useState(false);
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
   const [showRetry, setShowRetry] = useState(false);
@@ -385,6 +409,65 @@ export function CustomPlayer({
     };
   }, [saveProgress]);
 
+  // ── Controls visibility + fullscreen ────────────────────────────────────────
+  const resetControlsTimer = useCallback(() => {
+    setControlsVisible(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => setControlsVisible(false), 3500);
+  }, []);
+  resetControlsTimerRef.current = resetControlsTimer;
+
+  const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (streamTipo === "iframe") return;
+      if (e.code === "Space" || e.code === "KeyK") {
+        e.preventDefault();
+        if (jwRef.current) {
+          const state = jwRef.current.getState?.();
+          if (state === "playing") jwRef.current.pause();
+          else jwRef.current.play();
+        } else if (videoRef.current) {
+          if (videoRef.current.paused) videoRef.current.play().catch(() => {});
+          else videoRef.current.pause();
+        }
+      } else if (e.code === "ArrowRight") {
+        e.preventDefault();
+        const pos = progressoRef.current;
+        if (jwRef.current) jwRef.current.seek(pos + 10);
+        else if (videoRef.current) videoRef.current.currentTime = Math.min(pos + 10, (videoRef.current.duration || Infinity) - 1);
+      } else if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        const newPos = Math.max(0, progressoRef.current - 10);
+        if (jwRef.current) jwRef.current.seek(newPos);
+        else if (videoRef.current) videoRef.current.currentTime = newPos;
+      } else if (e.code === "KeyF") {
+        e.preventDefault();
+        toggleFullscreen();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [streamTipo, toggleFullscreen]);
+
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number) => {
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
@@ -395,7 +478,10 @@ export function CustomPlayer({
     setStreamUrl(null);
     setError("");
     setShowRetry(false);
-    setNativePlaying(false);
+    setPlaying(false);
+    setPosition(0);
+    setDuration(0);
+    setHasMultiAudio(false);
     setAutoPlayBlocked(false);
     setNextEpCountdown(null);
     autoSkipDoneRef.current = false;
@@ -520,8 +606,6 @@ export function CustomPlayer({
     // Fonte única pelo proxy autenticado — CDN URL nunca exposta ao browser
     const sources: any[] = [{ file: streamUrl, type: fileType }];
 
-    const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
-
     loadJW(() => {
       // Componente pode ter desmontado enquanto o script JW carregava
       if (unmountedRef.current) return;
@@ -532,15 +616,11 @@ export function CustomPlayer({
       const player = jw("jw-player-container").setup({
         sources,
         image: thumbUrl || undefined,
-        controls: true,
+        controls: false,
         sharing: false,
-        playbackRateControls: [0.5, 1, 1.5, 2],
         autostart: true,
-        displaytitle: true,
-        displaydescription: true,
-        title: titleText,
-        description: nomeEpisodio || "Você está assistindo",
-        skin: { name: "netflix" },
+        displaytitle: false,
+        displaydescription: false,
         hls: { bufferingGoal: 80 },
         width: "100%",
         height: "100%",
@@ -578,19 +658,25 @@ export function CustomPlayer({
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         setShowRetry(false);
         setStatus("playing");
+        setPlaying(true);
         initialLoadRef.current = false; // fallback: garante transição caso firstFrame não dispare
-        // Renovação anterior teve sucesso (player voltou a reproduzir) — reseta o contador
-        // de falhas consecutivas. Sem isso, um episódio longo com várias renovações bem-sucedidas
-        // ao longo de horas estouraria o cap de 5 e cairia em erro mesmo sem nenhuma falha real.
         reExtractCountRef.current = 0;
+        resetControlsTimerRef.current();
       });
-      player.on("pause", () => { saveProgressRef.current(); });
+      player.on("pause", () => {
+        setPlaying(false);
+        setControlsVisible(true);
+        if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
+        saveProgressRef.current();
+      });
       player.on("complete", () => { saveProgressRef.current(); });
 
       player.on("time", ({ position, duration }: any) => {
         if (unmountedRef.current) return;
         progressoRef.current = Math.floor(position);
         if (isFinite(duration) && duration > 0) durationRef.current = Math.round(duration);
+        setPosition(position);
+        if (isFinite(duration) && duration > 0) setDuration(duration);
 
         const url = nextUrlRef.current;
         if (!url || autoSkipDoneRef.current || !isFinite(duration) || duration <= 0) return;
@@ -631,15 +717,21 @@ export function CustomPlayer({
         }
       }
 
+      // Expõe alternância de áudio à UI via ref (substitui addButton, que não funciona com controls:false)
+      toggleAudioTrackRef.current = () => {
+        const tracks: any[] = player.getAudioTracks() ?? [];
+        if (tracks.length <= 1) return;
+        const cur = player.getCurrentAudioTrack();
+        const next = (cur + 1) % tracks.length;
+        userAudioTrackRef.current = next;
+        safeSetAudioTrack(next);
+      };
+
       // ── Auto-seleciona áudio em português, exceto se o usuário já escolheu manualmente ──
-      // Dispara na carga inicial e após cada load() de renovação de token.
-      // userAudioTrackRef = null → nenhuma escolha manual ainda → aplica preferência PT.
-      // userAudioTrackRef = N   → usuário escolheu manualmente → restaura exatamente
-      //                          essa faixa, sem jamais sobrescrever por PT novamente
-      //                          durante o mesmo episódio.
       player.on("audioTracks", () => {
         if (unmountedRef.current) return;
         const tracks: any[] = player.getAudioTracks() ?? [];
+        setHasMultiAudio(tracks.length > 1);
         if (tracks.length <= 1) return;
 
         if (userAudioTrackRef.current !== null) {
@@ -660,16 +752,12 @@ export function CustomPlayer({
         if (ptIdx > 0) safeSetAudioTrack(ptIdx);
       });
 
-      // ── Botão de alternância de áudio na barra de controles ────────────────
-      const audioSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>`;
-      player.addButton(audioSvg, "Alternar áudio", () => {
-        const tracks: any[] = player.getAudioTracks() ?? [];
-        if (tracks.length <= 1) return;
-        const cur = player.getCurrentAudioTrack();
-        const next = (cur + 1) % tracks.length;
-        userAudioTrackRef.current = next; // registra escolha manual para este episódio
-        safeSetAudioTrack(next);
-      }, "obaflix-audio-toggle");
+      player.on("volume", ({ volume: vol }: any) => {
+        if (!unmountedRef.current) setVolume(vol / 100);
+      });
+      player.on("mute", ({ mute: m }: any) => {
+        if (!unmountedRef.current) setMuted(m);
+      });
 
       // Renova o token CDN (rola3/4 no Electron) de forma transparente: extrai uma nova
       // URL via IPC nativo e troca a fonte do player sem destruí-lo, preservando posição,
@@ -876,15 +964,6 @@ export function CustomPlayer({
           `${supportsNativeDesktopExtraction(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-native"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
       });
 
-      // ── Botão +30s no control bar (visível em fullscreen) ────────────────────
-      try {
-        const fwd30Icon = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='24' viewBox='0 0 32 24'><text x='0' y='18' font-size='14' font-weight='700' font-family='Arial,sans-serif' fill='white'>+30s</text></svg>`;
-        player.addButton(fwd30Icon, "Avançar 30 segundos", () => {
-          const pos = player.getPosition?.() ?? 0;
-          const dur = player.getDuration?.() ?? 0;
-          player.seek(Math.min(pos + 30, dur - 1));
-        }, "obaflix-fwd30");
-      } catch {}
     });
 
     return () => {
@@ -932,15 +1011,28 @@ export function CustomPlayer({
     const video = videoRef.current;
     if (!video || streamTipo !== "native") return;
 
-    const onPlay = () => { setNativePlaying(true); setStatus("playing"); setAutoPlayBlocked(false); };
-    const onPause = () => { setNativePlaying(false); saveProgress(); };
+    const onPlay = () => {
+      setPlaying(true);
+      setStatus("playing");
+      setAutoPlayBlocked(false);
+      resetControlsTimerRef.current();
+    };
+    const onPause = () => {
+      setPlaying(false);
+      setControlsVisible(true);
+      if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
+      saveProgress();
+    };
     const onWaiting = () => setStatus("loading");
     const onCanPlay = () => setStatus("playing");
+    const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     const onTimeUpdate = () => {
       const ct = video.currentTime;
       const dur = video.duration;
       progressoRef.current = Math.floor(ct);
       if (isFinite(dur)) durationRef.current = Math.round(dur);
+      setPosition(ct);
+      if (isFinite(dur) && dur > 0) setDuration(dur);
 
       const url = nextUrl;
       if (!url || autoSkipDoneRef.current || !isFinite(dur) || dur <= 0) return;
@@ -968,6 +1060,7 @@ export function CustomPlayer({
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("volumechange", onVolumeChange);
 
     return () => {
       video.removeEventListener("play", onPlay);
@@ -975,17 +1068,23 @@ export function CustomPlayer({
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("volumechange", onVolumeChange);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamTipo, nextUrl, saveProgress]);
 
-  const titleText = `${titulo}${temporada && numeroEp ? ` · T${temporada} EP${numeroEp}` : ""}`;
   const btnCls = "flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 bg-white/10 text-white hover:bg-white hover:text-black active:bg-white active:text-black";
+  const pct = duration > 0 ? Math.min((position / duration) * 100, 100) : 0;
+  const showCustomControls = streamTipo !== "iframe";
+  const showOverlay = !playing || status !== "playing" || controlsVisible;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black select-none touch-none">
-
-      {/* ── Video elements (fill entire screen) ── */}
+    <div
+      ref={containerRef}
+      className="fixed inset-0 z-50 bg-black select-none touch-none"
+      onMouseMove={() => { if (playing && status === "playing") resetControlsTimerRef.current(); }}
+    >
+      {/* ── Video elements ── */}
       <div
         id="jw-player-container"
         className={`absolute inset-0 w-full h-full${
@@ -1013,11 +1112,32 @@ export function CustomPlayer({
         />
       )}
 
-      {/* ── Main UI overlay (top / middle / bottom) ── */}
-      <div className="absolute inset-0 flex flex-col justify-between pointer-events-none z-[9999]">
+      {/* Click-to-play zone (between video and controls overlay) */}
+      {showCustomControls && (
+        <div
+          className="absolute inset-0 z-[9998]"
+          onClick={() => {
+            resetControlsTimerRef.current();
+            if (jwRef.current) {
+              const state = jwRef.current.getState?.();
+              if (state === "playing") jwRef.current.pause();
+              else jwRef.current.play();
+            } else if (videoRef.current) {
+              if (videoRef.current.paused) videoRef.current.play().catch(() => {});
+              else videoRef.current.pause();
+            }
+          }}
+        />
+      )}
 
-        {/* Top bar */}
-        <div className="pointer-events-auto px-3 pt-2 pb-6 bg-gradient-to-b from-black/70 via-black/30 to-transparent md:px-8 md:pt-4 md:pb-10 landscape:pb-3">
+      {/* ── Main UI overlay ── */}
+      <div
+        className={`absolute inset-0 flex flex-col justify-between pointer-events-none z-[9999] transition-opacity duration-500 ${
+          showOverlay ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        {/* ── Top bar ── */}
+        <div className="pointer-events-auto px-3 pt-2 pb-6 bg-gradient-to-b from-black/80 via-black/30 to-transparent md:px-8 md:pt-4 md:pb-10 landscape:pb-3">
           <div className="flex items-center justify-between gap-2">
 
             {/* Left: back + title */}
@@ -1039,21 +1159,22 @@ export function CustomPlayer({
               </div>
             </div>
 
-            {/* Right: sources, cast, prev/next, report */}
-            <div className="flex items-center gap-1.5 md:gap-2 flex-shrink-0">
+            {/* Right: servidor, áudio, cast, prev, next, report */}
+            <div className="flex items-center gap-1 md:gap-1.5 flex-shrink-0">
 
-              {/* Sources dropdown (Film icon) */}
+              {/* Servidor dropdown */}
               {allFontes.length > 0 && (
                 <div className="relative">
                   <button
-                    title="Fonte / Qualidade"
-                    className={`${btnCls}${showSources ? " !bg-white !text-black" : ""}`}
+                    title="Selecionar servidor"
+                    className={`h-10 md:h-12 px-3 md:px-4 rounded-full flex items-center gap-1.5 flex-shrink-0 transition-all duration-200 bg-white/10 text-white text-xs md:text-sm font-medium hover:bg-white hover:text-black active:bg-white active:text-black${showSources ? " !bg-white !text-black" : ""}`}
                     onClick={(e) => { e.stopPropagation(); setShowSources((s) => !s); }}
                   >
-                    <Film className="w-5 h-5" />
+                    Servidor
+                    <ChevronRight className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 ${showSources ? "rotate-90" : ""}`} />
                   </button>
                   {showSources && (
-                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[130px] shadow-2xl">
+                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[140px] shadow-2xl">
                       {allFontes.map((f, i) => (
                         <button
                           key={i}
@@ -1072,6 +1193,17 @@ export function CustomPlayer({
                 </div>
               )}
 
+              {/* Áudio (múltiplas faixas) */}
+              {hasMultiAudio && streamTipo !== "iframe" && (
+                <button
+                  title="Alternar idioma do áudio"
+                  className={btnCls}
+                  onClick={() => toggleAudioTrackRef.current()}
+                >
+                  <Headphones className="w-5 h-5" />
+                </button>
+              )}
+
               {/* Chromecast */}
               {castAvailable && (
                 <button
@@ -1083,7 +1215,7 @@ export function CustomPlayer({
                 </button>
               )}
 
-              {/* Prev episode */}
+              {/* Episódio anterior */}
               {prevUrl && (
                 <button
                   title="Episódio anterior"
@@ -1094,7 +1226,7 @@ export function CustomPlayer({
                 </button>
               )}
 
-              {/* Next episode */}
+              {/* Próximo episódio */}
               {nextUrl && (
                 <button
                   title="Próximo episódio"
@@ -1106,7 +1238,7 @@ export function CustomPlayer({
                 </button>
               )}
 
-              {/* Report */}
+              {/* Reportar */}
               <button title="Reportar problema" className={btnCls}>
                 <Flag className="w-5 h-5" />
               </button>
@@ -1114,9 +1246,10 @@ export function CustomPlayer({
           </div>
         </div>
 
-        {/* Middle: title logo + episode info + description */}
+        {/* ── Middle: logo + info ── */}
         <div className="self-start pointer-events-none px-3 sm:px-4 md:px-12 max-w-[240px] sm:max-w-sm md:max-w-3xl lg:max-w-4xl xl:max-w-5xl [@media(max-height:540px)]:max-w-[220px] [@media(max-height:540px)]:px-2.5">
           {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={logoUrl}
               alt={titulo}
@@ -1139,30 +1272,185 @@ export function CustomPlayer({
           )}
         </div>
 
-        {/* Bottom spacer — JW Player renders its own controls here */}
-        <div className="h-16 md:h-20 pointer-events-auto" />
+        {/* ── Bottom: controles customizados ── */}
+        {showCustomControls ? (
+          <div className="pointer-events-auto px-3 pt-4 pb-2 bg-gradient-to-t from-black/80 via-black/30 to-transparent md:px-8 md:pt-10 landscape:pt-2 md:pb-4">
+
+            {/* Barra de progresso */}
+            <div className="flex items-center gap-2 mb-2 md:gap-3 md:mb-3">
+              <span className="text-white text-[10px] md:text-xs font-medium tabular-nums min-w-[32px] md:min-w-[42px] text-right">
+                {formatTime(position)}
+              </span>
+              <div
+                className="relative flex items-center flex-1 h-10 cursor-pointer group/seek md:h-6 touch-none"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                  const newPos = frac * duration;
+                  if (jwRef.current) jwRef.current.seek(newPos);
+                  else if (videoRef.current) videoRef.current.currentTime = newPos;
+                }}
+              >
+                <div className="absolute left-0 right-0 h-[3px] rounded-full bg-white/20 transition-all duration-200 group-hover/seek:h-[5px]">
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-full bg-[#E50914]"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#E50914] ring-2 ring-white/30 shadow-lg transition-transform duration-200 scale-0 group-hover/seek:scale-100 pointer-events-none"
+                  style={{ left: `calc(${pct}% - 8px)` }}
+                />
+              </div>
+              <span className="text-white text-[10px] md:text-xs font-medium tabular-nums min-w-[32px] md:min-w-[42px]">
+                {formatTime(duration)}
+              </span>
+            </div>
+
+            {/* Botões de controle */}
+            <div className="flex items-center justify-between">
+
+              {/* Esquerda: reiniciar + volume */}
+              <div className="flex items-center gap-1 md:gap-1.5">
+                <button
+                  title="Reiniciar"
+                  className={btnCls}
+                  onClick={() => {
+                    if (jwRef.current) jwRef.current.seek(0);
+                    else if (videoRef.current) videoRef.current.currentTime = 0;
+                  }}
+                >
+                  <RotateCcw className="w-4 h-4 md:w-5 md:h-5" />
+                </button>
+
+                {/* Volume (desktop) */}
+                <div className="hidden md:flex items-center gap-1 group/vol">
+                  <button
+                    title={muted || volume === 0 ? "Ativar som" : "Silenciar"}
+                    className={btnCls}
+                    onClick={() => {
+                      const newMuted = !muted;
+                      if (jwRef.current) jwRef.current.setMute(newMuted);
+                      else if (videoRef.current) videoRef.current.muted = newMuted;
+                      setMuted(newMuted);
+                    }}
+                  >
+                    {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={muted ? 0 : volume}
+                    className="w-0 overflow-hidden transition-all duration-300 cursor-pointer group-hover/vol:w-20 accent-[#E50914]"
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      setVolume(v);
+                      setMuted(v === 0);
+                      if (jwRef.current) { jwRef.current.setVolume(v * 100); if (v > 0) jwRef.current.setMute(false); }
+                      else if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0; }
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Centro: -10s + play/pause + +10s */}
+              <div className="flex items-center gap-2 md:gap-3">
+                <button
+                  title="-10 segundos"
+                  className={btnCls}
+                  onClick={() => {
+                    const newPos = Math.max(0, progressoRef.current - 10);
+                    if (jwRef.current) jwRef.current.seek(newPos);
+                    else if (videoRef.current) videoRef.current.currentTime = newPos;
+                  }}
+                >
+                  <span className="text-xs md:text-sm font-bold leading-none">-10s</span>
+                </button>
+
+                <button
+                  title={playing ? "Pausar" : "Reproduzir"}
+                  className="flex-shrink-0 w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center transition-all duration-200 bg-white/15 text-white hover:bg-white hover:text-black hover:scale-105 active:scale-95"
+                  onClick={() => {
+                    if (jwRef.current) {
+                      const state = jwRef.current.getState?.();
+                      if (state === "playing") jwRef.current.pause();
+                      else jwRef.current.play();
+                    } else if (videoRef.current) {
+                      if (videoRef.current.paused) videoRef.current.play().catch(() => {});
+                      else videoRef.current.pause();
+                    }
+                  }}
+                >
+                  {playing
+                    ? <Pause className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" strokeWidth={0} />
+                    : <Play className="w-5 h-5 md:w-6 md:h-6 ml-0.5" fill="currentColor" strokeWidth={0} />
+                  }
+                </button>
+
+                <button
+                  title="+10 segundos"
+                  className={btnCls}
+                  onClick={() => {
+                    const newPos = progressoRef.current + 10;
+                    if (jwRef.current) jwRef.current.seek(newPos);
+                    else if (videoRef.current) videoRef.current.currentTime = Math.min(newPos, (videoRef.current.duration || Infinity) - 1);
+                  }}
+                >
+                  <span className="text-xs md:text-sm font-bold leading-none">+10s</span>
+                </button>
+              </div>
+
+              {/* Direita: próximo ep + tela cheia */}
+              <div className="flex items-center gap-1 md:gap-1.5">
+                {nextUrl && (
+                  <button
+                    title="Próximo episódio"
+                    className={`${btnCls} !w-auto px-3 gap-1`}
+                    onClick={() => {
+                      autoSkipDoneRef.current = true;
+                      setNextEpCountdown(null);
+                      nextEpCountdownActiveRef.current = false;
+                      saveProgress().then(() => router.push(nextUrl));
+                    }}
+                  >
+                    <span className="hidden sm:inline text-xs font-medium">Próximo</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+                  className={btnCls}
+                  onClick={toggleFullscreen}
+                >
+                  {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="h-16 md:h-20 pointer-events-none" />
+        )}
       </div>
 
-      {/* ── Status overlays (above main UI) ── */}
+      {/* ── Status overlays (z-[99999]) ── */}
 
-      {/* Extracting */}
-      {status === "extracting" && (
+      {/* Loading unificado: extração + buffering inicial do JW */}
+      {(status === "extracting" || (status === "loading" && streamTipo !== "native")) && (
         <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center">
           {thumbUrl && (
             <div className="absolute inset-0 bg-cover bg-center scale-105" style={{ backgroundImage: `url(${thumbUrl})` }} />
           )}
-          <div className="absolute inset-0 bg-black/75" />
+          <div className="absolute inset-0 bg-black/80" />
           <div className="relative z-10 flex flex-col items-center gap-5 text-center px-8">
+            <div className="w-12 h-12 border-4 border-white/20 border-t-[#E50914] rounded-full animate-spin" />
             <div className="flex flex-col items-center gap-1">
-              <p className="text-white/40 text-[10px] uppercase tracking-[0.25em] font-medium">Você está assistindo</p>
-              <p className="text-white font-bold text-lg md:text-xl leading-snug">{titulo}</p>
+              <p className="text-white font-semibold text-base md:text-lg leading-snug">{titulo}</p>
               {temporada && numeroEp && (
-                <p className="text-white/60 text-sm mt-0.5">
-                  T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}
-                </p>
+                <p className="text-white/50 text-sm">T{temporada} EP{numeroEp}{nomeEpisodio ? ` · ${nomeEpisodio}` : ""}</p>
               )}
             </div>
-            <BouncingDots />
           </div>
         </div>
       )}
@@ -1170,24 +1458,11 @@ export function CustomPlayer({
       {/* Native buffering */}
       {status === "loading" && streamTipo === "native" && !autoPlayBlocked && (
         <div className="absolute inset-0 z-[99999] flex items-center justify-center">
-          <BouncingDots size="sm" />
+          <div className="w-10 h-10 border-4 border-white/20 border-t-[#E50914] rounded-full animate-spin" />
         </div>
       )}
 
-      {/* +30s skip (native mode) */}
-      {streamTipo === "native" && status === "playing" && (
-        <button
-          onClick={() => {
-            const video = videoRef.current;
-            if (video) video.currentTime = Math.min(video.currentTime + 30, video.duration - 1);
-          }}
-          className="absolute bottom-24 right-4 z-[9999] flex items-center gap-1 px-3 py-1.5 rounded-full bg-black/60 border border-white/20 text-white text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
-        >
-          +30s
-        </button>
-      )}
-
-      {/* Autoplay blocked (native) */}
+      {/* Autoplay bloqueado (native) */}
       {autoPlayBlocked && streamTipo === "native" && (
         <div
           className="absolute inset-0 z-[99999] flex items-center justify-center cursor-pointer"
@@ -1218,7 +1493,7 @@ export function CustomPlayer({
         </div>
       )}
 
-      {/* Error */}
+      {/* Erro */}
       {status === "error" && (
         <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center bg-black/75 gap-5">
           <AlertCircle size={44} className="text-[#E50914]" strokeWidth={1.5} />
@@ -1232,42 +1507,65 @@ export function CustomPlayer({
         </div>
       )}
 
-      {/* No fontes */}
+      {/* Sem fontes */}
       {status === "idle" && allFontes.length === 0 && (
         <div className="absolute inset-0 z-[99999] flex items-center justify-center">
           <p className="text-white/30 text-sm">Nenhuma fonte disponível</p>
         </div>
       )}
 
-      {/* Auto-skip next episode */}
+      {/* Auto-skip próximo episódio */}
       {nextEpCountdown !== null && nextUrl && (
-        <div className="absolute bottom-24 right-6 z-[9999] flex items-center gap-3 bg-black/80 backdrop-blur border border-white/10 rounded-xl px-4 py-3 shadow-xl">
-          <div className="text-right">
-            <p className="text-white/60 text-[10px] uppercase tracking-wider">Próximo episódio em</p>
-            <p className="text-white font-bold text-2xl tabular-nums leading-none">{nextEpCountdown}s</p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <button
-              onClick={() => {
-                autoSkipDoneRef.current = true;
-                setNextEpCountdown(null);
-                nextEpCountdownActiveRef.current = false;
-                saveProgress().then(() => router.push(nextUrl));
-              }}
-              className="flex items-center gap-1.5 bg-[#E50914] hover:bg-[#f00] text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
-            >
-              Ir agora <ChevronRight size={14} />
-            </button>
-            <button
-              onClick={() => {
-                autoSkipDoneRef.current = true;
-                setNextEpCountdown(null);
-                nextEpCountdownActiveRef.current = false;
-              }}
-              className="text-white/40 hover:text-white/70 text-[10px] text-center transition"
-            >
-              Cancelar
-            </button>
+        <div className="absolute bottom-28 right-4 z-[9999] md:bottom-32 md:right-6">
+          <div className="flex items-center gap-4 bg-zinc-900/95 backdrop-blur-sm border border-white/10 rounded-2xl px-5 py-4 shadow-2xl">
+            {/* Contador circular */}
+            <div className="relative w-14 h-14 flex-shrink-0">
+              <svg className="w-14 h-14 -rotate-90" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="22" fill="none" stroke="white" strokeOpacity="0.12" strokeWidth="3" />
+                <circle
+                  cx="28" cy="28" r="22" fill="none" stroke="#E50914" strokeWidth="3"
+                  strokeDasharray={`${2 * Math.PI * 22}`}
+                  strokeDashoffset={`${2 * Math.PI * 22 * (1 - nextEpCountdown / 30)}`}
+                  strokeLinecap="round"
+                  style={{ transition: "stroke-dashoffset 1s linear" }}
+                />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-white font-bold text-base tabular-nums">
+                {nextEpCountdown}
+              </span>
+            </div>
+
+            <div>
+              <p className="text-white/40 text-[10px] uppercase tracking-wider leading-none mb-1.5">Próximo episódio</p>
+              {temporada && numeroEp && (
+                <p className="text-white font-semibold text-sm leading-tight mb-3">
+                  T{temporada} EP{(numeroEp ?? 0) + 1}
+                </p>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    autoSkipDoneRef.current = true;
+                    setNextEpCountdown(null);
+                    nextEpCountdownActiveRef.current = false;
+                    saveProgress().then(() => router.push(nextUrl));
+                  }}
+                  className="flex items-center gap-1 bg-[#E50914] hover:bg-[#f00] text-white text-xs font-semibold px-3 py-1.5 rounded-full transition-all"
+                >
+                  Assistir <ChevronRight size={12} />
+                </button>
+                <button
+                  onClick={() => {
+                    autoSkipDoneRef.current = true;
+                    setNextEpCountdown(null);
+                    nextEpCountdownActiveRef.current = false;
+                  }}
+                  className="text-white/40 hover:text-white/70 text-xs transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
