@@ -254,7 +254,16 @@ export async function GET(req: NextRequest) {
     plog(id, "fetch_done", { status: res.status, ct: res.headers.get("content-type")?.slice(0, 40) ?? "—" });
 
     if (!res.ok) {
-      plog(id, "upstream_error", { status: res.status, url: url.slice(0, 120) });
+      const rangeHdr = req.headers.get("range");
+      const cnvsMatch = url.match(/cnvs_token=(\d+)-/);
+      const cnvsAgeS = cnvsMatch ? Math.floor((Date.now() - parseInt(cnvsMatch[1]) * 1000) / 1000) : null;
+      plog(id, "upstream_error", {
+        status: res.status,
+        host: parsed.hostname,
+        range: rangeHdr ? "yes" : "no",
+        ...(cnvsAgeS !== null ? { cnvs_token_age_s: cnvsAgeS } : {}),
+        url: url.slice(0, 120),
+      });
       return new NextResponse("Erro ao carregar conteúdo", { status: res.status });
     }
 

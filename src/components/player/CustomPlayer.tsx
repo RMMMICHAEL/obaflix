@@ -928,6 +928,84 @@ export function CustomPlayer({
 
         const inElectron = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
 
+        // Web MP4: re-extrai link fresco do mesmo servidor antes de trocar de fonte.
+        // Cobre expiração de cnvs_token (CDN Webcine assina URLs com TTL curto).
+        if (!inElectron && streamTipo === "mp4" && !initialLoadRef.current
+            && pos > 0 && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+          if (reExtractingRef.current) return;
+          reExtractingRef.current = true;
+          reExtractCountRef.current += 1;
+          const attempt = reExtractCountRef.current;
+          const myGeneration = ++reExtractGenerationRef.current;
+          recoveryLog("log", "token-renewal", myGeneration, attempt, fi, len, pos, -1,
+            `MP4 web re-extract iniciado (tentativa ${attempt})`);
+
+          const abortCtrl = new AbortController();
+          const safetyTimer = setTimeout(() => {
+            abortCtrl.abort();
+            reExtractingRef.current = false;
+            if (unmountedRef.current || reExtractGenerationRef.current !== myGeneration) return;
+            recoveryLog("warn", "token-renewal-failed", myGeneration, attempt, fi, len, pos, -1,
+              `MP4 web re-extract timeout (${REEXTRACT_SAFETY_TIMEOUT_MS}ms)`);
+            fallback("token-renewal-failed", "warn",
+              `timeout → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+          }, REEXTRACT_SAFETY_TIMEOUT_MS);
+
+          (async () => {
+            try {
+              const tokenRes = await fetch("/api/player/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ embedUrl }),
+                signal: abortCtrl.signal,
+              });
+              if (!tokenRes.ok) throw new Error("Falha ao obter token");
+              const { playToken } = await tokenRes.json();
+
+              const extractRes = await fetch(
+                `/api/player/extract?url=${encodeURIComponent(embedUrl)}&playToken=${encodeURIComponent(playToken)}`,
+                { signal: abortCtrl.signal },
+              );
+              const data = await extractRes.json();
+              if (!extractRes.ok || !data.streamToken) throw new Error(data.error || "Stream vazio");
+
+              clearTimeout(safetyTimer);
+              reExtractingRef.current = false;
+              if (unmountedRef.current || reExtractGenerationRef.current !== myGeneration) return;
+
+              const newUrl = data.streamToken.startsWith("/")
+                ? data.streamToken
+                : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
+
+              recoveryLog("log", "token-renewal-success", myGeneration, attempt, fi, len, pos, -1,
+                `MP4 novo link; seek(${pos}s)`);
+              suppressErrorUntilRef.current = Date.now() + 2000;
+              lastReExtractSuccessAtRef.current = Date.now();
+              lastLoadAtRef.current = Date.now();
+              jwRef.current!.load([{ file: newUrl, type: "mp4" }]);
+              if (pos > 5) {
+                jwRef.current!.once("firstFrame", () => {
+                  if (!jwRef.current) return;
+                  const dur = jwRef.current.getDuration?.();
+                  const validDuration = typeof dur === "number" && isFinite(dur) && dur > 0;
+                  if (!validDuration || pos < dur) jwRef.current.seek(pos);
+                });
+              }
+              jwRef.current!.play();
+            } catch (err: any) {
+              clearTimeout(safetyTimer);
+              reExtractingRef.current = false;
+              if (err?.name === "AbortError" || unmountedRef.current) return;
+              if (reExtractGenerationRef.current !== myGeneration) return;
+              recoveryLog("warn", "token-renewal-failed", myGeneration, attempt, fi, len, pos, -1,
+                `MP4 web re-extract falhou: ${err?.message ?? String(err)}`);
+              fallback("token-renewal-failed", "warn",
+                `erro → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+            }
+          })();
+          return;
+        }
+
         // Renovação de token: apenas fontes com extração nativa em Electron/Android, com
         // tentativas restantes. Qualquer outro player vai direto para fallback.
         if (inElectron && supportsNativeDesktopExtraction(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
