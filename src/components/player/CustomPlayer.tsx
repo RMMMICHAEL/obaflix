@@ -189,6 +189,8 @@ export function CustomPlayer({
   const reExtractGenerationRef = useRef(0); // monotônico — identifica cada chamada de runReExtract; resposta com geração antiga é descartada
   const suppressErrorUntilRef = useRef(0); // timestamp (ms) até quando "error" do JW deve ser ignorado (eco tardio da mídia anterior pós-load())
   const lastReExtractSuccessAtRef = useRef(0); // timestamp (ms) da última renovação bem-sucedida — usado pro cooldown mínimo
+  const mp4CooldownUntilRef = useRef(0); // timestamp (ms) até quando re-extração MP4 está em cooldown após falha
+  const serverSwitchCountRef = useRef(0); // total de trocas automáticas de servidor nesta sessão
   const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
   const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
   // Representa "nenhum frame válido foi exibido ainda" para esta fonte.
@@ -298,6 +300,7 @@ export function CustomPlayer({
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
   const [showRetry, setShowRetry] = useState(false);
+  const [recovering, setRecovering] = useState(false); // mini spinner durante re-extração MP4 silenciosa
   // chromecast
   const [castAvailable, setCastAvailable] = useState(false);
   const [isCasting, setIsCasting] = useState(false);
@@ -494,6 +497,8 @@ export function CustomPlayer({
     reExtractingRef.current = false;
     suppressErrorUntilRef.current = 0;
     lastReExtractSuccessAtRef.current = 0;
+    mp4CooldownUntilRef.current = 0;
+    serverSwitchCountRef.current += 1;
     isChangingAudioTrackRef.current = false;
     initialLoadRef.current = true; // nova fonte = novo ciclo de carga inicial
   }, []);
@@ -930,24 +935,46 @@ export function CustomPlayer({
 
         // Web MP4: re-extrai link fresco do mesmo servidor antes de trocar de fonte.
         // Cobre expiração de cnvs_token (CDN Webcine assina URLs com TTL curto).
+        // Só entra se o erro for de rede — 404/403, timeout JW (302xxx) ou sem status HTTP.
+        // Erros de codec (JW >= 331000) ou arquivo corrompido vão direto para fallback.
+        const isNetworkError =
+          httpStatus === 404 || httpStatus === 403 ||
+          (e?.code >= 302000 && e?.code < 310000) ||          // erros de carga JW
+          (!httpStatus && (e?.code || 0) < 331000);            // erro sem status HTTP, não codec
         if (!inElectron && streamTipo === "mp4" && !initialLoadRef.current
-            && pos > 0 && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+            && pos > 0 && isNetworkError
+            && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
           if (reExtractingRef.current) return;
+
+          // Cooldown: se a última tentativa neste servidor falhou, espera antes de tentar de novo
+          if (Date.now() < mp4CooldownUntilRef.current) {
+            const waitMs = mp4CooldownUntilRef.current - Date.now();
+            recoveryLog("warn", "recover_cooldown", null, null, fi, len, pos, sinceRenewal,
+              `cooldown ativo: ${Math.ceil(waitMs / 1000)}s restantes → fallback imediato`);
+            fallback("source-switch", "warn",
+              `cooldown → switches=${serverSwitchCountRef.current} fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+            return;
+          }
+
           reExtractingRef.current = true;
           reExtractCountRef.current += 1;
           const attempt = reExtractCountRef.current;
           const myGeneration = ++reExtractGenerationRef.current;
-          recoveryLog("log", "token-renewal", myGeneration, attempt, fi, len, pos, -1,
-            `MP4 web re-extract iniciado (tentativa ${attempt})`);
+          recoveryLog("log", "recover_start", myGeneration, attempt, fi, len, pos, sinceRenewal,
+            `MP4 web re-extract (tentativa ${attempt}; http=${httpStatus ?? "n/a"}; jwCode=${e?.code ?? "n/a"})`);
+
+          setRecovering(true);
 
           const abortCtrl = new AbortController();
           const safetyTimer = setTimeout(() => {
             abortCtrl.abort();
             reExtractingRef.current = false;
+            setRecovering(false);
             if (unmountedRef.current || reExtractGenerationRef.current !== myGeneration) return;
-            recoveryLog("warn", "token-renewal-failed", myGeneration, attempt, fi, len, pos, -1,
-              `MP4 web re-extract timeout (${REEXTRACT_SAFETY_TIMEOUT_MS}ms)`);
-            fallback("token-renewal-failed", "warn",
+            mp4CooldownUntilRef.current = Date.now() + 45000;
+            recoveryLog("warn", "recover_failed", myGeneration, attempt, fi, len, pos, sinceRenewal,
+              `timeout ${REEXTRACT_SAFETY_TIMEOUT_MS}ms; cooldown 45s; switches=${serverSwitchCountRef.current}`);
+            fallback("source-switch", "warn",
               `timeout → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
           }, REEXTRACT_SAFETY_TIMEOUT_MS);
 
@@ -971,14 +998,18 @@ export function CustomPlayer({
 
               clearTimeout(safetyTimer);
               reExtractingRef.current = false;
+              setRecovering(false);
               if (unmountedRef.current || reExtractGenerationRef.current !== myGeneration) return;
 
               const newUrl = data.streamToken.startsWith("/")
                 ? data.streamToken
                 : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
 
-              recoveryLog("log", "token-renewal-success", myGeneration, attempt, fi, len, pos, -1,
-                `MP4 novo link; seek(${pos}s)`);
+              // Atualiza cache de URL para que seeks futuros usem o link renovado
+              directStreamRef.current = newUrl;
+
+              recoveryLog("log", "recover_success", myGeneration, attempt, fi, len, pos, sinceRenewal,
+                `novo link; seek(${pos}s); switches=${serverSwitchCountRef.current}`);
               suppressErrorUntilRef.current = Date.now() + 2000;
               lastReExtractSuccessAtRef.current = Date.now();
               lastLoadAtRef.current = Date.now();
@@ -995,11 +1026,13 @@ export function CustomPlayer({
             } catch (err: any) {
               clearTimeout(safetyTimer);
               reExtractingRef.current = false;
+              setRecovering(false);
               if (err?.name === "AbortError" || unmountedRef.current) return;
               if (reExtractGenerationRef.current !== myGeneration) return;
-              recoveryLog("warn", "token-renewal-failed", myGeneration, attempt, fi, len, pos, -1,
-                `MP4 web re-extract falhou: ${err?.message ?? String(err)}`);
-              fallback("token-renewal-failed", "warn",
+              mp4CooldownUntilRef.current = Date.now() + 45000;
+              recoveryLog("warn", "recover_failed", myGeneration, attempt, fi, len, pos, sinceRenewal,
+                `${err?.message ?? String(err)}; cooldown 45s; switches=${serverSwitchCountRef.current}`);
+              fallback("source-switch", "warn",
                 `erro → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
             }
           })();
@@ -1188,6 +1221,16 @@ export function CustomPlayer({
           allow="autoplay; fullscreen; picture-in-picture"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
         />
+      )}
+
+      {/* Mini spinner durante re-extração silenciosa de link MP4 */}
+      {recovering && (
+        <div className="absolute inset-0 z-[9997] flex items-center justify-center pointer-events-none">
+          <div className="flex flex-col items-center gap-2 bg-black/40 backdrop-blur-sm rounded-2xl px-5 py-3">
+            <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+            <span className="text-white/70 text-[10px] font-medium tracking-wide">Reconectando</span>
+          </div>
+        </div>
       )}
 
       {/* Click-to-play zone (between video and controls overlay) */}
