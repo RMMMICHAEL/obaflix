@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
@@ -180,18 +181,18 @@ export default async function AnimesPage({
           </Suspense>
         </div>
 
-        {populares.length > 0    && <LandscapeRow titulo="Populares"              items={populares.map(toRow)}    verTodosHref="/animes?ordem=popular" />}
-        {emAlta.length > 0       && <LandscapeRow titulo="Em Alta"                 items={emAlta.map(toRow)} />}
-        {avaliados.length > 0    && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)}    verTodosHref="/animes?ordem=nota" />}
-        <EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} />
-        {lancamentos.length > 0  && <LandscapeRow titulo="Lançamentos"             items={lancamentos.map(toRow)}  verTodosHref="/animes?ordem=lancamento" />}
-        {recentes.length > 0     && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}     verTodosHref="/animes?ordem=recente" />}
-        {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/animes?genero=28" />}
-        {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/animes?genero=12" />}
-        {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/animes?genero=35" />}
-        {drama.length > 0     && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}     verTodosHref="/animes?genero=18" />}
-        {misterio.length > 0  && <LandscapeRow titulo="Mistério"                 items={misterio.map(toRow)}  verTodosHref="/animes?genero=9648" />}
-        {romance.length > 0   && <LandscapeRow titulo="Romance"                  items={romance.map(toRow)}   verTodosHref="/animes?genero=10749" />}
+        {populares.length > 0    && <LandscapeRow titulo="Populares"               items={populares.map(toRow)}   verTodosHref="/animes?ordem=popular" />}
+        {emAlta.length > 0       && <LandscapeRow titulo="Em Alta"                items={emAlta.map(toRow)} />}
+        {avaliados.length > 0    && <LazyRow><LandscapeRow titulo="Mais Bem Avaliados"      items={avaliados.map(toRow)}   verTodosHref="/animes?ordem=nota" /></LazyRow>}
+        <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
+        {lancamentos.length > 0  && <LazyRow><LandscapeRow titulo="Lançamentos"             items={lancamentos.map(toRow)} verTodosHref="/animes?ordem=lancamento" /></LazyRow>}
+        {recentes.length > 0     && <LazyRow><LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}    verTodosHref="/animes?ordem=recente" /></LazyRow>}
+        {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"     items={acao.map(toRow)}      verTodosHref="/animes?genero=28" /></LazyRow>}
+        {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura" items={aventura.map(toRow)}  verTodosHref="/animes?genero=12" /></LazyRow>}
+        {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"  items={comedia.map(toRow)}   verTodosHref="/animes?genero=35" /></LazyRow>}
+        {drama.length > 0     && <LazyRow><LandscapeRow titulo="Drama"    items={drama.map(toRow)}     verTodosHref="/animes?genero=18" /></LazyRow>}
+        {misterio.length > 0  && <LazyRow><LandscapeRow titulo="Mistério" items={misterio.map(toRow)}  verTodosHref="/animes?genero=9648" /></LazyRow>}
+        {romance.length > 0   && <LazyRow><LandscapeRow titulo="Romance"  items={romance.map(toRow)}   verTodosHref="/animes?genero=10749" /></LazyRow>}
       </div>
     </div>
   );

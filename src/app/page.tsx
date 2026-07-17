@@ -1,5 +1,6 @@
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { LazyRow } from "@/components/ui/LazyRow";
 import { RankRow } from "@/components/ui/RankRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
@@ -273,60 +274,64 @@ export default async function HomePage() {
 
         {/* Novos Filmes */}
         {dbRecFilmes.length > 0 && (
-          <LandscapeRow
-            titulo="Novos Filmes"
-            items={dbRecFilmes.map((f) => dbToCard(f, "filme"))}
-            verTodosHref="/filmes"
-          />
+          <LazyRow>
+            <LandscapeRow titulo="Novos Filmes" items={dbRecFilmes.map((f) => dbToCard(f, "filme"))} verTodosHref="/filmes" />
+          </LazyRow>
         )}
 
         {/* Filmes Populares */}
         {popMovies.length > 0 && (
-          <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
+          <LazyRow>
+            <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
+          </LazyRow>
         )}
 
         {/* Episódios Recentes */}
-        <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
+        <LazyRow>
+          <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
+        </LazyRow>
 
         {/* Top 10 Séries — baseado na popularidade real do TMDB */}
         {top10SeriesCards.length > 0 && (
-          <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/series" />
+          <LazyRow>
+            <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/series" />
+          </LazyRow>
         )}
 
         {/* Novas Séries */}
         {dbRecSeries.length > 0 && (
-          <LandscapeRow
-            titulo="Novas Séries"
-            items={dbRecSeries.map((s) => dbToCard(s, "serie"))}
-            verTodosHref="/series"
-          />
+          <LazyRow>
+            <LandscapeRow titulo="Novas Séries" items={dbRecSeries.map((s) => dbToCard(s, "serie"))} verTodosHref="/series" />
+          </LazyRow>
         )}
 
         {/* Séries Populares */}
         {popTV.length > 0 && (
-          <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
+          <LazyRow>
+            <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
+          </LazyRow>
         )}
 
         {/* Animes */}
         {animeList.length > 0 && (
-          <LandscapeRow titulo="Animes" items={animeList} verTodosHref="/animes" />
+          <LazyRow>
+            <LandscapeRow titulo="Animes" items={animeList} verTodosHref="/animes" />
+          </LazyRow>
         )}
 
         {/* Desenhos */}
         {dbDesenhos.length > 0 && (
-          <LandscapeRow
-            titulo="Desenhos Animados"
-            items={dbDesenhos.map((s) => dbToCard(s, "desenho"))}
-            verTodosHref="/desenhos"
-          />
+          <LazyRow>
+            <LandscapeRow titulo="Desenhos Animados" items={dbDesenhos.map((s) => dbToCard(s, "desenho"))} verTodosHref="/desenhos" />
+          </LazyRow>
         )}
 
         {/* Gêneros */}
-        {comediaList.length > 0 && <LandscapeRow titulo="Comédia" items={comediaList} verTodosHref="/genero/35" />}
-        {terrorList.length > 0   && <LandscapeRow titulo="Terror"  items={terrorList}  verTodosHref="/genero/27" />}
-        {ficcaoList.length > 0   && <LandscapeRow titulo="Ficção Científica" items={ficcaoList} verTodosHref="/genero/878" />}
-        {romanceList.length > 0  && <LandscapeRow titulo="Romance" items={romanceList} verTodosHref="/genero/10749" />}
-        {crimeList.length > 0    && <LandscapeRow titulo="Crime"   items={crimeList}   verTodosHref="/genero/80" />}
+        {comediaList.length > 0 && <LazyRow><LandscapeRow titulo="Comédia" items={comediaList} verTodosHref="/genero/35" /></LazyRow>}
+        {terrorList.length > 0   && <LazyRow><LandscapeRow titulo="Terror"  items={terrorList}  verTodosHref="/genero/27" /></LazyRow>}
+        {ficcaoList.length > 0   && <LazyRow><LandscapeRow titulo="Ficção Científica" items={ficcaoList} verTodosHref="/genero/878" /></LazyRow>}
+        {romanceList.length > 0  && <LazyRow><LandscapeRow titulo="Romance" items={romanceList} verTodosHref="/genero/10749" /></LazyRow>}
+        {crimeList.length > 0    && <LazyRow><LandscapeRow titulo="Crime"   items={crimeList}   verTodosHref="/genero/80" /></LazyRow>}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
@@ -147,14 +148,14 @@ export default async function FilmesPage({
 
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} verTodosHref="/filmes?ordem=recente" />}
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/filmes?ordem=nota" />}
-        {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/genero/28" />}
-        {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/genero/35" />}
-        {terror.length > 0    && <LandscapeRow titulo="Terror"                   items={terror.map(toRow)}    verTodosHref="/genero/27" />}
-        {ficcao.length > 0    && <LandscapeRow titulo="Ficção Científica"        items={ficcao.map(toRow)}    verTodosHref="/genero/878" />}
-        {drama.length > 0     && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}     verTodosHref="/genero/18" />}
-        {crime.length > 0     && <LandscapeRow titulo="Crime"                    items={crime.map(toRow)}     verTodosHref="/genero/80" />}
-        {thriller.length > 0  && <LandscapeRow titulo="Thriller"                 items={thriller.map(toRow)}  verTodosHref="/genero/53" />}
-        {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/genero/12" />}
+        {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"            items={acao.map(toRow)}      verTodosHref="/genero/28" /></LazyRow>}
+        {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"         items={comedia.map(toRow)}   verTodosHref="/genero/35" /></LazyRow>}
+        {terror.length > 0    && <LazyRow><LandscapeRow titulo="Terror"          items={terror.map(toRow)}    verTodosHref="/genero/27" /></LazyRow>}
+        {ficcao.length > 0    && <LazyRow><LandscapeRow titulo="Ficção Científica" items={ficcao.map(toRow)}  verTodosHref="/genero/878" /></LazyRow>}
+        {drama.length > 0     && <LazyRow><LandscapeRow titulo="Drama"           items={drama.map(toRow)}     verTodosHref="/genero/18" /></LazyRow>}
+        {crime.length > 0     && <LazyRow><LandscapeRow titulo="Crime"           items={crime.map(toRow)}     verTodosHref="/genero/80" /></LazyRow>}
+        {thriller.length > 0  && <LazyRow><LandscapeRow titulo="Thriller"        items={thriller.map(toRow)}  verTodosHref="/genero/53" /></LazyRow>}
+        {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura"        items={aventura.map(toRow)}  verTodosHref="/genero/12" /></LazyRow>}
       </div>
     </div>
   );

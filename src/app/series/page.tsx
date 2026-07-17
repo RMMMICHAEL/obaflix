@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
@@ -142,17 +143,17 @@ export default async function SeriesPage({
           </Suspense>
         </div>
 
-        {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}   verTodosHref="/series?ordem=recente" />}
-        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"           items={populares.map(toRow)}  verTodosHref="/series?ordem=popular" />}
-        {avaliadas.length > 0  && <LandscapeRow titulo="Mais Bem Avaliadas"       items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" />}
-        {drama.length > 0      && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}      verTodosHref="/genero/18" />}
-        {crime.length > 0      && <LandscapeRow titulo="Crime"                    items={crime.map(toRow)}      verTodosHref="/genero/80" />}
-        {comedia.length > 0    && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}    verTodosHref="/genero/35" />}
-        {misterio.length > 0   && <LandscapeRow titulo="Mistério"                 items={misterio.map(toRow)}   verTodosHref="/genero/9648" />}
-        {ficcao.length > 0     && <LandscapeRow titulo="Ficção Científica"        items={ficcao.map(toRow)}     verTodosHref="/genero/10765" />}
-        {terror.length > 0     && <LandscapeRow titulo="Terror"                   items={terror.map(toRow)}     verTodosHref="/genero/27" />}
-        {romance.length > 0    && <LandscapeRow titulo="Romance"                  items={romance.map(toRow)}    verTodosHref="/genero/10749" />}
-        {acao.length > 0       && <LandscapeRow titulo="Ação & Aventura"          items={acao.map(toRow)}       verTodosHref="/genero/10759" />}
+        {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
+        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"          items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
+        {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}
+        {drama.length > 0      && <LazyRow><LandscapeRow titulo="Drama"               items={drama.map(toRow)}      verTodosHref="/genero/18" /></LazyRow>}
+        {crime.length > 0      && <LazyRow><LandscapeRow titulo="Crime"               items={crime.map(toRow)}      verTodosHref="/genero/80" /></LazyRow>}
+        {comedia.length > 0    && <LazyRow><LandscapeRow titulo="Comédia"             items={comedia.map(toRow)}    verTodosHref="/genero/35" /></LazyRow>}
+        {misterio.length > 0   && <LazyRow><LandscapeRow titulo="Mistério"            items={misterio.map(toRow)}   verTodosHref="/genero/9648" /></LazyRow>}
+        {ficcao.length > 0     && <LazyRow><LandscapeRow titulo="Ficção Científica"   items={ficcao.map(toRow)}     verTodosHref="/genero/10765" /></LazyRow>}
+        {terror.length > 0     && <LazyRow><LandscapeRow titulo="Terror"              items={terror.map(toRow)}     verTodosHref="/genero/27" /></LazyRow>}
+        {romance.length > 0    && <LazyRow><LandscapeRow titulo="Romance"             items={romance.map(toRow)}    verTodosHref="/genero/10749" /></LazyRow>}
+        {acao.length > 0       && <LazyRow><LandscapeRow titulo="Ação & Aventura"     items={acao.map(toRow)}       verTodosHref="/genero/10759" /></LazyRow>}
       </div>
     </div>
   );

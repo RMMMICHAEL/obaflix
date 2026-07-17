@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
@@ -137,11 +138,11 @@ export default async function DesenhoPage({
 
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/desenhos?ordem=nota" />}
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  verTodosHref="/desenhos?ordem=recente" />}
-        {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/genero/28" />}
-        {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/genero/12" />}
-        {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/genero/35" />}
-        {familia.length > 0   && <LandscapeRow titulo="Família"                  items={familia.map(toRow)}   verTodosHref="/genero/10751" />}
-        {animacao.length > 0  && <LandscapeRow titulo="Animação"                 items={animacao.map(toRow)}  verTodosHref="/genero/16" />}
+        {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"     items={acao.map(toRow)}      verTodosHref="/genero/28" /></LazyRow>}
+        {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura" items={aventura.map(toRow)}  verTodosHref="/genero/12" /></LazyRow>}
+        {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"  items={comedia.map(toRow)}   verTodosHref="/genero/35" /></LazyRow>}
+        {familia.length > 0   && <LazyRow><LandscapeRow titulo="Família"  items={familia.map(toRow)}   verTodosHref="/genero/10751" /></LazyRow>}
+        {animacao.length > 0  && <LazyRow><LandscapeRow titulo="Animação" items={animacao.map(toRow)}  verTodosHref="/genero/16" /></LazyRow>}
       </div>
     </div>
   );
