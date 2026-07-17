@@ -876,6 +876,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
 
   if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
     streamUrl = await extractVoltz(url);
+    if (streamUrl) referer = url; // CDN verifica Referer — usa a página do embed como origem
 
   } else if (hostname.includes("lulu") || hostname.includes("luluvdo")) {
     const t = Date.now();
