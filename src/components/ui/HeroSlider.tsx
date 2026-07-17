@@ -72,7 +72,7 @@ export function HeroSlider({ items }: { items: HeroItem[] }) {
   const item = items[idx];
   const href = item.tipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`;
   const bgSrc = item.background
-    ? item.background.startsWith("http") ? item.background : imgUrl(item.background, "original")
+    ? item.background.startsWith("http") ? item.background : imgUrl(item.background, "w1280")
     : "/placeholder-bg.jpg";
 
   return (
@@ -86,6 +86,7 @@ export function HeroSlider({ items }: { items: HeroItem[] }) {
         src={bgSrc}
         alt={item.titulo}
         fill
+        sizes="100vw"
         className={`object-cover object-top transition-opacity duration-700 ${showTrailer ? "opacity-0" : "opacity-100"}`}
         priority
       />
