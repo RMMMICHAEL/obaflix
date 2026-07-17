@@ -4,14 +4,17 @@ import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
+import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
+import { getTrendingTV, TmdbItem } from "@/lib/tmdb";
 
 export const dynamic = "force-dynamic";
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
+const NEW_EP_MS = 48 * 60 * 60 * 1000;
 
 const selBrowse = {
-  id: true, titulo: true, poster: true, background: true, logo: true,
+  id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, createdAt: true,
 } as const;
 
@@ -72,10 +75,11 @@ export default async function AnimesPage({
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota"    ? { nota: "desc" }
-      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az"      ? { titulo: "asc" }
-      : ordem === "antigo"  ? { createdAt: "asc" }
+      ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
+      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
+      : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
+      : ordem === "az"        ? { titulo: "asc" }
+      : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
@@ -103,23 +107,64 @@ export default async function AnimesPage({
   }
 
   // Browse mode
-  const [heroRaw, avaliados, recentes, acao, aventura, comedia, drama, misterio, romance] =
-    await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "anime", background: { not: null } }, orderBy: { nota: "desc" }, take: 8, select: selHero }),
-      prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 9648 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    ]);
+  const [
+    heroRaw, populares, avaliados, recentes, lancamentos, epsRecentesRaw, tmdbTrendingTV,
+    acao, aventura, comedia, drama, misterio, romance,
+  ] = await Promise.all([
+    prisma.serie.findMany({ where: { tipo: "anime", background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+    prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: [{ ano: "desc" }, { createdAt: "desc" }], take: 24, select: selBrowse }),
+    prisma.episodio.findMany({
+      where: { serie: { tipo: "anime" } },
+      orderBy: { createdAt: "desc" },
+      take: 24,
+      select: {
+        id: true, serieId: true, titulo: true, thumbnail: true,
+        temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
+        serie: { select: { titulo: true, poster: true } },
+      },
+    }),
+    getTrendingTV("week"),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 9648 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "anime", generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+  ]);
+
+  // Em Alta: trending real do TMDB cruzado com o catálogo local de anime; se
+  // vier curto (poucos trending batem com o catálogo), completa com a lista
+  // de popularidade local — nunca fica vazio/esparso.
+  const trendingIds = ((tmdbTrendingTV?.results ?? []) as TmdbItem[]).map((i) => String(i.id));
+  const trendingMatches = trendingIds.length
+    ? await prisma.serie.findMany({ where: { tipo: "anime", tmdbId: { in: trendingIds } }, select: selBrowse })
+    : [];
+  const trendingMap = new Map(trendingMatches.map((s) => [s.tmdbId!, s]));
+  const emAltaOrdered = trendingIds.map((id) => trendingMap.get(id)).filter(Boolean) as typeof trendingMatches;
+  const emAlta = emAltaOrdered.length >= 8 ? emAltaOrdered.slice(0, 24) : populares;
 
   const heroItems = heroRaw.map((s) => ({
     id: s.id, tipo: "anime" as const,
     titulo: s.titulo, sinopse: s.sinopse ?? null,
     background: s.background!, trailerKey: null,
+  }));
+
+  const epsRecentesItems: EpisodioRecenteItem[] = epsRecentesRaw.map((e) => ({
+    episodioId: e.id,
+    serieId: e.serieId,
+    titulo: e.titulo ?? null,
+    serieTitulo: e.serie.titulo,
+    poster: e.serie.poster ?? null,
+    thumbnail: e.thumbnail ?? null,
+    temporada: e.temporada,
+    numeroEp: e.numeroEp,
+    tipo: "anime",
+    isNovoEpisodio: e.createdAt ? Date.now() - new Date(e.createdAt).getTime() < NEW_EP_MS : false,
+    urlDub: e.urlDub ?? null,
+    urlLeg: e.urlLeg ?? null,
   }));
 
   return (
@@ -135,14 +180,18 @@ export default async function AnimesPage({
           </Suspense>
         </div>
 
-        {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} />}
-        {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  />}
-        {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/genero/28" />}
-        {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/genero/12" />}
-        {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/genero/35" />}
-        {drama.length > 0     && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}     verTodosHref="/genero/18" />}
-        {misterio.length > 0  && <LandscapeRow titulo="Mistério"                 items={misterio.map(toRow)}  verTodosHref="/genero/9648" />}
-        {romance.length > 0   && <LandscapeRow titulo="Romance"                  items={romance.map(toRow)}   verTodosHref="/genero/10749" />}
+        {populares.length > 0    && <LandscapeRow titulo="Populares"              items={populares.map(toRow)}    verTodosHref="/animes?ordem=popular" />}
+        {emAlta.length > 0       && <LandscapeRow titulo="Em Alta"                 items={emAlta.map(toRow)} />}
+        {avaliados.length > 0    && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)}    verTodosHref="/animes?ordem=nota" />}
+        <EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} />
+        {lancamentos.length > 0  && <LandscapeRow titulo="Lançamentos"             items={lancamentos.map(toRow)}  verTodosHref="/animes?ordem=lancamento" />}
+        {recentes.length > 0     && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}     verTodosHref="/animes?ordem=recente" />}
+        {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/animes?genero=28" />}
+        {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/animes?genero=12" />}
+        {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/animes?genero=35" />}
+        {drama.length > 0     && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}     verTodosHref="/animes?genero=18" />}
+        {misterio.length > 0  && <LandscapeRow titulo="Mistério"                 items={misterio.map(toRow)}  verTodosHref="/animes?genero=9648" />}
+        {romance.length > 0   && <LandscapeRow titulo="Romance"                  items={romance.map(toRow)}   verTodosHref="/animes?genero=10749" />}
       </div>
     </div>
   );

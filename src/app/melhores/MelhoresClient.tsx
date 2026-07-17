@@ -5,12 +5,13 @@ import Link from "next/link";
 import { Star, Play } from "lucide-react";
 
 export interface ChartItem {
-  tmdbId: string;
+  id: string;
   titulo: string;
   ano: string;
   nota: number;
   poster: string | null;
-  catalogId: string | null;
+  rank: number;
+  disponivel: boolean;
 }
 
 type TabId = "top-filmes" | "top-series" | "pop-filmes" | "pop-series";
@@ -50,7 +51,8 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
     return items.filter((i) => i.titulo.toLowerCase().includes(q));
   }, [items, search]);
 
-  const disponiveisCount = items.filter((i) => i.catalogId).length;
+  const disponiveisCount = items.filter((i) => i.disponivel).length;
+  const fonteLabel = tab.startsWith("top") ? "IMDb Top 250" : "popularidade TMDB";
 
   return (
     <div className="min-h-screen pt-20 pb-16 px-4 md:px-14">
@@ -61,7 +63,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
             Melhores do Mundo
           </h1>
           <p className="text-zinc-500 text-sm mt-1">
-            Ranking baseado nas avaliações do TMDB •{" "}
+            Ranking: {fonteLabel} •{" "}
             <span className="text-green-500">{disponiveisCount} disponíveis</span>{" "}
             nesta lista
           </p>
@@ -104,15 +106,15 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
 
         {/* Chart list */}
         <div className="divide-y divide-zinc-800/40">
-          {filtered.map((item, i) => {
-            const rank = search ? null : i + 1;
-            const href = item.catalogId ? `/${tipoPath}/${item.catalogId}` : null;
+          {filtered.map((item) => {
+            const rank = search ? null : item.rank;
+            const href = `/${tipoPath}/${item.id}`;
 
             return (
               <div
-                key={item.tmdbId}
+                key={item.id}
                 className={`flex items-center gap-4 py-4 px-3 rounded-xl transition-colors group ${
-                  href ? "hover:bg-zinc-800/60" : "opacity-40"
+                  item.disponivel ? "hover:bg-zinc-800/60" : "opacity-40"
                 }`}
               >
                 {/* Rank number */}
@@ -151,18 +153,12 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
 
                 {/* Title + meta */}
                 <div className="flex-1 min-w-0">
-                  {href ? (
-                    <Link
-                      href={href}
-                      className="text-white text-base md:text-lg font-semibold hover:text-red-400 transition-colors line-clamp-2 block leading-snug"
-                    >
-                      {item.titulo}
-                    </Link>
-                  ) : (
-                    <span className="text-zinc-400 text-base md:text-lg font-semibold line-clamp-2 block leading-snug">
-                      {item.titulo}
-                    </span>
-                  )}
+                  <Link
+                    href={href}
+                    className="text-white text-base md:text-lg font-semibold hover:text-red-400 transition-colors line-clamp-2 block leading-snug"
+                  >
+                    {item.titulo}
+                  </Link>
                   <div className="flex items-center gap-3 mt-1.5">
                     {item.ano && (
                       <span className="text-zinc-500 text-sm">{item.ano}</span>
@@ -173,14 +169,14 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
                         {item.nota.toFixed(1)}
                       </span>
                     )}
-                    {!item.catalogId && (
+                    {!item.disponivel && (
                       <span className="text-zinc-600 text-xs">indisponível</span>
                     )}
                   </div>
                 </div>
 
                 {/* Assistir button */}
-                {href && (
+                {item.disponivel && (
                   <Link
                     href={href}
                     className="shrink-0 flex items-center gap-1.5 bg-red-600 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all opacity-0 group-hover:opacity-100 hover:bg-red-500"

@@ -1034,6 +1034,10 @@ export async function GET(req: NextRequest) {
     // when seeking, so the second request always fails with "token já consumido".
     // Use a HMAC-signed proxy URL instead; it's stateless and allows repeated range requests.
     if (result.tipo === "mp4") {
+      // vod01e001.fun (Voltz CDN) bloqueia IPs de datacenter da Vercel — entrega URL direta ao browser
+      if (url.includes("voltz.php")) {
+        return NextResponse.json({ tipo: "mp4_direct", stream: result.stream }, { headers: NO_STORE });
+      }
       const sig = signSegmentUrl(result.stream, userId);
       const ref = result.referer ? `&ref=${encodeURIComponent(result.referer)}` : "";
       const proxyUrl = `/api/player/proxy?url=${encodeURIComponent(result.stream)}&sig=${sig}${ref}`;

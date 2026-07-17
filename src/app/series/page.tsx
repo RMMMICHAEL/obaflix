@@ -72,10 +72,11 @@ export default async function SeriesPage({
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota"    ? { nota: "desc" }
-      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az"      ? { titulo: "asc" }
-      : ordem === "antigo"  ? { createdAt: "asc" }
+      ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
+      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
+      : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
+      : ordem === "az"        ? { titulo: "asc" }
+      : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
@@ -103,37 +104,15 @@ export default async function SeriesPage({
   }
 
   // Browse mode
-  const popularHistRaw = await prisma.watchHistory.groupBy({
-    by: ["conteudoId"],
-    where: { conteudoTipo: "serie" },
-    _count: { id: true },
-    orderBy: { _count: { id: "desc" } },
-    take: 48,
-  });
-  const popularIds = popularHistRaw.map((p) => p.conteudoId);
-
-  let populares: any[];
-  if (popularIds.length >= 6) {
-    const byId = await prisma.serie.findMany({
-      where: { id: { in: popularIds }, tipo: "serie" },
-      select: selBrowse,
-    });
-    const idxMap = Object.fromEntries(popularIds.map((id, i) => [id, i]));
-    populares = byId.sort((a: any, b: any) => (idxMap[a.id] ?? 999) - (idxMap[b.id] ?? 999));
-  } else {
-    populares = await prisma.serie.findMany({
-      where: { tipo: "serie" },
-      orderBy: [{ nota: "desc" }, { createdAt: "desc" }],
-      take: 24,
-      select: selBrowse,
-    });
-  }
-
-  const [heroRaw, recentes, avaliadas, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
+  // "Mais Populares" usa popularidade real do TMDB (não histórico de
+  // visualização interno — com um usuário só na base, isso só refletia o que
+  // essa pessoa tinha acabado de assistir, não popularidade de verdade).
+  const [heroRaw, recentes, avaliadas, populares, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { nota: "desc" }, take: 8, select: selHero }),
+      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -163,9 +142,9 @@ export default async function SeriesPage({
           </Suspense>
         </div>
 
-        {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}   />}
-        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"           items={populares.map(toRow)}  />}
-        {avaliadas.length > 0  && <LandscapeRow titulo="Mais Bem Avaliadas"       items={avaliadas.map(toRow)}  />}
+        {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}   verTodosHref="/series?ordem=recente" />}
+        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"           items={populares.map(toRow)}  verTodosHref="/series?ordem=popular" />}
+        {avaliadas.length > 0  && <LandscapeRow titulo="Mais Bem Avaliadas"       items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" />}
         {drama.length > 0      && <LandscapeRow titulo="Drama"                    items={drama.map(toRow)}      verTodosHref="/genero/18" />}
         {crime.length > 0      && <LandscapeRow titulo="Crime"                    items={crime.map(toRow)}      verTodosHref="/genero/80" />}
         {comedia.length > 0    && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}    verTodosHref="/genero/35" />}

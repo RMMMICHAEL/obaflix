@@ -6,8 +6,7 @@ import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
 import {
-  getTrending, getPopularMovies, getPopularTV,
-  getTopRatedMovies, getTopRatedTV,
+  getTrending,
   discoverMovies, discoverTV,
   getMovieVideos, getTVVideos,
   imgUrl, pickTrailer, TmdbItem,
@@ -78,9 +77,6 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
   };
 }
 
-// Janela de 30 dias para o ranking de visualizações
-const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
 // createdAt + logo incluídos nas queries
 const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, createdAt: true } as const;
 const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
@@ -89,10 +85,6 @@ const selSerie  = { ...selDB, tipo: true } as const;
 export default async function HomePage() {
   const [
     tmdbTrending,
-    tmdbPopMovies,
-    tmdbPopTV,
-    tmdbTopMovies,
-    tmdbTopTV,
     tmdbAnime,
     tmdbComedia,
     tmdbTerror,
@@ -103,19 +95,16 @@ export default async function HomePage() {
     dbRecSeries,
     dbAnimes,
     dbDesenhos,
-    // Top 10 por visualizações + fallback por nota
-    top10FilmesHistory,
-    top10SeriesHistory,
-    dbTop10FilmesFallback,
-    dbTop10SeriesFallback,
+    // Populares (Top 10 + linhas "Populares") — direto do catálogo local
+    // ordenado por popularidade real do TMDB, sem depender de cruzar com
+    // listas ao vivo do TMDB (que descartavam a maioria dos itens por falta
+    // de correspondência no banco).
+    dbPopFilmes,
+    dbPopSeries,
     dbEpsRecentes,
     ...dbGeneroFilmes
   ] = await Promise.all([
     getTrending("week"),
-    getPopularMovies(),
-    getPopularTV(),
-    getTopRatedMovies(),
-    getTopRatedTV(),
     discoverTV({ with_original_language: "ja", with_genres: "16", sort_by: "vote_average.desc", "vote_count.gte": 200 }),
     discoverMovies({ with_genres: "35", sort_by: "popularity.desc" }),
     discoverMovies({ with_genres: "27", sort_by: "popularity.desc" }),
@@ -127,49 +116,8 @@ export default async function HomePage() {
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
-    // Top 10 por visualizações — últimos 30 dias (atualiza sozinho com o uso)
-    // Só conta "view" genuína: ignora placeholders de fila (queued) e starts
-    // com poucos segundos assistidos, que não representam interesse real.
-    prisma.watchHistory.groupBy({
-      by: ["filmeId"],
-      where: {
-        filmeId: { not: null },
-        updatedAt: { gte: THIRTY_DAYS_AGO },
-        queued: false,
-        progressoSeg: { gte: 60 },
-      },
-      _count: { userId: true },
-      orderBy: { _count: { userId: "desc" } },
-      take: 15,
-    }),
-    // Séries: uma linha por episódio assistido (userId, conteudoId, episodioId)
-    // é a unique key — então contar linhas conta "episódios vistos", não
-    // "pessoas que assistiram". Agrupamos por (serieId, userId) primeiro para
-    // colapsar em pares distintos e só então contamos quantos usuários únicos
-    // cada série teve, senão uma maratona de 1 pessoa parece "mais popular"
-    // que uma série vista por vários usuários uma vez só.
-    prisma.watchHistory.groupBy({
-      by: ["serieId", "userId"],
-      where: {
-        serieId: { not: null },
-        updatedAt: { gte: THIRTY_DAYS_AGO },
-        queued: false,
-        progressoSeg: { gte: 60 },
-      },
-    }).then((rows) => {
-      const viewerCounts = new Map<string, number>();
-      for (const row of rows) {
-        const id = row.serieId!;
-        viewerCounts.set(id, (viewerCounts.get(id) ?? 0) + 1);
-      }
-      return [...viewerCounts.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 15)
-        .map(([serieId, count]) => ({ serieId, _count: { userId: count } }));
-    }),
-    // Fallback por nota (usado quando não há histórico suficiente)
-    prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 10, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 10, select: selSerie }),
+    prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selFilme }),
+    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selSerie }),
     // Episódios recentes — últimos 24 adicionados com info da série
     prisma.episodio.findMany({
       orderBy: { createdAt: "desc" },
@@ -210,10 +158,6 @@ export default async function HomePage() {
 
   const allTmdbIds = [
     ...(tmdbTrending?.results ?? []),
-    ...(tmdbPopMovies?.results ?? []),
-    ...(tmdbPopTV?.results ?? []),
-    ...(tmdbTopMovies?.results ?? []),
-    ...(tmdbTopTV?.results ?? []),
     ...(tmdbAnime?.results ?? []),
     ...(tmdbComedia?.results ?? []),
     ...(tmdbTerror?.results ?? []),
@@ -222,25 +166,10 @@ export default async function HomePage() {
     ...(tmdbCrime?.results ?? []),
   ].map((i) => String(i.id));
 
-  // Extrai IDs ordenados pelo ranking de visualizações
-  const top10FilmesIds = (top10FilmesHistory as any[])
-    .map((r) => r.filmeId as string | null)
-    .filter((id): id is string => id !== null);
-  const top10SeriesIds = (top10SeriesHistory as any[])
-    .map((r) => r.serieId as string | null)
-    .filter((id): id is string => id !== null);
-
-  const [[dbFilmesMap_raw, dbSeriesMap_raw, top10FilmesDb, top10SeriesDb], heroTrailerResults] = await Promise.all([
+  const [[dbFilmesMap_raw, dbSeriesMap_raw], heroTrailerResults] = await Promise.all([
     Promise.all([
       prisma.filme.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selFilme }),
       prisma.serie.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selSerie }),
-      // Busca detalhes dos filmes/séries mais assistidos (para montar os cards)
-      top10FilmesIds.length > 0
-        ? prisma.filme.findMany({ where: { id: { in: top10FilmesIds } }, select: selFilme })
-        : Promise.resolve([] as typeof dbTop10FilmesFallback),
-      top10SeriesIds.length > 0
-        ? prisma.serie.findMany({ where: { id: { in: top10SeriesIds }, tipo: "serie" }, select: selSerie })
-        : Promise.resolve([] as typeof dbTop10SeriesFallback),
     ]),
     Promise.all(
       heroRaw.slice(0, 5).map((item: any) =>
@@ -261,10 +190,6 @@ export default async function HomePage() {
   }
 
   const trending    = tmdbList(tmdbTrending?.results ?? [], "filme").slice(0, 20);
-  const popMovies   = tmdbList(tmdbPopMovies?.results ?? [], "filme").slice(0, 24);
-  const popTV       = tmdbList(tmdbPopTV?.results ?? [], "serie").slice(0, 24);
-  const topMovies   = tmdbList(tmdbTopMovies?.results ?? [], "filme").slice(0, 24);
-  const topTV       = tmdbList(tmdbTopTV?.results ?? [], "serie").slice(0, 24);
   const animeList   = tmdbList(tmdbAnime?.results ?? [], "anime").slice(0, 24);
   const comediaList = tmdbList(tmdbComedia?.results ?? [], "filme").slice(0, 24);
   const terrorList  = tmdbList(tmdbTerror?.results ?? [], "filme").slice(0, 24);
@@ -272,26 +197,13 @@ export default async function HomePage() {
   const romanceList = tmdbList(tmdbRomance?.results ?? [], "filme").slice(0, 24);
   const crimeList   = tmdbList(tmdbCrime?.results ?? [], "filme").slice(0, 24);
 
-  // Constrói Top 10 priorizando visualizações; preenche com nota se faltar itens
-  function buildTop10Cards(
-    historyIds: string[],
-    historyData: any[],
-    fallback: any[],
-    tipo: CardItem["tipo"],
-  ): CardItem[] {
-    if (historyIds.length === 0) return fallback.slice(0, 10).map((f) => dbToCard(f, tipo));
-    const byId = new Map(historyData.map((d) => [d.id, d]));
-    const ranked = historyIds.map((id) => byId.get(id)).filter(Boolean) as any[];
-    if (ranked.length < 10) {
-      const seen = new Set(ranked.map((f) => f.id));
-      const extra = fallback.filter((f) => !seen.has(f.id)).slice(0, 10 - ranked.length);
-      return [...ranked, ...extra].map((f) => dbToCard(f, tipo));
-    }
-    return ranked.slice(0, 10).map((f) => dbToCard(f, tipo));
-  }
-
-  const top10FilmesCards = buildTop10Cards(top10FilmesIds, top10FilmesDb, dbTop10FilmesFallback, "filme");
-  const top10SeriesCards = buildTop10Cards(top10SeriesIds, top10SeriesDb, dbTop10SeriesFallback, "serie");
+  // Populares e Top 10 vêm direto do catálogo local ordenado por popularidade
+  // real do TMDB — mesma lógica para filmes e séries, sem itens descartados
+  // por falta de correspondência com listas ao vivo do TMDB.
+  const popMovies = dbPopFilmes.map((f) => dbToCard(f, "filme"));
+  const popTV     = dbPopSeries.map((s) => dbToCard(s, "serie"));
+  const top10FilmesCards = popMovies.slice(0, 10);
+  const top10SeriesCards = popTV.slice(0, 10);
 
   const heroItems = heroRaw.map((item: any, i: number) => {
     const db = mergeMap(item).get(String(item.id));
@@ -354,7 +266,7 @@ export default async function HomePage() {
         {/* Coleções */}
         <CollectionsRow />
 
-        {/* Top 10 Filmes — baseado em histórico real de visualizações */}
+        {/* Top 10 Filmes — baseado na popularidade real do TMDB */}
         {top10FilmesCards.length > 0 && (
           <RankRow titulo="Top 10 Filmes" items={top10FilmesCards} verTodosHref="/filmes" />
         )}
@@ -376,7 +288,7 @@ export default async function HomePage() {
         {/* Episódios Recentes */}
         <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
 
-        {/* Top 10 Séries — baseado em histórico real de visualizações */}
+        {/* Top 10 Séries — baseado na popularidade real do TMDB */}
         {top10SeriesCards.length > 0 && (
           <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/series" />
         )}

@@ -12,6 +12,7 @@ datasource db {
 model Filme {
   id               String        @id
   tmdbId           String?
+  imdbId           String?
   titulo           String
   tituloOriginal   String?
   poster           String?
@@ -20,8 +21,15 @@ model Filme {
   sinopse          String?       @db.Text
   ano              Int?
   nota             Float?
+  voteCount        Int?
+  popularidade     Float?
+  scoreDestaque    Float?
   duracao          Int?
   top250           Int?
+  top250Fonte          String?
+  top250AtualizadoEm   DateTime?
+  popularRank          Int?
+  popularCheckedAt     DateTime?
   sagaId           Int?
   originalLanguage String?
   urlDub           String?       @db.Text
@@ -36,6 +44,7 @@ model Filme {
 model Serie {
   id             String        @id
   tmdbId         String?
+  imdbId         String?
   titulo         String
   tituloOriginal String?
   poster         String?
@@ -44,8 +53,15 @@ model Serie {
   sinopse        String?       @db.Text
   ano            Int?
   nota           Float?
+  voteCount        Int?
+  popularidade     Float?
+  scoreDestaque    Float?
   temporadas     Int?
   top250           Int?
+  top250Fonte          String?
+  top250AtualizadoEm   DateTime?
+  popularRank          Int?
+  popularCheckedAt     DateTime?
   tipo             String        @default("serie")
   originalLanguage String?
   createdAt        DateTime      @default(now())
@@ -158,4 +174,31 @@ model Watchlist {
 model Saga {
   id   Int    @id
   nome String
+}
+
+model PopularHistory {
+  id           String   @id @default(cuid())
+  conteudoId   String
+  conteudoTipo String   // "filme" | "serie"
+  rank         Int
+  recordedAt   DateTime @default(now())
+
+  @@index([conteudoId, conteudoTipo])
+}
+
+model SyncMetric {
+  id               String   @id @default(cuid())
+  job              String   // "popular-sync"
+  source           String   // "tmdb"
+  startedAt        DateTime @default(now())
+  durationMs       Int
+  found            Int
+  added            Int
+  removed          Int
+  repositioned     Int
+  bytesTransferred Int?
+  errors           Int
+  ok               Boolean
+  errorMessage     String?  @db.Text
+  detail           String?  @db.Text
 }

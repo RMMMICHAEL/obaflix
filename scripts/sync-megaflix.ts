@@ -25,6 +25,7 @@ const TIPO = getArg("--tipo") ?? "ambos"; // "filmes" | "series" | "ambos"
 const PAGE_LIMIT = Number(getArg("--paginas") ?? "5"); // quantas páginas buscar
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
+const TMDB_KEY = process.env.TMDB_API_KEY;
 
 let BASE = ADMIN_URL;
 let sessionToken = "";
@@ -231,6 +232,47 @@ async function fetchCatalog(tipo: "filmes" | "series"): Promise<any[]> {
 async function fetchFilmes(): Promise<MegaFilme[]> { return fetchCatalog("filmes"); }
 async function fetchSeries(): Promise<MegaSerie[]> { return fetchCatalog("series"); }
 
+// ── Classificação de tipo (anime/desenho/serie) ─────────────────────────────
+// O catálogo do Megaflix não informa país de origem, então checamos no TMDB.
+// Mesma heurística usada em import.ts/import-embedmovies.mjs: genero 16
+// (Animação) + origin_country "JP" → anime; genero 16 sem JP → desenho.
+async function fetchOriginCountry(tmdbId: string | number): Promise<string[]> {
+  if (!TMDB_KEY) return [];
+  try {
+    const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.origin_country ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function poolLimit<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (i < items.length) { const item = items[i++]; await fn(item); }
+    }),
+  );
+}
+
+async function classificarTipos(series: MegaSerie[]): Promise<Map<string, "anime" | "desenho" | "serie">> {
+  const tipos = new Map<string, "anime" | "desenho" | "serie">();
+  await poolLimit(series, 5, async (s) => {
+    const generoIds = (s.generos ?? []).map((g) => Number(g.id));
+    let tipo: "anime" | "desenho" | "serie" = "serie";
+    if (generoIds.includes(16)) {
+      const origins = s.tmdb ? await fetchOriginCountry(s.tmdb) : [];
+      tipo = origins.includes("JP") ? "anime" : "desenho";
+    }
+    tipos.set(String(s.id), tipo);
+  });
+  return tipos;
+}
+
 // ── Comparação com banco ──────────────────────────────────────────────────────
 
 async function syncFilmes(filmes: MegaFilme[]) {
@@ -327,7 +369,10 @@ async function syncSeries(series: MegaSerie[]) {
 
   if (!DO_IMPORT) { console.log("\n   ℹ️  Rode com --import para salvar."); return; }
 
-  console.log("\n   Importando séries...");
+  console.log("\n   Classificando tipo (anime/desenho/série) via TMDB...");
+  const tipos = await classificarTipos(novasSeries);
+
+  console.log("   Importando séries...");
   const BATCH = 100;
 
   // Gêneros
@@ -345,11 +390,10 @@ async function syncSeries(series: MegaSerie[]) {
     await prisma.serie.createMany({
       skipDuplicates: true,
       data: batch.map((s) => {
-        const generoIds = (s.generos ?? []).map((g) => Number(g.id));
         const maxTemp = s.episodios?.length
           ? Math.max(...s.episodios.map((e) => Number(e.temp) || 1))
           : null;
-        const tipo = generoIds.includes(16) ? "anime" : "serie";
+        const tipo = tipos.get(String(s.id)) ?? "serie";
         return {
           id: String(s.id),
           tmdbId: s.tmdb ? String(s.tmdb) : null,

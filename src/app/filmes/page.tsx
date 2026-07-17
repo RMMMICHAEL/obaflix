@@ -76,10 +76,11 @@ export default async function FilmesPage({
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota"    ? { nota: "desc" }
-      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az"      ? { titulo: "asc" }
-      : ordem === "antigo"  ? { createdAt: "asc" }
+      ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
+      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
+      : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
+      : ordem === "az"        ? { titulo: "asc" }
+      : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [filmes, total] = await Promise.all([
@@ -112,9 +113,9 @@ export default async function FilmesPage({
   // Browse mode — hero + genre rows
   const [heroRaw, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura] =
     await Promise.all([
-      prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { nota: "desc" }, take: 8, select: selHero }),
+      prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 27 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -144,8 +145,8 @@ export default async function FilmesPage({
           </Suspense>
         </div>
 
-        {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} />}
-        {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} />}
+        {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} verTodosHref="/filmes?ordem=recente" />}
+        {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/filmes?ordem=nota" />}
         {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/genero/28" />}
         {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/genero/35" />}
         {terror.length > 0    && <LandscapeRow titulo="Terror"                   items={terror.map(toRow)}    verTodosHref="/genero/27" />}

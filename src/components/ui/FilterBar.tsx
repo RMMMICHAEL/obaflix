@@ -15,11 +15,12 @@ interface FilterBarProps {
 }
 
 const ORDENS = [
-  { value: "recente", label: "Mais Recentes" },
-  { value: "antigo",  label: "Mais Antigos" },
-  { value: "nota",    label: "Melhor Avaliados" },
-  { value: "popular", label: "Mais Populares" },
-  { value: "az",      label: "A — Z" },
+  { value: "recente",    label: "Mais Recentes" },
+  { value: "antigo",     label: "Mais Antigos" },
+  { value: "nota",       label: "Melhor Avaliados" },
+  { value: "popular",    label: "Mais Populares" },
+  { value: "lancamento", label: "Lançamentos" },
+  { value: "az",         label: "A — Z" },
 ];
 
 export function FilterBar({ generos, anos, total, pages = 0, label }: FilterBarProps) {

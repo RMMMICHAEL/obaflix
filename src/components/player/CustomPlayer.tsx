@@ -573,6 +573,11 @@ export function CustomPlayer({
           // esses players nunca servem iframe válido — iframe fallback = extração falhou
           if (embedUrl.includes("playerflix.ink") || embedUrl.includes("webcinevs2.com")) throw new Error("Stream não encontrado");
           playerUrl = data.stream!;
+        } else if (tipo === "mp4_direct") {
+          // CDN bloqueia IPs de datacenter — serve URL direta ao browser (IP residencial passa)
+          if (!data.stream) throw new Error("Stream não encontrado");
+          playerUrl = data.stream;
+          tipo = "mp4";
         } else {
           if (!data.streamToken) throw new Error("Stream não encontrado");
           // MP4: streamToken já é a URL proxy HMAC-assinada (permite range requests repetidos ao buscar posição)
@@ -1012,16 +1017,18 @@ export function CustomPlayer({
                 { signal: abortCtrl.signal },
               );
               const data = await extractRes.json();
-              if (!extractRes.ok || !data.streamToken) throw new Error(data.error || "Stream vazio");
+              if (!extractRes.ok || (!data.streamToken && !data.stream)) throw new Error(data.error || "Stream vazio");
 
               clearTimeout(safetyTimer);
               reExtractingRef.current = false;
               setRecovering(false);
               if (unmountedRef.current || reExtractGenerationRef.current !== myGeneration) return;
 
-              const newUrl = data.streamToken.startsWith("/")
-                ? data.streamToken
-                : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
+              const newUrl = data.tipo === "mp4_direct"
+                ? data.stream
+                : (data.streamToken.startsWith("/")
+                  ? data.streamToken
+                  : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`);
 
               // Atualiza cache de URL para que seeks futuros usem o link renovado
               directStreamRef.current = newUrl;

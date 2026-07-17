@@ -72,10 +72,11 @@ export default async function DesenhoPage({
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota"    ? { nota: "desc" }
-      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az"      ? { titulo: "asc" }
-      : ordem === "antigo"  ? { createdAt: "asc" }
+      ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
+      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
+      : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
+      : ordem === "az"        ? { titulo: "asc" }
+      : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
@@ -105,8 +106,8 @@ export default async function DesenhoPage({
   // Browse mode
   const [heroRaw, avaliados, recentes, acao, aventura, comedia, familia, animacao] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "desenho", background: { not: null } }, orderBy: { nota: "desc" }, take: 8, select: selHero }),
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: { tipo: "desenho", background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -134,8 +135,8 @@ export default async function DesenhoPage({
           </Suspense>
         </div>
 
-        {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} />}
-        {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  />}
+        {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/desenhos?ordem=nota" />}
+        {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  verTodosHref="/desenhos?ordem=recente" />}
         {acao.length > 0      && <LandscapeRow titulo="Ação"                     items={acao.map(toRow)}      verTodosHref="/genero/28" />}
         {aventura.length > 0  && <LandscapeRow titulo="Aventura"                 items={aventura.map(toRow)}  verTodosHref="/genero/12" />}
         {comedia.length > 0   && <LandscapeRow titulo="Comédia"                  items={comedia.map(toRow)}   verTodosHref="/genero/35" />}

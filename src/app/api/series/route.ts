@@ -22,10 +22,11 @@ export async function GET(req: NextRequest) {
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
     const orderBy: any =
-      ordem === "nota"    ? { nota: "desc" }
-      : ordem === "popular" ? [{ nota: "desc" }, { createdAt: "desc" }]
-      : ordem === "az"      ? { titulo: "asc" }
-      : ordem === "antigo"  ? { createdAt: "asc" }
+      ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
+      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
+      : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
+      : ordem === "az"        ? { titulo: "asc" }
+      : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
