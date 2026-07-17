@@ -112,6 +112,18 @@ function parseFontes(urls: string | null, prefix: string, includeTokenized: bool
     .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u, tokenized: isTokenizedUrl(u) }));
 }
 
+// Separa a URL do Voltz (contém "voltz.php") das demais fontes de urlDub/urlLeg,
+// para que possa ser posicionada como Player 3 independentemente da ordem do warez2.
+function splitVoltz(urls: string | null): { voltz: string | null; rest: string | null } {
+  if (!urls) return { voltz: null, rest: null };
+  const parts = urls.split(",").map((u) => u.trim()).filter(Boolean);
+  const idx = parts.findIndex((u) => u.includes("voltz.php"));
+  if (idx === -1) return { voltz: null, rest: urls };
+  const voltz = parts[idx];
+  const rest = parts.filter((_, i) => i !== idx).join(",") || null;
+  return { voltz, rest };
+}
+
 // Extrai o hostname real de uma URL de erro do JW Player.
 // No path Electron (native=1), srcUrl tem forma https://obaflix.vercel.app/api/player/proxy?url=<cdnUrl>&native=1 —
 // o hostname relevante está dentro do parâmetro url=, não no proxy.
@@ -267,8 +279,14 @@ export function CustomPlayer({
     }
   }
 
+  // Player 3: Voltz (extraído do urlDub antes de parseFontes para ter label fixo)
+  const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
+  if (voltzUrl) {
+    allFontes.push({ label: "Player 3", embedUrl: voltzUrl, tokenized: false });
+  }
+
   allFontes.push(
-    ...parseFontes(urlDub, "[Dub]", isDesktop),
+    ...parseFontes(urlDubRest, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
   );
 
