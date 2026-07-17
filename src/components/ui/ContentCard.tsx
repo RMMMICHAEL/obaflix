@@ -4,6 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { Heart, Play, Star } from "lucide-react";
+
+function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
+  (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
+}
 import { imgUrl } from "@/lib/tmdb";
 
 interface Props {
@@ -40,6 +44,7 @@ export function ContentCard({ id, tipo, titulo, poster, ano, nota, urlDub, urlLe
             fill
             className="object-cover"
             sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 16vw"
+            onError={imgFallback}
           />
           {/* badges */}
           <div className="absolute top-2 left-2 flex gap-1">

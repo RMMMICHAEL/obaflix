@@ -89,6 +89,7 @@ export function HeroSlider({ items }: { items: HeroItem[] }) {
         sizes="100vw"
         className={`object-cover object-top transition-opacity duration-700 ${showTrailer ? "opacity-0" : "opacity-100"}`}
         priority
+        onError={(e) => { (e.currentTarget as HTMLImageElement).src = "/placeholder-bg.jpg"; }}
       />
 
       {/* YouTube trailer (desktop only, after delay) */}

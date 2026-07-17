@@ -5,6 +5,10 @@ import Link from "next/link";
 import { Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
+function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
+  (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
+}
+
 interface Props {
   id: string;
   tipo: "filme" | "serie" | "anime" | "desenho";
@@ -50,6 +54,7 @@ export function LandscapeCard({
                 className="w-full h-full object-cover opacity-40 scale-110 blur-[2px] transition-opacity duration-300 group-hover/card:opacity-55"
                 sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
                 loading="lazy"
+                onError={imgFallback}
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/50" />
               <div className="absolute inset-0 flex items-center justify-center p-4 md:p-5">
@@ -70,6 +75,7 @@ export function LandscapeCard({
               className="w-full h-full object-cover transition-transform duration-300 group-hover/card:scale-105"
               sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
               loading="lazy"
+              onError={imgFallback}
             />
           )}
 

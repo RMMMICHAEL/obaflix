@@ -4,6 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { imgUrl } from "@/lib/tmdb";
 
+function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
+  (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
+}
+
 interface Props {
   rank: number;
   id: string;
@@ -74,6 +78,7 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
             fill
             className="object-cover transition-opacity duration-300 group-hover/card:brightness-75"
             sizes={`${POSTER_W}px`}
+            onError={imgFallback}
           />
 
           {urlDub && (
