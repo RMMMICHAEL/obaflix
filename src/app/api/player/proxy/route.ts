@@ -58,8 +58,13 @@ function rewriteAttrUri(
 }
 
 /**
- * Reescreve todas as URLs de uma playlist HLS (master ou variant) para passar
- * pelo proxy com HMAC. Reutilizável para inline e upstream — evita duplicação.
+ * Reescreve uma playlist HLS para minimizar o tráfego pelo proxy Vercel:
+ * - Sub-playlists (após #EXT-X-STREAM-INF): ainda passam pelo proxy (auth gate)
+ * - Chaves de criptografia (#EXT-X-KEY URI): ainda passam pelo proxy (auth gate)
+ * - Segmentos de vídeo (.ts / fMP4): URL direta do CDN — browser busca sem passar pelo Compute
+ *
+ * Isso elimina ~90% do "CDN→Compute" de Vercel pois os bytes de vídeo nunca
+ * transitam pela função serverless. Auth é garantida no nível do M3U8.
  */
 function rewriteHlsPlaylist(
   text: string,
@@ -73,6 +78,8 @@ function rewriteHlsPlaylist(
     ? sourceUrl
     : sourceUrl.substring(0, sourceUrl.lastIndexOf("/") + 1);
 
+  let prevTag = "";
+
   return text
     .split("\n")
     .map((line) => {
@@ -80,21 +87,36 @@ function rewriteHlsPlaylist(
       if (!trimmed) return line;
 
       if (trimmed.startsWith("#EXT-X-KEY") || trimmed.startsWith("#EXT-X-SESSION-KEY")) {
+        prevTag = "#EXT-X-KEY";
         return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
       }
       if (trimmed.startsWith("#EXT-X-MEDIA")) {
+        prevTag = "#EXT-X-MEDIA";
         return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
       }
-      if (trimmed.startsWith("#")) return line;
+      if (trimmed.startsWith("#")) {
+        prevTag = trimmed.split(":")[0];
+        return line;
+      }
 
-      let segUrl: string;
-      if (trimmed.startsWith("http")) segUrl = trimmed;
-      else if (trimmed.startsWith("/")) segUrl = parsedOrigin + trimmed;
-      else segUrl = base + trimmed;
+      // Resolve URL absoluta
+      let absUrl: string;
+      if (trimmed.startsWith("http")) absUrl = trimmed;
+      else if (trimmed.startsWith("/")) absUrl = parsedOrigin + trimmed;
+      else absUrl = base + trimmed;
 
-      const sig = signSegmentUrl(segUrl, userId);
-      const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
-      return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(segUrl)}&sig=${sig}${refParam}`;
+      const tag = prevTag;
+      prevTag = "";
+
+      // Sub-playlist (após #EXT-X-STREAM-INF) → proxy com HMAC (mantém auth gate)
+      if (tag === "#EXT-X-STREAM-INF") {
+        const sig = signSegmentUrl(absUrl, userId);
+        const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
+        return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(absUrl)}&sig=${sig}${refParam}`;
+      }
+
+      // Segmento de vídeo → URL direta ao CDN (zero bytes pelo Compute)
+      return absUrl;
     })
     .join("\n");
 }
