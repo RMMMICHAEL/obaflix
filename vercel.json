@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/popular-sync",
       "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/sync-webcine",
+      "schedule": "0 4 * * *"
     }
   ]
 }
