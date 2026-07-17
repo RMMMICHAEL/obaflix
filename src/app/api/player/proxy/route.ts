@@ -21,6 +21,16 @@ function plog(id: string, step: string, extra?: Record<string, unknown>) {
   const parts = Object.entries(extra ?? {}).map(([k, v]) => `${k}=${String(v)}`).join(" ");
   console.log(`[proxy/${step}] rid=${id}${parts ? " " + parts : ""}`);
 }
+/** Remove query string de URLs nos logs — tokens (cnvs_token, verify, sig) nunca ficam em log. */
+function sanitizeUrl(url: string, maxLen = 80): string {
+  try {
+    const p = new URL(url);
+    return `${p.hostname}${p.pathname}`.slice(0, maxLen);
+  } catch {
+    const qi = url.indexOf("?");
+    return (qi !== -1 ? url.slice(0, qi) : url).slice(0, maxLen);
+  }
+}
 
 // ── Helpers de contexto da requisição ────────────────────────────────────────
 
@@ -225,7 +235,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { url, ref, manifest } = target;
-  plog(id, "resolved", { url: url.slice(0, 80), ref: (ref || "").slice(0, 60), hasManifest: !!manifest });
+  plog(id, "resolved", { url: sanitizeUrl(url), ref: sanitizeUrl(ref || ""), hasManifest: !!manifest });
 
   // Manifest inline: extraído durante o extract na mesma instância/IP do CDN.
   // Serve direto sem ir ao CDN, evitando falha de IP-bound md5 (403 upstream).
@@ -292,7 +302,7 @@ export async function GET(req: NextRequest) {
         host: parsed.hostname,
         range: rangeHdr ? "yes" : "no",
         ...(cnvsAgeS !== null ? { cnvs_token_age_s: cnvsAgeS } : {}),
-        url: url.slice(0, 120),
+        url: sanitizeUrl(url, 100),
       });
       return new NextResponse("Erro ao carregar conteúdo", { status: res.status });
     }

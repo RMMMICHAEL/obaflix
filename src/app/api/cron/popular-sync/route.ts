@@ -46,16 +46,18 @@ function computeDiff(current: RankRow[], incoming: Map<string, number>): RankDif
 
   for (const [tmdbId, rank] of incoming) {
     const row = currentByTmdb.get(tmdbId);
-    if (!row) continue; // stub ainda não foi criado (acontece na 1ª execução de um título novo)
+    if (!row) continue; // título ausente do catálogo — stub ainda não foi criado
     stillPresent.add(row.id);
     if (row.popularRank == null) {
+      // Entrando no ranking: prevRank = null (nunca esteve rankeado)
       updates.push({ id: row.id, rank, prevRank: null });
       added.push(row.id);
     } else if (row.popularRank !== rank) {
+      // Reposicionado: prevRank = valor lido do banco NESTA execução = rank da execução anterior
       updates.push({ id: row.id, rank, prevRank: row.popularRank });
       repositioned.push(row.id);
     }
-    // rank igual → sem escrita (sem popular_checked_at desnecessário)
+    // Rank igual → nenhuma escrita (sem popularCheckedAt desnecessário)
   }
 
   const clears = current
@@ -70,47 +72,31 @@ function computeDiff(current: RankRow[], incoming: Map<string, number>): RankDif
   };
 }
 
-async function applyDiff(tipo: "filme" | "serie", diff: RankDiff) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function applyDiff(tipo: "filme" | "serie", diff: RankDiff, db: any = prisma) {
   if (diff.updates.length > 0) {
-    // Atualiza popularRank E salva o rank anterior (para "em alta" / tendências)
     const rows = diff.updates.map((u) =>
       Prisma.sql`(${u.id}::text, ${u.rank}::int4, ${u.prevRank ?? null}::int4)`
     );
     if (tipo === "filme") {
-      await prisma.$executeRaw`
+      await db.$executeRaw`
         UPDATE "Filme" AS t
-        SET "popularRank"     = v.rank,
-            "popularRankPrev" = v.prev_rank,
+        SET "popularRank"      = v.rank,
+            "popularRankPrev"  = v.prev_rank,
             "popularCheckedAt" = now()
         FROM (VALUES ${Prisma.join(rows)}) AS v(id, rank, prev_rank)
         WHERE t.id = v.id`;
     } else {
-      await prisma.$executeRaw`
+      await db.$executeRaw`
         UPDATE "Serie" AS t
-        SET "popularRank"     = v.rank,
-            "popularRankPrev" = v.prev_rank,
+        SET "popularRank"      = v.rank,
+            "popularRankPrev"  = v.prev_rank,
             "popularCheckedAt" = now()
         FROM (VALUES ${Prisma.join(rows)}) AS v(id, rank, prev_rank)
         WHERE t.id = v.id`;
     }
-  }
-
-  if (diff.clears.length > 0) {
-    if (tipo === "filme") {
-      await prisma.filme.updateMany({
-        where: { id: { in: diff.clears } },
-        data: { popularRank: null }, // popularRankPrev mantido — mostra onde estava antes
-      });
-    } else {
-      await prisma.serie.updateMany({
-        where: { id: { in: diff.clears } },
-        data: { popularRank: null },
-      });
-    }
-  }
-
-  if (diff.updates.length > 0) {
-    await prisma.popularHistory.createMany({
+    // Histórico registra cada mudança real de posição (nunca grava se não houve alteração)
+    await db.popularHistory.createMany({
       data: diff.updates.map((u) => ({
         conteudoId: u.id,
         conteudoTipo: tipo,
@@ -118,11 +104,46 @@ async function applyDiff(tipo: "filme" | "serie", diff: RankDiff) {
       })),
     });
   }
+
+  if (diff.clears.length > 0) {
+    // popularRankPrev mantido ao limpar — preserva memória de onde o título estava
+    if (tipo === "filme") {
+      await db.filme.updateMany({ where: { id: { in: diff.clears } }, data: { popularRank: null } });
+    } else {
+      await db.serie.updateMany({ where: { id: { in: diff.clears } }, data: { popularRank: null } });
+    }
+  }
 }
 
-// Cria registros "stub" para títulos populares que não existem no catálogo.
-// Stubs têm urlDub=null (sem player) mas aparecem em rankings e buscas.
-// Na próxima execução do cron, o diff já os encontra e atribui popularRank.
+// Remove stubs (id=tmdb_*) que saíram do ranking E não têm player.
+// Evita acúmulo indefinido de registros sem valor. Executado fora da tx principal.
+async function cleanupStubs(): Promise<{ filmes: number; series: number }> {
+  try {
+    const [f, s] = await Promise.all([
+      prisma.filme.deleteMany({
+        where: {
+          id: { startsWith: "tmdb_" },
+          popularRank: null,
+          urlDub: null,
+          urlLeg: null,
+        },
+      }),
+      prisma.serie.deleteMany({
+        where: {
+          id: { startsWith: "tmdb_" },
+          popularRank: null,
+          episodios: { none: {} },
+        },
+      }),
+    ]);
+    return { filmes: f.count, series: s.count };
+  } catch {
+    return { filmes: 0, series: 0 };
+  }
+}
+
+// Cria registros "stub" para títulos populares ausentes do catálogo.
+// Stubs têm urlDub=null (sem player) mas participam de rankings e buscas.
 async function createStubs(
   tipo: "filme" | "serie",
   missing: PopularItem[],
@@ -130,10 +151,9 @@ async function createStubs(
 ): Promise<{ created: number; skipped: number }> {
   const withMeta = missing.filter((i) => i.titulo);
   if (withMeta.length === 0) return { created: 0, skipped: missing.length };
-
   if (dryRun) return { created: 0, skipped: withMeta.length };
 
-  // Verifica duplicata por tmdbId antes de criar
+  // Dupla verificação por tmdbId para não criar duplicata se título migrou de id
   const tmdbIds = withMeta.map((i) => i.tmdbId);
   const existsByTmdb =
     tipo === "filme"
@@ -157,7 +177,6 @@ async function createStubs(
         nota: i.nota ?? null,
         voteCount: i.voteCount ?? null,
         popularidade: i.popularidade ?? null,
-        // urlDub/urlLeg = null → stub sem player
       })),
     });
   } else {
@@ -175,7 +194,6 @@ async function createStubs(
         voteCount: i.voteCount ?? null,
         popularidade: i.popularidade ?? null,
         tipo: "serie",
-        // urlDub via episódios = null → stub sem player
       })),
     });
   }
@@ -204,9 +222,10 @@ export async function GET(req: NextRequest) {
   let errorMessage: string | null = null;
   let found = 0, added = 0, removed = 0, repositioned = 0, bytesTransferred = 0;
   let stubsCreated = 0;
-  let ok = true;
+  let stubsDeleted = { filmes: 0, series: 0 };
 
   try {
+    // ── 1. Fetch TMDB ─────────────────────────────────────────────────────────
     const [movies, series] = await Promise.all([
       tmdbPopularSource.getPopularMovies(FETCH_LIMIT),
       tmdbPopularSource.getPopularSeries(FETCH_LIMIT),
@@ -214,12 +233,12 @@ export async function GET(req: NextRequest) {
     bytesTransferred = movies.bytesTransferred + series.bytesTransferred;
     found = movies.items.length + series.items.length;
 
-    // ── Guardas de sanidade ────────────────────────────────────────────────────
+    // ── 2. Guardas de sanidade ────────────────────────────────────────────────
     if (movies.items.length < FETCH_LIMIT * MIN_RATIO_OK) {
-      throw new Error(`Poucos filmes retornados pelo TMDB: ${movies.items.length}/${FETCH_LIMIT}`);
+      throw new Error(`Poucos filmes retornados: ${movies.items.length}/${FETCH_LIMIT}`);
     }
     if (series.items.length < FETCH_LIMIT * MIN_RATIO_OK) {
-      throw new Error(`Poucas séries retornadas pelo TMDB: ${series.items.length}/${FETCH_LIMIT}`);
+      throw new Error(`Poucas séries retornadas: ${series.items.length}/${FETCH_LIMIT}`);
     }
 
     const moviesDedup = dedupeByTmdbId(movies.items);
@@ -232,18 +251,19 @@ export async function GET(req: NextRequest) {
       throw new Error(`Duplicidade alta em séries: ${seriesDedup.duplicates}/${series.items.length}`);
     }
 
-    // Valida: filmes e séries não misturados (sanidade de tipo)
-    const movieIds = moviesDedup.items.map((i) => i.tmdbId);
-    const serieIds = seriesDedup.items.map((i) => i.tmdbId);
-    const overlap  = movieIds.filter((id) => serieIds.includes(id));
-    if (overlap.length > 5) {
-      throw new Error(`Alta sobreposição entre filmes e séries (${overlap.length} ids em comum) — resposta suspeita`);
+    // Filmes e séries não devem se misturar (sanidade de tipo da API)
+    const movieTmdbSet = new Set(moviesDedup.items.map((i) => i.tmdbId));
+    const overlapCount = seriesDedup.items.filter((i) => movieTmdbSet.has(i.tmdbId)).length;
+    if (overlapCount > 5) {
+      throw new Error(`Sobreposição suspeita entre filmes e séries: ${overlapCount} IDs em comum`);
     }
 
     const movieRankMap = new Map(moviesDedup.items.map((i) => [i.tmdbId, i.rank]));
     const serieRankMap = new Map(seriesDedup.items.map((i) => [i.tmdbId, i.rank]));
+    const movieIds = moviesDedup.items.map((i) => i.tmdbId);
+    const serieIds = seriesDedup.items.map((i) => i.tmdbId);
 
-    // ── Busca registros atuais no banco ────────────────────────────────────────
+    // ── 3. Snapshot do banco (lido uma vez, antes de qualquer escrita) ─────────
     const [currentFilmes, currentSeries] = await Promise.all([
       prisma.filme.findMany({
         where: { OR: [{ tmdbId: { in: movieIds } }, { popularRank: { not: null } }] },
@@ -255,7 +275,7 @@ export async function GET(req: NextRequest) {
       }),
     ]);
 
-    // ── Stubs: títulos populares não encontrados no catálogo ───────────────────
+    // ── 4. Stubs: criar títulos populares ausentes do catálogo ─────────────────
     const existingFilmeTmdb = new Set(currentFilmes.map((f) => f.tmdbId).filter(Boolean) as string[]);
     const existingSerieTmdb = new Set(currentSeries.map((s) => s.tmdbId).filter(Boolean) as string[]);
 
@@ -268,35 +288,47 @@ export async function GET(req: NextRequest) {
     ]);
     stubsCreated = filmeStubs.created + serieStubs.created;
 
-    // Após criar stubs, inclui-os no diff desta execução (sem re-fetch ao banco)
-    for (const s of missingFilmes.filter((i) => i.titulo)) {
-      currentFilmes.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
-    }
-    for (const s of missingSeries.filter((i) => i.titulo)) {
-      currentSeries.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
+    // Inclui stubs recém-criados no diff desta execução (sem re-fetch ao banco)
+    if (!dryRun) {
+      for (const s of missingFilmes.filter((i) => i.titulo)) {
+        currentFilmes.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
+      }
+      for (const s of missingSeries.filter((i) => i.titulo)) {
+        currentSeries.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
+      }
     }
 
-    // ── Diff e aplicação ───────────────────────────────────────────────────────
+    // ── 5. Diff ───────────────────────────────────────────────────────────────
     const filmeDiff = computeDiff(currentFilmes as RankRow[], movieRankMap);
     const serieDiff = computeDiff(currentSeries as RankRow[], serieRankMap);
 
-    added       = filmeDiff.addedCount       + serieDiff.addedCount;
-    removed     = filmeDiff.removedCount     + serieDiff.removedCount;
+    added        = filmeDiff.addedCount        + serieDiff.addedCount;
+    removed      = filmeDiff.removedCount      + serieDiff.removedCount;
     repositioned = filmeDiff.repositionedCount + serieDiff.repositionedCount;
 
     if (!dryRun) {
-      await Promise.all([applyDiff("filme", filmeDiff), applyDiff("serie", serieDiff)]);
+      // ── 6. Aplica diff em transação (updates + histórico atômicos) ────────────
+      await prisma.$transaction(async (tx) => {
+        await applyDiff("filme", filmeDiff, tx);
+        await applyDiff("serie", serieDiff, tx);
+      });
+
+      // ── 7. Cleanup de stubs fora do ranking (fora da tx — operação independente)
+      stubsDeleted = await cleanupStubs();
+
+      // ── 8. Invalida cache apenas se houve mudança real ────────────────────────
       if (added + removed + repositioned > 0) revalidatePath("/melhores");
     }
 
     const durationMs = Date.now() - startedAt;
+
     if (!dryRun) {
       await prisma.syncMetric.create({
         data: {
           job: "popular-sync", source: "tmdb", durationMs,
           found, added, removed, repositioned, bytesTransferred,
           errors: 0, ok: true,
-          detail: `stubs_criados=${stubsCreated}`,
+          detail: JSON.stringify({ stubsCreated, stubsDeleted }),
         },
       }).catch(() => {});
       await redis.del(LOCK_KEY);
@@ -304,20 +336,19 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true, dryRun, found, added, removed, repositioned,
-      stubsCreated, durationMs, bytesTransferred,
+      stubsCreated, stubsDeleted, durationMs, bytesTransferred,
       diff: {
         filmes: { added: filmeDiff.added, removed: filmeDiff.removed, repositioned: filmeDiff.repositioned },
         series: { added: serieDiff.added, removed: serieDiff.removed, repositioned: serieDiff.repositioned },
       },
       stubs: {
-        filmes: { created: filmeStubs.created, skipped: filmeStubs.skipped, missing: missingFilmes.length },
-        series: { created: serieStubs.created, skipped: serieStubs.skipped, missing: missingSeries.length },
+        filmes: { created: filmeStubs.created, missing: missingFilmes.length },
+        series: { created: serieStubs.created, missing: missingSeries.length },
       },
     });
   } catch (err: any) {
-    ok = false;
-    errorMessage = err?.message ?? String(err);
     const durationMs = Date.now() - startedAt;
+    errorMessage = err?.message ?? String(err);
 
     if (!dryRun) {
       await prisma.syncMetric.create({
