@@ -29,6 +29,7 @@ model Filme {
   top250Fonte          String?
   top250AtualizadoEm   DateTime?
   popularRank          Int?
+  popularRankPrev      Int?
   popularCheckedAt     DateTime?
   sagaId           Int?
   originalLanguage String?
@@ -61,6 +62,7 @@ model Serie {
   top250Fonte          String?
   top250AtualizadoEm   DateTime?
   popularRank          Int?
+  popularRankPrev      Int?
   popularCheckedAt     DateTime?
   tipo             String        @default("serie")
   originalLanguage String?

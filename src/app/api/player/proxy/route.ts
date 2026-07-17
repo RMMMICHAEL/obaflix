@@ -94,6 +94,14 @@ function rewriteHlsPlaylist(
         prevTag = "#EXT-X-MEDIA";
         return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
       }
+      if (trimmed.startsWith("#EXT-X-MAP")) {
+        // Segmento de inicialização (fMP4): resolve para URL absoluta direta (sem proxy)
+        prevTag = "#EXT-X-MAP";
+        return line.replace(/URI="([^"]+)"/, (_, uri) => {
+          const abs = uri.startsWith("http") ? uri : uri.startsWith("/") ? parsedOrigin + uri : base + uri;
+          return `URI="${abs}"`;
+        });
+      }
       if (trimmed.startsWith("#")) {
         prevTag = trimmed.split(":")[0];
         return line;
@@ -311,7 +319,13 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    plog(id, "SEGMENT_UPSTREAM", { host: parsed.hostname, status: res.status, ct: contentType.slice(0, 40) });
+    const contentLengthVal = res.headers.get("content-length");
+    plog(id, "SEGMENT_UPSTREAM", {
+      host: parsed.hostname,
+      status: res.status,
+      ct: contentType.slice(0, 40),
+      bytes: contentLengthVal ?? "unknown",
+    });
 
     const responseHeaders: Record<string, string> = {
       "Content-Type": contentType,

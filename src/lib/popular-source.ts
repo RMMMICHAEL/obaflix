@@ -20,6 +20,15 @@ const RETRY_DELAY_MS = 600;
 export interface PopularItem {
   tmdbId: string;
   rank: number;
+  // Metadados incluídos na resposta da API popular — usados para criar stubs
+  titulo?: string;
+  tituloOriginal?: string;
+  poster?: string;
+  backdrop?: string;
+  ano?: number;
+  nota?: number;
+  voteCount?: number;
+  popularidade?: number;
 }
 
 export interface PopularFetchResult {
@@ -36,12 +45,23 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchPageWithRetry(path: string, page: number): Promise<{ results: { id: number }[]; bytes: number } | null> {
+interface TmdbResult {
+  id: number;
+  title?: string;          // filmes
+  name?: string;           // séries
+  original_title?: string;
+  original_name?: string;
+  poster_path?: string;
+  backdrop_path?: string;
+  release_date?: string;   // filmes
+  first_air_date?: string; // séries
+  vote_average?: number;
+  vote_count?: number;
+  popularity?: number;
+}
+
+async function fetchPageWithRetry(path: string, page: number): Promise<{ results: TmdbResult[]; bytes: number } | null> {
   for (let attempt = 1; attempt <= RETRIES + 1; attempt++) {
-    // AbortController manual em vez de AbortSignal.timeout(): visto em scripts
-    // desta sessão que o timer interno do AbortSignal.timeout() pode lançar
-    // fora da cadeia de promises do fetch sob concorrência (bug do fetch
-    // nativo do Node/undici) — abort() manual num setTimeout é mais estável.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
@@ -61,21 +81,36 @@ async function fetchPageWithRetry(path: string, page: number): Promise<{ results
   return null;
 }
 
-async function fetchPopular(path: string, limit: number): Promise<PopularFetchResult> {
+function parseYear(dateStr?: string): number | undefined {
+  if (!dateStr) return undefined;
+  const y = parseInt(dateStr.slice(0, 4));
+  return isNaN(y) ? undefined : y;
+}
+
+async function fetchPopular(path: string, limit: number, isSeries = false): Promise<PopularFetchResult> {
   const pages = Math.ceil(limit / PAGE_SIZE);
   const items: PopularItem[] = [];
   let bytesTransferred = 0;
   let rank = 0;
 
-  // Sequencial (não paralelo): a ordem das páginas define o rank, e o TMDB
-  // pagina de forma estável o suficiente pra isso valer a pena manter simples.
   for (let page = 1; page <= pages; page++) {
     const result = await fetchPageWithRetry(path, page);
-    if (!result) break; // página falhou mesmo após retry — para aqui, guarda de sanidade no cron cuida do resto
+    if (!result) break;
     bytesTransferred += result.bytes;
     for (const r of result.results) {
       rank++;
-      items.push({ tmdbId: String(r.id), rank });
+      items.push({
+        tmdbId: String(r.id),
+        rank,
+        titulo: (isSeries ? r.name : r.title) ?? undefined,
+        tituloOriginal: (isSeries ? r.original_name : r.original_title) ?? undefined,
+        poster: r.poster_path ?? undefined,
+        backdrop: r.backdrop_path ?? undefined,
+        ano: parseYear(isSeries ? r.first_air_date : r.release_date),
+        nota: r.vote_average ?? undefined,
+        voteCount: r.vote_count ?? undefined,
+        popularidade: r.popularity ?? undefined,
+      });
       if (items.length >= limit) return { items, bytesTransferred };
     }
     if (result.results.length === 0) break;
@@ -84,6 +119,6 @@ async function fetchPopular(path: string, limit: number): Promise<PopularFetchRe
 }
 
 export const tmdbPopularSource: PopularSource = {
-  getPopularMovies: (limit) => fetchPopular("/movie/popular", limit),
-  getPopularSeries: (limit) => fetchPopular("/tv/popular", limit),
+  getPopularMovies: (limit) => fetchPopular("/movie/popular", limit, false),
+  getPopularSeries: (limit) => fetchPopular("/tv/popular",    limit, true),
 };

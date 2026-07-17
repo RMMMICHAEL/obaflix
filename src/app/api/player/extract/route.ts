@@ -1034,8 +1034,9 @@ export async function GET(req: NextRequest) {
     // when seeking, so the second request always fails with "token já consumido".
     // Use a HMAC-signed proxy URL instead; it's stateless and allows repeated range requests.
     if (result.tipo === "mp4") {
-      // vod01e001.fun (Voltz CDN) bloqueia IPs de datacenter da Vercel — entrega URL direta ao browser
-      if (url.includes("voltz.php")) {
+      // CDNs com token tempo-limitado (não IP-bound): entrega URL direta ao browser
+      // vod01e001.fun (Voltz) bloqueia IPs de datacenter; webcinevs2 usa cnvs_token tempo-limitado
+      if (url.includes("voltz.php") || url.includes("webcinevs2.com")) {
         return NextResponse.json({ tipo: "mp4_direct", stream: result.stream }, { headers: NO_STORE });
       }
       const sig = signSegmentUrl(result.stream, userId);
