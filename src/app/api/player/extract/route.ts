@@ -601,61 +601,77 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
       xlog("webcine/no_sub", { ms: Date.now() - t0 });
       return null;
     }
-    const videos = (videosData.videos ?? []) as Array<{ id: number; audio_type: string; is_premium: boolean; locked: boolean }>;
-    const bestVideo = videos.find((v) => !v.is_premium && !v.locked) ?? videos[0];
-    if (!bestVideo) return null;
-    xlog("webcine/video_sel", { ms: Date.now() - t0, videoId: bestVideo.id, audio: bestVideo.audio_type });
+    const videos = (videosData.videos ?? []) as Array<{ id: number; audio_type: string; is_premium: boolean; locked: boolean; sort_order?: number }>;
+    if (videos.length === 0) return null;
 
-    // 3. Get encrypted video URL
-    // Movie params from HAR: device_id, profile_id, device_name=Windows+(Web), device_type, platform
-    // Series params:         platform, device_type, profile_id, device_id
-    const videoDetailUrl = isMovie
-      ? `https://webcinevs2.com/api/streaming/movies/${internalId}/video/${bestVideo.id}?device_id=${deviceId}&profile_id=${profileId}&device_name=Windows+(Web)&device_type=web&platform=web`
-      : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/video/${bestVideo.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`;
+    // Prioridade: dubbed desbloqueados (na ordem da lista) → subtitled → premium (último recurso)
+    const eligible = [
+      ...videos.filter((v) => !v.is_premium && !v.locked && v.audio_type === "dubbed"),
+      ...videos.filter((v) => !v.is_premium && !v.locked && v.audio_type !== "dubbed"),
+      ...videos.filter((v) => v.is_premium || v.locked),
+    ];
+    if (eligible.length === 0) eligible.push(videos[0]);
 
-    const videoDetailRes = await fetch(videoDetailUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
-    if (!videoDetailRes.ok) {
-      xlog("webcine/video_detail_err", { ms: Date.now() - t0, status: videoDetailRes.status });
-      return null;
+    // Tenta cada servidor em ordem; avança se resolve falhar ou HEAD retornar 4xx/5xx
+    for (const video of eligible) {
+      xlog("webcine/video_try", { ms: Date.now() - t0, videoId: video.id, audio: video.audio_type });
+
+      // 3. Encrypted video URL
+      const videoDetailUrl = isMovie
+        ? `https://webcinevs2.com/api/streaming/movies/${internalId}/video/${video.id}?device_id=${deviceId}&profile_id=${profileId}&device_name=Windows+(Web)&device_type=web&platform=web`
+        : `https://webcinevs2.com/api/streaming/episodes/${episodeId}/video/${video.id}?platform=web&device_type=web&profile_id=${profileId}&device_id=${deviceId}`;
+
+      let encryptedUrl: string, sessionId: number;
+      try {
+        const r = await fetch(videoDetailUrl, { headers: apiHeaders(token), signal: AbortSignal.timeout(8000) });
+        if (!r.ok) { xlog("webcine/detail_skip", { videoId: video.id, status: r.status }); continue; }
+        const d = await r.json();
+        encryptedUrl = d.video_url; sessionId = d.session_id;
+        if (!encryptedUrl || !sessionId) continue;
+      } catch { continue; }
+
+      // 4. Resolve URL
+      const resolveBody = isMovie
+        ? { payload: encryptedUrl, session_id: sessionId }
+        : { payload: encryptedUrl, session_id: sessionId, device_id: deviceId, platform: "web", device_type: "web" };
+
+      let rawUrl: string;
+      try {
+        const r = await fetch("https://webcinevs2.com/api/streaming/resolve-url", {
+          method: "POST",
+          headers: { ...apiHeaders(token), "Content-Type": "application/json" },
+          body: JSON.stringify(resolveBody),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) { xlog("webcine/resolve_skip", { videoId: video.id, status: r.status }); continue; }
+        rawUrl = (await r.json()).url;
+        if (!rawUrl) continue;
+      } catch { continue; }
+
+      // 5. HEAD check — valida servidor e segue redirect; rejeita 4xx/5xx
+      let finalUrl = rawUrl;
+      try {
+        const headRes = await fetch(rawUrl, {
+          method: "HEAD",
+          headers: { "User-Agent": UA, "Referer": "https://webcinevs2.com/" },
+          redirect: "manual",
+          signal: AbortSignal.timeout(8000),
+        });
+        if (headRes.status >= 400) {
+          xlog("webcine/head_skip", { videoId: video.id, status: headRes.status });
+          continue;
+        }
+        const loc = headRes.headers.get("location");
+        if (loc && (headRes.status === 301 || headRes.status === 302)) finalUrl = loc;
+      } catch { /* erro de rede no HEAD — tenta usar rawUrl mesmo assim */ }
+
+      const host = (() => { try { return new URL(finalUrl).hostname; } catch { return "?"; } })();
+      xlog("webcine/ok", { ms: Date.now() - t0, tmdbId, type, videoId: video.id, audio: video.audio_type, host });
+      return { streamUrl: finalUrl, referer: "https://webcinevs2.com/" };
     }
-    const { video_url: encryptedUrl, session_id: sessionId } = await videoDetailRes.json();
-    if (!encryptedUrl || !sessionId) return null;
 
-    // 4. Resolve URL
-    // Movie body (from HAR): {payload, session_id} only
-    // Series body: {payload, session_id, device_id, platform, device_type}
-    const resolveBody = isMovie
-      ? { payload: encryptedUrl, session_id: sessionId }
-      : { payload: encryptedUrl, session_id: sessionId, device_id: deviceId, platform: "web", device_type: "web" };
-
-    const resolveRes = await fetch("https://webcinevs2.com/api/streaming/resolve-url", {
-      method: "POST",
-      headers: { ...apiHeaders(token), "Content-Type": "application/json" },
-      body: JSON.stringify(resolveBody),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!resolveRes.ok) {
-      xlog("webcine/resolve_err", { ms: Date.now() - t0, status: resolveRes.status });
-      return null;
-    }
-    const rawUrl = (await resolveRes.json()).url as string;
-    if (!rawUrl) return null;
-
-    // 5. Follow redirect (server-amz/utx → play-amz/utx)
-    let finalUrl = rawUrl;
-    try {
-      const headRes = await fetch(rawUrl, {
-        method: "HEAD",
-        headers: { "User-Agent": UA, "Referer": "https://webcinevs2.com/" },
-        redirect: "manual",
-        signal: AbortSignal.timeout(8000),
-      });
-      const loc = headRes.headers.get("location");
-      if (loc && (headRes.status === 301 || headRes.status === 302)) finalUrl = loc;
-    } catch { /* use rawUrl as-is */ }
-
-    xlog("webcine/ok", { ms: Date.now() - t0, tmdbId, type, host: (() => { try { return new URL(finalUrl).hostname; } catch { return "?"; } })() });
-    return { streamUrl: finalUrl, referer: "https://webcinevs2.com/" };
+    xlog("webcine/all_failed", { ms: Date.now() - t0, tmdbId, tried: eligible.length });
+    return null;
 
   } catch (e: any) {
     xlog("webcine/error", { ms: Date.now() - t0, tmdbId, err: String(e?.message ?? "").slice(0, 80) });
