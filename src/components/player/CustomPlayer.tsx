@@ -113,7 +113,7 @@ function parseFontes(urls: string | null, prefix: string, includeTokenized: bool
 }
 
 // Separa a URL do Voltz (contém "voltz.php") das demais fontes de urlDub/urlLeg,
-// para que possa ser posicionada como Player 3 independentemente da ordem do warez2.
+// para que possa ser posicionada como Player 1 independentemente da ordem do warez2.
 function splitVoltz(urls: string | null): { voltz: string | null; rest: string | null } {
   if (!urls) return { voltz: null, rest: null };
   const parts = urls.split(",").map((u) => u.trim()).filter(Boolean);
@@ -245,44 +245,44 @@ export function CustomPlayer({
 
   const allFontes: Fonte[] = [];
 
-  // Player 1: webcinevs2.com — MP4 direto via Cloudflare CDN
+  // Player 1: Voltz (extraído do urlDub antes de parseFontes para ter prioridade fixa)
+  const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
+  if (voltzUrl) {
+    allFontes.push({ label: "Player 1", embedUrl: voltzUrl, tokenized: false });
+  }
+
+  // Player 2: webcinevs2.com — MP4 direto via Cloudflare CDN
   if (tmdbId) {
     if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
-        label: "Player 1",
+        label: "Player 2",
         embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}&q=${encodeURIComponent(titulo)}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "filme") {
       allFontes.push({
-        label: "Player 1",
+        label: "Player 2",
         embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=movie&q=${encodeURIComponent(titulo)}`,
         tokenized: false,
       });
     }
   }
 
-  // Player 2: playerflix.ink → embedplayer2.xyz
+  // Player 3: playerflix.ink → embedplayer2.xyz
   if (tmdbId) {
     if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
-        label: "Player 2",
+        label: "Player 3",
         embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "filme") {
       allFontes.push({
-        label: "Player 2",
+        label: "Player 3",
         embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
         tokenized: false,
       });
     }
-  }
-
-  // Player 3: Voltz (extraído do urlDub antes de parseFontes para ter label fixo)
-  const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
-  if (voltzUrl) {
-    allFontes.push({ label: "Player 3", embedUrl: voltzUrl, tokenized: false });
   }
 
   allFontes.push(
