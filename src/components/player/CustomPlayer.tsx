@@ -439,8 +439,10 @@ export function CustomPlayer({
   resetControlsTimerRef.current = resetControlsTimer;
 
   const toggleFullscreen = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
+    // Mantém o fullscreen durante a troca de episódio.
+    // O container do CustomPlayer é desmontado pelo router.push(nextUrl), mas o
+    // documentElement permanece montado durante a navegação do Next.js.
+    const el = document.documentElement;
     if (!document.fullscreenElement) {
       el.requestFullscreen?.().catch(() => {});
     } else {
@@ -1291,7 +1293,15 @@ export function CustomPlayer({
               <button
                 title="Voltar"
                 className={btnCls}
-                onClick={() => { saveProgress(); router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`); }}
+                onClick={async () => {
+                  saveProgress();
+                  // Ao sair do player de propósito, encerra o fullscreen. Nas trocas de
+                  // episódio, ele é preservado porque o documentElement não é desmontado.
+                  if (document.fullscreenElement) {
+                    await document.exitFullscreen?.().catch(() => {});
+                  }
+                  router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`);
+                }}
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
