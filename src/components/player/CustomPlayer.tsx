@@ -285,6 +285,25 @@ export function CustomPlayer({
     }
   }
 
+  // Player 4: Vidsrc legendado com português selecionado por padrão.
+  // Usa o TMDB ID já presente em todo o catálogo. O autonext fica desligado,
+  // pois a navegação para o próximo episódio é controlada pelo próprio Obaflix.
+  if (tmdbId) {
+    if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 4 [Leg PT]",
+        embedUrl: `https://vidsrc-embed.ru/embed/tv?tmdb=${encodeURIComponent(tmdbId)}&season=${temporada}&episode=${numeroEp}&ds_lang=pt&autoplay=1&autonext=0`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 4 [Leg PT]",
+        embedUrl: `https://vidsrc-embed.ru/embed/movie?tmdb=${encodeURIComponent(tmdbId)}&ds_lang=pt&autoplay=1`,
+        tokenized: false,
+      });
+    }
+  }
+
   allFontes.push(
     ...parseFontes(urlDubRest, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
@@ -541,6 +560,16 @@ export function CustomPlayer({
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
       let tipo: string;
       let playerUrl: string;
+
+      // Vidsrc já é um player embed completo. Carrega direto no iframe para não
+      // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que deve
+      // continuar dentro do player do próprio provedor.
+      if (embedUrl.startsWith("https://vidsrc-embed.ru/embed/")) {
+        setStreamTipo("iframe");
+        setStreamUrl(embedUrl);
+        setStatus("playing");
+        return;
+      }
 
       if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
