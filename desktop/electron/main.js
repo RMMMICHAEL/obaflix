@@ -19,6 +19,7 @@ const EMBED_HOSTNAMES = [
   "playerwish.com", "jvrkt.online", "beamy.online",
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
   "watchplayer.xyz",
+  "superflixapi.pro", "vizero.buzz", "warezcdn.lat",
 ];
 
 // Estado do player ativo — atualizado pelo servidor local após extração bem-sucedida.
@@ -44,9 +45,9 @@ else {
 // Dispatcher genérico (rola3/rola4, PlayHide, Lulu, Rola2, Wish, Bolt, Big) —
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
-  const { stream, tipo, provider } = await extractStreamNative(embedUrl);
+  const { stream, tipo, provider, referer } = await extractStreamNative(embedUrl);
   console.log(`[extract] provider=${provider} → ${stream.slice(0, 120)}`);
-  return { stream, tipo };
+  return { stream, tipo, referer };
 }
 
 // ── Servidor local ─────────────────────────────────────────────────────────────
@@ -75,19 +76,19 @@ function startLocalServer() {
 
         console.log(`[local] extract: ${embedUrl.slice(0, 80)}`);
         try {
-          const { stream, tipo } = await extractSecuredLink(embedUrl);
+          const { stream, tipo, referer } = await extractSecuredLink(embedUrl);
           console.log(`[local] stream: ${stream.slice(0, 80)}`);
 
           // Atualiza playerState: o CDN valida Referer = URL completa da página embed
           // (não apenas a origem). O mesmo Referer usado na extração POST.
           try {
             playerState.cdnHostname = new URL(stream).hostname;
-            playerState.embedReferer = embedUrl;
+            playerState.embedReferer = referer || null;
             console.log(`[local] CDN: ${playerState.cdnHostname} | Referer: ${playerState.embedReferer}`);
           } catch { /**/ }
 
           res.writeHead(200, { ...CORS, "Content-Type": "application/json" });
-          res.end(JSON.stringify({ stream, tipo, referer: embedUrl }));
+          res.end(JSON.stringify({ stream, tipo, referer: referer || null }));
         } catch (err) {
           console.error(`[local] erro: ${err.message}`);
           res.writeHead(422, { ...CORS, "Content-Type": "application/json" });
@@ -294,10 +295,10 @@ ipcMain.handle("extract-stream", async (_event, embedUrl) => {
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
       playerState.cdnHostname = new URL(stream).hostname;
-      playerState.embedReferer = embedUrl;
-      console.log(`[ipc] CDN: ${playerState.cdnHostname} | Referer: ${embedUrl}`);
+      playerState.embedReferer = referer || null;
+      console.log(`[ipc] CDN: ${playerState.cdnHostname} | Referer: ${playerState.embedReferer}`);
     } catch { /**/ }
-    return { stream, tipo, referer: embedUrl };
+    return { stream, tipo, referer: referer || null };
   } catch (err) {
     return { error: err.message };
   }

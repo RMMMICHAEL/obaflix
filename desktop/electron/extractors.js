@@ -7,6 +7,7 @@
 // Ver docs/player-native-extraction.md para o mapa completo de providers.
 
 const { createContext, runInContext } = require("vm");
+const { extractSuperflix } = require("./superflix-extractor");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -75,14 +76,14 @@ async function postPlayer(url, id) {
 
 // Extração do rola3/rola4 (embedplayer1/2.xyz, xn--...): POST direto com IP do usuário,
 // idêntico ao que já existia como extractSecuredLink em main.js.
-async function extractEmbedPlayer(embedUrl) {
+async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/") {
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
   if (!id) throw new Error("ID não encontrado");
 
   const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
-  const body = new URLSearchParams({ hash: id, r: OBAFLIX_URL + "/" });
+  const body = new URLSearchParams({ hash: id, r: rUrl });
 
   const res = await fetch(apiUrl, {
     method: "POST",
@@ -352,6 +353,7 @@ function detectProvider(embedUrl) {
   if (hostname.includes("boltcdn") || hostname.includes("bolt")) return "bolt";
   if (hostname.includes("bigshare") || hostname.includes("big")) return "big";
   if (hostname.includes("watchplayer")) return "watchplayer";
+  if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return "superflix";
   return null;
 }
 
@@ -365,6 +367,7 @@ async function extractStream(embedUrl) {
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
 
   let stream;
+  let referer = embedUrl;
   switch (provider) {
     case "embedplayer": stream = await extractEmbedPlayer(embedUrl); break;
     case "hide": stream = await extractHide(embedUrl, id); break;
@@ -374,10 +377,20 @@ async function extractStream(embedUrl) {
     case "bolt": stream = await extractBolt(embedUrl); break;
     case "big": stream = await extractBig(embedUrl); break;
     case "watchplayer": stream = await extractWatchplayer(embedUrl); break;
+    case "superflix": {
+      const result = await extractSuperflix(embedUrl, {
+        ua: UA,
+        appReferer: OBAFLIX_URL + "/",
+        extractEmbedPlayer,
+      });
+      stream = result.stream;
+      referer = result.referer;
+      break;
+    }
     default: throw new Error(`Provider sem extrator: ${provider}`);
   }
 
-  return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", provider };
+  return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", provider, referer };
 }
 
 module.exports = { detectProvider, extractStream };

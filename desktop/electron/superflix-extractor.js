@@ -1,0 +1,532 @@
+"use strict";
+
+// Extrator nativo do SuperFlixAPI.
+// Toda a cadeia roda no dispositivo do usuário (Electron), sem Vercel:
+// SuperFlix -> Vizero -> WarezCDN -> player/source -> MP4/HLS final.
+
+const DEFAULT_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
+
+const DEFAULT_TIMEOUT_MS = 15000;
+const MAX_PAGE_HOPS = 7;
+
+function slog(step, detail = "") {
+  console.log(`[superflix/${step}]${detail ? ` ${detail}` : ""}`);
+}
+
+function safeUrlLabel(raw) {
+  try {
+    const url = new URL(raw);
+    return `${url.hostname}${url.pathname}`.slice(0, 120);
+  } catch {
+    return String(raw).split("?")[0].slice(0, 120);
+  }
+}
+
+function normalizeHtml(text) {
+  return String(text || "")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003d/gi, "=")
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#x2f;/gi, "/")
+    .replace(/&#47;/g, "/")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function resolveUrl(candidate, baseUrl) {
+  if (!candidate) return null;
+  let value = normalizeHtml(candidate).trim();
+  value = value.replace(/^['"]|['"]$/g, "");
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    try {
+      return new URL(decodeURIComponent(value), baseUrl).toString();
+    } catch {
+      return null;
+    }
+  }
+}
+
+function isChainHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return (
+    host === "superflixapi.pro" || host.endsWith(".superflixapi.pro") ||
+    host.includes("vizero") || host.includes("warezcdn")
+  );
+}
+
+function collectChainUrls(html, baseUrl) {
+  const normalized = normalizeHtml(html);
+  const found = [];
+  const seen = new Set();
+
+  const add = (raw) => {
+    const absolute = resolveUrl(raw, baseUrl);
+    if (!absolute || seen.has(absolute)) return;
+    try {
+      const parsed = new URL(absolute);
+      if (!isChainHost(parsed.hostname)) return;
+      seen.add(absolute);
+      found.push(absolute);
+    } catch { /**/ }
+  };
+
+  for (const match of normalized.matchAll(/(?:src|data-src|href|data-url)\s*=\s*["']([^"']+)["']/gi)) {
+    add(match[1]);
+  }
+  for (const match of normalized.matchAll(/https?:\/\/[^\s"'<>\\]+/gi)) {
+    add(match[0]);
+  }
+
+  return found.sort((a, b) => {
+    const score = (url) => {
+      let value = 0;
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname.includes("warezcdn")) value += 100;
+        if (parsed.searchParams.has("cfv")) value += 100;
+        if (parsed.hostname.includes("vizero")) value += 50;
+        if (parsed.pathname.includes("/player/")) value -= 30;
+      } catch { /**/ }
+      return value;
+    };
+    return score(b) - score(a);
+  });
+}
+
+function decodeTokenPayload(token) {
+  try {
+    const part = token.split(".")[0];
+    const pad = "=".repeat((4 - (part.length % 4)) % 4);
+    return JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function findPageToken(html) {
+  const normalized = normalizeHtml(html);
+  const explicitPatterns = [
+    /(?:page_token|pageToken)\s*[:=]\s*["']([^"']+)["']/i,
+    /name=["']page_token["'][^>]*value=["']([^"']+)["']/i,
+    /value=["']([^"']+)["'][^>]*name=["']page_token["']/i,
+    /data-page-token=["']([^"']+)["']/i,
+    /page_token=([^&"'\s<]+)/i,
+  ];
+
+  for (const pattern of explicitPatterns) {
+    const token = normalized.match(pattern)?.[1];
+    if (token) return decodeURIComponent(token);
+  }
+
+  // Tanto cfv quanto page_token têm formato payload.assinatura. O page_token é
+  // identificado pelos campos embed_content_path/embed_context_host do payload.
+  const tokenPattern = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{32,}/g;
+  for (const match of normalized.matchAll(tokenPattern)) {
+    const payload = decodeTokenPayload(match[0]);
+    if (payload?.embed_content_path || payload?.embed_context_host || payload?.native_title) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
+function sourceScore(id, context) {
+  const text = String(context || "").toLowerCase();
+  let score = id.startsWith("native_media:") ? 100 : 0;
+  if (/dublad|portugu|pt-br/.test(text)) score += 40;
+  if (/legend|subtitle|leg\b/.test(text)) score -= 10;
+  if (/full\s*hd|1080|hd/.test(text)) score += 5;
+  return score;
+}
+
+function findSourceIds(html) {
+  const normalized = normalizeHtml(html);
+  const items = new Map();
+
+  const add = (id, index) => {
+    const clean = String(id || "").trim();
+    if (!/^(?:native_media:)?\d+$/.test(clean)) return;
+    const context = normalized.slice(Math.max(0, index - 300), Math.min(normalized.length, index + 300));
+    const score = sourceScore(clean, context);
+    const previous = items.get(clean);
+    if (!previous || score > previous.score) items.set(clean, { id: clean, score, index });
+  };
+
+  for (const match of normalized.matchAll(/native_media:\d+/gi)) add(match[0], match.index || 0);
+
+  const patterns = [
+    /(?:video[_-]?id|data-video-id|data-player-id|data-source-id|data-id)\s*[:=]\s*["']?((?:native_media:)?\d+)/gi,
+    /name=["']video_id["'][^>]*value=["']((?:native_media:)?\d+)["']/gi,
+    /value=["']((?:native_media:)?\d+)["'][^>]*name=["']video_id["']/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of normalized.matchAll(pattern)) add(match[1], match.index || 0);
+  }
+
+  return [...items.values()]
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.id);
+}
+
+function findNativeMediaSource(html, baseUrl) {
+  const normalized = normalizeHtml(html);
+  const arrayMatch = normalized.match(/var\s+SOURCES\s*=\s*(\[[\s\S]*?\])\s*;/i);
+  if (arrayMatch) {
+    try {
+      const sources = JSON.parse(arrayMatch[1]);
+      for (const source of sources) {
+        const resolved = resolveUrl(source?.src, baseUrl);
+        if (resolved?.includes("/player/native/media-source")) return resolved;
+      }
+    } catch { /**/ }
+  }
+
+  const match = normalized.match(/["'](https?:\/\/[^"']+\/player\/native\/media-source[^"']*)["']/i);
+  return match ? resolveUrl(match[1], baseUrl) : null;
+}
+
+function findDirectMedia(html, baseUrl) {
+  const normalized = normalizeHtml(html);
+  const patterns = [
+    /["'](https?:\/\/[^"']+\.(?:m3u8|mp4)(?:\?[^"']*)?)["']/i,
+    /["'](https?:\/\/[^"']+\/cdn\/hls\/[^"']+\/master\.txt(?:\?[^"']*)?)["']/i,
+    /(?:file|src|source)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/i,
+  ];
+  for (const pattern of patterns) {
+    const candidate = normalized.match(pattern)?.[1];
+    const resolved = resolveUrl(candidate, baseUrl);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function createCookieJar() {
+  const cookies = new Map();
+
+  function absorb(url, headers) {
+    const host = new URL(url).hostname.toLowerCase();
+    let values = [];
+    if (typeof headers.getSetCookie === "function") values = headers.getSetCookie();
+    if (!values.length) {
+      const combined = headers.get("set-cookie");
+      if (combined) {
+        // Separa múltiplos Set-Cookie sem quebrar a vírgula do atributo Expires.
+        values = combined.split(/,(?=\s*[^;,=\s]+=[^;,]*)/g);
+      }
+    }
+
+    for (const raw of values) {
+      const parts = String(raw).split(";").map((p) => p.trim());
+      const first = parts.shift();
+      if (!first?.includes("=")) continue;
+      const [name, ...rest] = first.split("=");
+      let domain = host;
+      for (const attr of parts) {
+        const [key, ...valueParts] = attr.split("=");
+        if (key.toLowerCase() === "domain" && valueParts.length) {
+          domain = valueParts.join("=").replace(/^\./, "").toLowerCase();
+        }
+      }
+      cookies.set(`${domain}|${name}`, { domain, name, value: rest.join("=") });
+    }
+  }
+
+  function header(url) {
+    const host = new URL(url).hostname.toLowerCase();
+    return [...cookies.values()]
+      .filter((cookie) => host === cookie.domain || host.endsWith(`.${cookie.domain}`))
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  }
+
+  return { absorb, header };
+}
+
+function secFetchSite(url, referer) {
+  if (!referer) return "none";
+  try {
+    return new URL(url).origin === new URL(referer).origin ? "same-origin" : "cross-site";
+  } catch {
+    return "cross-site";
+  }
+}
+
+async function requestOnce(fetchImpl, jar, url, options) {
+  const headers = {
+    "User-Agent": options.ua,
+    "Accept": options.accept || "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.7,en-US;q=0.3,en;q=0.2",
+    "Sec-Fetch-Dest": options.dest || "iframe",
+    "Sec-Fetch-Mode": options.mode || "navigate",
+    "Sec-Fetch-Site": secFetchSite(url, options.referer),
+    ...(options.headers || {}),
+  };
+  if (options.referer) headers.Referer = options.referer;
+  const cookie = jar.header(url);
+  if (cookie) headers.Cookie = cookie;
+
+  const response = await fetchImpl(url, {
+    method: options.method || "GET",
+    headers,
+    body: options.body,
+    redirect: "manual",
+    signal: AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS),
+  });
+  jar.absorb(url, response.headers);
+  return response;
+}
+
+async function fetchPage(fetchImpl, jar, startUrl, options) {
+  let url = startUrl;
+  let referer = options.referer;
+  let method = options.method || "GET";
+  let body = options.body;
+  let extraHeaders = options.headers || {};
+
+  for (let hop = 0; hop < MAX_PAGE_HOPS; hop += 1) {
+    const response = await requestOnce(fetchImpl, jar, url, {
+      ...options,
+      url,
+      referer,
+      method,
+      body,
+      headers: extraHeaders,
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) throw new Error(`redirect ${response.status} sem Location em ${safeUrlLabel(url)}`);
+      const next = resolveUrl(location, url);
+      if (!next) throw new Error(`Location inválido em ${safeUrlLabel(url)}`);
+      referer = url;
+      url = next;
+      if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+        method = "GET";
+        body = undefined;
+        extraHeaders = {};
+      }
+      continue;
+    }
+
+    const text = options.readBody === false ? "" : await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status} em ${safeUrlLabel(url)}`);
+    return { url, response, text };
+  }
+  throw new Error(`redirecionamentos demais em ${safeUrlLabel(startUrl)}`);
+}
+
+async function resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer) {
+  let current = embedUrl;
+  let referer = appReferer;
+  const visited = new Set();
+
+  for (let hop = 0; hop < MAX_PAGE_HOPS; hop += 1) {
+    if (visited.has(current)) throw new Error("loop na cadeia SuperFlix/Vizero/WarezCDN");
+    visited.add(current);
+
+    const page = await fetchPage(fetchImpl, jar, current, { ua, referer });
+    const finalUrl = page.url;
+    const parsed = new URL(finalUrl);
+    slog("page", `hop=${hop} url=${safeUrlLabel(finalUrl)} bytes=${page.text.length}`);
+
+    if (parsed.hostname.includes("warezcdn") && findPageToken(page.text)) {
+      return { url: finalUrl, html: page.text };
+    }
+
+    const candidates = collectChainUrls(page.text, finalUrl).filter((url) => !visited.has(url));
+    const next = candidates.find((url) => {
+      try {
+        const candidate = new URL(url);
+        return candidate.hostname.includes("warezcdn") && candidate.searchParams.has("cfv");
+      } catch { return false; }
+    }) || candidates[0];
+
+    if (!next) {
+      // Alguns endpoints já entregam a página Warez sem mudar o hostname.
+      if (findPageToken(page.text)) return { url: finalUrl, html: page.text };
+      throw new Error(`iframe/redirect WarezCDN não encontrado em ${safeUrlLabel(finalUrl)}`);
+    }
+
+    referer = finalUrl;
+    current = next;
+  }
+  throw new Error("cadeia SuperFlix excedeu o limite de páginas");
+}
+
+async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua) {
+  const origin = new URL(warezPage.url).origin;
+  const endpoint = `${origin}/player/source?host=${encodeURIComponent(host)}`;
+  const form = new URLSearchParams({
+    video_id: sourceId,
+    page_token: pageToken,
+    host,
+    site: host,
+    _token: "",
+  });
+
+  const response = await requestOnce(fetchImpl, jar, endpoint, {
+    ua,
+    method: "POST",
+    referer: warezPage.url,
+    dest: "empty",
+    mode: "cors",
+    accept: "*/*",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "Origin": origin,
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    body: form.toString(),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`player/source HTTP ${response.status}`);
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error("player/source retornou JSON inválido"); }
+  const videoUrl = json?.data?.video_url || json?.video_url;
+  if (!videoUrl) throw new Error("video_url ausente em player/source");
+  return resolveUrl(videoUrl, endpoint);
+}
+
+async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, extractEmbedPlayer) {
+  const first = await requestOnce(fetchImpl, jar, targetUrl, {
+    ua,
+    referer: warezPageUrl,
+    readBody: false,
+  });
+
+  let resolvedUrl = targetUrl;
+  if (first.status >= 300 && first.status < 400) {
+    const location = first.headers.get("location");
+    resolvedUrl = resolveUrl(location, targetUrl);
+    if (!resolvedUrl) throw new Error("player/redirect sem Location válido");
+  } else if (!first.ok) {
+    throw new Error(`player/redirect HTTP ${first.status}`);
+  }
+
+  const parsed = new URL(resolvedUrl);
+  slog("target", safeUrlLabel(resolvedUrl));
+
+  if (parsed.pathname.includes("/player/native/media/")) {
+    const mediaPage = await fetchPage(fetchImpl, jar, resolvedUrl, {
+      ua,
+      referer: warezPageUrl,
+    });
+    const mediaSource = findNativeMediaSource(mediaPage.text, mediaPage.url);
+    if (!mediaSource) throw new Error("media-source não encontrado no player nativo");
+
+    const mediaResponse = await requestOnce(fetchImpl, jar, mediaSource, {
+      ua,
+      referer: mediaPage.url,
+      dest: "video",
+      mode: "no-cors",
+      accept: "*/*",
+      headers: { Range: "bytes=0-0" },
+      readBody: false,
+    });
+
+    if (mediaResponse.status >= 300 && mediaResponse.status < 400) {
+      const finalUrl = resolveUrl(mediaResponse.headers.get("location"), mediaSource);
+      if (!finalUrl) throw new Error("media-source sem Location final");
+      return { stream: finalUrl, referer: null, tipo: "mp4" };
+    }
+
+    const contentType = mediaResponse.headers.get("content-type") || "";
+    if (mediaResponse.ok && /video\/mp4|octet-stream/i.test(contentType)) {
+      return { stream: mediaSource, referer: mediaPage.url, tipo: "mp4" };
+    }
+    throw new Error(`media-source HTTP ${mediaResponse.status}`);
+  }
+
+  if (
+    parsed.hostname.includes("embedplayer") ||
+    parsed.hostname.includes("xn--kcksk7a2bl5le7b6doc1h3f") ||
+    /\/video\/[a-f0-9]{16,}/i.test(parsed.pathname)
+  ) {
+    if (typeof extractEmbedPlayer !== "function") throw new Error("extrator embedplayer indisponível");
+    const stream = await extractEmbedPlayer(resolvedUrl, `${new URL(warezPageUrl).origin}/`);
+    return { stream, referer: resolvedUrl, tipo: stream.includes(".mp4") ? "mp4" : "hls" };
+  }
+
+  if (/\.(?:mp4|m3u8)(?:$|\?)/i.test(resolvedUrl) || /\/master\.txt(?:$|\?)/i.test(resolvedUrl)) {
+    return {
+      stream: resolvedUrl,
+      referer: warezPageUrl,
+      tipo: resolvedUrl.includes(".mp4") ? "mp4" : "hls",
+    };
+  }
+
+  const fallbackPage = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl });
+  const direct = findDirectMedia(fallbackPage.text, fallbackPage.url);
+  if (!direct) throw new Error(`mídia não encontrada em ${safeUrlLabel(fallbackPage.url)}`);
+  return { stream: direct, referer: fallbackPage.url, tipo: direct.includes(".mp4") ? "mp4" : "hls" };
+}
+
+async function extractSuperflix(embedUrl, options = {}) {
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== "function") throw new Error("fetch indisponível no Electron");
+
+  const ua = options.ua || DEFAULT_UA;
+  const appReferer = options.appReferer || "https://obaflix.vercel.app/";
+  const jar = createCookieJar();
+
+  const input = new URL(embedUrl);
+  if (!input.hostname.endsWith("superflixapi.pro")) {
+    throw new Error("URL SuperFlix inválida");
+  }
+
+  const warezPage = await resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer);
+  const pageToken = findPageToken(warezPage.html);
+  if (!pageToken) throw new Error("page_token não encontrado na página WarezCDN");
+
+  const tokenPayload = decodeTokenPayload(pageToken) || {};
+  const host = tokenPayload.embed_context_host || new URL(warezPage.url).searchParams.get("host") || "vizero.buzz";
+  const sourceIds = findSourceIds(warezPage.html);
+  if (!sourceIds.length) throw new Error("nenhum video_id encontrado na página WarezCDN");
+
+  slog("sources", `total=${sourceIds.length} native=${sourceIds.filter((id) => id.startsWith("native_media:")).length}`);
+
+  const failures = [];
+  for (const sourceId of sourceIds) {
+    try {
+      const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua);
+      if (!targetUrl) throw new Error("video_url inválida");
+      const result = await resolveSource(
+        fetchImpl,
+        jar,
+        targetUrl,
+        warezPage.url,
+        host,
+        ua,
+        options.extractEmbedPlayer,
+      );
+      slog("ok", `source=${sourceId.startsWith("native_media:") ? "native" : "embed"} tipo=${result.tipo} host=${safeUrlLabel(result.stream)}`);
+      return result;
+    } catch (error) {
+      const message = error?.message || String(error);
+      failures.push(`${sourceId}: ${message}`);
+      slog("source_skip", `source=${sourceId} erro=${message.slice(0, 100)}`);
+    }
+  }
+
+  throw new Error(`todas as fontes SuperFlix falharam: ${failures.join(" | ").slice(0, 500)}`);
+}
+
+module.exports = {
+  extractSuperflix,
+  // Exportado apenas para testes locais do parser; não é usado pelo app.
+  _test: {
+    normalizeHtml,
+    collectChainUrls,
+    findPageToken,
+    findSourceIds,
+    findNativeMediaSource,
+    findDirectMedia,
+    decodeTokenPayload,
+  },
+};

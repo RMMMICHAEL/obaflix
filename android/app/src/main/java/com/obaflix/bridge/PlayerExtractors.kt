@@ -154,7 +154,10 @@ object PlayerExtractors {
 
     // ── Extratores por provider ───────────────────────────────────────────────
 
-    suspend fun extractEmbedPlayer(embedUrl: String): String {
+    suspend fun extractEmbedPlayer(
+        embedUrl: String,
+        rUrl: String = BuildConfig.OBAFLIX_URL + "/",
+    ): String {
         val parsed = URL(embedUrl)
         val base = "${parsed.protocol}://${parsed.host}"
         val id = parsed.path.split("/").last { it.isNotEmpty() }
@@ -162,7 +165,7 @@ object PlayerExtractors {
 
         // "r" preserva o comportamento original (pré-generalização): domínio do próprio app,
         // não megaflix.lat — diferente do Referer/Origin desta mesma requisição.
-        val body = FormBody.Builder().add("hash", id).add("r", BuildConfig.OBAFLIX_URL + "/").build()
+        val body = FormBody.Builder().add("hash", id).add("r", rUrl).build()
         val request = Request.Builder()
             .url("$base/player/index.php?data=$id&do=getVideo")
             .post(body)
@@ -287,16 +290,19 @@ object PlayerExtractors {
         if (host.contains("llanfair") || path.contains("/rola/")) return "rola2"
         if (host.contains("boltcdn") || host.contains("bolt")) return "bolt"
         if (host.contains("bigshare") || host.contains("big")) return "big"
+        if (host == "superflixapi.pro" || host.endsWith(".superflixapi.pro")) return "superflix"
         return null
     }
 
-    suspend fun extract(embedUrl: String): String {
+    suspend fun extractResult(embedUrl: String): NativeExtractResult {
         val provider = detectProvider(embedUrl)
             ?: throw Exception("Provider não suportado nativamente: ${embedUrl.take(60)}")
         val parsed = URL(embedUrl)
         val id = parsed.path.split("/").lastOrNull { it.isNotEmpty() } ?: ""
 
-        return when (provider) {
+        if (provider == "superflix") return SuperflixExtractor.extract(embedUrl)
+
+        val stream = when (provider) {
             "embedplayer" -> extractEmbedPlayer(embedUrl)
             "hide" -> extractHide(embedUrl, id)
             "lulu" -> extractLulu(embedUrl)
@@ -306,5 +312,8 @@ object PlayerExtractors {
             "big" -> extractBig(embedUrl)
             else -> throw Exception("Provider sem extrator: $provider")
         }
+        return NativeExtractResult(stream = stream, referer = embedUrl)
     }
+
+    suspend fun extract(embedUrl: String): String = extractResult(embedUrl).stream
 }

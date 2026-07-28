@@ -90,6 +90,7 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("bolt")) return true;
     if (hostname.includes("bigshare") || hostname.includes("big")) return true;
     if (hostname.includes("watchplayer")) return true;
+    if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return true;
     return false;
   } catch {
     return false;
@@ -308,6 +309,16 @@ export function CustomPlayer({
     ...parseFontes(urlDubRest, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
   );
+
+  // SuperFlix: fonte sintética exclusiva do Electron/Android. A cadeia completa é
+  // extraída no dispositivo do usuário (IP residencial/móvel), sem passar pela Vercel.
+  // Ao expirar, o mesmo embedUrl é reextraído e o JW Player retoma na posição anterior.
+  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
+    const superflixUrl = conteudoTipo === "filme"
+      ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbId)}`
+      : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`;
+    allFontes.push({ label: "SuperFlix", embedUrl: superflixUrl, tokenized: false });
+  }
 
   // WatchPlayer: fonte sintética, não vem de urlDub/urlLeg — construída a partir do
   // tmdbId. Só no Electron/Android por enquanto (isDesktop), como opção extra ao final
@@ -823,7 +834,7 @@ export function CustomPlayer({
       // faixa de áudio e legenda. Protegida por debounce + lock + timeout de segurança.
       const REEXTRACT_BASE_DELAY_MS = 500;
       const REEXTRACT_MAX_DELAY_MS = 8000; // backoff exponencial: 500ms → 1s → 2s → 4s → 8s (cap)
-      const REEXTRACT_SAFETY_TIMEOUT_MS = 18000; // > timeout interno do main.js (15s)
+      const REEXTRACT_SAFETY_TIMEOUT_MS = 30000; // SuperFlix percorre múltiplas páginas/redirects no dispositivo
       const REEXTRACT_MAX_CONSECUTIVE_FAILURES = 5;
       const REEXTRACT_MIN_COOLDOWN_MS = 5000; // erro tão pouco tempo após uma renovação bem-sucedida provavelmente não é token expirado
 
@@ -896,6 +907,7 @@ export function CustomPlayer({
             }
 
             const newUrl = buildElectronProxyUrl(data.stream, data.referer);
+            const renewedType = data.tipo === "mp4" ? "mp4" : "hls";
             const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
 
             // [DIAG] Contexto da renovação — remover após confirmar causa dos 500 em .woff
@@ -906,14 +918,14 @@ export function CustomPlayer({
             console.log(`[diag/renewal] Domínio CDN novo:     ${newManifestDomain}`);
 
             recoveryLog("log", "token-renewal-success", myGeneration, attempt, fi, len, pos, sinceRenewal,
-              `domínio=${newManifestDomain}; load+${pos > 5 ? `seek(${pos}s)` : "play"}`);
+              `tipo=${renewedType}; domínio=${newManifestDomain}; load+${pos > 5 ? `seek(${pos}s)` : "play"}`);
 
             // Suprime "error" por 2s: hls.js pode emitir eventos atrasados da instância
             // anterior logo após load() trocar a fonte.
             suppressErrorUntilRef.current = Date.now() + 2000;
             lastReExtractSuccessAtRef.current = Date.now();
             lastLoadAtRef.current = Date.now(); // [DIAG]
-            jwRef.current.load([{ file: newUrl, type: "hls" }]);
+            jwRef.current.load([{ file: newUrl, type: renewedType }]);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
                 if (!jwRef.current) return;

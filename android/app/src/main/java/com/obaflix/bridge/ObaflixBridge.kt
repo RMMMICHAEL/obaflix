@@ -79,15 +79,12 @@ class ObaflixBridge(
 
                 val json = JSONObject().apply {
                     put("stream", result.stream)
-                    put(
-                        "tipo",
-                        if (result.stream.contains(".mp4")) {
-                            "mp4"
-                        } else {
-                            "hls"
-                        }
-                    )
-                    put("referer", result.referer)
+                    put("tipo", if (result.stream.contains(".mp4")) "mp4" else "hls")
+                    if (result.referer != null) {
+                        put("referer", result.referer)
+                    } else {
+                        put("referer", JSONObject.NULL)
+                    }
                 }.toString()
 
                 Log.d(

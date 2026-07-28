@@ -71,7 +71,11 @@ class PlayerWebViewClient(
                     val json = JSONObject().apply {
                         put("stream", result.stream)
                         put("tipo", tipo)
-                        put("referer", result.referer)
+                        if (result.referer != null) {
+                            put("referer", result.referer)
+                        } else {
+                            put("referer", JSONObject.NULL)
+                        }
                     }.toString()
                     WebResourceResponse(
                         "application/json", "UTF-8",
