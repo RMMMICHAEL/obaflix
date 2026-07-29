@@ -83,6 +83,7 @@ function supportsNativeDesktopExtraction(url: string) {
   if (isTokenizedUrl(url)) return true;
   try {
     const { hostname, pathname } = new URL(url);
+    if (pathname.includes("voltz.php")) return true;
     if (hostname.includes("lulu")) return true;
     if (hostname.includes("hide")) return true;
     if (hostname.includes("wish")) return true;

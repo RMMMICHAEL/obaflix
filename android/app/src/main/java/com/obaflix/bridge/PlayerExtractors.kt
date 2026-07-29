@@ -154,6 +154,23 @@ object PlayerExtractors {
 
     // ── Extratores por provider ───────────────────────────────────────────────
 
+    suspend fun extractVoltz(embedUrl: String): String {
+        fun parse(html: String): String? {
+            val declared = Regex("""const\s+stream\s*=\s*["']([^"']+)["']""")
+                .find(html)?.groupValues?.getOrNull(1)
+            if (declared != null && declared.startsWith("http")) return declared
+            findM3u8(html)?.let { return it }
+            return Regex(
+                """https?://[^\s<>"']+\.(?:mp4|m3u8)[^\s<>"']*""",
+                RegexOption.IGNORE_CASE
+            ).find(html)?.value
+        }
+
+        parse(fetchHtml(embedUrl, REFERER_DEFAULT))?.let { return it }
+        kotlinx.coroutines.delay(1200)
+        return parse(fetchHtml(embedUrl, REFERER_DEFAULT))
+            ?: throw Exception("stream não encontrado (Voltz)")
+    }
     suspend fun extractEmbedPlayer(
         embedUrl: String,
         rUrl: String = BuildConfig.OBAFLIX_URL + "/",
@@ -284,6 +301,7 @@ object PlayerExtractors {
         if (path.contains("/rola3/") || path.contains("/rola4/") || host.contains("embedplayer") ||
             host.contains("xn--kcksk7a2bl5le7b6doc1h3f")
         ) return "embedplayer"
+        if (path.contains("voltz.php")) return "voltz"
         if (host.contains("lulu")) return "lulu"
         if (host.contains("hide")) return "hide"
         if (host.contains("wish")) return "wish"
@@ -303,6 +321,7 @@ object PlayerExtractors {
         if (provider == "superflix") return SuperflixExtractor.extract(embedUrl)
 
         val stream = when (provider) {
+            "voltz" -> extractVoltz(embedUrl)
             "embedplayer" -> extractEmbedPlayer(embedUrl)
             "hide" -> extractHide(embedUrl, id)
             "lulu" -> extractLulu(embedUrl)
