@@ -90,7 +90,7 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("llanfair") || pathname.includes("/rola/")) return true;
     if (hostname.includes("bolt")) return true;
     if (hostname.includes("bigshare") || hostname.includes("big")) return true;
-    if (hostname.includes("watchplayer")) return true;
+    if (hostname.includes("watchplay")) return true;
     if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return true;
     return false;
   } catch {
@@ -163,7 +163,8 @@ function recoveryLog(
     `sinceRenewal=${sinceRenewal >= 0 ? `${sinceRenewal}ms` : "never"}`,
     `→ ${detail}`,
   ].join("  ");
-  level === "warn" ? console.warn(msg) : console.log(msg);
+  if (level === "warn") console.warn(msg);
+  else console.log(msg);
 }
 
 function formatTime(s: number): string {
@@ -287,50 +288,51 @@ export function CustomPlayer({
     }
   }
 
-  // Player 4: Vidsrc legendado com português selecionado por padrão.
-  // Usa o TMDB ID já presente em todo o catálogo. O autonext fica desligado,
-  // pois a navegação para o próximo episódio é controlada pelo próprio Obaflix.
-  if (tmdbId) {
-    if (conteudoTipo === "serie" && temporada && numeroEp) {
-      allFontes.push({
-        label: "Player 4 [Leg PT]",
-        embedUrl: `https://vidsrc-embed.ru/embed/tv?tmdb=${encodeURIComponent(tmdbId)}&season=${temporada}&episode=${numeroEp}&ds_lang=pt&autoplay=1&autonext=0`,
-        tokenized: false,
-      });
-    } else if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 4 [Leg PT]",
-        embedUrl: `https://vidsrc-embed.ru/embed/movie?tmdb=${encodeURIComponent(tmdbId)}&ds_lang=pt&autoplay=1`,
-        tokenized: false,
-      });
-    }
-  }
-
-  allFontes.push(
+  const parsedFontes = [
     ...parseFontes(urlDubRest, "[Dub]", isDesktop),
     ...parseFontes(urlLeg, "[Leg]", isDesktop),
+  ];
+
+  const isProvider = (fonte: Fonte, provider: string) => {
+    try {
+      return new URL(fonte.embedUrl).hostname.toLowerCase().includes(provider);
+    } catch {
+      return fonte.embedUrl.toLowerCase().includes(provider);
+    }
+  };
+
+  const hideFonte = parsedFontes.find((fonte) => isProvider(fonte, "hide"));
+  const wishFonte = parsedFontes.find((fonte) => isProvider(fonte, "wish"));
+
+  // Player 4: Hide
+  if (hideFonte) {
+    allFontes.push({ ...hideFonte, label: "Player 4" });
+  }
+
+  // Player 5: WatchPlay
+  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
+    const watchplayUrl = conteudoTipo === "filme"
+      ? `https://v1.watchplay.shop/movie/${tmdbId}`
+      : `https://v1.watchplay.shop/tvshow/${tmdbId}/${temporada}/${numeroEp}`;
+
+    allFontes.push({
+      label: "Player 5",
+      embedUrl: watchplayUrl,
+      tokenized: false,
+    });
+  }
+
+  // Player 6: Wish
+  if (wishFonte) {
+    allFontes.push({ ...wishFonte, label: "Player 6" });
+  }
+
+  // Mantém as demais fontes depois dos seis players principais.
+  allFontes.push(
+    ...parsedFontes.filter(
+      (fonte) => fonte !== hideFonte && fonte !== wishFonte,
+    ),
   );
-
-  // SuperFlix: fonte sintética exclusiva do Electron/Android. A cadeia completa é
-  // extraída no dispositivo do usuário (IP residencial/móvel), sem passar pela Vercel.
-  // Ao expirar, o mesmo embedUrl é reextraído e o JW Player retoma na posição anterior.
-  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
-    const superflixUrl = conteudoTipo === "filme"
-      ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbId)}`
-      : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`;
-    allFontes.push({ label: "SuperFlix", embedUrl: superflixUrl, tokenized: false });
-  }
-
-  // WatchPlayer: fonte sintética, não vem de urlDub/urlLeg — construída a partir do
-  // tmdbId. Só no Electron/Android por enquanto (isDesktop), como opção extra ao final
-  // da lista, sem prioridade sobre as fontes do banco. Ver docs/player-native-extraction.md.
-  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
-    const watchplayerUrl = conteudoTipo === "filme"
-      ? `https://watchplayer.xyz/movie/${tmdbId}`
-      : `https://watchplayer.xyz/tvshow/${tmdbId}/${temporada}/${numeroEp}`;
-    allFontes.push({ label: "WatchPlayer", embedUrl: watchplayerUrl, tokenized: false });
-  }
-
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");

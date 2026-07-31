@@ -18,7 +18,7 @@ const EMBED_HOSTNAMES = [
   "playhide.shop", "streamwish.com", "hlswish.com",
   "playerwish.com", "jvrkt.online", "beamy.online",
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
-  "watchplayer.xyz",
+  "v1.watchplay.shop",
   "superflixapi.pro", "vizero.buzz", "warezcdn.lat",
 ];
 

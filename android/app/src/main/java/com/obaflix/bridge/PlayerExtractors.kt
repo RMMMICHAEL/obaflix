@@ -289,6 +289,80 @@ object PlayerExtractors {
         return src
     }
 
+    suspend fun extractWatchplayer(embedUrl: String): String {
+        val parsed = URL(embedUrl)
+        val parts = parsed.path.split("/").filter { it.isNotEmpty() }
+        val html = fetchHtml(embedUrl, REFERER_DEFAULT)
+
+        suspend fun callApi(params: Map<String, String>): JSONObject =
+            withContext(Dispatchers.IO) {
+                val bodyBuilder = FormBody.Builder()
+                params.forEach { (key, value) -> bodyBuilder.add(key, value) }
+
+                val request = Request.Builder()
+                    .url("https://v1.watchplay.shop/api")
+                    .post(bodyBuilder.build())
+                    .addHeader("User-Agent", UA_NATIVE)
+                    .addHeader("X-Requested-With", "XMLHttpRequest")
+                    .addHeader("Referer", embedUrl)
+                    .build()
+
+                val response = ObaflixApp.httpClient.newCall(request).execute()
+                val responseText = response.body?.string() ?: ""
+
+                if (!response.isSuccessful) {
+                    throw Exception("WatchPlay API HTTP ${response.code}")
+                }
+
+                JSONObject(responseText)
+            }
+
+        val videoId = if (parts.firstOrNull() == "tvshow") {
+            val season = parts.getOrNull(2)
+                ?: throw Exception("temporada nao encontrada (WatchPlay)")
+            val episode = parts.getOrNull(3)
+                ?: throw Exception("episodio nao encontrado (WatchPlay)")
+
+            val contentId = Regex(
+                """data-contentid=["'](\d+)["']\s+data-season=["']${Regex.escape(season)}["']\s+data-episode=["']${Regex.escape(episode)}["']"""
+            ).find(html)?.groupValues?.getOrNull(1)
+                ?: throw Exception("episodio nao encontrado (WatchPlay)")
+
+            val optionsJson = callApi(
+                mapOf(
+                    "action" to "getOptions",
+                    "contentid" to contentId,
+                )
+            )
+
+            optionsJson
+                .optJSONObject("data")
+                ?.optJSONArray("options")
+                ?.optJSONObject(0)
+                ?.optString("ID")
+                ?.takeIf { it.isNotEmpty() }
+                ?: throw Exception("opcoes nao encontradas (WatchPlay)")
+        } else {
+            Regex(
+                """class=["']player_select_item["']\s+data-id=["'](\d+)["']"""
+            ).find(html)?.groupValues?.getOrNull(1)
+                ?: throw Exception("player nao encontrado (WatchPlay)")
+        }
+
+        val playerJson = callApi(
+            mapOf(
+                "action" to "getPlayer",
+                "video_id" to videoId,
+            )
+        )
+
+        return playerJson
+            .optJSONObject("data")
+            ?.optString("video_url")
+            ?.takeIf { it.isNotEmpty() }
+            ?: throw Exception("stream nao encontrado (WatchPlay)")
+    }
+
     // ── Router ────────────────────────────────────────────────────────────────
 
     // Mantido em sincronia com detectProvider() em desktop/electron/extractors.js e
@@ -308,6 +382,7 @@ object PlayerExtractors {
         if (host.contains("llanfair") || path.contains("/rola/")) return "rola2"
         if (host.contains("boltcdn") || host.contains("bolt")) return "bolt"
         if (host.contains("bigshare") || host.contains("big")) return "big"
+        if (host.contains("watchplay")) return "watchplayer"
         if (host == "superflixapi.pro" || host.endsWith(".superflixapi.pro")) return "superflix"
         return null
     }
@@ -329,6 +404,7 @@ object PlayerExtractors {
             "wish" -> extractWish(embedUrl, id)
             "bolt" -> extractBolt(embedUrl)
             "big" -> extractBig(embedUrl)
+            "watchplayer" -> extractWatchplayer(embedUrl)
             else -> throw Exception("Provider sem extrator: $provider")
         }
         return NativeExtractResult(stream = stream, referer = embedUrl)

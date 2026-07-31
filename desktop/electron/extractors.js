@@ -291,7 +291,7 @@ async function extractWatchplayer(embedUrl) {
   const html = await fetchHtml(embedUrl, REFERER_DEFAULT);
 
   const callApi = async (body) => {
-    const res = await fetch("https://watchplayer.xyz/api", {
+    const res = await fetch("https://v1.watchplay.shop/api", {
       method: "POST",
       headers: {
         "User-Agent": UA,
@@ -352,7 +352,7 @@ function detectProvider(embedUrl) {
   if (hostname.includes("llanfair") || pathname.includes("/rola/")) return "rola2";
   if (hostname.includes("boltcdn") || hostname.includes("bolt")) return "bolt";
   if (hostname.includes("bigshare") || hostname.includes("big")) return "big";
-  if (hostname.includes("watchplayer")) return "watchplayer";
+  if (hostname.includes("watchplay")) return "watchplayer";
   if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return "superflix";
   return null;
 }
