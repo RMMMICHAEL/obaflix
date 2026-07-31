@@ -5,6 +5,7 @@ const http = require("http");
 const path = require("path");
 const { setupUpdater } = require("./updater");
 const { detectProvider, extractStream: extractStreamNative } = require("./extractors");
+const { extractSuperflixInBrowser } = require("./browser-extractor");
 
 const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
 const UA =
@@ -45,9 +46,24 @@ else {
 // Dispatcher genérico (rola3/rola4, PlayHide, Lulu, Rola2, Wish, Bolt, Big) —
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
-  const { stream, tipo, provider, referer } = await extractStreamNative(embedUrl);
-  console.log(`[extract] provider=${provider} → ${stream.slice(0, 120)}`);
-  return { stream, tipo, referer };
+  try {
+    const { stream, tipo, provider, referer } = await extractStreamNative(embedUrl);
+    console.log(`[extract] provider=${provider} → ${stream.slice(0, 120)}`);
+    return { stream, tipo, referer };
+  } catch (error) {
+    const provider = detectProvider(embedUrl);
+    const message = error?.message || String(error);
+
+    if (provider !== "superflix") throw error;
+
+    console.warn(`[extract] SuperFlix direto falhou: ${message}`);
+    console.warn("[extract] tentando fallback Chromium...");
+
+    const result = await extractSuperflixInBrowser(embedUrl);
+    console.log(`[extract] provider=superflix-browser → ${result.stream.slice(0, 120)}`);
+
+    return result;
+  }
 }
 
 // ── Servidor local ─────────────────────────────────────────────────────────────

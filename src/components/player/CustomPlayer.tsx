@@ -322,6 +322,24 @@ export function CustomPlayer({
   if (wishFonte) {
     allFontes.push({ ...wishFonte, label: "Player 6" });
   }
+  // Player 7: SuperFlix — extração pelo Electron usando iframe Chromium.
+  if (
+    isDesktop &&
+    tmdbId &&
+    (conteudoTipo === "filme" ||
+      (conteudoTipo === "serie" && temporada && numeroEp))
+  ) {
+    const superflixUrl =
+      conteudoTipo === "filme"
+        ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbId)}`
+        : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`;
+
+    allFontes.push({
+      label: "Player 7",
+      embedUrl: superflixUrl,
+      tokenized: false,
+    });
+  }
 
   // Mantém as demais fontes depois dos seis players principais.
   allFontes.push(
