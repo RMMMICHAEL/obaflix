@@ -248,45 +248,7 @@ export function CustomPlayer({
 
   const allFontes: Fonte[] = [];
 
-  // Player 1: Voltz (extraído do urlDub antes de parseFontes para ter prioridade fixa)
   const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
-  if (voltzUrl) {
-    allFontes.push({ label: "Player 1", embedUrl: voltzUrl, tokenized: false });
-  }
-
-  // Player 2: webcinevs2.com — MP4 direto via Cloudflare CDN
-  if (tmdbId) {
-    if (conteudoTipo === "serie" && temporada && numeroEp) {
-      allFontes.push({
-        label: "Player 2",
-        embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}&q=${encodeURIComponent(titulo)}`,
-        tokenized: false,
-      });
-    } else if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 2",
-        embedUrl: `https://webcinevs2.com/watch?id=${tmdbId}&type=movie&q=${encodeURIComponent(titulo)}`,
-        tokenized: false,
-      });
-    }
-  }
-
-  // Player 3: playerflix.ink → embedplayer2.xyz
-  if (tmdbId) {
-    if (conteudoTipo === "serie" && temporada && numeroEp) {
-      allFontes.push({
-        label: "Player 3",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
-        tokenized: false,
-      });
-    } else if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 3",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
-        tokenized: false,
-      });
-    }
-  }
 
   const parsedFontes = [
     ...parseFontes(urlDubRest, "[Dub]", isDesktop),
@@ -301,28 +263,32 @@ export function CustomPlayer({
     }
   };
 
-  const hideFonte = parsedFontes.find((fonte) => isProvider(fonte, "hide"));
-  const wishFonte = parsedFontes.find((fonte) => isProvider(fonte, "wish"));
+  const hideFonte = parsedFontes.find((fonte) =>
+    isProvider(fonte, "hide"),
+  );
 
-  // Player 4: Hide
-  if (hideFonte) {
-    allFontes.push({ ...hideFonte, label: "Player 4" });
+  const wishFonte = parsedFontes.find((fonte) =>
+    isProvider(fonte, "wish"),
+  );
+
+  // Player 1: PlayerFlix
+  if (tmdbId) {
+    if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 1",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 1",
+        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
+        tokenized: false,
+      });
+    }
   }
 
-  // Player 5: WatchPlay — o domínio atual oferece somente filmes.
-  if (isDesktop && tmdbId && conteudoTipo === "filme") {
-    allFontes.push({
-      label: "Player 5",
-      embedUrl: `https://v1.watchplay.shop/movie/${tmdbId}`,
-      tokenized: false,
-    });
-  }
-
-  // Player 6: Wish
-  if (wishFonte) {
-    allFontes.push({ ...wishFonte, label: "Player 6" });
-  }
-  // Player 7: SuperFlix — extração pelo Electron usando iframe Chromium.
+  // Player 2: SuperFlix
   if (
     isDesktop &&
     tmdbId &&
@@ -335,18 +301,46 @@ export function CustomPlayer({
         : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`;
 
     allFontes.push({
-      label: "Player 7",
+      label: "Player 2",
       embedUrl: superflixUrl,
       tokenized: false,
     });
   }
 
-  // Mantém as demais fontes depois dos seis players principais.
-  allFontes.push(
-    ...parsedFontes.filter(
-      (fonte) => fonte !== hideFonte && fonte !== wishFonte,
-    ),
-  );
+  // Player 3: Voltz
+  if (voltzUrl) {
+    allFontes.push({
+      label: "Player 3",
+      embedUrl: voltzUrl,
+      tokenized: false,
+    });
+  }
+
+  // Player 4: Hide
+  if (hideFonte) {
+    allFontes.push({
+      ...hideFonte,
+      label: "Player 4",
+    });
+  }
+
+  // Player 5: WatchPlay — somente filmes
+  if (isDesktop && tmdbId && conteudoTipo === "filme") {
+    allFontes.push({
+      label: "Player 5",
+      embedUrl: `https://v1.watchplay.shop/movie/${tmdbId}`,
+      tokenized: false,
+    });
+  }
+
+  // Player 6: Wish
+  if (wishFonte) {
+    allFontes.push({
+      ...wishFonte,
+      label: "Player 6",
+    });
+  }
+
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
