@@ -309,15 +309,11 @@ export function CustomPlayer({
     allFontes.push({ ...hideFonte, label: "Player 4" });
   }
 
-  // Player 5: WatchPlay
-  if (isDesktop && tmdbId && (conteudoTipo === "filme" || (temporada && numeroEp))) {
-    const watchplayUrl = conteudoTipo === "filme"
-      ? `https://v1.watchplay.shop/movie/${tmdbId}`
-      : `https://v1.watchplay.shop/tvshow/${tmdbId}/${temporada}/${numeroEp}`;
-
+  // Player 5: WatchPlay — o domínio atual oferece somente filmes.
+  if (isDesktop && tmdbId && conteudoTipo === "filme") {
     allFontes.push({
       label: "Player 5",
-      embedUrl: watchplayUrl,
+      embedUrl: `https://v1.watchplay.shop/movie/${tmdbId}`,
       tokenized: false,
     });
   }
