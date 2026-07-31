@@ -291,7 +291,7 @@ ipcMain.handle("install-update", () => require("electron-updater").autoUpdater.q
 // supportsNativeDesktopExtraction() (src/components/player/CustomPlayer.tsx).
 ipcMain.handle("extract-stream", async (_event, embedUrl) => {
   try {
-    const { stream, tipo } = await extractSecuredLink(embedUrl);
+    const { stream, tipo, referer } = await extractSecuredLink(embedUrl);
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
       playerState.cdnHostname = new URL(stream).hostname;
@@ -300,7 +300,8 @@ ipcMain.handle("extract-stream", async (_event, embedUrl) => {
     } catch { /**/ }
     return { stream, tipo, referer: referer || null };
   } catch (err) {
-    return { error: err.message };
+    console.error("[ipc] extract-stream error:", err);
+    return { error: err?.message || String(err) };
   }
 });
 
