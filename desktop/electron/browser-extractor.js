@@ -1,24 +1,37 @@
-"use strict";
+﻿"use strict";
 
-const { BrowserWindow } = require("electron");
+const { WebContentsView } = require("electron");
 
 const APP_URL =
-  process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
+  process.env.OBAFLIX_URL ||
+  "https://obaflix.vercel.app";
+
+let activeExtraction = null;
 
 function safeLabel(raw) {
   try {
     const url = new URL(raw);
-    return `${url.hostname}${url.pathname}`.slice(0, 180);
+
+    return `${url.hostname}${url.pathname}`
+      .slice(0, 180);
   } catch {
-    return String(raw).split("?")[0].slice(0, 180);
+    return String(raw || "")
+      .split("?")[0]
+      .slice(0, 180);
   }
 }
 
 function headerValue(headers, wantedName) {
-  const wanted = wantedName.toLowerCase();
+  const wanted =
+    String(wantedName).toLowerCase();
 
-  for (const [name, value] of Object.entries(headers || {})) {
-    if (name.toLowerCase() === wanted) {
+  for (
+    const [name, value]
+    of Object.entries(headers || {})
+  ) {
+    if (
+      String(name).toLowerCase() === wanted
+    ) {
       return String(value || "");
     }
   }
@@ -29,7 +42,8 @@ function headerValue(headers, wantedName) {
 function isHls(url) {
   return (
     /\.m3u8(?:$|\?)/i.test(url) ||
-    /\/cdn\/hls\/[^/]+\/master\.txt(?:$|\?)/i.test(url)
+    /\/cdn\/hls\/[^/]+\/master\.txt(?:$|\?)/i
+      .test(url)
   );
 }
 
@@ -41,7 +55,8 @@ function isInteresting(url) {
   return (
     /superflixapi\.pro/i.test(url) ||
     /warezcdn/i.test(url) ||
-    /xn--kcksk7a2bl5le7b6doc1h3f/i.test(url) ||
+    /xn--kcksk7a2bl5le7b6doc1h3f/i
+      .test(url) ||
     /\/player\/source/i.test(url) ||
     /\/player\/redirect/i.test(url) ||
     /\/player\/native/i.test(url) ||
@@ -50,221 +65,596 @@ function isInteresting(url) {
   );
 }
 
+function createWrapperHtml() {
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  >
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #superflix-frame {
+      position: fixed;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #000;
+    }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      background: #000;
+      font: 16px Arial, sans-serif;
+      pointer-events: none;
+    }
+
+    #close-superflix {
+      position: fixed;
+      top: 14px;
+      right: 16px;
+      z-index: 2147483647;
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(255,255,255,.35);
+      border-radius: 50%;
+      color: #fff;
+      background: rgba(15,15,18,.9);
+      font-size: 22px;
+      line-height: 38px;
+      cursor: pointer;
+    }
+
+    #close-superflix:hover {
+      background: rgba(210,35,35,.95);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loading">
+    Carregando servidores do SuperFlix...
+  </div>
+
+  <button
+    id="close-superflix"
+    type="button"
+    title="Fechar seleção de servidor"
+    onclick="location.href='obaflix-superflix://close'"
+  >
+    ×
+  </button>
+
+  <iframe
+    id="superflix-frame"
+    allow="autoplay; fullscreen; encrypted-media"
+  ></iframe>
+</body>
+</html>`;
+}
+
 async function extractSuperflixInBrowser(
   embedUrl,
   {
+    parentWindow,
+    wrapperUrl,
     partition = "persist:obaflix",
-    timeoutMs = 90000,
+    timeoutMs = 120000,
   } = {},
 ) {
   const input = new URL(embedUrl);
 
   if (
     input.hostname !== "superflixapi.pro" &&
-    !input.hostname.endsWith(".superflixapi.pro")
+    !input.hostname.endsWith(
+      ".superflixapi.pro",
+    )
   ) {
-    throw new Error("URL SuperFlix inválida para fallback Chromium");
+    throw new Error(
+      "URL SuperFlix inválida.",
+    );
+  }
+
+  if (
+    !parentWindow ||
+    parentWindow.isDestroyed()
+  ) {
+    throw new Error(
+      "Janela principal indisponível para abrir o SuperFlix.",
+    );
+  }
+
+  if (activeExtraction) {
+    activeExtraction.cancel(
+      "Extração anterior substituída por um novo episódio.",
+    );
+
+    activeExtraction = null;
   }
 
   console.log(
-    `[superflix-browser] iniciando: ${safeLabel(embedUrl)}`,
+    `[superflix-overlay] iniciando: ${safeLabel(embedUrl)}`,
   );
 
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    show: true,
-    backgroundColor: "#000000",
+  const view = new WebContentsView({
     webPreferences: {
       partition,
       contextIsolation: true,
       nodeIntegration: false,
-      autoplayPolicy: "no-user-gesture-required",
+      autoplayPolicy:
+        "no-user-gesture-required",
       backgroundThrottling: false,
     },
   });
 
-  const ses = win.webContents.session;
-  const referers = new Map();
+  const webContents =
+    view.webContents;
 
-  let timeout = null;
+  const webContentsId =
+    webContents.id;
+
+  const ses =
+    webContents.session;
+
+  const referers =
+    new Map();
+
   let settled = false;
+  let timeout = null;
 
-  const belongsToWindow = (details) => {
+  const belongsToView = (details) => {
     return (
       !details.webContentsId ||
-      details.webContentsId === win.webContents.id
+      details.webContentsId ===
+        webContentsId
     );
   };
 
-  const cleanup = () => {
-    if (timeout) clearTimeout(timeout);
-
-    // Esses três eventos não são utilizados pelo main.js.
-    ses.webRequest.onSendHeaders(null);
-    ses.webRequest.onBeforeRedirect(null);
-    ses.webRequest.onCompleted(null);
-
-    referers.clear();
-
-    if (!win.isDestroyed()) {
-      win.destroy();
+  const updateBounds = () => {
+    if (
+      parentWindow.isDestroyed()
+    ) {
+      return;
     }
+
+    const [width, height] =
+      parentWindow.getContentSize();
+
+    view.setBounds({
+      x: 0,
+      y: 0,
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+    });
   };
 
-  return new Promise((resolve, reject) => {
-    const finish = (error, result) => {
-      if (settled) return;
+  parentWindow.contentView
+    .addChildView(view);
 
-      settled = true;
-      cleanup();
+  updateBounds();
 
-      if (error) reject(error);
-      else resolve(result);
-    };
+  parentWindow.on(
+    "resize",
+    updateBounds,
+  );
 
-    const capture = (stream, referer, statusCode) => {
-      if (!stream || statusCode < 200 || statusCode >= 400) {
-        return;
-      }
+  return new Promise(
+    (resolve, reject) => {
+      const cleanup = () => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
 
-      if (isHls(stream)) {
-        console.log(
-          `[superflix-browser] HLS capturado: ${safeLabel(stream)}`,
+        parentWindow.removeListener(
+          "resize",
+          updateBounds,
         );
 
-        finish(null, {
-          stream,
-          tipo: "hls",
-          referer: referer || embedUrl,
-        });
+        ses.webRequest
+          .onSendHeaders(null);
 
-        return;
-      }
+        ses.webRequest
+          .onBeforeRedirect(null);
 
-      if (
-        isMp4(stream) &&
-        (statusCode === 200 || statusCode === 206)
-      ) {
-        console.log(
-          `[superflix-browser] MP4 capturado: ${safeLabel(stream)}`,
-        );
+        ses.webRequest
+          .onCompleted(null);
 
-        finish(null, {
-          stream,
-          tipo: "mp4",
-          referer: referer || null,
-        });
-      }
-    };
+        referers.clear();
 
-    ses.webRequest.onSendHeaders(
-      { urls: ["*://*/*"] },
-      (details) => {
-        if (!belongsToWindow(details)) return;
+        try {
+          if (
+            !parentWindow.isDestroyed()
+          ) {
+            parentWindow.contentView
+              .removeChildView(view);
+          }
+        } catch {
+          // A view pode já ter sido removida.
+        }
 
-        const referer =
-          details.referrer ||
-          headerValue(details.requestHeaders, "referer") ||
-          embedUrl;
-
-        referers.set(details.id, referer);
-      },
-    );
-
-    ses.webRequest.onBeforeRedirect(
-      { urls: ["*://*/*"] },
-      (details) => {
-        if (!belongsToWindow(details)) return;
+        try {
+          if (
+            !webContents.isDestroyed()
+          ) {
+            webContents.close();
+          }
+        } catch {
+          // O renderer pode já ter sido encerrado.
+        }
 
         if (
-          isInteresting(details.url) ||
-          isInteresting(details.redirectURL || "")
+          activeExtraction?.view === view
+        ) {
+          activeExtraction = null;
+        }
+      };
+
+      const finish = (
+        error,
+        result,
+      ) => {
+        if (settled) return;
+
+        settled = true;
+        cleanup();
+
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      };
+
+      activeExtraction = {
+        view,
+
+        cancel(reason) {
+          finish(
+            new Error(
+              reason ||
+              "Seleção do SuperFlix cancelada.",
+            ),
+          );
+        },
+      };
+
+      const capture = (
+        stream,
+        referer,
+        statusCode,
+      ) => {
+        if (
+          settled ||
+          !stream ||
+          statusCode < 200 ||
+          statusCode >= 400
+        ) {
+          return;
+        }
+
+        if (isHls(stream)) {
+          console.log(
+            `[superflix-overlay] HLS capturado: ${safeLabel(stream)}`,
+          );
+
+          finish(null, {
+            stream,
+            tipo: "hls",
+            referer:
+              referer ||
+              embedUrl,
+          });
+
+          return;
+        }
+
+        if (
+          isMp4(stream) &&
+          (
+            statusCode === 200 ||
+            statusCode === 206
+          )
         ) {
           console.log(
-            `[superflix-browser/redirect] ${details.statusCode} ` +
-            `${safeLabel(details.url)} -> ` +
-            `${safeLabel(details.redirectURL)}`,
+            `[superflix-overlay] MP4 capturado: ${safeLabel(stream)}`,
           );
+
+          finish(null, {
+            stream,
+            tipo: "mp4",
+            referer:
+              referer ||
+              embedUrl,
+          });
         }
-      },
-    );
+      };
 
-    ses.webRequest.onCompleted(
-      { urls: ["*://*/*"] },
-      (details) => {
-        if (!belongsToWindow(details)) return;
+      ses.webRequest.onSendHeaders(
+        {
+          urls: ["*://*/*"],
+        },
+        (details) => {
+          if (
+            settled ||
+            !belongsToView(details)
+          ) {
+            return;
+          }
 
-        const referer =
-          referers.get(details.id) ||
-          details.referrer ||
-          embedUrl;
+          const referer =
+            details.referrer ||
+            headerValue(
+              details.requestHeaders,
+              "referer",
+            ) ||
+            embedUrl;
 
-        if (isInteresting(details.url)) {
-          console.log(
-            `[superflix-browser/net] ${details.statusCode} ` +
-            `${details.resourceType} ${safeLabel(details.url)}`,
+          referers.set(
+            details.id,
+            referer,
           );
-        }
-
-        capture(details.url, referer, details.statusCode);
-        referers.delete(details.id);
-      },
-    );
-
-    timeout = setTimeout(() => {
-      finish(
-        new Error(
-          "Timeout aguardando mídia no iframe do SuperFlix",
-        ),
+        },
       );
-    }, timeoutMs);
 
-    win.webContents.setWindowOpenHandler(() => ({
-      action: "deny",
-    }));
+      ses.webRequest.onBeforeRedirect(
+        {
+          urls: ["*://*/*"],
+        },
+        (details) => {
+          if (
+            settled ||
+            !belongsToView(details)
+          ) {
+            return;
+          }
 
-    win.loadURL(APP_URL)
-      .then(() => {
-        const iframeScript = `
-          window.stop();
+          const redirectUrl =
+            details.redirectURL || "";
 
-          document.open();
-          document.write(
-            '<!doctype html>' +
-            '<html>' +
-            '<head>' +
-            '<meta charset="utf-8">' +
-            '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-            '<style>' +
-            'html,body{width:100%;height:100%;margin:0;background:#000;overflow:hidden}' +
-            'iframe{display:block;width:100%;height:100%;border:0}' +
-            '</style>' +
-            '</head>' +
-            '<body>' +
-            '<iframe id="superflix-frame" ' +
-            'allow="autoplay; fullscreen; encrypted-media"></iframe>' +
-            '</body>' +
-            '</html>'
+          if (
+            isInteresting(details.url) ||
+            isInteresting(redirectUrl)
+          ) {
+            console.log(
+              `[superflix-overlay/redirect] ${details.statusCode} ` +
+              `${safeLabel(details.url)} -> ` +
+              `${safeLabel(redirectUrl)}`,
+            );
+          }
+
+          if (
+            !isMp4(redirectUrl) &&
+            !isHls(redirectUrl)
+          ) {
+            return;
+          }
+
+          const referer =
+            referers.get(details.id) ||
+            details.referrer ||
+            details.url ||
+            embedUrl;
+
+          const tipo =
+            isHls(redirectUrl)
+              ? "hls"
+              : "mp4";
+
+          console.log(
+            `[superflix-overlay] ${tipo.toUpperCase()} capturado no redirecionamento: ` +
+            safeLabel(redirectUrl),
           );
 
-          document.close();
+          finish(null, {
+            stream: redirectUrl,
+            tipo,
+            referer,
+          });
+        },
+      );
 
-          document.getElementById("superflix-frame").src =
-            ${JSON.stringify(embedUrl)};
-        `;
+      ses.webRequest.onCompleted(
+        {
+          urls: ["*://*/*"],
+        },
+        (details) => {
+          if (
+            settled ||
+            !belongsToView(details)
+          ) {
+            return;
+          }
 
-        return win.webContents.executeJavaScript(iframeScript);
-      })
-      .then(() => {
-        console.log(
-          "[superflix-browser] SuperFlix aberto dentro do iframe",
+          const referer =
+            referers.get(details.id) ||
+            details.referrer ||
+            embedUrl;
+
+          if (
+            isInteresting(details.url)
+          ) {
+            console.log(
+              `[superflix-overlay/net] ${details.statusCode} ` +
+              `${details.resourceType} ` +
+              safeLabel(details.url),
+            );
+          }
+
+          capture(
+            details.url,
+            referer,
+            details.statusCode,
+          );
+
+          referers.delete(
+            details.id,
+          );
+        },
+      );
+
+      webContents.setWindowOpenHandler(
+        () => ({
+          action: "deny",
+        }),
+      );
+
+      webContents.on(
+        "before-input-event",
+        (event, inputEvent) => {
+          if (
+            inputEvent.type === "keyDown" &&
+            inputEvent.key === "Escape"
+          ) {
+            event.preventDefault();
+
+            finish(
+              new Error(
+                "Seleção de servidor cancelada pelo usuário.",
+              ),
+            );
+          }
+        },
+      );
+
+      webContents.on(
+        "will-navigate",
+        (event, url) => {
+          if (
+            url.startsWith(
+              "obaflix-superflix://close",
+            )
+          ) {
+            event.preventDefault();
+
+            finish(
+              new Error(
+                "Seleção de servidor cancelada pelo usuário.",
+              ),
+            );
+          }
+        },
+      );
+
+      webContents.once(
+        "render-process-gone",
+        () => {
+          finish(
+            new Error(
+              "O processo do SuperFlix foi encerrado inesperadamente.",
+            ),
+          );
+        },
+      );
+
+      timeout = setTimeout(
+        () => {
+          finish(
+            new Error(
+              "Tempo esgotado aguardando a seleção de servidor do SuperFlix.",
+            ),
+          );
+        },
+        timeoutMs,
+      );
+
+      const resolvedWrapperUrl =
+        wrapperUrl ||
+        (
+          APP_URL.replace(/\/+$/, "") +
+          "/superflix-wrapper.html"
         );
-      })
-      .catch((error) => {
-        finish(error);
-      });
-  });
+
+      webContents
+        .loadURL(resolvedWrapperUrl)
+        .then(() => {
+          if (settled) return;
+
+          console.log(
+            "[superflix-overlay] wrapper local estatico carregado",
+          );
+
+          const script = `
+            (() => {
+              const frame =
+                document.getElementById(
+                  "superflix-frame"
+                );
+
+              const loading =
+                document.getElementById(
+                  "superflix-loading"
+                );
+
+              if (!frame) {
+                throw new Error(
+                  "iframe SuperFlix não encontrado no wrapper"
+                );
+              }
+
+              frame.addEventListener(
+                "load",
+                () => {
+                  if (loading) {
+                    loading.remove();
+                  }
+                },
+                {
+                  once: true,
+                },
+              );
+
+              frame.src =
+                ${JSON.stringify(embedUrl)};
+
+              return true;
+            })()
+          `;
+
+          return webContents.executeJavaScript(
+            script,
+            true,
+          );
+        })
+        .then(() => {
+          if (settled) return;
+
+          updateBounds();
+
+          console.log(
+            "[superflix-overlay] navegacao do iframe iniciada",
+          );
+        })
+        .catch((error) => {
+          finish(error);
+        });
+    },
+  );
 }
 
-module.exports = { extractSuperflixInBrowser };
+module.exports = {
+  extractSuperflixInBrowser,
+};

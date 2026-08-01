@@ -59,7 +59,13 @@ async function extractSecuredLink(embedUrl) {
     console.warn(`[extract] SuperFlix direto falhou: ${message}`);
     console.warn("[extract] tentando fallback Chromium...");
 
-    const result = await extractSuperflixInBrowser(embedUrl);
+    const result = await extractSuperflixInBrowser(
+      embedUrl,
+      {
+        parentWindow: mainWindow,
+        wrapperUrl: `http://localhost:${localPort}/superflix-wrapper`,
+      },
+    );
     console.log(`[extract] provider=superflix-browser → ${result.stream.slice(0, 120)}`);
 
     return result;
@@ -85,6 +91,42 @@ function startLocalServer() {
       if (req.method === "OPTIONS") { res.writeHead(204, CORS); res.end(); return; }
 
       const url = new URL(req.url, "http://127.0.0.1");
+
+      if (url.pathname === "/superflix-wrapper") {
+        const html = [
+          "<!doctype html>",
+          '<html lang="pt-BR">',
+          "<head>",
+          '<meta charset="utf-8">',
+          '<meta name="viewport" content="width=device-width,initial-scale=1">',
+          "<style>",
+          "*{box-sizing:border-box}",
+          "html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}",
+          "#superflix-frame{position:fixed;inset:0;display:block;width:100%;height:100%;border:0;background:#000}",
+          "#superflix-loading{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;font:16px Arial,sans-serif;pointer-events:none}",
+          "#superflix-close{position:fixed;top:14px;right:16px;z-index:2147483647;width:42px;height:42px;border:1px solid rgba(255,255,255,.35);border-radius:50%;background:rgba(15,15,18,.9);color:#fff;font-size:22px;cursor:pointer}",
+          "#superflix-close:hover{background:rgba(210,35,35,.95)}",
+          "</style>",
+          "</head>",
+          "<body>",
+          '<div id="superflix-loading">Carregando servidores do SuperFlix...</div>',
+          '<button id="superflix-close" type="button" title="Fechar" onclick="location.href=\'obaflix-superflix://close\'">×</button>',
+          '<iframe id="superflix-frame" allow="autoplay; fullscreen; encrypted-media"></iframe>',
+          "</body>",
+          "</html>",
+        ].join("");
+
+        res.writeHead(200, {
+          ...CORS,
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache",
+        });
+
+        res.end(html);
+        return;
+      }
+
 
       if (url.pathname === "/extract") {
         const embedUrl = url.searchParams.get("embedUrl");
