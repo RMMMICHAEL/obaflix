@@ -34,7 +34,7 @@ const nextConfig = {
           // Frames: players embed conhecidos (iframes de fallback)
           "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com",
           // Conexões: apenas nossa API + CDNs dos players já proxiados
-          "connect-src 'self'",
+          "connect-src 'self' https://ssl.p.jwpcdn.com",
           // Media: nosso proxy (segmentos HLS/MP4)
           "media-src 'self' blob:",
           // Workers (HLS.js usa blob workers)

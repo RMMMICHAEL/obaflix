@@ -46,6 +46,17 @@ function clientUa(req: NextRequest): string {
   return req.headers.get("user-agent") || "unknown";
 }
 
+/**
+ * Navegadores comuns precisam manter playlists e segmentos em same-origin,
+ * respeitando a CSP e evitando bloqueios de CORS/Referer.
+ *
+ * Electron e Android possuem tratamento nativo e continuam buscando os
+ * segmentos diretamente no CDN.
+ */
+function shouldProxyMediaThroughApp(ua: string): boolean {
+  return !/(?:\bElectron\/|ObaflixApp\/)/i.test(ua);
+}
+
 /** Nega silenciosamente com erro genérico */
 function deny(reason: string, ip: string, event: Parameters<typeof audit>[0] = "stream_rejected", status = 403): NextResponse {
   audit(event, { ip, detail: reason });
@@ -68,13 +79,10 @@ function rewriteAttrUri(
 }
 
 /**
- * Reescreve uma playlist HLS para minimizar o tráfego pelo proxy Vercel:
- * - Sub-playlists (após #EXT-X-STREAM-INF): ainda passam pelo proxy (auth gate)
- * - Chaves de criptografia (#EXT-X-KEY URI): ainda passam pelo proxy (auth gate)
- * - Segmentos de vídeo (.ts / fMP4): URL direta do CDN — browser busca sem passar pelo Compute
- *
- * Isso elimina ~90% do "CDN→Compute" de Vercel pois os bytes de vídeo nunca
- * transitam pela função serverless. Auth é garantida no nível do M3U8.
+ * Reescreve uma playlist HLS de acordo com o ambiente:
+ * - playlists, chaves e trilhas alternativas passam pelo proxy autenticado;
+ * - no navegador, mapas e segmentos também passam pelo proxy same-origin;
+ * - no Electron e Android, mapas e segmentos continuam diretos pelo CDN.
  */
 function rewriteHlsPlaylist(
   text: string,
@@ -83,6 +91,7 @@ function rewriteHlsPlaylist(
   proxyOrigin: string,     // origem do nosso app (req.nextUrl.origin)
   ref: string,
   userId: string,
+  proxyMediaThroughApp: boolean,
 ): string {
   const base = sourceUrl.endsWith("/")
     ? sourceUrl
@@ -104,6 +113,18 @@ function rewriteHlsPlaylist(
         prevTag = "#EXT-X-MEDIA";
         return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
       }
+
+      // No navegador, qualquer recurso declarado em URI="..." deve passar
+      // pelo proxy same-origin: MAP, PART, PRELOAD-HINT, I-FRAME e similares.
+      if (
+        proxyMediaThroughApp &&
+        trimmed.startsWith("#") &&
+        /\bURI="/.test(trimmed)
+      ) {
+        prevTag = trimmed.split(":")[0];
+        return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
+      }
+
       if (trimmed.startsWith("#EXT-X-MAP")) {
         // Segmento de inicialização (fMP4): resolve para URL absoluta direta (sem proxy)
         prevTag = "#EXT-X-MAP";
@@ -133,7 +154,15 @@ function rewriteHlsPlaylist(
         return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(absUrl)}&sig=${sig}${refParam}`;
       }
 
-      // Segmento de vídeo → URL direta ao CDN (zero bytes pelo Compute)
+      // Navegador comum: passa pelo proxy para manter same-origin e enviar
+      // os cabeçalhos exigidos pelo CDN.
+      if (proxyMediaThroughApp) {
+        const sig = signSegmentUrl(absUrl, userId);
+        const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
+        return `${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(absUrl)}&sig=${sig}${refParam}`;
+      }
+
+      // Electron e Android continuam buscando diretamente no CDN.
       return absUrl;
     })
     .join("\n");
@@ -180,6 +209,7 @@ export async function GET(req: NextRequest) {
   const id = rid();
   const ip = clientIp(req);
   const ua = clientUa(req);
+  const proxyMediaThroughApp = shouldProxyMediaThroughApp(ua);
   const mode = req.nextUrl.searchParams.has("t") ? "token" : req.nextUrl.searchParams.has("url") ? "segment" : "unknown";
   plog(id, "start", { mode, ip: ip.slice(0, 16) });
 
@@ -243,7 +273,15 @@ export async function GET(req: NextRequest) {
     let cdnOrigin: string;
     try { cdnOrigin = new URL(url).origin; } catch { cdnOrigin = "https://unknown.invalid"; }
     const nextRef = ref || url.substring(0, url.lastIndexOf("/") + 1);
-    const rewritten = rewriteHlsPlaylist(manifest, url, cdnOrigin, req.nextUrl.origin, nextRef, userId);
+    const rewritten = rewriteHlsPlaylist(
+      manifest,
+      url,
+      cdnOrigin,
+      req.nextUrl.origin,
+      nextRef,
+      userId,
+      proxyMediaThroughApp,
+    );
     plog(id, "MASTER_INLINE", { bytes: manifest.length, lines: rewritten.split("\n").length });
     return new NextResponse(rewritten, {
       status: 200,
@@ -319,7 +357,15 @@ export async function GET(req: NextRequest) {
       const isMaster = text.includes("#EXT-X-STREAM-INF");
       const nextRef = ref || url.substring(0, url.lastIndexOf("/") + 1);
       plog(id, isMaster ? "MASTER_UPSTREAM" : "VARIANT_UPSTREAM", { host: parsed.hostname, bytes: text.length });
-      const rewritten = rewriteHlsPlaylist(text, url, parsed.origin, req.nextUrl.origin, nextRef, userId);
+      const rewritten = rewriteHlsPlaylist(
+        text,
+        url,
+        parsed.origin,
+        req.nextUrl.origin,
+        nextRef,
+        userId,
+        proxyMediaThroughApp,
+      );
       return new NextResponse(rewritten, {
         status: 200,
         headers: {
