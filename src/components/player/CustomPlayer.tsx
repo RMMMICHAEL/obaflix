@@ -307,8 +307,9 @@ export function CustomPlayer({
     });
   }
 
-  // Player 3: Voltz
-  if (voltzUrl) {
+  // Player 3: Voltz — somente Electron/Android.
+  // No site, o MP4 direto pode falhar por CORS ou exigência de Referer.
+  if (isDesktop && voltzUrl) {
     allFontes.push({
       label: "Player 3",
       embedUrl: voltzUrl,
