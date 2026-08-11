@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronRight, Play, Search, Star, Trophy } from "lucide-react";
+import { CalendarDays, ChevronRight, ListFilter, Play, Search, Star, Trophy, X } from "lucide-react";
 
 export interface ChartItem {
   id: string;
@@ -14,6 +14,7 @@ export interface ChartItem {
   logo: string | null;
   sinopse: string | null;
   detalhe: string | null;
+  generos: string[];
   rank: number;
   disponivel: boolean;
 }
@@ -21,11 +22,27 @@ export interface ChartItem {
 type TabId = "top-filmes" | "top-series" | "pop-filmes" | "pop-series";
 
 const TABS: { id: TabId; label: string; eyebrow: string }[] = [
-  { id: "top-filmes", label: "Filmes", eyebrow: "IMDb Top 250" },
-  { id: "top-series", label: "Séries", eyebrow: "IMDb Top 250" },
-  { id: "pop-filmes", label: "Em alta", eyebrow: "Filmes populares" },
+  { id: "top-filmes", label: "Top filmes", eyebrow: "IMDb Top 250" },
+  { id: "top-series", label: "Top séries", eyebrow: "IMDb Top 250" },
+  { id: "pop-filmes", label: "Filmes em alta", eyebrow: "Popularidade TMDB" },
   { id: "pop-series", label: "Séries em alta", eyebrow: "Popularidade TMDB" },
 ];
+
+function normalize(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
+}
+
+function deduplicate(items: ChartItem[]) {
+  const unique = new Map<string, ChartItem>();
+  for (const item of items) {
+    const key = `${normalize(item.titulo)}:${item.ano}`;
+    const current = unique.get(key);
+    if (!current || (!current.disponivel && item.disponivel) || (current.disponivel === item.disponivel && item.rank < current.rank)) {
+      unique.set(key, item);
+    }
+  }
+  return [...unique.values()].sort((a, b) => a.rank - b.rank);
+}
 
 interface Props {
   topFilmes: ChartItem[];
@@ -37,6 +54,8 @@ interface Props {
 export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: Props) {
   const [tab, setTab] = useState<TabId>("top-filmes");
   const [search, setSearch] = useState("");
+  const [genre, setGenre] = useState("");
+  const [releaseYear, setReleaseYear] = useState("");
   const allItems: Record<TabId, ChartItem[]> = {
     "top-filmes": topFilmes,
     "top-series": topSeries,
@@ -44,15 +63,37 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
     "pop-series": popSeries,
   };
 
-  const items = allItems[tab];
+  const sourceItems = allItems[tab];
+  const items = useMemo(() => deduplicate(sourceItems), [sourceItems]);
   const isSeries = tab === "top-series" || tab === "pop-series";
   const tipoPath = isSeries ? "serie" : "filme";
   const activeTab = TABS.find((item) => item.id === tab)!;
-  const hero = items.find((item) => item.disponivel) ?? items[0];
+  const genreOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    for (const item of items) {
+      for (const name of item.generos) {
+        const key = normalize(name);
+        if (!options.has(key)) options.set(key, name);
+      }
+    }
+    return [...options].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  }, [items]);
+  const yearOptions = useMemo(
+    () => [...new Set(items.map((item) => item.ano).filter(Boolean))].sort((a, b) => Number(b) - Number(a)),
+    [items],
+  );
   const filtered = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("pt-BR");
-    return query ? items.filter((item) => item.titulo.toLocaleLowerCase("pt-BR").includes(query)) : items;
-  }, [items, search]);
+    return items.filter((item) => {
+      if (query && !item.titulo.toLocaleLowerCase("pt-BR").includes(query)) return false;
+      if (genre && !item.generos.some((name) => normalize(name) === genre)) return false;
+      if (releaseYear && item.ano !== releaseYear) return false;
+      return true;
+    });
+  }, [genre, items, releaseYear, search]);
+
+  const hero = filtered.find((item) => item.disponivel) ?? filtered[0];
+  const hasActiveFilters = Boolean(search || genre || releaseYear);
 
   const heroHref = hero ? `/${tipoPath}/${hero.id}` : "#";
 
@@ -113,33 +154,62 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
       )}
 
       <section className="relative z-20 mx-auto -mt-1 max-w-7xl px-4 md:px-14">
-        <div className="mb-8 flex flex-col gap-5 border-b border-[oklch(0.34_0.01_25/0.5)] pb-5 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-[oklch(0.62_0.16_28)]">Curadoria mundial</p>
             <h2 className="text-2xl font-bold tracking-tight md:text-3xl">Melhores do Mundo</h2>
           </div>
 
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-            <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-[oklch(0.16_0.009_25)] p-1 scrollbar-hide" role="tablist" aria-label="Listas de melhores">
-              {TABS.map((item) => (
-                <button
-                  key={item.id}
-                  role="tab"
-                  aria-selected={tab === item.id}
-                  onClick={() => { setTab(item.id); setSearch(""); }}
-                  className={`min-h-10 whitespace-nowrap rounded-md px-3.5 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white ${tab === item.id ? "bg-[oklch(0.29_0.014_25)] text-white" : "text-[oklch(0.66_0.01_25)] hover:text-white"}`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-
-            <label className="flex min-h-11 items-center gap-2 rounded-lg border border-[oklch(0.34_0.01_25)] bg-[oklch(0.14_0.008_25)] px-3 focus-within:border-[oklch(0.58_0.02_25)]">
-              <Search size={16} className="text-[oklch(0.58_0.01_25)]" />
-              <span className="sr-only">Buscar nesta lista</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar título" className="w-full bg-transparent text-sm outline-none placeholder:text-[oklch(0.52_0.01_25)] sm:w-40" />
-            </label>
+          <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-[oklch(0.16_0.009_25)] p-1 scrollbar-hide" role="tablist" aria-label="Listas de melhores">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                role="tab"
+                aria-selected={tab === item.id}
+                onClick={() => { setTab(item.id); setSearch(""); setGenre(""); setReleaseYear(""); }}
+                className={`min-h-10 whitespace-nowrap rounded-md px-3.5 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white ${tab === item.id ? "bg-[oklch(0.29_0.014_25)] text-white" : "text-[oklch(0.66_0.01_25)] hover:text-white"}`}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
+        </div>
+
+        <div className="mb-8 mt-5 border-y border-[oklch(0.28_0.009_25/0.65)] py-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+            <label className="flex min-h-11 flex-1 items-center gap-2 rounded-lg border border-[oklch(0.34_0.01_25)] bg-[oklch(0.14_0.008_25)] px-3 focus-within:border-[oklch(0.58_0.02_25)]">
+              <Search size={16} className="shrink-0 text-[oklch(0.58_0.01_25)]" aria-hidden="true" />
+              <span className="sr-only">Buscar nesta lista</span>
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar título" className="w-full bg-transparent text-sm outline-none placeholder:text-[oklch(0.52_0.01_25)]" />
+            </label>
+
+            <label className="flex min-h-11 min-w-52 items-center gap-2 rounded-lg border border-[oklch(0.34_0.01_25)] bg-[oklch(0.14_0.008_25)] px-3 focus-within:border-[oklch(0.58_0.02_25)]">
+              <ListFilter size={16} className="shrink-0 text-[oklch(0.58_0.01_25)]" aria-hidden="true" />
+              <span className="sr-only">Filtrar por gênero</span>
+              <select value={genre} onChange={(event) => setGenre(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm outline-none">
+                <option value="" className="bg-zinc-900">Todos os gêneros</option>
+                {genreOptions.map((option) => <option key={option.value} value={option.value} className="bg-zinc-900">{option.label}</option>)}
+              </select>
+            </label>
+
+            <label className="flex min-h-11 min-w-44 items-center gap-2 rounded-lg border border-[oklch(0.34_0.01_25)] bg-[oklch(0.14_0.008_25)] px-3 focus-within:border-[oklch(0.58_0.02_25)]">
+              <CalendarDays size={16} className="shrink-0 text-[oklch(0.58_0.01_25)]" aria-hidden="true" />
+              <span className="sr-only">Filtrar por ano de lançamento</span>
+              <select value={releaseYear} onChange={(event) => setReleaseYear(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm outline-none">
+                <option value="" className="bg-zinc-900">Todos os anos</option>
+                {yearOptions.map((year) => <option key={year} value={year} className="bg-zinc-900">{year}</option>)}
+              </select>
+            </label>
+
+            {hasActiveFilters && (
+              <button type="button" onClick={() => { setSearch(""); setGenre(""); setReleaseYear(""); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold text-[oklch(0.68_0.012_25)] transition-colors hover:bg-[oklch(0.18_0.01_25)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white">
+                <X size={15} aria-hidden="true" /> Limpar filtros
+              </button>
+            )}
+          </div>
+          <p className="mt-3 text-xs text-[oklch(0.55_0.01_25)]" aria-live="polite">
+            {filtered.length} {filtered.length === 1 ? "título encontrado" : "títulos encontrados"}
+          </p>
         </div>
 
         <div className="grid gap-x-8 lg:grid-cols-2">
@@ -173,7 +243,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
         {filtered.length === 0 && (
           <div className="py-24 text-center">
             <p className="font-semibold">Nenhum título encontrado</p>
-            <p className="mt-1 text-sm text-[oklch(0.58_0.01_25)]">Tente buscar por outro nome.</p>
+            <p className="mt-1 text-sm text-[oklch(0.58_0.01_25)]">Ajuste o gênero, o ano ou o título buscado.</p>
           </div>
         )}
       </section>
