@@ -1,15 +1,27 @@
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const BASE = "https://api.themoviedb.org/3";
 export const IMG = "https://image.tmdb.org/t/p";
+const TMDB_TIMEOUT_MS = 4500;
 
 async function tmdbFetch<T = any>(path: string, opts?: RequestInit): Promise<T | null> {
+  if (!TMDB_KEY) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TMDB_TIMEOUT_MS);
+
   try {
     const url = `${BASE}${path}${path.includes("?") ? "&" : "?"}api_key=${TMDB_KEY}&language=pt-BR`;
-    const res = await fetch(url, { next: { revalidate: 3600 }, ...opts });
+    const res = await fetch(url, {
+      ...opts,
+      next: { revalidate: 3600, ...opts?.next },
+      signal: controller.signal,
+    });
     if (!res.ok) return null;
     return res.json();
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -100,6 +112,9 @@ export const getTVSeasonDetails = (tmdbId: string | number, season: number) =>
 
 export const getCollection = (collectionId: number) =>
   tmdbFetch<TmdbCollection>(`/collection/${collectionId}`);
+
+export const getPerson = (personId: string | number) =>
+  tmdbFetch<TmdbPerson>(`/person/${personId}?append_to_response=combined_credits`);
 
 // ── Images / Logos / Backdrops ─────────────────────────────────────────────
 
@@ -207,6 +222,7 @@ export interface TmdbItem {
   media_type?: string;
   original_language?: string;
   genre_ids?: number[];
+  popularity?: number;
 }
 
 export interface TmdbPage {
@@ -225,6 +241,7 @@ export interface TmdbTV extends TmdbItem {
   number_of_seasons?: number;
   number_of_episodes?: number;
   genres?: { id: number; name: string }[];
+  created_by?: TmdbPersonPreview[];
 }
 
 export interface TmdbVideo {
@@ -240,13 +257,50 @@ export interface TmdbCast {
   name: string;
   character?: string;
   roles?: { character: string }[];
+  job?: string;
+  department?: string;
+  jobs?: { job: string; episode_count?: number }[];
   profile_path?: string | null;
   order?: number;
+}
+
+export interface TmdbPersonPreview {
+  id: number;
+  name: string;
+  profile_path?: string | null;
+}
+
+export interface TmdbPersonCredit extends TmdbItem {
+  character?: string;
+  job?: string;
+  department?: string;
+  credit_id?: string;
+  episode_count?: number;
+}
+
+export interface TmdbPerson {
+  id: number;
+  name: string;
+  biography?: string;
+  birthday?: string | null;
+  deathday?: string | null;
+  place_of_birth?: string | null;
+  profile_path?: string | null;
+  known_for_department?: string;
+  also_known_as?: string[];
+  combined_credits?: {
+    cast?: TmdbPersonCredit[];
+    crew?: TmdbPersonCredit[];
+  };
 }
 
 export interface TmdbEpisodeDetails {
   episode_number: number;
   season_number: number;
+  name?: string;
+  overview?: string;
+  air_date?: string | null;
+  still_path?: string | null;
   vote_average: number;
   vote_count: number;
 }

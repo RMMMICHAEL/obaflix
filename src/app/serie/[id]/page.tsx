@@ -1,21 +1,38 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, Trophy, User } from "lucide-react";
+import { Play, Star, Trophy } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { imgUrl, getTVVideos, getTVCredits, getTVRecommendations, getTVSeasonDetails, pickTrailer } from "@/lib/tmdb";
+import { imgUrl, getSerie, getTVVideos, getTVCredits, getTVRecommendations, getTVSeasonDetails, pickTrailer } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
 import { LikeButtons } from "@/components/ui/LikeButtons";
+import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
+import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
-  const serie = await prisma.serie.findUnique({ where: { id: params.id } });
-  return { title: serie ? `${serie.titulo} — Obaflix` : "Obaflix" };
+  const serie = await prisma.serie.findUnique({
+    where: { id: params.id },
+    select: { titulo: true, sinopse: true, background: true, poster: true, ano: true, tipo: true },
+  });
+  if (!serie) return { title: "Série não encontrada", robots: { index: false, follow: false } };
+
+  const title = serie.ano ? `${serie.titulo} (${serie.ano})` : serie.titulo;
+  const image = serie.background ?? serie.poster;
+  return mediaMetadata({
+    title,
+    description: serie.sinopse,
+    path: `/serie/${params.id}`,
+    image: image ? imgUrl(image, "original") : null,
+    type: "video.tv_show",
+  });
 }
 
 export default async function SeriePage({ params }: { params: { id: string } }) {
@@ -29,13 +46,14 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   if (!serie) notFound();
 
-  const [episodios, videos, credits, tmdbRecs, episodeProgressList, continueEp] = await Promise.all([
+  const [episodios, videos, credits, tmdbDetails, tmdbRecs, episodeProgressList, continueEp] = await Promise.all([
     prisma.episodio.findMany({
       where: { serieId: serie.id },
       orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
     }),
     serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
     serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
+    serie.tmdbId ? getSerie(serie.tmdbId) : null,
     serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
     userId
       ? prisma.watchHistory.findMany({
@@ -79,6 +97,21 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   const trailer = pickTrailer(videos?.results);
   const cast = (credits?.cast ?? []).slice(0, 16);
+  const creativePeople = new Map<number, PeopleRowItem>();
+  for (const person of tmdbDetails?.created_by ?? []) {
+    creativePeople.set(person.id, { ...person, role: "Criação" });
+  }
+  for (const person of credits?.crew ?? []) {
+    const directed = person.job === "Director" || person.jobs?.some((job) => job.job === "Director");
+    if (!directed) continue;
+    const current = creativePeople.get(person.id);
+    creativePeople.set(person.id, {
+      id: person.id,
+      name: person.name,
+      profile_path: person.profile_path,
+      role: current ? "Criação e direção" : "Direção",
+    });
+  }
 
   // TMDB recommendations → match with DB
   let recCards: any[] = [];
@@ -102,8 +135,45 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
 
+  const sectionLabel = serie.tipo === "anime" ? "Animes" : serie.tipo === "desenho" ? "Desenhos" : "Séries";
+  const sectionHref = serie.tipo === "anime" ? "/animes" : serie.tipo === "desenho" ? "/desenhos" : "/series";
+  const genres = serie.generos.map((item: any) => item.genero.nome);
+  const seriesSchema = {
+    "@context": "https://schema.org",
+    "@type": "TVSeries",
+    name: serie.titulo,
+    alternateName: serie.tituloOriginal || undefined,
+    description: serie.sinopse || undefined,
+    image: serie.poster ? imgUrl(serie.poster, "w500") : undefined,
+    dateCreated: serie.ano ? String(serie.ano) : undefined,
+    numberOfSeasons: serie.temporadas || temporadas.length || undefined,
+    numberOfEpisodes: episodios.length || undefined,
+    genre: genres,
+    actor: cast.map((person: any) => ({ "@type": "Person", name: person.name })),
+    aggregateRating: serie.nota && serie.voteCount && serie.voteCount > 0 ? {
+      "@type": "AggregateRating",
+      ratingValue: serie.nota,
+      bestRating: 10,
+      worstRating: 0,
+      ratingCount: serie.voteCount,
+    } : undefined,
+    url: absoluteUrl(`/serie/${serie.id}`),
+    identifier: serie.imdbId || serie.tmdbId || serie.id,
+    inLanguage: "pt-BR",
+  };
+  const breadcrumbSchema = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
+      { "@type": "ListItem", position: 2, name: sectionLabel, item: absoluteUrl(sectionHref) },
+      { "@type": "ListItem", position: 3, name: serie.titulo, item: absoluteUrl(`/serie/${serie.id}`) },
+    ],
+  };
+
   return (
     <div className="min-h-screen">
+      <JsonLd data={[seriesSchema, breadcrumbSchema]} />
       {/* Backdrop */}
       <div className="relative h-[65vh] min-h-[400px]">
         <Image
@@ -118,6 +188,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       </div>
 
       <div className="relative -mt-56 px-4 md:px-16 pb-16">
+        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: sectionLabel, href: sectionHref }, { label: serie.titulo }]} />
         <div className="flex flex-col md:flex-row gap-8">
           {/* Poster */}
           <div className="shrink-0">
@@ -192,40 +263,14 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
           </div>
         </div>
 
-        {/* Elenco */}
-        {cast.length > 0 && (
-          <div className="mt-12">
-            <h2 className="text-white font-semibold text-lg mb-4">Elenco Principal</h2>
-            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2">
-              {cast.map((person: any) => {
-                const character = person.character ?? person.roles?.[0]?.character;
-                return (
-                  <div key={person.id} className="flex-none w-24 text-center">
-                    <div className="w-24 h-24 rounded-full overflow-hidden bg-zinc-800 mb-2 mx-auto ring-2 ring-zinc-700">
-                      {person.profile_path ? (
-                        <Image
-                          src={imgUrl(person.profile_path, "w185")}
-                          alt={person.name}
-                          width={96}
-                          height={96}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-zinc-600">
-                          <User size={32} />
-                        </div>
-                      )}
-                    </div>
-                    <p className="text-white text-xs font-semibold line-clamp-2 leading-tight">{person.name}</p>
-                    {character && (
-                      <p className="text-zinc-500 text-[10px] line-clamp-1 mt-0.5">{character}</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
+        <PeopleRow
+          title="Elenco principal"
+          people={cast.map((person) => ({
+            ...person,
+            role: person.character ?? person.roles?.[0]?.character,
+          }))}
+        />
 
         {/* Episódios */}
         <div className="mt-10">

@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, Clock, Trophy, User } from "lucide-react";
+import { Play, Star, Clock, Trophy } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickTrailer } from "@/lib/tmdb";
@@ -9,12 +9,29 @@ import { prisma } from "@/lib/prisma";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { TrailerButton } from "@/components/ui/TrailerButton";
 import { LikeButtons } from "@/components/ui/LikeButtons";
+import { PeopleRow } from "@/components/ui/PeopleRow";
+import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
-  const filme = await prisma.filme.findUnique({ where: { id: params.id } });
-  return { title: filme ? `${filme.titulo} — Obaflix` : "Obaflix" };
+  const filme = await prisma.filme.findUnique({
+    where: { id: params.id },
+    select: { titulo: true, sinopse: true, background: true, poster: true, ano: true },
+  });
+  if (!filme) return { title: "Filme não encontrado", robots: { index: false, follow: false } };
+
+  const title = filme.ano ? `${filme.titulo} (${filme.ano})` : filme.titulo;
+  const image = filme.background ?? filme.poster;
+  return mediaMetadata({
+    title,
+    description: filme.sinopse,
+    path: `/filme/${params.id}`,
+    image: image ? imgUrl(image, "original") : null,
+    type: "video.movie",
+  });
 }
 
 export default async function FilmePage({ params }: { params: { id: string } }) {
@@ -51,6 +68,9 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
 
   const trailer = pickTrailer(videos?.results);
   const cast = (credits?.cast ?? []).slice(0, 16);
+  const directors = (credits?.crew ?? [])
+    .filter((person) => person.job === "Director")
+    .filter((person, index, all) => all.findIndex((item) => item.id === person.id) === index);
 
   // If TMDB has recommendations, try to match with our DB
   let recCards: any[] = [];
@@ -68,8 +88,42 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     tipo: "filme" as const,
   }));
 
+  const genres = filme.generos.map((item: any) => item.genero.nome);
+  const movieSchema = {
+    "@context": "https://schema.org",
+    "@type": "Movie",
+    name: filme.titulo,
+    alternateName: filme.tituloOriginal || undefined,
+    description: filme.sinopse || undefined,
+    image: filme.poster ? imgUrl(filme.poster, "w500") : undefined,
+    dateCreated: filme.ano ? String(filme.ano) : undefined,
+    duration: filme.duracao ? `PT${Math.floor(filme.duracao / 60)}H${filme.duracao % 60}M` : undefined,
+    genre: genres,
+    actor: cast.map((person: any) => ({ "@type": "Person", name: person.name })),
+    aggregateRating: filme.nota && filme.voteCount && filme.voteCount > 0 ? {
+      "@type": "AggregateRating",
+      ratingValue: filme.nota,
+      bestRating: 10,
+      worstRating: 0,
+      ratingCount: filme.voteCount,
+    } : undefined,
+    url: absoluteUrl(`/filme/${filme.id}`),
+    identifier: filme.imdbId || filme.tmdbId || filme.id,
+    inLanguage: "pt-BR",
+  };
+  const breadcrumbSchema = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
+      { "@type": "ListItem", position: 2, name: "Filmes", item: absoluteUrl("/filmes") },
+      { "@type": "ListItem", position: 3, name: filme.titulo, item: absoluteUrl(`/filme/${filme.id}`) },
+    ],
+  };
+
   return (
     <div className="min-h-screen">
+      <JsonLd data={[movieSchema, breadcrumbSchema]} />
       {/* Backdrop */}
       <div className="relative h-[65vh] min-h-[400px]">
         <Image
@@ -85,6 +139,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
 
       {/* Content */}
       <div className="relative -mt-56 px-4 md:px-16 pb-16">
+        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: "Filmes", href: "/filmes" }, { label: filme.titulo }]} />
         <div className="flex flex-col md:flex-row gap-8">
           {/* Poster */}
           <div className="shrink-0">
@@ -159,37 +214,14 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
           </div>
         </div>
 
-        {/* Cast */}
-        {cast.length > 0 && (
-          <div className="mt-12">
-            <h2 className="text-white font-semibold text-lg mb-4">Elenco Principal</h2>
-            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2">
-              {cast.map((person: any) => (
-                <div key={person.id} className="flex-none w-24 text-center">
-                  <div className="w-24 h-24 rounded-full overflow-hidden bg-zinc-800 mb-2 mx-auto ring-2 ring-zinc-700">
-                    {person.profile_path ? (
-                      <Image
-                        src={imgUrl(person.profile_path, "w185")}
-                        alt={person.name}
-                        width={96}
-                        height={96}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-zinc-600">
-                        <User size={32} />
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-white text-xs font-semibold line-clamp-2 leading-tight">{person.name}</p>
-                  {person.character && (
-                    <p className="text-zinc-500 text-[10px] line-clamp-1 mt-0.5">{person.character}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <PeopleRow
+          title="Direção"
+          people={directors.map((person) => ({ ...person, role: "Diretor(a)" }))}
+        />
+        <PeopleRow
+          title="Elenco principal"
+          people={cast.map((person) => ({ ...person, role: person.character }))}
+        />
 
         {/* Recommendations */}
         {similares.length > 0 && (
