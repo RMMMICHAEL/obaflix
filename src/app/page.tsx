@@ -5,6 +5,7 @@ import { RankRow } from "@/components/ui/RankRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
+import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
 import { prisma } from "@/lib/prisma";
 import {
   getTrending,
@@ -258,6 +259,8 @@ export default async function HomePage() {
       <div className="mt-3">
         {/* Continuar Assistindo */}
         <ContinuarAssistindo />
+
+        <PersonalizedRows />
 
         {/* Em Alta */}
         {trending.length > 0 && (

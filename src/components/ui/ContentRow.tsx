@@ -10,6 +10,7 @@ interface Item {
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
+  logo?: string | null;
   ano: number | null;
   nota: number | null;
   urlDub?: string | null;

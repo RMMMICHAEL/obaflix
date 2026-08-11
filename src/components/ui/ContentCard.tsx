@@ -8,13 +8,14 @@ import { Heart, Play, Star } from "lucide-react";
 function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
   (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
 }
-import { imgUrl } from "@/lib/tmdb";
+import { imgUrl, logoUrl } from "@/lib/tmdb";
 
 interface Props {
   id: string;
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
+  logo?: string | null;
   ano: number | null;
   nota: number | null;
   urlDub?: string | null;
@@ -24,7 +25,7 @@ interface Props {
   inWatchlist?: boolean;
 }
 
-export function ContentCard({ id, tipo, titulo, poster, ano, nota, urlDub, urlLeg, progresso, onWatchlistToggle, inWatchlist }: Props) {
+export function ContentCard({ id, tipo, titulo, poster, logo, ano, nota, urlDub, urlLeg, progresso, onWatchlistToggle, inWatchlist }: Props) {
   const [hovered, setHovered] = useState(false);
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
   const playerHref = href;
@@ -46,6 +47,17 @@ export function ContentCard({ id, tipo, titulo, poster, ano, nota, urlDub, urlLe
             sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 16vw"
             onError={imgFallback}
           />
+          {logo && !hovered && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex min-h-24 items-end justify-center bg-gradient-to-t from-zinc-950/95 via-zinc-950/45 to-transparent px-4 pb-4 pt-10">
+              <Image
+                src={logoUrl(logo) ?? ""}
+                alt=""
+                width={150}
+                height={60}
+                className="max-h-12 w-auto max-w-full object-contain drop-shadow-lg"
+              />
+            </div>
+          )}
           {/* badges */}
           <div className="absolute top-2 left-2 flex gap-1">
             {urlDub && <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">DUB</span>}
@@ -62,7 +74,7 @@ export function ContentCard({ id, tipo, titulo, poster, ano, nota, urlDub, urlLe
 
       {/* hover overlay */}
       {hovered && (
-        <div className="absolute inset-0 bg-black/80 flex flex-col justify-between p-3 transition-opacity">
+        <div className="absolute inset-0 flex flex-col justify-between bg-zinc-950/90 p-3 transition-opacity">
           <div>
             <p className="text-white font-semibold text-sm line-clamp-2">{titulo}</p>
             <div className="flex items-center gap-2 mt-1 text-xs text-zinc-400">

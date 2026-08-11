@@ -86,12 +86,18 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     : [];
 
   const epRatingMap: Record<string, number> = {};
+  const epMetadataMap: Record<string, { overview: string | null; runtime: number | null; thumbnail: string | null }> = {};
   for (const season of seasonDetailsArr) {
     if (!season?.episodes) continue;
     for (const ep of season.episodes) {
       if (ep.vote_average > 0) {
         epRatingMap[`${ep.season_number}_${ep.episode_number}`] = ep.vote_average;
       }
+      epMetadataMap[`${ep.season_number}_${ep.episode_number}`] = {
+        overview: ep.overview?.trim() || null,
+        runtime: ep.runtime ?? null,
+        thumbnail: ep.still_path ?? null,
+      };
     }
   }
 
@@ -274,7 +280,15 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
         {/* Episódios */}
         <div className="mt-10">
-          <EpisodeGrid serieId={serie.id} episodios={episodios} temporadas={temporadas} progresso={progressoMap} ratingMap={epRatingMap} />
+          <EpisodeGrid
+            serieId={serie.id}
+            episodios={episodios}
+            temporadas={temporadas}
+            progresso={progressoMap}
+            ratingMap={epRatingMap}
+            metadataMap={epMetadataMap}
+            initialSeason={continueEp?.temporada ?? temporadas[0]}
+          />
         </div>
 
         {/* Recomendações */}

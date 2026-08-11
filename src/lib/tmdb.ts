@@ -301,6 +301,7 @@ export interface TmdbEpisodeDetails {
   overview?: string;
   air_date?: string | null;
   still_path?: string | null;
+  runtime?: number | null;
   vote_average: number;
   vote_count: number;
 }
