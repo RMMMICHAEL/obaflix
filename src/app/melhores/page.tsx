@@ -8,12 +8,12 @@ import { MelhoresClient, type ChartItem } from "./MelhoresClient";
 export const dynamic = "force-dynamic";
 
 const selFilme = {
-  id: true, titulo: true, poster: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, duracao: true, ano: true, nota: true,
   urlDub: true, urlLeg: true, top250: true, popularRank: true,
 } as const;
 
 const selSerie = {
-  id: true, titulo: true, poster: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
   top250: true, popularRank: true,
   _count: { select: { episodios: true } },
 } as const;
@@ -25,6 +25,10 @@ function filmeToChart(f: any, rankField: "top250" | "popularRank"): ChartItem {
     ano: f.ano ? String(f.ano) : "",
     nota: Math.round((f.nota ?? 0) * 10) / 10,
     poster: f.poster ? imgUrl(f.poster, "w185") : null,
+    background: f.background ? imgUrl(f.background, "original") : null,
+    logo: f.logo ? imgUrl(f.logo, "w500") : null,
+    sinopse: f.sinopse,
+    detalhe: f.duracao ? `${f.duracao} min` : null,
     rank: f[rankField],
     disponivel: !!(f.urlDub || f.urlLeg),
   };
@@ -37,6 +41,10 @@ function serieToChart(s: any, rankField: "top250" | "popularRank"): ChartItem {
     ano: s.ano ? String(s.ano) : "",
     nota: Math.round((s.nota ?? 0) * 10) / 10,
     poster: s.poster ? imgUrl(s.poster, "w185") : null,
+    background: s.background ? imgUrl(s.background, "original") : null,
+    logo: s.logo ? imgUrl(s.logo, "w500") : null,
+    sinopse: s.sinopse,
+    detalhe: s.temporadas ? `${s.temporadas} temporada${s.temporadas === 1 ? "" : "s"}` : null,
     rank: s[rankField],
     disponivel: s._count.episodios > 0,
   };
