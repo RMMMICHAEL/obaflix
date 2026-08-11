@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
+  poweredByHeader: false,
   images: {
     unoptimized: true,
     remotePatterns: [
@@ -33,10 +32,10 @@ const nextConfig = {
           "img-src 'self' data: blob: https://image.tmdb.org https://lh3.googleusercontent.com",
           // Frames: players embed conhecidos (iframes de fallback)
           "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com",
-          // Conexões: apenas nossa API + CDNs dos players já proxiados
-          "connect-src 'self' https://ssl.p.jwpcdn.com",
-          // Media: nosso proxy (segmentos HLS/MP4)
-          "media-src 'self' blob:",
+          // HLS.js baixa segmentos diretamente dos CDNs dinâmicos dos provedores.
+          "connect-src 'self' https:",
+          // A reprodução nativa também pode consumir mídia HTTPS diretamente.
+          "media-src 'self' blob: https:",
           // Workers (HLS.js usa blob workers)
           "worker-src 'self' blob:",
         ].join("; "),

@@ -1,3 +1,11 @@
+# Obaflix
+
+> [!CAUTION]
+> Antes de alterar player, proxy HLS, CSP, Middleware ou entrega de mídia, leia
+> **[FAST_ORIGIN_TRANSFER.md](FAST_ORIGIN_TRANSFER.md)**. Segmentos de vídeo não
+> podem passar pelo Vercel Compute, pois isso consome rapidamente a franquia de
+> Fast Origin Transfer.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started

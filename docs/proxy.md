@@ -1,5 +1,11 @@
 # Proxy HLS
 
+> [!CAUTION]
+> **Não volte a rotear segmentos de vídeo pelo proxy da Vercel.** Leia o documento
+> obrigatório [`../FAST_ORIGIN_TRANSFER.md`](../FAST_ORIGIN_TRANSFER.md) antes de
+> alterar esta rota. O padrão de produção envia os segmentos diretamente do CDN
+> para o dispositivo; apenas respostas pequenas e protegidas permanecem na Vercel.
+
 ## Arquivo
 
 `src/app/api/player/proxy/route.ts`

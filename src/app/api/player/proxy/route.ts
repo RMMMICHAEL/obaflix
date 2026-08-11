@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertSafeUrl } from "@/lib/ssrf";
+import { headerMatchesHost } from "@/lib/requestSecurity";
 import {
   resolveStreamToken,
   signSegmentUrl,
@@ -47,14 +48,15 @@ function clientUa(req: NextRequest): string {
 }
 
 /**
- * Navegadores comuns precisam manter playlists e segmentos em same-origin,
- * respeitando a CSP e evitando bloqueios de CORS/Referer.
+ * Os bytes pesados de mídia devem ir do CDN diretamente para o dispositivo.
+ * Playlists, chaves e trilhas alternativas ainda passam pelo proxy autenticado,
+ * mas segmentos TS/fMP4 não consomem Fast Origin Transfer da Vercel.
  *
- * Electron e Android possuem tratamento nativo e continuam buscando os
- * segmentos diretamente no CDN.
+ * Interruptor de emergência: MEDIA_SEGMENT_DELIVERY=proxy restaura o proxy de
+ * segmentos para fontes que não ofereçam CORS, sem exigir uma nova alteração.
  */
-function shouldProxyMediaThroughApp(ua: string): boolean {
-  return !/(?:\bElectron\/|ObaflixApp\/)/i.test(ua);
+function shouldProxyMediaThroughApp(_ua: string): boolean {
+  return process.env.MEDIA_SEGMENT_DELIVERY?.toLowerCase() === "proxy";
 }
 
 /** Nega silenciosamente com erro genérico */
@@ -75,6 +77,14 @@ function rewriteAttrUri(
     const sig = signSegmentUrl(absUri, userId);
     const refParam = ref ? `&ref=${encodeURIComponent(ref)}` : "";
     return `${pre}${proxyOrigin}/api/player/proxy?url=${encodeURIComponent(absUri)}&sig=${sig}${refParam}${post}`;
+  });
+}
+
+function rewriteAttrUriDirect(line: string, attr: string, base: string, parsedOrigin: string): string {
+  const re = new RegExp(`(${attr}=")([^"]+)(")`);
+  return line.replace(re, (_, pre, uri: string, post) => {
+    const absUri = uri.startsWith("http") ? uri : uri.startsWith("/") ? parsedOrigin + uri : base + uri;
+    return `${pre}${absUri}${post}`;
   });
 }
 
@@ -114,15 +124,13 @@ function rewriteHlsPlaylist(
         return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
       }
 
-      // No navegador, qualquer recurso declarado em URI="..." deve passar
-      // pelo proxy same-origin: MAP, PART, PRELOAD-HINT, I-FRAME e similares.
-      if (
-        proxyMediaThroughApp &&
-        trimmed.startsWith("#") &&
-        /\bURI="/.test(trimmed)
-      ) {
+      // Recursos de mídia declarados em URI="..." ficam absolutos no modo
+      // direto; no fallback, continuam assinados pelo proxy same-origin.
+      if (trimmed.startsWith("#") && /\bURI="/.test(trimmed)) {
         prevTag = trimmed.split(":")[0];
-        return rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId);
+        return proxyMediaThroughApp
+          ? rewriteAttrUri(line, "URI", base, parsedOrigin, proxyOrigin, ref, userId)
+          : rewriteAttrUriDirect(line, "URI", base, parsedOrigin);
       }
 
       if (trimmed.startsWith("#EXT-X-MAP")) {
@@ -222,14 +230,14 @@ export async function GET(req: NextRequest) {
   // Exclui ausência de Origin (navegadores omitem em navegação direta — segmentos HLS incluídos).
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
-  if (origin && host && !origin.includes(host)) {
+  if (origin && host && !headerMatchesHost(origin, host)) {
     plog(id, "reject", { reason: "origin_mismatch", origin, host });
     await recordAbuseAttempt(ip);
     return deny(`origin inválida: ${origin}`, ip, "origin_rejected");
   }
 
   const refererHeader = req.headers.get("referer");
-  if (refererHeader && host && !refererHeader.includes(host)) {
+  if (refererHeader && host && !headerMatchesHost(refererHeader, host)) {
     plog(id, "reject", { reason: "referer_external", referer: refererHeader.slice(0, 60) });
     await recordAbuseAttempt(ip);
     return deny(`referer externo: ${refererHeader.slice(0, 80)}`, ip, "origin_rejected");
