@@ -6,6 +6,7 @@ import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { prisma } from "@/lib/prisma";
+import { groupGenres, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
 
@@ -46,17 +47,17 @@ export default async function FilmesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
-  const generoId = searchParams.genero ? Number(searchParams.genero) : null;
+  const generoIds = parseGenreIds(searchParams.genero);
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;
   const q = searchParams.q ?? null;
   const page = Number(searchParams.page ?? 1);
-  const isFiltered = !!(generoId || ano || ordem || q);
+  const isFiltered = !!(generoIds.length || ano || ordem || q);
   const limit = 24;
   const skip = (page - 1) * limit;
 
   // Always fetch generos and anos for the FilterBar
-  const [generos, anosRaw] = await Promise.all([
+  const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
       where: { filmes: { some: {} } },
       orderBy: { nome: "asc" },
@@ -68,11 +69,12 @@ export default async function FilmesPage({
       orderBy: { ano: "desc" },
     }),
   ]);
+  const generos = groupGenres(generosRaw);
   const anos = anosRaw.map((a) => a.ano!).filter(Boolean) as number[];
 
   if (isFiltered) {
     const where: any = {};
-    if (generoId) where.generos = { some: { generoId } };
+    if (generoIds.length) where.generos = { some: { generoId: { in: generoIds } } };
     if (ano) where.ano = ano;
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 

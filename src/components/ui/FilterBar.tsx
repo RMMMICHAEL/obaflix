@@ -3,11 +3,10 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { ChevronDown, Search, X } from "lucide-react";
-
-interface Genero { id: number; nome: string; }
+import { genreOptionValue, parseGenreIds, type GenreOption } from "@/lib/genres";
 
 interface FilterBarProps {
-  generos: Genero[];
+  generos: GenreOption[];
   anos: number[];
   total?: number;
   pages?: number;
@@ -75,7 +74,10 @@ export function FilterBar({ generos, anos, total, pages = 0, label }: FilterBarP
   };
 
   const ordemLabel = ORDENS.find((o) => o.value === ordem)?.label;
-  const generoLabel = generos.find((g) => String(g.id) === genero)?.nome;
+  const selectedGenreIds = new Set(parseGenreIds(genero));
+  const selectedGenre = generos.find((item) => item.ids.some((id) => selectedGenreIds.has(id)));
+  const currentGenreValue = selectedGenre ? genreOptionValue(selectedGenre) : genero;
+  const generoLabel = selectedGenre?.nome;
 
   return (
     <div className="w-full">
@@ -115,8 +117,8 @@ export function FilterBar({ generos, anos, total, pages = 0, label }: FilterBarP
           label="Gênero"
           activeLabel={generoLabel}
           paramKey="genero"
-          options={generos.map((g) => ({ value: String(g.id), label: g.nome }))}
-          current={genero}
+          options={generos.map((item) => ({ value: genreOptionValue(item), label: item.nome }))}
+          current={currentGenreValue}
           openKey={openKey}
           setOpenKey={setOpenKey}
           onSelect={(v) => update("genero", v)}

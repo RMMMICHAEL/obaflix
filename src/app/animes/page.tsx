@@ -8,6 +8,7 @@ import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
 import { getTrendingTV, TmdbItem } from "@/lib/tmdb";
+import { groupGenres, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
 
@@ -46,16 +47,16 @@ export default async function AnimesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
-  const generoId = searchParams.genero ? Number(searchParams.genero) : null;
+  const generoIds = parseGenreIds(searchParams.genero);
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;
   const q = searchParams.q ?? null;
   const page = Number(searchParams.page ?? 1);
-  const isFiltered = !!(generoId || ano || ordem || q);
+  const isFiltered = !!(generoIds.length || ano || ordem || q);
   const limit = 24;
   const skip = (page - 1) * limit;
 
-  const [generos, anosRaw] = await Promise.all([
+  const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
       where: { series: { some: { serie: { tipo: "anime" } } } },
       orderBy: { nome: "asc" },
@@ -67,11 +68,12 @@ export default async function AnimesPage({
       orderBy: { ano: "desc" },
     }),
   ]);
+  const generos = groupGenres(generosRaw);
   const anos = anosRaw.map((a) => a.ano!).filter(Boolean) as number[];
 
   if (isFiltered) {
     const where: any = { tipo: "anime" };
-    if (generoId) where.generos = { some: { generoId } };
+    if (generoIds.length) where.generos = { some: { generoId: { in: generoIds } } };
     if (ano) where.ano = ano;
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
