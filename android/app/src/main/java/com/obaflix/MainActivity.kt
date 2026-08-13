@@ -36,8 +36,9 @@ class MainActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         configureWebView()
 
-        val androidEntryUrl = BuildConfig.OBAFLIX_URL.trimEnd('/') + "/android"
-        webView.loadUrl(androidEntryUrl)
+        // A rota raiz é o contrato publicado do app. A tela /android ainda está
+        // em desenvolvimento e não pode ser requisito para o player nativo.
+        webView.loadUrl(BuildConfig.OBAFLIX_URL)
     }
 
     @SuppressLint("SetJavaScriptEnabled")

@@ -25,6 +25,7 @@ const EMBED_HOSTNAMES = [
   "playerwish.com", "jvrkt.online", "beamy.online",
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
   "v1.watchplay.shop",
+  "vods.faz-o-eli.online",
   "superflixapi.pro", "vizero.buzz", "warezcdn.lat",
 ];
 

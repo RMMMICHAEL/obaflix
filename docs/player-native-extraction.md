@@ -26,8 +26,8 @@ residencial do usuário + CDN direto, sem proxy Vercel) para **todos os provider
 | Wish (Streamwish/Hlswish/Playerwish) | `wish` no hostname | `extractWish` | `route.ts extractWish` |
 | Bolt | `bolt` no hostname | `extractBolt` | `route.ts extractBolt` |
 | Big (Bigshare) | `bigshare`/`big` no hostname | `extractBig` | `route.ts extractBig` |
-| WatchPlayer | `watchplayer` no hostname | `extractWatchplayer` | **não implementado** (só Electron/Android por enquanto) |
-| VOD | — | **não implementado** | não implementado (MegaFlix usa `vods.faz-o-eli.online`, nunca portado) |
+| WatchPlayer | `v1.watchplay.shop` | `extractWatchplayer` | `extractWatchplayer` (também usado pelo PlayerFlix atual) |
+| Voltz | `voltz.php` em `megafrixapi.com` ou `vods.faz-o-eli.online` | `extractVoltz` | `extractVoltz` |
 
 O site web (não-Electron/Android) continua **sempre** usando o fluxo `route.ts` +
 `/api/player/proxy` para todos os providers — nada mudou para usuários web. A única mudança é
@@ -36,14 +36,12 @@ provider da tabela acima, em vez de só rola3/rola4.
 
 ### WatchPlayer — provider diferente dos demais
 
-WatchPlayer não vem do banco (`urlDub`/`urlLeg`) como todos os outros — é uma **fonte
-sintética**, montada em `CustomPlayer.tsx` a partir do `tmdbId` do filme/série (prop nova,
-passada pelas páginas `assistir/filme/[id]` e `assistir/serie/.../[ep]`), só quando
-`isDesktop === true`. É adicionada ao final de `allFontes`, sem prioridade sobre as fontes reais
-do catálogo — hoje aparece como uma opção extra, não como fonte principal.
+WatchPlayer não vem do banco (`urlDub`/`urlLeg`) como todos os outros. Nos clientes nativos,
+também existe como fonte sintética montada em `CustomPlayer.tsx` a partir do `tmdbId`. No site,
+o endpoint atual do PlayerFlix devolve `v1.watchplay.shop` como primeira opção; por isso o
+`extractPlayerflix()` delega ao mesmo algoritmo WatchPlayer no servidor.
 
-Descoberto via engenharia reversa do MegaFlix (cadeia `myembed.biz` → `playerflix.ink` →
-`ajax.php`, que expõe as opções reais de player em base64). É o provider mais simples de todos:
+O endpoint `playerflix.ink/inc/Ajax.php` expõe as opções reais em JSON. É um provider simples:
 API JSON própria, sem packer/moon.php, sem Cloudflare, e o CDN final (`*.hclod.qzz.io`) não
 exige nenhum header especial.
 
@@ -56,9 +54,8 @@ Série:  GET  /tvshow/{tmdbId}/{season}/{episode}            → data-contentid 
         POST /api  action=getPlayer&video_id={options[0].ID} → { data: { video_url } }
 ```
 
-Ainda não implementado: fluxo web (`route.ts`) e Android (`PlayerExtractors.kt`) — só Electron
-por enquanto, a pedido explícito. Se for promovido a fonte principal ou portado pros outros
-dois lados, seguir o mesmo padrão dos demais providers (seção "Como adicionar um novo player").
+O algoritmo precisa permanecer equivalente em `route.ts`, Electron e Android. Mudanças no HTML
+ou na API `getOptions`/`getPlayer` devem ser portadas para os três lados no mesmo commit.
 
 ## Arquivos
 
@@ -176,10 +173,9 @@ Um novo provider precisa de mudanças em **4 lugares**, sempre em conjunto:
 Se o provider só precisa funcionar bem no site web (sem ganho perceptível no app nativo — ex.:
 já é rápido via Vercel), pare no passo 1: não é obrigatório dar suporte nativo a todo provider.
 
-## Por que não existe suporte nativo a VOD
+## Voltz (`vods.faz-o-eli.online`)
 
-O script do MegaFlix referencia `vods.faz-o-eli.online` e `get_token_vod`, mas o Obaflix nunca
-implementou extração de VOD em `route.ts` — não há branch para isso em `doExtract()`. Portar o
-provider nativo pressupõe que a extração web já exista; como não existe, VOD ficou fora deste
-trabalho. Se for necessário no futuro, o primeiro passo é implementar `extractVod()` em
-`route.ts` (passo 1 da seção anterior).
+As URLs atuais do catálogo usam `vods.faz-o-eli.online/voltz.php`. O host precisa permanecer
+nas listas permitidas do servidor, Worker, Electron e Android. A detecção exige HTTPS, hostname
+exato (ou subdomínio) e o path `voltz.php`; não volte a usar apenas `pathname.includes()` sem
+validar o host, pois isso reabriria o extrator para destinos arbitrários.

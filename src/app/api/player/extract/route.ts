@@ -670,8 +670,74 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
   }
 }
 
-// ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
-// Pipeline: GET inc/Ajax.php (JSON options) → POST getVideo → securedLink.
+// ── WatchPlay ─────────────────────────────────────────────────────────────────
+// O PlayerFlix atualmente devolve WatchPlay como a primeira opção para filmes e
+// séries. Este extrator já existia nos clientes nativos; a versão web precisa do
+// mesmo caminho para não depender de uma opção EmbedPlayer que deixou de vir na API.
+async function extractWatchplayer(embedUrl: string): Promise<string | null> {
+  const parsed = await assertAllowedMediaUrl(embedUrl);
+  if (parsed.hostname !== "v1.watchplay.shop") return null;
+
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  const html = await fetchHtml(embedUrl, "https://playerflix.ink/");
+  const tags = html.match(/<[^>]+>/g) ?? [];
+  const attr = (tag: string, name: string): string | null => {
+    const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i"));
+    return match?.[1] ?? null;
+  };
+
+  const callApi = async (params: Record<string, string>): Promise<any> => {
+    const body = new URLSearchParams(params);
+    const response = await fetch("https://v1.watchplay.shop/api", {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": embedUrl,
+        "Origin": "https://v1.watchplay.shop",
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`WatchPlay API HTTP ${response.status}`);
+    return response.json();
+  };
+
+  let videoId: string | null = null;
+  if (parts[0] === "tvshow") {
+    const season = parts[2];
+    const episode = parts[3];
+    if (!season || !episode) return null;
+
+    const episodeTag = tags.find((tag) =>
+      attr(tag, "data-season") === season && attr(tag, "data-episode") === episode,
+    );
+    const contentId = episodeTag ? attr(episodeTag, "data-contentid") : null;
+    if (!contentId) return null;
+
+    const optionsJson = await callApi({ action: "getOptions", contentid: contentId });
+    const firstOption = optionsJson?.data?.options?.[0];
+    videoId = typeof firstOption?.ID === "string" || typeof firstOption?.ID === "number"
+      ? String(firstOption.ID)
+      : null;
+  } else {
+    const playerTag = tags.find((tag) => {
+      const classes = attr(tag, "class")?.split(/\s+/) ?? [];
+      return classes.includes("player_select_item") && !!attr(tag, "data-id");
+    });
+    videoId = playerTag ? attr(playerTag, "data-id") : null;
+  }
+
+  if (!videoId) return null;
+  const playerJson = await callApi({ action: "getPlayer", video_id: videoId });
+  const streamUrl = playerJson?.data?.video_url;
+  return typeof streamUrl === "string" && /^https:\/\//i.test(streamUrl) ? streamUrl : null;
+}
+
+// ── PlayerFlix: playerflix.ink → WatchPlay/EmbedPlayer ────────────────────────
+// Pipeline atual: GET inc/Ajax.php (JSON options) → WatchPlay getPlayer.
+// O fluxo legado de EmbedPlayer continua como fallback.
 // The parser retains support for the former pages/ajax.php HTML response.
 // Logging: resolution time, server, hash, expires, HLS URL, failure reason.
 async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; referer: string; manifest?: string } | null> {
@@ -745,7 +811,30 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
     return null;
   }
 
-  // 3. Prioritize embedplayer2.xyz, fallback to qualquer servidor com /video/{hash}
+  // 3. A API atual prioriza WatchPlay. Mantém EmbedPlayer como fallback para
+  // respostas antigas, caches e conteúdos cuja lista de servidores seja diferente.
+  const watchplayerUrl = embeds.find((candidate) => {
+    try { return new URL(candidate).hostname === "v1.watchplay.shop"; } catch { return false; }
+  });
+  if (watchplayerUrl) {
+    try {
+      const streamUrl = await extractWatchplayer(watchplayerUrl);
+      if (streamUrl) {
+        xlog("playerflix/watchplay", { ms: Date.now() - t0, id: tmdbId, type, found: true });
+        return { streamUrl, referer: watchplayerUrl };
+      }
+    } catch (error: any) {
+      xlog("playerflix/watchplay", {
+        ms: Date.now() - t0,
+        id: tmdbId,
+        type,
+        found: false,
+        error: String(error?.message ?? "").slice(0, 80),
+      });
+    }
+  }
+
+  // 4. Prioriza embedplayer2.xyz e aceita o formato legado /video/{hash}.
   const targetUrl = embeds.find((u) => u.includes("embedplayer2.xyz"))
     ?? embeds.find((u) => u.includes("embedplayer"))
     ?? embeds.find((u) => /\/video\/[a-f0-9]{16,}/i.test(u))
@@ -761,7 +850,9 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
     return null;
   }
 
-  // 4. Extract hash from /video/{hash}
+  await assertAllowedMediaUrl(targetUrl);
+
+  // 5. Extract hash from /video/{hash}
   const hashMatch = targetUrl.match(/\/video\/([a-f0-9]{16,})/i);
   const hash = hashMatch?.[1] ?? "";
   if (!hash) {
@@ -771,7 +862,7 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
 
   xlog("playerflix/getVideo", { server });
 
-  // 5. POST to getVideo
+  // 6. POST to getVideo
   const form = new URLSearchParams();
   form.append("hash", hash);
   form.append("r", "");

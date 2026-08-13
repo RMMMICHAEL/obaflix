@@ -211,8 +211,14 @@ class PlayerWebViewClient(
             // aos níveis/segmentos caem no branch 3 (host CDN) e seguem pelo fetchCdnDirect.
             val ct = contentType.lowercase()
             val urlLower = cdnUrl.lowercase()
+            val parsedCdnUrl = runCatching { URL(cdnUrl) }.getOrNull()
+            val isExtensionlessEmbedPlayerPlaylist = parsedCdnUrl != null &&
+                (parsedCdnUrl.host == "embedplayer1.xyz" || parsedCdnUrl.host.endsWith(".embedplayer1.xyz") ||
+                    parsedCdnUrl.host == "embedplayer2.xyz" || parsedCdnUrl.host.endsWith(".embedplayer2.xyz")) &&
+                Regex("^/m(?:3|d)/", RegexOption.IGNORE_CASE).containsMatchIn(parsedCdnUrl.path)
             val isM3u8 = ct.contains("mpegurl") || ct.contains("m3u") ||
-                urlLower.contains(".m3u8") || urlLower.contains(".txt")
+                urlLower.contains(".m3u8") || urlLower.contains(".txt") ||
+                isExtensionlessEmbedPlayerPlaylist
 
             if (isM3u8) {
                 val bodyText = response.body?.string() ?: return null

@@ -30,6 +30,7 @@ const PROVIDER_HOSTS = [
   "superflixapi.pro",
   "v1.watchplay.shop",
   "megafrixapi.com",
+  "vods.faz-o-eli.online",
 ] as const;
 
 function matchesHost(hostname: string, allowed: string): boolean {

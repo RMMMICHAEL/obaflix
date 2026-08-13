@@ -354,10 +354,18 @@ export async function GET(req: NextRequest) {
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
     const ct = contentType.toLowerCase();
+    // O EmbedPlayer usa playlists HLS sem extensão: /m3/... para vídeo/áudio
+    // e /md/... para a playlist de legendas. O MIME retornado é text/plain.
+    const extensionlessProviderPlaylist =
+      (parsed.hostname === "embedplayer2.xyz" || parsed.hostname.endsWith(".embedplayer2.xyz") ||
+       parsed.hostname === "embedplayer1.xyz" || parsed.hostname.endsWith(".embedplayer1.xyz")) &&
+      /^\/m(?:3|d)\//i.test(parsed.pathname);
+    const isSubtitlePlaylist = extensionlessProviderPlaylist && /^\/md\//i.test(parsed.pathname);
     const isM3u8 =
       url.toLowerCase().includes(".m3u8") ||
       url.toLowerCase().includes(".txt") ||
-      ct.includes("mpegurl");
+      ct.includes("mpegurl") ||
+      extensionlessProviderPlaylist;
 
     if (isM3u8) {
       const text = await res.text();
@@ -371,7 +379,7 @@ export async function GET(req: NextRequest) {
         req.nextUrl.origin,
         nextRef,
         userId,
-        proxyMediaThroughApp,
+        proxyMediaThroughApp || isSubtitlePlaylist,
       );
       return new NextResponse(rewritten, {
         status: 200,

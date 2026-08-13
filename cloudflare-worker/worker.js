@@ -391,7 +391,7 @@ const EMBED_HOSTS = [
   "embedplayer1.xyz", "embedplayer2.xyz",
   "xn--kcksk7a2bl5le7b6doc1h3f.com", "llanfairpwllgwyngy.com",
   "boltcdn.xyz", "upbolt.to", "bigshare.link", "superflixapi.pro",
-  "v1.watchplay.shop", "megafrixapi.com",
+  "v1.watchplay.shop", "megafrixapi.com", "vods.faz-o-eli.online",
 ];
 
 function allowedHost(hostname, allowed) {
