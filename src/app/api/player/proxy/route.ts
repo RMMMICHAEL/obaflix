@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { assertSafeUrl } from "@/lib/ssrf";
+import { assertSafeUrl, safeGet } from "@/lib/ssrf";
 import { headerMatchesHost } from "@/lib/requestSecurity";
 import {
   resolveStreamToken,
@@ -331,10 +331,9 @@ export async function GET(req: NextRequest) {
 
     plog(id, "fetch_start", { host: parsed.hostname, referer: (headers["Referer"] ?? "—").slice(0, 60), origin: spoofedOrigin.slice(0, 60) });
 
-    const res = await fetch(url, {
+    const res = await safeGet(url, {
       headers,
       signal: AbortSignal.timeout(20000),
-      redirect: "follow",
     });
 
     plog(id, "fetch_done", { status: res.status, ct: res.headers.get("content-type")?.slice(0, 40) ?? "—" });

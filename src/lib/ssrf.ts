@@ -13,6 +13,12 @@ function isPrivateIPv4(ip: string): boolean {
     (a === 169 && b === 254) ||        // link-local (cloud metadata 169.254.169.254)
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 2) ||
+    (a === 192 && b === 88) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51) ||
+    (a === 203 && b === 0) ||
     (a === 100 && b >= 64 && b <= 127) || // CGNAT
     a >= 224                           // multicast / reservado
   );
@@ -23,6 +29,9 @@ function isPrivateIPv6(ip: string): boolean {
   if (low === "::1" || low === "::") return true;
   if (low.startsWith("fc") || low.startsWith("fd")) return true; // ULA
   if (low.startsWith("fe80")) return true;                       // link-local
+  if (low.startsWith("fec") || low.startsWith("fed") || low.startsWith("fee") || low.startsWith("fef")) return true;
+  if (low.startsWith("ff")) return true;                         // multicast
+  if (low.startsWith("2001:db8")) return true;                   // documentation
   if (low.startsWith("::ffff:")) return isPrivateIPv4(low.split(":").pop() || ""); // IPv4-mapped
   return false;
 }
@@ -50,7 +59,9 @@ export async function assertSafeUrl(raw: string): Promise<URL> {
     throw new Error("scheme não permitido");
   }
 
-  const host = parsed.hostname;
+  if (parsed.username || parsed.password) throw new Error("credenciais na URL não permitidas");
+
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
 
   // IP literal → checa direto
   if (net.isIP(host)) {
@@ -65,4 +76,24 @@ export async function assertSafeUrl(raw: string): Promise<URL> {
     if (isPrivateIP(r.address)) throw new Error("destino interno bloqueado");
   }
   return parsed;
+}
+
+/** Fetch GET with SSRF validation repeated after every redirect. */
+export async function safeGet(
+  raw: string,
+  init: Omit<RequestInit, "method" | "redirect"> = {},
+  maxRedirects = 4,
+): Promise<Response> {
+  let current = await assertSafeUrl(raw);
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(current, { ...init, method: "GET", redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location || redirects >= maxRedirects) {
+      response.body?.cancel().catch(() => {});
+      throw new Error("redirecionamento não permitido");
+    }
+    response.body?.cancel().catch(() => {});
+    current = await assertSafeUrl(new URL(location, current).toString());
+  }
 }

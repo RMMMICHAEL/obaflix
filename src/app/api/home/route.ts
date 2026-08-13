@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publicMedia } from "@/lib/publicMedia";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,12 @@ export async function GET() {
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
       prisma.filme.findMany({ orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
-      prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.serie.findMany({
+        where: { tipo: "anime" },
+        orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
+        take: 20,
+        include: { generos: { include: { genero: true } } },
+      }),
       prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
     ]);
 
@@ -18,5 +24,13 @@ export async function GET() {
     .sort(() => Math.random() - 0.5)
     .slice(0, 5);
 
-  return NextResponse.json({ hero, lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos });
+  return NextResponse.json({
+    hero: hero.map(publicMedia),
+    lancamentosFilmes: lancamentosFilmes.map(publicMedia),
+    lancamentosSeries,
+    destaquesFilmes: destaquesFilmes.map(publicMedia),
+    destaquesSeries,
+    animes,
+    desenhos,
+  });
 }

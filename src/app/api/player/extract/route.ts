@@ -3,7 +3,9 @@ export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { assertSafeUrl } from "@/lib/ssrf";
+import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
+import { headerMatchesHost } from "@/lib/requestSecurity";
+import { parsePlayerflixEmbeds } from "@/lib/playerflix";
 import {
   verifyPlayToken,
   createStreamToken,
@@ -12,6 +14,7 @@ import {
   recordAbuseAttempt,
 } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import crypto from "crypto";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -29,6 +32,19 @@ function clientUa(req: NextRequest): string {
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
+
+function signedWorkerStreamUrl(workerBase: string, embedUrl: string): string | null {
+  const secret = process.env.EMBED_WORKER_SECRET;
+  if (!secret || secret.length < 32) return null;
+  const target = new URL("/stream", workerBase);
+  target.searchParams.set("embedUrl", embedUrl);
+  const exp = String(Math.floor(Date.now() / 1000) + 10 * 60);
+  target.searchParams.set("exp", exp);
+  const canonical = `/stream\n${exp}\n${target.searchParams.toString()}`;
+  const sig = crypto.createHmac("sha256", secret).update(canonical).digest("base64url");
+  target.searchParams.set("sig", sig);
+  return target.toString();
+}
 
 // ── Diagnóstico de extração ───────────────────────────────────────────────────
 // Logs estruturados por etapa: [extract/<provider>/<fase>] k=v k=v
@@ -177,31 +193,6 @@ async function postPlayer(url: string, id: string): Promise<string> {
 }
 
 async function postEmbedPlayer(embedUrl: string): Promise<string> {
-  const workerUrl = process.env.EMBED_WORKER_URL;
-  const workerSecret = process.env.EMBED_WORKER_SECRET ?? "";
-
-  if (workerUrl) {
-    try {
-      const res = await fetch(workerUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Worker-Secret": workerSecret,
-        },
-        body: JSON.stringify({ url: embedUrl }),
-        signal: AbortSignal.timeout(12000),
-      });
-      if (res.ok) {
-        const text = await res.text();
-        if (text.trimStart().startsWith("{")) {
-          const json = JSON.parse(text);
-          const src = json.securedLink || json.videoSource || json.src || "";
-          if (src) return src;
-        }
-      }
-    } catch { /* fallback para direto */ }
-  }
-
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
@@ -680,7 +671,8 @@ async function extractWebcine(parsed: URL): Promise<{ streamUrl: string; referer
 }
 
 // ── PlayerFlix: playerflix.ink → embedplayer2.xyz ─────────────────────────────
-// Pipeline: GET ajax.php (base64 embeds) → decode → POST getVideo → securedLink
+// Pipeline: GET inc/Ajax.php (JSON options) → POST getVideo → securedLink.
+// The parser retains support for the former pages/ajax.php HTML response.
 // Logging: resolution time, server, hash, expires, HLS URL, failure reason.
 async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; referer: string; manifest?: string } | null> {
   const tmdbId = parsed.searchParams.get("id") ?? "";
@@ -689,22 +681,30 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
   const episode = parsed.searchParams.get("episode") ?? "1";
   const t0 = Date.now();
 
-  const ajaxUrl = type === "tv"
-    ? `https://playerflix.ink/pages/ajax.php?id=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`
-    : `https://playerflix.ink/pages/ajax.php?id=${encodeURIComponent(tmdbId)}&type=movie`;
+  const ajaxUrl = new URL("https://playerflix.ink/inc/Ajax.php");
+  ajaxUrl.searchParams.set("type", type === "tv" ? "tv" : "movie");
+  ajaxUrl.searchParams.set("id", tmdbId);
+  if (type === "tv") {
+    ajaxUrl.searchParams.set("season", season);
+    ajaxUrl.searchParams.set("episode", episode);
+  }
+  const pageReferer = type === "tv"
+    ? `https://playerflix.ink/serie/${encodeURIComponent(tmdbId)}/${encodeURIComponent(season)}/${encodeURIComponent(episode)}`
+    : `https://playerflix.ink/filme/${encodeURIComponent(tmdbId)}`;
 
   // 1. Fetch embed options from playerflix
-  let html: string;
+  let responseBody: string;
   try {
     const res = await fetch(ajaxUrl, {
       headers: {
         "User-Agent": UA,
-        "Accept": "text/html,*/*;q=0.8",
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "pt-BR,pt;q=0.5",
-        "Referer": "https://myembed.biz/",
-        "Sec-Fetch-Dest": "iframe",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "cross-site",
+        "Referer": pageReferer,
+        "X-Requested-With": "XMLHttpRequest",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
       },
       signal: AbortSignal.timeout(8000),
     });
@@ -712,28 +712,41 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
       xlog("playerflix/ajax", { ms: Date.now() - t0, status: res.status, id: tmdbId, type, error: `http_${res.status}` });
       return null;
     }
-    html = await res.text();
+    responseBody = await res.text();
   } catch (e: any) {
     const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
     xlog("playerflix/ajax", { ms: Date.now() - t0, id: tmdbId, type, error: isTimeout ? "timeout_8000ms" : String(e?.message ?? "").slice(0, 60) });
     return null;
   }
 
-  // 2. Extract and decode base64 data-embed attributes
-  const embedMatches = [...html.matchAll(/data-embed=["']([^"']+)["']/g)];
-  const embeds = embedMatches.map((m) => {
-    try { return Buffer.from(m[1], "base64").toString("utf-8"); } catch { return null; }
-  }).filter(Boolean) as string[];
+  // 2. Current API returns { status, data: { options: [{ embed }] } }.
+  // Keep parsing legacy data-embed HTML so cached/older deployments still work.
+  const parsedEmbeds = parsePlayerflixEmbeds(responseBody);
+  const embeds = parsedEmbeds.embeds;
 
-  xlog("playerflix/embeds", { ms: Date.now() - t0, id: tmdbId, type, total: embedMatches.length, decoded: embeds.length });
+  xlog("playerflix/embeds", {
+    ms: Date.now() - t0,
+    id: tmdbId,
+    type,
+    format: parsedEmbeds.format,
+    total: parsedEmbeds.optionCount,
+    decoded: embeds.length,
+  });
 
   if (embeds.length === 0) {
-    xlog("playerflix/no_embeds", { ms: Date.now() - t0, id: tmdbId, type, htmlLen: html.length, failReason: "no_data_embed_found" });
+    xlog("playerflix/no_embeds", {
+      ms: Date.now() - t0,
+      id: tmdbId,
+      type,
+      format: parsedEmbeds.format,
+      bodyLen: responseBody.length,
+      failReason: "no_embed_options_found",
+    });
     return null;
   }
 
   // 3. Prioritize embedplayer2.xyz, fallback to qualquer servidor com /video/{hash}
-  let targetUrl = embeds.find((u) => u.includes("embedplayer2.xyz"))
+  const targetUrl = embeds.find((u) => u.includes("embedplayer2.xyz"))
     ?? embeds.find((u) => u.includes("embedplayer"))
     ?? embeds.find((u) => /\/video\/[a-f0-9]{16,}/i.test(u))
     ?? null;
@@ -756,7 +769,7 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
     return null;
   }
 
-  xlog("playerflix/getVideo", { server, hash });
+  xlog("playerflix/getVideo", { server });
 
   // 5. POST to getVideo
   const form = new URLSearchParams();
@@ -778,14 +791,14 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
       signal: AbortSignal.timeout(8000),
     });
     if (!r2.ok) {
-      xlog("playerflix/result", { ms: Date.now() - t0, server, hash, status: r2.status, found: false, failReason: `http_${r2.status}` });
+      xlog("playerflix/result", { ms: Date.now() - t0, server, status: r2.status, found: false, failReason: `http_${r2.status}` });
       return null;
     }
     const text = await r2.text();
     data = JSON.parse(text);
   } catch (e: any) {
     const isTimeout = e?.name === "TimeoutError" || e?.name === "AbortError";
-    xlog("playerflix/result", { ms: Date.now() - t0, server, hash, found: false, failReason: isTimeout ? "timeout_8000ms" : String(e?.message ?? "").slice(0, 60) });
+    xlog("playerflix/result", { ms: Date.now() - t0, server, found: false, failReason: isTimeout ? "timeout_8000ms" : String(e?.message ?? "").slice(0, 60) });
     return null;
   }
 
@@ -829,13 +842,13 @@ async function extractPlayerflix(parsed: URL): Promise<{ streamUrl: string; refe
       const ct = mRes.headers.get("content-type") ?? "";
       if (ct.includes("mpegurl") || ct.includes("text") || mRes.url.includes(".m3u8") || mRes.url.includes(".txt")) {
         manifest = await mRes.text();
-        xlog("playerflix/manifest", { ms: Date.now() - t0, server, hash, bytes: manifest.length, finalUrl: mRes.url.slice(0, 80) });
+        xlog("playerflix/manifest", { ms: Date.now() - t0, server, bytes: manifest.length });
       }
     } else {
-      xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, hash, status: mRes.status });
+      xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, status: mRes.status });
     }
   } catch (e: any) {
-    xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, hash, err: String(e?.message ?? "").slice(0, 60) });
+    xlog("playerflix/manifest_err", { ms: Date.now() - t0, server, err: String(e?.message ?? "").slice(0, 60) });
   }
 
   return { streamUrl, referer: embedReferer, manifest };
@@ -874,7 +887,7 @@ function findM3u8(text: string): string | null {
 const EXTRACT_TIMEOUT_MS = 25000;
 
 async function doExtract(url: string): Promise<{ stream: string; tipo: string; referer?: string; manifest?: string }> {
-  const parsed = await assertSafeUrl(url);
+  const parsed = await assertAllowedMediaUrl(url);
   const hostname = parsed.hostname;
   const pathname = parsed.pathname;
   const id = pathname.split("/").filter(Boolean).pop() ?? "";
@@ -939,9 +952,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     // Fallback: worker URL if direct extraction failed
     if (!streamUrl) {
       const workerUrl = process.env.EMBED_WORKER_URL;
-      if (workerUrl) {
-        streamUrl = `${workerUrl}/stream?embedUrl=${encodeURIComponent(url)}`;
-      }
+      if (workerUrl) streamUrl = signedWorkerStreamUrl(workerUrl, url);
     }
 
   } else if (hostname.includes("rola") || hostname.includes("llanfair")) {
@@ -1001,7 +1012,7 @@ export async function GET(req: NextRequest) {
 
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
-  if (origin && host && !origin.includes(host)) {
+  if (origin && host && !headerMatchesHost(origin, host)) {
     await recordAbuseAttempt(ip);
     audit("origin_rejected", { ip, ua, detail: `origin=${origin}` });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
@@ -1024,7 +1035,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 400, headers: NO_STORE });
   }
 
-  const tokenCheck = verifyPlayToken(playToken, userId, url, ip);
+  const tokenCheck = await verifyPlayToken(playToken, userId, url, ip);
   if (!tokenCheck.ok) {
     await recordAbuseAttempt(ip);
     audit("play_token_rejected", { userId, ip, ua, detail: "token inválido ou expirado" });

@@ -371,19 +371,19 @@ object PlayerExtractors {
         val parsed = try { URL(embedUrl) } catch (_: Exception) { return null }
         val host = parsed.host ?: ""
         val path = parsed.path ?: ""
+        if (parsed.protocol != "https") return null
+        fun hostIs(vararg allowed: String): Boolean = allowed.any { host == it || host.endsWith(".$it") }
 
-        if (path.contains("/rola3/") || path.contains("/rola4/") || host.contains("embedplayer") ||
-            host.contains("xn--kcksk7a2bl5le7b6doc1h3f")
-        ) return "embedplayer"
-        if (path.contains("voltz.php")) return "voltz"
-        if (host.contains("lulu")) return "lulu"
-        if (host.contains("hide")) return "hide"
-        if (host.contains("wish")) return "wish"
-        if (host.contains("llanfair") || path.contains("/rola/")) return "rola2"
-        if (host.contains("boltcdn") || host.contains("bolt")) return "bolt"
-        if (host.contains("bigshare") || host.contains("big")) return "big"
-        if (host.contains("watchplay")) return "watchplayer"
-        if (host == "superflixapi.pro" || host.endsWith(".superflixapi.pro")) return "superflix"
+        if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) return "embedplayer"
+        if (hostIs("megafrixapi.com") && path.contains("voltz.php")) return "voltz"
+        if (hostIs("luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com")) return "lulu"
+        if (hostIs("playhide.shop", "hidehide.shop", "vidhidehub.com")) return "hide"
+        if (hostIs("streamwish.com", "playerwish.com", "hlswish.com", "wishonly.site", "cdnwish.com", "asnwish.com", "swishsrv.com")) return "wish"
+        if (hostIs("llanfairpwllgwyngy.com")) return "rola2"
+        if (hostIs("boltcdn.xyz", "upbolt.to")) return "bolt"
+        if (hostIs("bigshare.link")) return "big"
+        if (hostIs("v1.watchplay.shop")) return "watchplayer"
+        if (hostIs("superflixapi.pro")) return "superflix"
         return null
     }
 

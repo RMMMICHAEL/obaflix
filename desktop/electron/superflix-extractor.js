@@ -206,6 +206,32 @@ function findDirectMedia(html, baseUrl) {
   return null;
 }
 
+function findSubtitleTracks(html, baseUrl) {
+  const normalized = normalizeHtml(html);
+  const tracks = [];
+  const seen = new Set();
+  const add = (raw, label = "Português") => {
+    const file = resolveUrl(raw, baseUrl);
+    if (!file || seen.has(file) || !/\.(?:vtt|srt|ass|ssa)(?:$|\?)/i.test(file)) return;
+    seen.add(file);
+    tracks.push({ file, label: label || "Português", kind: "captions", default: tracks.length === 0, referer: baseUrl });
+  };
+
+  for (const match of normalized.matchAll(/<track\b[^>]*>/gi)) {
+    const tag = match[0];
+    const src = tag.match(/\bsrc=["']([^"']+)["']/i)?.[1];
+    const label = tag.match(/\blabel=["']([^"']+)["']/i)?.[1];
+    if (src) add(src, label);
+  }
+  for (const match of normalized.matchAll(/(?:file|src)\s*:\s*["']([^"']+\.(?:vtt|srt|ass|ssa)(?:\?[^"']*)?)["'][\s\S]{0,160}?(?:label\s*:\s*["']([^"']+)["'])?/gi)) {
+    add(match[1], match[2]);
+  }
+  for (const match of normalized.matchAll(/["'](https?:\/\/[^"']+\.(?:vtt|srt|ass|ssa)(?:\?[^"']*)?)["']/gi)) {
+    add(match[1]);
+  }
+  return tracks;
+}
+
 function createCookieJar() {
   const cookies = new Map();
 
@@ -418,6 +444,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       referer: warezPageUrl,
     });
     const mediaSource = findNativeMediaSource(mediaPage.text, mediaPage.url);
+    const subtitles = findSubtitleTracks(mediaPage.text, mediaPage.url);
     if (!mediaSource) throw new Error("media-source não encontrado no player nativo");
 
     const mediaResponse = await requestOnce(fetchImpl, jar, mediaSource, {
@@ -433,12 +460,12 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     if (mediaResponse.status >= 300 && mediaResponse.status < 400) {
       const finalUrl = resolveUrl(mediaResponse.headers.get("location"), mediaSource);
       if (!finalUrl) throw new Error("media-source sem Location final");
-      return { stream: finalUrl, referer: null, tipo: "mp4" };
+      return { stream: finalUrl, referer: null, tipo: "mp4", subtitles };
     }
 
     const contentType = mediaResponse.headers.get("content-type") || "";
     if (mediaResponse.ok && /video\/mp4|octet-stream/i.test(contentType)) {
-      return { stream: mediaSource, referer: mediaPage.url, tipo: "mp4" };
+      return { stream: mediaSource, referer: mediaPage.url, tipo: "mp4", subtitles };
     }
     throw new Error(`media-source HTTP ${mediaResponse.status}`);
   }
@@ -450,7 +477,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
   ) {
     if (typeof extractEmbedPlayer !== "function") throw new Error("extrator embedplayer indisponível");
     const stream = await extractEmbedPlayer(resolvedUrl, `${new URL(warezPageUrl).origin}/`);
-    return { stream, referer: resolvedUrl, tipo: stream.includes(".mp4") ? "mp4" : "hls" };
+    return { stream, referer: resolvedUrl, tipo: stream.includes(".mp4") ? "mp4" : "hls", subtitles: [] };
   }
 
   if (/\.(?:mp4|m3u8)(?:$|\?)/i.test(resolvedUrl) || /\/master\.txt(?:$|\?)/i.test(resolvedUrl)) {
@@ -458,13 +485,19 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       stream: resolvedUrl,
       referer: warezPageUrl,
       tipo: resolvedUrl.includes(".mp4") ? "mp4" : "hls",
+      subtitles: [],
     };
   }
 
   const fallbackPage = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl });
   const direct = findDirectMedia(fallbackPage.text, fallbackPage.url);
   if (!direct) throw new Error(`mídia não encontrada em ${safeUrlLabel(fallbackPage.url)}`);
-  return { stream: direct, referer: fallbackPage.url, tipo: direct.includes(".mp4") ? "mp4" : "hls" };
+  return {
+    stream: direct,
+    referer: fallbackPage.url,
+    tipo: direct.includes(".mp4") ? "mp4" : "hls",
+    subtitles: findSubtitleTracks(fallbackPage.text, fallbackPage.url),
+  };
 }
 
 async function extractSuperflix(embedUrl, options = {}) {

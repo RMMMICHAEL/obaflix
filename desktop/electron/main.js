@@ -3,11 +3,16 @@
 const { app, BrowserWindow, session, ipcMain, shell, Menu } = require("electron");
 const http = require("http");
 const path = require("path");
+const crypto = require("crypto");
+const dns = require("dns").promises;
+const net = require("net");
 const { setupUpdater } = require("./updater");
 const { detectProvider, extractStream: extractStreamNative } = require("./extractors");
 const { extractSuperflixInBrowser } = require("./browser-extractor");
 
 const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
+const OBAFLIX_ORIGIN = new URL(OBAFLIX_URL).origin;
+const LOCAL_SERVER_TOKEN = crypto.randomBytes(32).toString("base64url");
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
@@ -30,6 +35,29 @@ const playerState = {
   embedReferer: null,  // Referer que o CDN espera em todo request (ex: https://embedplayer2.xyz/)
 };
 
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  const low = ip.toLowerCase();
+  return low === "::" || low === "::1" || low.startsWith("fc") || low.startsWith("fd") ||
+    low.startsWith("fe8") || low.startsWith("fe9") || low.startsWith("fea") || low.startsWith("feb") ||
+    low.startsWith("ff") || low.startsWith("::ffff:");
+}
+
+async function assertPublicHttpsStream(raw) {
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Stream inseguro");
+  const addresses = await dns.lookup(parsed.hostname, { all: true });
+  if (!addresses.length || addresses.some(({ address }) => isPrivateIp(address))) {
+    throw new Error("Destino de stream bloqueado");
+  }
+  return raw;
+}
+
 let mainWindow = null;
 let localPort = null;
 
@@ -47,9 +75,10 @@ else {
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
   try {
-    const { stream, tipo, provider, referer } = await extractStreamNative(embedUrl);
-    console.log(`[extract] provider=${provider} → ${stream.slice(0, 120)}`);
-    return { stream, tipo, referer };
+    const { stream, tipo, provider, referer, subtitles } = await extractStreamNative(embedUrl);
+    console.log(`[extract] provider=${provider} stream_resolved=true`);
+    await assertPublicHttpsStream(stream);
+    return { stream, tipo, referer, subtitles: subtitles || [] };
   } catch (error) {
     const provider = detectProvider(embedUrl);
     const message = error?.message || String(error);
@@ -63,11 +92,12 @@ async function extractSecuredLink(embedUrl) {
       embedUrl,
       {
         parentWindow: mainWindow,
-        wrapperUrl: `http://localhost:${localPort}/superflix-wrapper`,
+        wrapperUrl: `http://127.0.0.1:${localPort}/superflix-wrapper?token=${LOCAL_SERVER_TOKEN}`,
       },
     );
-    console.log(`[extract] provider=superflix-browser → ${result.stream.slice(0, 120)}`);
+    console.log("[extract] provider=superflix-browser stream_resolved=true");
 
+    await assertPublicHttpsStream(result.stream);
     return result;
   }
 }
@@ -76,8 +106,18 @@ async function extractSecuredLink(embedUrl) {
 function startLocalServer() {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url, "http://127.0.0.1");
+      if (url.searchParams.get("token") !== LOCAL_SERVER_TOKEN) {
+        res.writeHead(403, { "Cache-Control": "no-store" });
+        res.end("Forbidden");
+        return;
+      }
+
+      const requestOrigin = req.headers.origin || "";
       const CORS = {
-        "Access-Control-Allow-Origin": "*",
+        ...(requestOrigin === OBAFLIX_ORIGIN
+          ? { "Access-Control-Allow-Origin": OBAFLIX_ORIGIN, "Vary": "Origin" }
+          : {}),
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
         // Chromium Private Network Access: sem este header, um fetch vindo de um site
@@ -90,8 +130,6 @@ function startLocalServer() {
 
       if (req.method === "OPTIONS") { res.writeHead(204, CORS); res.end(); return; }
 
-      const url = new URL(req.url, "http://127.0.0.1");
-
       if (url.pathname === "/superflix-wrapper") {
         const html = [
           "<!doctype html>",
@@ -99,6 +137,7 @@ function startLocalServer() {
           "<head>",
           '<meta charset="utf-8">',
           '<meta name="viewport" content="width=device-width,initial-scale=1">',
+          '<meta name="referrer" content="no-referrer">',
           "<style>",
           "*{box-sizing:border-box}",
           "html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}",
@@ -121,6 +160,7 @@ function startLocalServer() {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store, no-cache, must-revalidate",
           "Pragma": "no-cache",
+          "Referrer-Policy": "no-referrer",
         });
 
         res.end(html);
@@ -135,7 +175,7 @@ function startLocalServer() {
         console.log(`[local] extract: ${embedUrl.slice(0, 80)}`);
         try {
           const { stream, tipo, referer } = await extractSecuredLink(embedUrl);
-          console.log(`[local] stream: ${stream.slice(0, 80)}`);
+          console.log("[local] stream resolved");
 
           // Atualiza playerState: o CDN valida Referer = URL completa da página embed
           // (não apenas a origem). O mesmo Referer usado na extração POST.
@@ -177,10 +217,11 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       autoplayPolicy: "no-user-gesture-required",
       partition: "persist:obaflix",
       // Desativa CORS no renderer — idêntico ao WebView do MegaFlix Android
-      webSecurity: false,
+      webSecurity: true,
     },
   });
 
@@ -196,17 +237,36 @@ function createWindow() {
 function configureSession() {
   const ses = session.fromPartition("persist:obaflix");
 
+  // The streaming shell does not need camera, microphone, geolocation, USB,
+  // notifications or other privileged Chromium permissions.
+  ses.setPermissionCheckHandler(() => false);
+  ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+
   // ── Strip CSP do Vercel ─────────────────────────────────────────────────
   // O header Content-Security-Policy (connect-src 'self') bloqueia requests do
   // renderer para CDNs externos mesmo com webSecurity:false (CSP é independente de SOP).
   // Removemos o CSP das respostas do Vercel para que o redirect proxy→CDN funcione.
   ses.webRequest.onHeadersReceived(
-    { urls: [`${OBAFLIX_URL}/*`] },
+    { urls: ["*://*/*"] },
     (details, callback) => {
       const rh = { ...details.responseHeaders };
-      delete rh["content-security-policy"];
-      delete rh["Content-Security-Policy"];
-      delete rh["content-security-policy-report-only"];
+      let responseOrigin = "";
+      let responseHost = "";
+      try {
+        const parsed = new URL(details.url);
+        responseOrigin = parsed.origin;
+        responseHost = parsed.hostname;
+      } catch { /**/ }
+      if (responseOrigin === OBAFLIX_ORIGIN) {
+        delete rh["content-security-policy"];
+        delete rh["Content-Security-Policy"];
+        delete rh["content-security-policy-report-only"];
+      }
+      const cdnHost = playerState.cdnHostname;
+      if (cdnHost && (responseHost === cdnHost || responseHost.endsWith("." + cdnHost))) {
+        rh["Access-Control-Allow-Origin"] = [OBAFLIX_ORIGIN];
+        rh["Vary"] = ["Origin"];
+      }
       callback({ responseHeaders: rh });
     }
   );
@@ -228,7 +288,7 @@ function configureSession() {
           const hasNativeExtractor = !!detectProvider(embedUrl);
 
           if (hasNativeExtractor && localPort) {
-            const redirect = `http://127.0.0.1:${localPort}/extract?embedUrl=${encodeURIComponent(embedUrl)}`;
+            const redirect = `http://127.0.0.1:${localPort}/extract?token=${LOCAL_SERVER_TOKEN}&embedUrl=${encodeURIComponent(embedUrl)}`;
             console.log(`[intercept/extract] → local: ${embedUrl.slice(0, 60)}`);
             callback({ redirectURL: redirect });
             return;
@@ -278,7 +338,7 @@ function configureSession() {
 
     // 2. Requests para os embed players (extração, página do player)
     const reqHostname = (() => { try { return new URL(details.url).hostname; } catch { return ""; } })();
-    const isEmbedReq = EMBED_HOSTNAMES.some((host) => reqHostname.endsWith(host));
+    const isEmbedReq = EMBED_HOSTNAMES.some((host) => reqHostname === host || reqHostname.endsWith("." + host));
     if (isEmbedReq) {
       if (!h["Referer"] && !h["referer"]) h["Referer"] = OBAFLIX_URL + "/";
       if (details.method === "POST") h["X-Requested-With"] = "XMLHttpRequest";
@@ -309,19 +369,31 @@ function configureSession() {
 function setupWebContents() {
   const wc = mainWindow.webContents;
 
+  const isAppUrl = (raw) => {
+    try { return new URL(raw).origin === OBAFLIX_ORIGIN; } catch { return false; }
+  };
+  const openExternalHttp = (raw) => {
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol === "https:") shell.openExternal(parsed.href);
+    } catch { /**/ }
+  };
+
   wc.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(OBAFLIX_URL)) { shell.openExternal(url); return { action: "deny" }; }
+    if (!isAppUrl(url)) { openExternalHttp(url); return { action: "deny" }; }
     return { action: "allow" };
   });
 
   wc.on("will-navigate", (event, url) => {
     try {
-      if (!url.startsWith(OBAFLIX_URL) && !url.startsWith("http://127.0.0.1")) {
-        const parsed = new URL(url);
-        const isEmbed = EMBED_HOSTNAMES.some((host) => parsed.hostname.endsWith(host));
-        if (!isEmbed) { event.preventDefault(); shell.openExternal(url); }
+      const parsed = new URL(url);
+      const isLocalWrapper = parsed.origin === `http://127.0.0.1:${localPort}` &&
+        parsed.searchParams.get("token") === LOCAL_SERVER_TOKEN;
+      if (!isAppUrl(url) && !isLocalWrapper) {
+        event.preventDefault();
+        openExternalHttp(url);
       }
-    } catch { }
+    } catch { event.preventDefault(); }
   });
 
   wc.on("did-finish-load", () => {
@@ -332,31 +404,47 @@ function setupWebContents() {
     if (input.type !== "keyDown") return;
     if (input.key === "F11") { mainWindow.setFullScreen(!mainWindow.isFullScreen()); event.preventDefault(); }
     else if (input.key === "F5") { wc.reload(); event.preventDefault(); }
-    else if (input.key === "F12") { wc.openDevTools(); event.preventDefault(); }
+    else if (input.key === "F12" && !app.isPackaged) { wc.openDevTools(); event.preventDefault(); }
     else if (input.key === "Escape" && mainWindow.isFullScreen()) { mainWindow.setFullScreen(false); event.preventDefault(); }
   });
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────────
-ipcMain.handle("toggle-fullscreen", () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()));
-ipcMain.handle("get-version", () => app.getVersion());
-ipcMain.handle("install-update", () => require("electron-updater").autoUpdater.quitAndInstall(false, true));
+function isTrustedIpc(event) {
+  try { return new URL(event.senderFrame.url).origin === OBAFLIX_ORIGIN; } catch { return false; }
+}
+
+ipcMain.handle("toggle-fullscreen", (event) => {
+  if (!isTrustedIpc(event)) return false;
+  mainWindow?.setFullScreen(!mainWindow.isFullScreen());
+  return true;
+});
+ipcMain.handle("get-version", (event) => isTrustedIpc(event) ? app.getVersion() : null);
+ipcMain.handle("install-update", (event) => {
+  if (!isTrustedIpc(event)) return false;
+  require("electron-updater").autoUpdater.quitAndInstall(false, true);
+  return true;
+});
 
 // Extração nativa multi-provider: o site chama window.obaflixDesktop.extractStream()
 // → ipcRenderer.invoke("extract-stream") → aqui → Node.js fetch com IP do usuário.
 // Cobre qualquer provider com extrator em desktop/electron/extractors.js — a decisão de
 // QUANDO chamar este caminho (em vez do fluxo web via Vercel) é feita no site por
 // supportsNativeDesktopExtraction() (src/components/player/CustomPlayer.tsx).
-ipcMain.handle("extract-stream", async (_event, embedUrl) => {
+ipcMain.handle("extract-stream", async (event, embedUrl) => {
   try {
-    const { stream, tipo, referer } = await extractSecuredLink(embedUrl);
+    if (!isTrustedIpc(event)) throw new Error("Origem IPC não autorizada");
+    if (typeof embedUrl !== "string" || embedUrl.length > 4096) throw new Error("URL inválida");
+    const parsed = new URL(embedUrl);
+    if (parsed.protocol !== "https:" || !detectProvider(embedUrl)) throw new Error("Provedor não autorizado");
+    const { stream, tipo, referer, subtitles } = await extractSecuredLink(embedUrl);
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
       playerState.cdnHostname = new URL(stream).hostname;
       playerState.embedReferer = referer || null;
       console.log(`[ipc] CDN: ${playerState.cdnHostname} | Referer: ${playerState.embedReferer}`);
     } catch { /**/ }
-    return { stream, tipo, referer: referer || null };
+    return { stream, tipo, referer: referer || null, subtitles: subtitles || [] };
   } catch (err) {
     console.error("[ipc] extract-stream error:", err);
     return { error: err?.message || String(err) };

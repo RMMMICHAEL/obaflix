@@ -22,6 +22,17 @@ export default {
       return new Response(null, { headers: corsHeaders(env) });
     }
 
+    if ((url.pathname === "/stream" || url.pathname === "/proxy") &&
+        (!env.WORKER_SECRET || env.WORKER_SECRET.length < 32)) {
+      return new Response("Worker not configured", { status: 503 });
+    }
+
+    if (url.pathname === "/stream" || url.pathname === "/proxy") {
+      if (!(await verifySignedRequest(url, env.WORKER_SECRET))) {
+        return new Response("Unauthorized", { status: 401, headers: corsHeaders(env) });
+      }
+    }
+
     try {
       if (request.method === "GET" && url.pathname === "/stream") {
         return await handleStream(request, url, env);
@@ -32,7 +43,7 @@ export default {
     } catch (err) {
       console.error(`[WORKER UNHANDLED] ${url.pathname}`, String(err), err?.stack);
       return new Response(
-        JSON.stringify({ error: "worker exception", detail: String(err) }),
+        JSON.stringify({ error: "worker exception" }),
         { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders(env) } }
       );
     }
@@ -49,24 +60,24 @@ async function handleStream(request, workerUrl, env) {
 
   let embedUrl;
   try {
-    embedUrl = decodeURIComponent(embedParam);
-    new URL(embedUrl);
+    embedUrl = embedParam;
+    if (!isAllowedEmbedUrl(embedUrl)) throw new Error("provider not allowed");
   } catch {
     return new Response("Invalid embedUrl", { status: 400 });
   }
 
-  console.log(`[STREAM] embedUrl=${embedUrl}`);
-
   const securedLink = await extractEmbedPlayer(embedUrl);
   if (!securedLink) {
-    console.error(`[STREAM] extraction failed for ${embedUrl}`);
+    console.error("[STREAM] extraction failed");
     return new Response(
-      JSON.stringify({ error: "extraction failed", embedUrl }),
+      JSON.stringify({ error: "extraction failed" }),
       { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders(env) } }
     );
   }
 
-  console.log(`[STREAM] securedLink=${securedLink}`);
+  if (!isPublicHttpsUrl(securedLink)) {
+    return new Response("Invalid upstream media URL", { status: 502 });
+  }
 
   let m3u8Text;
   try {
@@ -79,17 +90,16 @@ async function handleStream(request, workerUrl, env) {
     });
     console.log(`[STREAM] master status=${res.status} ct=${res.headers.get("content-type")}`);
     if (!res.ok) {
-      const body = await res.text();
-      return new Response(`CDN ${res.status}: ${body}`, { status: res.status });
+      res.body?.cancel();
+      return new Response("Upstream media error", { status: res.status });
     }
     m3u8Text = await res.text();
-    console.log(`[STREAM] master preview=\n${m3u8Text.slice(0, 300)}`);
   } catch (err) {
     console.error(`[STREAM] fetch master threw`, String(err));
-    return new Response(String(err), { status: 502 });
+    return new Response("Upstream media error", { status: 502 });
   }
 
-  const rewritten = rewriteM3u8(m3u8Text, securedLink, workerUrl.origin, embedUrl);
+  const rewritten = await rewriteM3u8(m3u8Text, securedLink, workerUrl.origin, embedUrl, env);
 
   return new Response(rewritten, {
     headers: {
@@ -110,19 +120,16 @@ async function handleProxy(request, workerUrl, env) {
 
   let targetUrl;
   try {
-    targetUrl = decodeURIComponent(targetParam);
-    new URL(targetUrl);
+    targetUrl = targetParam;
+    if (!isPublicHttpsUrl(targetUrl)) throw new Error("target not allowed");
   } catch (err) {
-    console.error(`[PROXY] invalid u: ${targetParam.slice(0, 100)}`, String(err));
+    console.error("[PROXY] invalid target", String(err));
     return new Response("Invalid u param", { status: 400 });
   }
 
   const referer = refererParam
-    ? decodeURIComponent(refererParam)
+    ? refererParam
     : new URL(targetUrl).origin + "/";
-
-  console.log(`[PROXY] url=${targetUrl}`);
-  console.log(`[PROXY] referer=${referer}`);
 
   let res;
   try {
@@ -135,15 +142,15 @@ async function handleProxy(request, workerUrl, env) {
     });
   } catch (err) {
     console.error(`[PROXY] fetch threw`, String(err));
-    return new Response(String(err), { status: 502 });
+    return new Response("Upstream media error", { status: 502 });
   }
 
   const contentType = res.headers.get("content-type") ?? "";
   console.log(`[PROXY] cdn status=${res.status} ct=${contentType} cl=${res.headers.get("content-length")}`);
 
   if (!res.ok && res.status !== 206) {
-    const body = await res.text();
-    console.error(`[PROXY] cdn error ${res.status} url=${targetUrl} body=${body.slice(0, 200)}`);
+    res.body?.cancel();
+    console.error(`[PROXY] cdn error ${res.status}`);
     // Ad/tracking servers (dahds*.xyz etc) injetados no M3U8 retornam 5xx.
     // Retorna 204 (vazio) para que o HLS.js pule o "segmento" sem abortar.
     return new Response(null, {
@@ -174,10 +181,8 @@ async function handleProxy(request, workerUrl, env) {
 
   if (isM3u8) {
     const finalUrl = res.url || targetUrl;
-    console.log(`[PROXY] detected M3U8 finalUrl=${finalUrl}`);
-    console.log(`[PROXY] playlist preview=\n${bodyText.slice(0, 400)}`);
-    const rewritten = rewriteM3u8(bodyText, finalUrl, workerUrl.origin, referer);
-    console.log(`[PROXY] rewritten preview=\n${rewritten.slice(0, 400)}`);
+    console.log("[PROXY] detected M3U8");
+    const rewritten = await rewriteM3u8(bodyText, finalUrl, workerUrl.origin, referer, env);
     return new Response(rewritten, {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
@@ -218,8 +223,6 @@ async function extractEmbedPlayer(embedUrl) {
   form.append("r", "https://megaflix.lat/");
 
   const apiUrl = `${base}/player/index.php?data=${id}&do=getVideo`;
-  console.log(`[EXTRACT] POST ${apiUrl}`);
-
   try {
     const res = await fetch(apiUrl, {
       method: "POST",
@@ -233,7 +236,7 @@ async function extractEmbedPlayer(embedUrl) {
       body: form.toString(),
     });
     const text = await res.text();
-    console.log(`[EXTRACT] status=${res.status} body=${text.slice(0, 200)}`);
+    console.log(`[EXTRACT] status=${res.status}`);
     if (!text.trimStart().startsWith("{")) return null;
     const data = JSON.parse(text);
     return data.securedLink || data.videoSource || data.src || null;
@@ -245,12 +248,11 @@ async function extractEmbedPlayer(embedUrl) {
 
 // ── Reescrita de M3U8 ─────────────────────────────────────────────────────────
 
-function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
+async function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer, env) {
   const parsedBase = new URL(baseUrl);
   const base = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
   const origin = parsedBase.origin;
   const proxyBase = `${workerOrigin}/proxy`;
-  const refParam = playerReferer ? "&ref=" + encodeURIComponent(playerReferer) : "";
 
   function toAbsolute(href) {
     const h = href.trim();
@@ -260,8 +262,22 @@ function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
     return base + h;
   }
 
-  function wrapProxy(href) {
-    return `${proxyBase}?u=${encodeURIComponent(toAbsolute(href))}${refParam}`;
+  async function wrapProxy(href) {
+    const params = new URLSearchParams({ u: toAbsolute(href) });
+    if (playerReferer) params.set("ref", playerReferer);
+    return createSignedUrl(proxyBase, "/proxy", params, env.WORKER_SECRET);
+  }
+
+  async function rewriteUriAttributes(line) {
+    const matches = [...line.matchAll(/URI="([^"]+)"/g)];
+    let rewritten = line;
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const match = matches[i];
+      const signed = await wrapProxy(match[1]);
+      rewritten = rewritten.slice(0, match.index) + `URI="${signed}"` +
+        rewritten.slice(match.index + match[0].length);
+    }
+    return rewritten;
   }
 
   // Extensões usadas por ad-trackers injetados no M3U8 (nunca usadas em segmentos de vídeo)
@@ -287,7 +303,7 @@ function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
 
     // Tags com atributo URI
     if (/^#EXT-X-(KEY|MAP|MEDIA|SESSION-KEY)/.test(trimmed)) {
-      out.push(trimmed.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${wrapProxy(uri)}"`));
+      out.push(await rewriteUriAttributes(trimmed));
       continue;
     }
 
@@ -299,7 +315,6 @@ function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
         if (next && !next.startsWith("#")) { segIdx = j; break; }
       }
       if (segIdx !== -1 && isAdUrl(lines[segIdx].trim())) {
-        console.log(`[REWRITE] filtered ad EXTINF+seg: ${toAbsolute(lines[segIdx].trim()).slice(0, 80)}`);
         i = segIdx; // avança o loop para além do segmento
         continue;
       }
@@ -312,14 +327,98 @@ function rewriteM3u8(text, baseUrl, workerOrigin, playerReferer) {
 
     // URL de segmento ou variante — filtra ad sem #EXTINF precedente (raro)
     if (isAdUrl(trimmed)) {
-      console.log(`[REWRITE] filtered orphan ad: ${toAbsolute(trimmed).slice(0, 80)}`);
       continue;
     }
 
-    out.push(wrapProxy(trimmed));
+    out.push(await wrapProxy(trimmed));
   }
 
   return out.join("\n");
+}
+
+function base64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function hmac(value, secret) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  return base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value))));
+}
+
+function canonicalRequest(pathname, params, exp) {
+  const canonical = new URLSearchParams(params);
+  canonical.delete("sig");
+  canonical.sort();
+  return `${pathname}\n${exp}\n${canonical.toString()}`;
+}
+
+async function createSignedUrl(base, pathname, params, secret) {
+  const target = new URL(base);
+  const exp = String(Math.floor(Date.now() / 1000) + 10 * 60);
+  params.set("exp", exp);
+  params.sort();
+  target.search = params.toString();
+  target.searchParams.set("sig", await hmac(canonicalRequest(pathname, target.searchParams, exp), secret));
+  return target.toString();
+}
+
+async function verifySignedRequest(url, secret) {
+  const now = Math.floor(Date.now() / 1000);
+  const exp = url.searchParams.get("exp") || "";
+  const sig = url.searchParams.get("sig") || "";
+  if (!/^\d{10}$/.test(exp) || Number(exp) < now || Number(exp) > now + 15 * 60 || !sig) return false;
+  const expected = await hmac(canonicalRequest(url.pathname, url.searchParams, exp), secret);
+  return constantTimeEqual(expected, sig);
+}
+
+function constantTimeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let different = 0;
+  for (let i = 0; i < left.length; i++) different |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return different === 0;
+}
+
+const EMBED_HOSTS = [
+  "playerflix.ink", "webcinevs2.com", "playhide.shop", "hidehide.shop",
+  "vidhidehub.com", "streamwish.com", "playerwish.com", "hlswish.com",
+  "wishonly.site", "cdnwish.com", "asnwish.com", "swishsrv.com",
+  "luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com",
+  "embedplayer1.xyz", "embedplayer2.xyz",
+  "xn--kcksk7a2bl5le7b6doc1h3f.com", "llanfairpwllgwyngy.com",
+  "boltcdn.xyz", "upbolt.to", "bigshare.link", "superflixapi.pro",
+  "v1.watchplay.shop", "megafrixapi.com",
+];
+
+function allowedHost(hostname, allowed) {
+  return hostname === allowed || hostname.endsWith(`.${allowed}`);
+}
+
+function isAllowedEmbedUrl(raw) {
+  if (!isPublicHttpsUrl(raw)) return false;
+  const hostname = new URL(raw).hostname.toLowerCase();
+  return EMBED_HOSTS.some((allowed) => allowedHost(hostname, allowed));
+}
+
+function isPublicHttpsUrl(raw) {
+  let parsed;
+  try { parsed = new URL(raw); } catch { return false; }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) return false;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+  if (/^(0|10|127)\./.test(host) || /^169\.254\./.test(host) || /^192\.168\./.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return false;
+  if (/^(192\.0\.(0|2)|198\.(18|19|51\.100)|203\.0\.113)\./.test(host)) return false;
+  if (host.includes(":") && (
+    host === "::" || host === "::1" || host.startsWith("::ffff:") ||
+    host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80") ||
+    host.startsWith("ff") || host.startsWith("2001:db8")
+  )) return false;
+  return true;
 }
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
@@ -328,6 +427,6 @@ function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "https://obaflix.vercel.app",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Worker-Secret",
+    "Access-Control-Allow-Headers": "Content-Type",
   };
 }

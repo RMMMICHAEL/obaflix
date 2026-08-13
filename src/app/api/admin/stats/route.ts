@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   const guard = await requireAdmin(req); if (guard) return guard;
 
   const [filmes, series, animes, desenhos, episodios, usuarios] = await Promise.all([

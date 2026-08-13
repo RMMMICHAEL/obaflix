@@ -2,8 +2,10 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { createPlayToken, checkRateLimit, isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -30,7 +32,7 @@ export async function POST(req: NextRequest) {
 
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
-  if (origin && host && !origin.includes(host)) {
+  if (origin && host && !headerMatchesHost(origin, host)) {
     await recordAbuseAttempt(ip);
     audit("origin_rejected", { ip, ua, detail: `origin=${origin}` });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
@@ -52,10 +54,11 @@ export async function POST(req: NextRequest) {
 
   let embedUrl: string;
   try {
-    const body = await req.json();
-    embedUrl = body?.embedUrl;
-    if (!embedUrl || typeof embedUrl !== "string") throw new Error();
-    new URL(embedUrl);
+    const body = await readJsonBody<{ embedUrl?: unknown }>(req, 8192);
+    const requestedEmbedUrl = body?.embedUrl;
+    if (!requestedEmbedUrl || typeof requestedEmbedUrl !== "string" || requestedEmbedUrl.length > 4096) throw new Error();
+    embedUrl = requestedEmbedUrl;
+    await assertAllowedMediaUrl(embedUrl);
   } catch {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }

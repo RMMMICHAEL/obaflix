@@ -30,14 +30,6 @@ const KEY = {
 // Prefixo [token/<fase>] uid=...XXXX — pesquisável nos logs do Vercel.
 // Remover quando a correção do ZREM estiver confirmada.
 
-function tlog(phase: string, userId: string, data: Record<string, string | number | boolean | null | undefined>) {
-  const parts = Object.entries(data)
-    .filter(([, v]) => v !== null && v !== undefined)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(" ");
-  console.log(`[token/${phase}] uid=...${userId.slice(-8)} ${parts}`);
-}
-
 // ── Rotação semanal de chave ──────────────────────────────────────────────────
 
 function weekNumber(): number {
@@ -129,7 +121,6 @@ async function markUsed(token: string): Promise<boolean> {
     nx: true, // SET NX → falha se a chave já existir (atômico no Redis)
   });
   const firstUse = result === "OK";
-  console.log(`[token/markUsed] th=${h.slice(0, 8)} firstUse=${firstUse}`);
   return firstUse;
 }
 
@@ -143,18 +134,10 @@ async function registerStream(userId: string, tokenHash: string, expiresAt: numb
   const now = Date.now();
 
   // Remove streams expirados do sorted set antes de contar
-  const expiredRemoved = await redis.zremrangebyscore(key, 0, now);
+  await redis.zremrangebyscore(key, 0, now);
 
   const before = await redis.zcard(key);
   if (before >= MAX_CONCURRENT) {
-    const ttlSec = await redis.ttl(key);
-    tlog("register/rejected", userId, {
-      th: tokenHash.slice(0, 8),
-      before,
-      max: MAX_CONCURRENT,
-      expiredRemoved: expiredRemoved ?? null,
-      ttlSec,
-    });
     audit("concurrent_limit", { userId, detail: `${before} streams ativos` });
     return false;
   }
@@ -162,16 +145,6 @@ async function registerStream(userId: string, tokenHash: string, expiresAt: numb
   await redis.zadd(key, expiresAt, tokenHash);
   // TTL do sorted set = expiração do token mais longo possível + margem
   await redis.expire(key, Math.ceil((expiresAt - now) / 1000) + 60);
-  const after = await redis.zcard(key);
-  const ttlSec = await redis.ttl(key);
-  tlog("register/ok", userId, {
-    th: tokenHash.slice(0, 8),
-    before,
-    after,
-    expiresInSec: Math.round((expiresAt - now) / 1000),
-    ttlSec,
-    expiredRemoved: expiredRemoved ?? null,
-  });
   return true;
 }
 
@@ -202,12 +175,12 @@ export function createPlayToken(userId: string, embedUrl: string, clientIp: stri
   return `${json}.${sig}`;
 }
 
-export function verifyPlayToken(
+export async function verifyPlayToken(
   token: string,
   userId: string,
   embedUrl: string,
   clientIp: string,
-): { ok: boolean; ipMismatch?: boolean } {
+): Promise<{ ok: boolean; ipMismatch?: boolean }> {
   const dot = token.lastIndexOf(".");
   if (dot === -1) return { ok: false };
   const json = token.slice(0, dot);
@@ -221,6 +194,9 @@ export function verifyPlayToken(
     if (p.exp < Date.now()) return { ok: false };
     if (p.uid !== userId) return { ok: false };
     if (p.eh !== hashUrl(embedUrl)) return { ok: false };
+    // Extraction is the expensive operation. A valid play token may authorize
+    // it once only, preventing replay from multiplying upstream/compute cost.
+    if (!(await markUsed(token))) return { ok: false };
     return { ok: true, ipMismatch: p.ih !== hashUrl(clientIp) };
   } catch { return { ok: false }; }
 }
@@ -253,8 +229,6 @@ export async function createStreamToken(
 
   const accepted = await registerStream(userId, th, expiresAt);
   if (!accepted) return { token: "", accepted: false };
-  tlog("create", userId, { th: th.slice(0, 8), expiresInSec: Math.round(STREAM_TOKEN_TTL_MS / 1000), hasManifest: !!manifest });
-
   const [key] = keys();
   const payload: StreamTokenPayload = {
     uid: userId,
@@ -284,28 +258,20 @@ export async function resolveStreamToken(
   clientIp: string,
   userAgent: string,
 ): Promise<{ streamUrl: string; referer: string | null; ipMismatch?: boolean; manifest?: string } | null> {
-  const tokenParts = token.split(".");
-  console.log(`[token/resolve] uid=...${userId.slice(-8)} parts=${tokenParts.length} tokenLen=${token.length}`);
-
   // Single-use: SET NX no Redis — atômico, funciona em múltiplas instâncias
   const used = await markUsed(token);
   if (!used) {
     audit("stream_rejected", { userId, ip: clientIp, detail: "token já consumido" });
-    console.log(`[token/resolve] REJECTED uid=...${userId.slice(-8)} reason=already_used`);
     return null;
   }
-  console.log(`[token/resolve] markUsed=ok uid=...${userId.slice(-8)}`);
 
   const [kCurr, kPrev] = keys();
   const redis = getRedis();
-  let keyIndex = 0;
 
   for (const key of [kCurr, kPrev]) {
-    keyIndex++;
     try {
       const parts = token.split(".");
       if (parts.length !== 3) {
-        console.log(`[token/resolve] REJECTED reason=bad_format parts=${parts.length}`);
         continue;
       }
       const iv = Buffer.from(parts[0], "base64url");
@@ -316,16 +282,12 @@ export async function resolveStreamToken(
       const plain = Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
       const p = JSON.parse(plain) as StreamTokenPayload;
 
-      console.log(`[token/resolve] decrypted keyIndex=${keyIndex} exp=${p.exp} now=${Date.now()} uid_ok=${p.uid === userId} url=${p.url.slice(0, 60)}`);
-
       if (p.exp < Date.now()) {
         const agoSec = Math.round((Date.now() - p.exp) / 1000);
-        console.log(`[token/resolve] REJECTED reason=expired agoSec=${agoSec}`);
         audit("stream_rejected", { userId, ip: clientIp, detail: `token expirado há ${agoSec}s` });
         return null;
       }
       if (p.uid !== userId) {
-        console.log(`[token/resolve] REJECTED reason=uid_mismatch token_uid=...${p.uid.slice(-8)} req_uid=...${userId.slice(-8)}`);
         audit("stream_rejected", { userId, ip: clientIp, detail: "userId mismatch" });
         return null;
       }
@@ -333,26 +295,12 @@ export async function resolveStreamToken(
 
       const ipMismatch = p.ih !== hashUrl(clientIp);
       const streamKey = KEY.activeStreams(p.uid);
-      const beforeZrem = await redis.zcard(streamKey);
-      const zremCount = await redis.zrem(streamKey, p.th);
-      const afterZrem = await redis.zcard(streamKey);
-      const ttlSec = await redis.ttl(streamKey);
-      tlog("zrem", p.uid, {
-        th: p.th.slice(0, 8),
-        removed: zremCount,
-        before: beforeZrem,
-        after: afterZrem,
-        ttlSec,
-      });
-      console.log(`[token/resolve] OK uid=...${userId.slice(-8)} ipMismatch=${ipMismatch} hasManifest=${!!p.mfst} referer=${(p.ref ?? "null").slice(0, 60)}`);
+      await redis.zrem(streamKey, p.th);
       return { streamUrl: p.url, referer: p.ref, ipMismatch, manifest: p.mfst };
-    } catch (e: any) {
-      console.log(`[token/resolve] decrypt_failed keyIndex=${keyIndex} err=${String(e?.message ?? "").slice(0, 60)}`);
-    }
+    } catch { /* tenta a chave anterior */ }
   }
 
   audit("stream_rejected", { userId, ip: clientIp, detail: "descriptografia falhou (ambas as chaves)" });
-  console.log(`[token/resolve] REJECTED reason=decrypt_failed_both_keys uid=...${userId.slice(-8)}`);
   return null;
 }
 

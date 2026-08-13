@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { searchFilme, searchSerie } from "@/lib/tmdb";
+import { checkRateLimit, clientIp } from "@/lib/requestSecurity";
+import { publicMedia } from "@/lib/publicMedia";
 
 // Remove acentos, hífens e chars especiais — mantém só alfanumérico lowercase
 function normalizeQuery(s: string): string {
@@ -78,10 +80,19 @@ async function localSearchSeries(
 }
 
 export async function GET(req: NextRequest) {
+  const rate = await checkRateLimit(`search:${clientIp(req)}`, 60, 60);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Limite de buscas atingido. Tente novamente em instantes." },
+      { status: 429, headers: { "Retry-After": "60" } },
+    );
+  }
+
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo"); // "filme" | "serie" | "anime" | null
 
   if (!q.trim()) return NextResponse.json({ filmes: [], series: [] });
+  if (q.length > 120) return NextResponse.json({ error: "Busca muito longa" }, { status: 400 });
 
   const normalized = normalizeQuery(q);
   if (!normalized) return NextResponse.json({ filmes: [], series: [] });
@@ -146,5 +157,5 @@ export async function GET(req: NextRequest) {
     ...(seriesByTmdb as SerieRow[]).filter((s) => !localSerieIdSet.has(s.id)),
   ].slice(0, 30);
 
-  return NextResponse.json({ filmes, series });
+  return NextResponse.json({ filmes: filmes.map(publicMedia), series });
 }

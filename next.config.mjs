@@ -14,6 +14,8 @@ const nextConfig = {
     const securityHeaders = [
       { key: "X-Frame-Options", value: "SAMEORIGIN" },
       { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "X-DNS-Prefetch-Control", value: "off" },
+      { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
       { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
       {
@@ -33,13 +35,18 @@ const nextConfig = {
           // Imagens: TMDB, Google, dados inline
           "img-src 'self' data: blob: https://image.tmdb.org https://lh3.googleusercontent.com",
           // Frames: players embed conhecidos (iframes de fallback)
-          "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com",
+          "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com https://superflixapi.pro https://*.superflixapi.pro",
           // HLS.js baixa segmentos diretamente dos CDNs dinâmicos dos provedores.
           "connect-src 'self' https:",
           // A reprodução nativa também pode consumir mídia HTTPS diretamente.
           "media-src 'self' blob: https:",
           // Workers (HLS.js usa blob workers)
           "worker-src 'self' blob:",
+          "object-src 'none'",
+          "base-uri 'self'",
+          "form-action 'self'",
+          "frame-ancestors 'self'",
+          "upgrade-insecure-requests",
         ].join("; "),
       },
     ];

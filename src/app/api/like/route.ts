@@ -2,17 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit, readJsonBody } from "@/lib/requestSecurity";
 
 export const dynamic = "force-dynamic";
+
+const CONTENT_TYPES = new Set(["filme", "serie", "anime", "desenho"]);
+
+function validContentId(id: unknown): id is string {
+  return typeof id === "string" && id.length > 0 && id.length <= 128;
+}
+
+function validContentType(type: unknown): type is string {
+  return typeof type === "string" && CONTENT_TYPES.has(type);
+}
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
   const userId = (session.user as { id: string }).id;
+  if (!(await checkRateLimit(`like:${userId}`, 60, 60)).allowed) {
+    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
+  }
   const { searchParams } = req.nextUrl;
   const conteudoId = searchParams.get("conteudoId");
   const conteudoTipo = searchParams.get("conteudoTipo");
-  if (!conteudoId || !conteudoTipo) return NextResponse.json({ valor: 0 });
+  if (!validContentId(conteudoId) || !validContentType(conteudoTipo)) return NextResponse.json({ valor: 0 });
 
   try {
     const like = await (prisma as any).like.findUnique({
@@ -28,8 +42,20 @@ export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
   const userId = (session.user as { id: string }).id;
-  const { conteudoId, conteudoTipo, valor } = await req.json();
-  if (!conteudoId || !conteudoTipo) return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
+  if (!(await checkRateLimit(`like-write:${userId}`, 60, 60)).allowed) {
+    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
+  }
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req, 4096); }
+  catch { return NextResponse.json({ error: "Dados inválidos" }, { status: 400 }); }
+  const { conteudoId, conteudoTipo, valor } = body;
+  if (!validContentId(conteudoId) || !validContentType(conteudoTipo) || typeof valor !== "number" || ![-1, 0, 1].includes(valor)) {
+    return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
+  }
+  const contentExists = conteudoTipo === "filme"
+    ? await prisma.filme.findUnique({ where: { id: conteudoId }, select: { id: true } })
+    : await prisma.serie.findFirst({ where: { id: conteudoId, tipo: conteudoTipo === "serie" ? undefined : conteudoTipo }, select: { id: true } });
+  if (!contentExists) return NextResponse.json({ error: "Conteúdo inválido" }, { status: 400 });
 
   try {
     if (valor === 0) {

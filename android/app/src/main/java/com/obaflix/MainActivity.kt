@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -13,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.obaflix.bridge.ObaflixBridge
 import com.obaflix.player.PlayerWebViewClient
+import java.util.UUID
 
 private const val TAG = "Obaflix"
 
@@ -20,18 +22,22 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var fullscreenView: View? = null
+    private val bridgeCapability = UUID.randomUUID().toString()
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros)
-        WebView.setWebContentsDebuggingEnabled(true)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
         configureWebView()
 
-        webView.loadUrl(BuildConfig.OBAFLIX_URL)
+        val androidEntryUrl = BuildConfig.OBAFLIX_URL.trimEnd('/') + "/android"
+        webView.loadUrl(androidEntryUrl)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -40,7 +46,7 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = false
@@ -50,9 +56,17 @@ class MainActivity : AppCompatActivity() {
                 " ObaflixApp/1.0"
         }
 
+        // O Superflix roda em um iframe de outro domínio. A validação da
+        // Cloudflare depende do cookie cf_clearance; sem cookies de terceiros o
+        // desafio aparece, mas a sessão validada se perde na navegação seguinte.
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+        }
+
         // Bridge: expõe _obaflixBridge ao JS (shim cria window.obaflixDesktop)
         webView.addJavascriptInterface(
-            ObaflixBridge(webView, lifecycleScope),
+            ObaflixBridge(webView, lifecycleScope, bridgeCapability),
             "_obaflixBridge",
         )
 
@@ -92,15 +106,26 @@ class MainActivity : AppCompatActivity() {
     private fun injectBridgeShim(view: WebView) {
         val script = """
             (function() {
-                if (window.obaflixDesktop) return;
+                document.documentElement.classList.add('obaflix-android-app');
+                window.__OBAFLIX_ANDROID__ = true;
+                if (window.obaflixDesktop) {
+                    window.obaflixDesktop.platform = 'android';
+                    return;
+                }
                 window._obaflixCallbacks = {};
+                var bridgeCapability = '$bridgeCapability';
                 window.obaflixDesktop = {
+                    platform: 'android',
+                    isAndroid: true,
                     extractStream: function(embedUrl) {
                         return new Promise(function(resolve, reject) {
                             var id = Math.random().toString(36).slice(2) + Date.now();
                             window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
-                            window._obaflixBridge.extractStream(id, embedUrl);
+                            window._obaflixBridge.extractStream(bridgeCapability, id, embedUrl);
                         });
+                    },
+                    setKeepScreenOn: function(enabled) {
+                        window._obaflixBridge.setKeepScreenOn(bridgeCapability, !!enabled);
                     },
                     onUpdateReady: function(cb) { /* no-op: atualizações Android chegam via Play Store */ },
                     installUpdate: function() { /* no-op */ }

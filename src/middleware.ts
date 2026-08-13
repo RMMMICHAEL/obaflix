@@ -1,5 +1,5 @@
 import { withAuth } from "next-auth/middleware";
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
 const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
@@ -13,7 +13,7 @@ function corsHeaders(origin: string) {
 }
 
 export default withAuth(
-  function middleware(req: NextRequest) {
+  function middleware(req) {
     const { pathname } = req.nextUrl;
     const origin = req.headers.get("origin") ?? "";
     const isAdminApi = pathname.startsWith("/api/admin/");

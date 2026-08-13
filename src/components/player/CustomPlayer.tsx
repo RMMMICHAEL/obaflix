@@ -64,6 +64,7 @@ type Status = "idle" | "extracting" | "loading" | "playing" | "error";
 type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
 interface Fonte { label: string; embedUrl: string; tokenized: boolean; }
+interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
 
 // Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
 // Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
@@ -93,6 +94,15 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("watchplay")) return true;
     if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return true;
     return false;
+  } catch {
+    return false;
+  }
+}
+
+function isSuperflixUrl(url: string) {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro");
   } catch {
     return false;
   }
@@ -244,7 +254,10 @@ export function CustomPlayer({
 
   // No Electron (.exe): inclui rola3/rola4 como players principais
   // No site: remove rola3/rola4 (só funcionam com IP residencial via app nativo)
-  const isDesktop = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
+  const desktopBridge = typeof window !== "undefined" ? (window as any).obaflixDesktop : null;
+  const isDesktop = !!desktopBridge;
+  const isAndroid = desktopBridge?.platform === "android" ||
+    (typeof window !== "undefined" && (window as any).__OBAFLIX_ANDROID__ === true);
 
   const allFontes: Fonte[] = [];
 
@@ -276,13 +289,13 @@ export function CustomPlayer({
     if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "filme") {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/pages/ajax.php?id=${tmdbId}&type=movie`,
+        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbId}&type=movie`,
         tokenized: false,
       });
     }
@@ -347,6 +360,7 @@ export function CustomPlayer({
   const [error, setError] = useState("");
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamTipo, setStreamTipo] = useState<StreamTipo>("hls");
+  const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrack[]>([]);
   // Unified playback state (JW + native)
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -541,6 +555,7 @@ export function CustomPlayer({
     setFonteIdx(idx);
     setStatus("idle");
     setStreamUrl(null);
+    setSubtitleTracks([]);
     setError("");
     setShowRetry(false);
     setPlaying(false);
@@ -584,6 +599,15 @@ export function CustomPlayer({
       let tipo: string;
       let playerUrl: string;
 
+      // O provedor documenta o SuperFlix como iframe. No Android, a WebView
+      // executa a validação JavaScript que o extrator OkHttp não consegue concluir.
+      if (isAndroid && isSuperflixUrl(embedUrl)) {
+        setStreamTipo("iframe");
+        setStreamUrl(embedUrl);
+        setStatus("playing");
+        return;
+      }
+
       // Vidsrc já é um player embed completo. Carrega direto no iframe para não
       // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que deve
       // continuar dentro do player do próprio provedor.
@@ -596,7 +620,7 @@ export function CustomPlayer({
 
       if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
-        const data: { stream?: string; tipo?: string; referer?: string; error?: string } =
+        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; error?: string } =
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         tipo = data.tipo ?? "hls";
@@ -604,6 +628,11 @@ export function CustomPlayer({
         playerUrl = tipo === "iframe" ? data.stream! : buildElectronProxyUrl(data.stream!, data.referer);
         streamRefererRef.current = data.referer ?? null;
         directStreamRef.current = data.stream!;
+        setSubtitleTracks((data.subtitles ?? []).map((track) => ({
+          ...track,
+          file: buildElectronProxyUrl(track.file, track.referer || data.referer),
+          kind: "captions",
+        })));
       } else {
         // Web: obtém play token primeiro, depois extrai
         const tokenRes = await fetch("/api/player/token", {
@@ -661,7 +690,7 @@ export function CustomPlayer({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonteIdx, allFontes.length, switchFonte]);
+  }, [fonteIdx, allFontes.length, switchFonte, isAndroid]);
 
   extractRef.current = extract;
 
@@ -687,6 +716,12 @@ export function CustomPlayer({
 
     // Fonte única pelo proxy autenticado — CDN URL nunca exposta ao browser
     const sources: any[] = [{ file: streamUrl, type: fileType }];
+    const tracks = subtitleTracks.map((track, index) => ({
+      file: track.file,
+      label: track.label || "Português",
+      kind: "captions",
+      default: track.default ?? index === 0,
+    }));
 
     loadJW(() => {
       // Componente pode ter desmontado enquanto o script JW carregava
@@ -697,6 +732,7 @@ export function CustomPlayer({
 
       const player = jw("jw-player-container").setup({
         sources,
+        tracks,
         image: thumbUrl || undefined,
         controls: false,
         sharing: false,
@@ -920,6 +956,12 @@ export function CustomPlayer({
 
             const newUrl = buildElectronProxyUrl(data.stream, data.referer);
             const renewedType = data.tipo === "mp4" ? "mp4" : "hls";
+            const renewedTracks = (data.subtitles ?? []).map((track: SubtitleTrack, index: number) => ({
+              file: buildElectronProxyUrl(track.file, track.referer || data.referer),
+              label: track.label || "Português",
+              kind: "captions",
+              default: track.default ?? index === 0,
+            }));
             const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
 
             // [DIAG] Contexto da renovação — remover após confirmar causa dos 500 em .woff
@@ -937,7 +979,8 @@ export function CustomPlayer({
             suppressErrorUntilRef.current = Date.now() + 2000;
             lastReExtractSuccessAtRef.current = Date.now();
             lastLoadAtRef.current = Date.now(); // [DIAG]
-            jwRef.current.load([{ file: newUrl, type: renewedType }]);
+            jwRef.current.load([{ file: newUrl, type: renewedType, tracks: renewedTracks }]);
+            setSubtitleTracks(renewedTracks);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
                 if (!jwRef.current) return;
@@ -1163,7 +1206,7 @@ export function CustomPlayer({
       if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamUrl, streamTipo]);
+  }, [streamUrl, streamTipo, subtitleTracks]);
 
   // ── Native HLS (rola4 em Safari/iOS) ────────────────────────────────────────
   useEffect(() => {
@@ -1297,9 +1340,18 @@ export function CustomPlayer({
         <iframe
           key={streamUrl}
           src={streamUrl}
-          className="absolute inset-0 w-full h-full border-0"
-          allow="autoplay; fullscreen; picture-in-picture"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+          className="absolute inset-0 w-full h-full border-0 touch-auto"
+          allow={isSuperflixUrl(streamUrl)
+            ? "autoplay *; encrypted-media *; picture-in-picture *; fullscreen *; clipboard-write *; accelerometer *; gyroscope *; web-share *"
+            : "autoplay; fullscreen; picture-in-picture"}
+          allowFullScreen
+          referrerPolicy="origin-when-cross-origin"
+          // A integração oficial do Superflix não usa sandbox. Restringi-lo
+          // impede partes do fluxo de validação da Cloudflare no Android WebView.
+          sandbox={isSuperflixUrl(streamUrl)
+            ? undefined
+            : "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"}
+          title={`${titulo} - player`}
         />
       )}
 

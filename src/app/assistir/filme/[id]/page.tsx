@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -34,6 +34,7 @@ function mergeFilmeUrls(warezUrls: string[], dbUrl: string | null): string | nul
 export default async function AssistirFilmePage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
+  if (!userId) redirect(`/login?callbackUrl=${encodeURIComponent(`/assistir/filme/${params.id}`)}`);
 
   const filme = await prisma.filme.findUnique({ where: { id: params.id } });
   if (!filme) notFound();

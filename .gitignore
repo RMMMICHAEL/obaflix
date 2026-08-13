@@ -42,3 +42,12 @@ scripts/.sync-memory.json
 
 .vercel
 .env*
+
+# Android signing secrets
+android/key.properties
+android/local.properties
+*.jks
+*.keystore
+*.p12
+
+.env*

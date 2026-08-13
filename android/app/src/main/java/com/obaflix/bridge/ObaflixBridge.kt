@@ -23,13 +23,17 @@ private const val TAG = "Obaflix"
 class ObaflixBridge(
     private val webView: WebView,
     private val scope: CoroutineScope,
+    private val capability: String,
 ) {
+
+    private fun authorized(value: String): Boolean = value == capability
 
     /**
      * Exibe um Toast nativo com erros enviados pelo JavaScript.
      */
     @JavascriptInterface
-    fun logError(msg: String) {
+    fun logError(capability: String, msg: String) {
+        if (!authorized(capability)) return
         Log.e(
             TAG,
             "[bridge/debug] JS Error: $msg"
@@ -51,7 +55,8 @@ class ObaflixBridge(
      * Não exige permissão no AndroidManifest.
      */
     @JavascriptInterface
-    fun setKeepScreenOn(enabled: Boolean) {
+    fun setKeepScreenOn(capability: String, enabled: Boolean) {
+        if (!authorized(capability)) return
         Log.d(
             TAG,
             "[bridge] setKeepScreenOn=$enabled"
@@ -64,13 +69,15 @@ class ObaflixBridge(
 
     @JavascriptInterface
     fun extractStream(
+        capability: String,
         callbackId: String,
         embedUrl: String
     ) {
+        if (!authorized(capability) || callbackId.length > 128 || embedUrl.length > 4096) return
         Log.d(
             TAG,
             "[bridge] extractStream chamado: " +
-                "id=$callbackId url=${embedUrl.take(80)}"
+                "id=$callbackId"
         )
 
         scope.launch {
@@ -85,6 +92,16 @@ class ObaflixBridge(
                     } else {
                         put("referer", JSONObject.NULL)
                     }
+                    put("subtitles", org.json.JSONArray().apply {
+                        result.subtitles.forEachIndexed { index, track ->
+                            put(JSONObject().apply {
+                                put("file", track.file)
+                                put("label", track.label)
+                                put("kind", "captions")
+                                put("default", index == 0)
+                            })
+                        }
+                    })
                 }.toString()
 
                 Log.d(

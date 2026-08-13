@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -47,6 +47,10 @@ export default async function AssistirEpPage({
 }) {
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
+  if (!userId) {
+    const path = `/assistir/serie/${params.id}/${params.temp}/${params.ep}`;
+    redirect(`/login?callbackUrl=${encodeURIComponent(path)}`);
+  }
 
   const temporada = Number(params.temp.replace("t", ""));
   const numeroEp = Number(params.ep.replace("ep", ""));

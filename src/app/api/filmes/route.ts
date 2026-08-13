@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publicMedia } from "@/lib/publicMedia";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
       prisma.filme.count({ where }),
     ]);
 
-    return NextResponse.json({ filmes, total, page, pages: Math.ceil(total / limit) });
+    return NextResponse.json({ filmes: filmes.map(publicMedia), total, page, pages: Math.ceil(total / limit) });
   } catch (e: any) {
     console.error("GET /api/filmes error:", e?.message);
     return NextResponse.json({ error: "Erro ao buscar filmes", filmes: [], total: 0, page: 1, pages: 0 }, { status: 500 });

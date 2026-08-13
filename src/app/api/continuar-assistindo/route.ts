@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { readJsonBody } from "@/lib/requestSecurity";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -89,7 +90,13 @@ export async function DELETE(req: Request) {
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
   const userId = (session.user as { id: string }).id;
-  const { historyId } = await req.json();
+  let body: { historyId?: unknown };
+  try { body = await readJsonBody(req, 2048); }
+  catch { return NextResponse.json({ error: "Dados inválidos" }, { status: 400 }); }
+  const { historyId } = body;
+  if (typeof historyId !== "string" || historyId.length > 128) {
+    return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
+  }
 
   await prisma.watchHistory.deleteMany({ where: { id: historyId, userId } });
   return NextResponse.json({ ok: true });

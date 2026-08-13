@@ -22,6 +22,12 @@ private const val SUPERFLIX_TIMEOUT_HOPS = 7
 data class NativeExtractResult(
     val stream: String,
     val referer: String?,
+    val subtitles: List<SubtitleTrack> = emptyList(),
+)
+
+data class SubtitleTrack(
+    val file: String,
+    val label: String = "Português",
 )
 
 /**
@@ -36,6 +42,26 @@ object SuperflixExtractor {
     private const val UA =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
+
+    private fun findSubtitleTracks(html: String, baseUrl: String): List<SubtitleTrack> {
+        val normalized = normalizeHtml(html)
+        val found = linkedMapOf<String, SubtitleTrack>()
+        fun add(raw: String?, label: String? = null) {
+            val file = resolveUrl(raw, baseUrl) ?: return
+            if (!Regex("""\.(?:vtt|srt|ass|ssa)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(file)) return
+            found.putIfAbsent(file, SubtitleTrack(file, label?.takeIf { it.isNotBlank() } ?: "Português"))
+        }
+
+        Regex("""<track\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(normalized).forEach { match ->
+            val tag = match.value
+            val src = Regex("""\bsrc=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(tag)?.groupValues?.get(1)
+            val label = Regex("""\blabel=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(tag)?.groupValues?.get(1)
+            add(src, label)
+        }
+        Regex("""["'](https?://[^"']+\.(?:vtt|srt|ass|ssa)(?:\?[^"']*)?)["']""", RegexOption.IGNORE_CASE)
+            .findAll(normalized).forEach { add(it.groupValues[1]) }
+        return found.values.toList()
+    }
 
     private data class HttpResult(
         val url: String,
@@ -138,6 +164,14 @@ object SuperflixExtractor {
             host.contains("vizero") || host.contains("warezcdn")
     }
 
+    private fun isCloudflareChallenge(html: String): Boolean {
+        val text = html.lowercase()
+        return text.contains("/cdn-cgi/challenge-platform/") ||
+            text.contains("cf_chl_opt") ||
+            text.contains("challenge-running") ||
+            text.contains("just a moment...")
+    }
+
     private fun collectChainUrls(html: String, baseUrl: String): List<String> {
         val normalized = normalizeHtml(html)
         val found = linkedSetOf<String>()
@@ -145,6 +179,9 @@ object SuperflixExtractor {
         fun add(raw: String) {
             val absolute = resolveUrl(raw, baseUrl) ?: return
             val parsed = try { URL(absolute) } catch (_: Exception) { return }
+            // Scripts do desafio Cloudflare pertencem ao mesmo host, mas não são
+            // páginas da cadeia SuperFlix/Vizero/WarezCDN.
+            if (parsed.path.startsWith("/cdn-cgi/", ignoreCase = true)) return
             if (isChainHost(parsed.host)) found.add(absolute)
         }
 
@@ -392,6 +429,10 @@ object SuperflixExtractor {
             val parsed = URL(page.url)
             log("page", "hop=$hop url=${safeUrl(page.url)} bytes=${page.html.length}")
 
+            if (isCloudflareChallenge(page.html)) {
+                throw Exception("SuperFlix exigiu validação do navegador; tentando o próximo servidor")
+            }
+
             if (parsed.host.contains("warezcdn") && findPageToken(page.html) != null) return page
 
             val candidates = collectChainUrls(page.html, page.url).filterNot { visited.contains(it) }
@@ -486,6 +527,7 @@ object SuperflixExtractor {
             val mediaPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
             val mediaSource = findNativeMediaSource(mediaPage.html, mediaPage.url)
                 ?: throw Exception("media-source não encontrado no player nativo")
+            val subtitles = findSubtitleTracks(mediaPage.html, mediaPage.url)
 
             val mediaResponse = requestOnce(
                 client = client,
@@ -502,14 +544,14 @@ object SuperflixExtractor {
             if (mediaResponse.status in 300..399) {
                 val finalUrl = resolveUrl(mediaResponse.headers["Location"], mediaSource)
                     ?: throw Exception("media-source sem Location final")
-                return NativeExtractResult(finalUrl, null)
+                return NativeExtractResult(finalUrl, null, subtitles)
             }
 
             val contentType = mediaResponse.headers["Content-Type"].orEmpty()
             if (mediaResponse.status in 200..299 &&
                 (contentType.contains("video/mp4", ignoreCase = true) || contentType.contains("octet-stream", ignoreCase = true))
             ) {
-                return NativeExtractResult(mediaSource, mediaPage.url)
+                return NativeExtractResult(mediaSource, mediaPage.url, subtitles)
             }
             throw Exception("media-source HTTP ${mediaResponse.status}")
         }
@@ -532,7 +574,7 @@ object SuperflixExtractor {
         val fallbackPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
         val direct = findDirectMedia(fallbackPage.html, fallbackPage.url)
             ?: throw Exception("mídia não encontrada em ${safeUrl(fallbackPage.url)}")
-        return NativeExtractResult(direct, fallbackPage.url)
+        return NativeExtractResult(direct, fallbackPage.url, findSubtitleTracks(fallbackPage.html, fallbackPage.url))
     }
 
     suspend fun extract(embedUrl: String): NativeExtractResult {

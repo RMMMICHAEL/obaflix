@@ -2,7 +2,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 import { NextRequest, NextResponse } from "next/server";
-import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
@@ -204,7 +203,7 @@ async function createStubs(
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
   }
 
@@ -316,8 +315,8 @@ export async function GET(req: NextRequest) {
       // ── 7. Cleanup de stubs fora do ranking (fora da tx — operação independente)
       stubsDeleted = await cleanupStubs();
 
-      // ── 8. Invalida cache apenas se houve mudança real ────────────────────────
-      if (added + removed + repositioned > 0) revalidatePath("/melhores");
+      // /melhores é force-dynamic e lê o banco em cada requisição; não há cache
+      // de página da Vercel para invalidar após uma execução local.
     }
 
     const durationMs = Date.now() - startedAt;

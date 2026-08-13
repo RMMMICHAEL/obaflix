@@ -3,23 +3,46 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit, readJsonBody } from "@/lib/requestSecurity";
+
+const CONTENT_TYPES = new Set(["filme", "serie"]);
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
   const userId = (session.user as { id: string }).id;
-  const body = await req.json();
+  if (!(await checkRateLimit(`progress:${userId}`, 120, 60)).allowed) {
+    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
+  }
+  let body: Record<string, any>;
+  try { body = await readJsonBody(req, 8192); }
+  catch { return NextResponse.json({ error: "Dados inválidos" }, { status: 400 }); }
   const { conteudoId, conteudoTipo, episodioId, temporada, numeroEp } = body;
   const progressoSeg = Math.round(Number(body.progressoSeg) || 0);
   const duracaoSeg = body.duracaoSeg != null ? Math.round(Number(body.duracaoSeg)) : null;
 
-  if (!conteudoId || !conteudoTipo) {
+  if (
+    typeof conteudoId !== "string" || conteudoId.length === 0 || conteudoId.length > 128 ||
+    typeof conteudoTipo !== "string" || !CONTENT_TYPES.has(conteudoTipo) ||
+    !Number.isFinite(progressoSeg) || progressoSeg < 0 || progressoSeg > 7 * 24 * 3600 ||
+    (duracaoSeg !== null && (!Number.isFinite(duracaoSeg) || duracaoSeg <= 0 || duracaoSeg > 7 * 24 * 3600)) ||
+    (episodioId != null && (typeof episodioId !== "string" || episodioId.length > 128)) ||
+    (temporada != null && (!Number.isInteger(temporada) || temporada < 0 || temporada > 1000)) ||
+    (numeroEp != null && (!Number.isInteger(numeroEp) || numeroEp <= 0 || numeroEp > 100000))
+  ) {
     return NextResponse.json({ error: "conteudoId e conteudoTipo são obrigatórios" }, { status: 400 });
   }
 
   const concluido = duracaoSeg ? progressoSeg > duracaoSeg * 0.9 : false;
   const epId: string | null = episodioId ?? null;
+
+  const contentExists = conteudoTipo === "filme"
+    ? await prisma.filme.findUnique({ where: { id: conteudoId }, select: { id: true } })
+    : epId
+      ? await prisma.episodio.findFirst({ where: { id: epId, serieId: conteudoId }, select: { id: true } })
+      : await prisma.serie.findUnique({ where: { id: conteudoId }, select: { id: true } });
+  if (!contentExists) return NextResponse.json({ error: "Conteúdo inválido" }, { status: 400 });
 
   const updateData = {
     progressoSeg, duracaoSeg, concluido, temporada, numeroEp, queued: false,

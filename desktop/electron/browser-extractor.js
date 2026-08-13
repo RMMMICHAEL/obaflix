@@ -263,10 +263,17 @@ async function extractSuperflixInBrowser(
 
   return new Promise(
     (resolve, reject) => {
+      const subtitleTracks = new Map();
+      let mediaFinishTimer = null;
+
       const cleanup = () => {
         if (timeout) {
           clearTimeout(timeout);
           timeout = null;
+        }
+        if (mediaFinishTimer) {
+          clearTimeout(mediaFinishTimer);
+          mediaFinishTimer = null;
         }
 
         parentWindow.removeListener(
@@ -356,18 +363,24 @@ async function extractSuperflixInBrowser(
           return;
         }
 
+        const completeMedia = (tipo) => {
+          if (mediaFinishTimer) return;
+          // Dá ao player incorporado uma pequena janela para requisitar VTT/SRT
+          // depois que o manifesto/vídeo começa a carregar.
+          mediaFinishTimer = setTimeout(() => finish(null, {
+            stream,
+            tipo,
+            referer: referer || embedUrl,
+            subtitles: [...subtitleTracks.values()],
+          }), 1200);
+        };
+
         if (isHls(stream)) {
           console.log(
             `[superflix-overlay] HLS capturado: ${safeLabel(stream)}`,
           );
 
-          finish(null, {
-            stream,
-            tipo: "hls",
-            referer:
-              referer ||
-              embedUrl,
-          });
+          completeMedia("hls");
 
           return;
         }
@@ -383,13 +396,7 @@ async function extractSuperflixInBrowser(
             `[superflix-overlay] MP4 capturado: ${safeLabel(stream)}`,
           );
 
-          finish(null, {
-            stream,
-            tipo: "mp4",
-            referer:
-              referer ||
-              embedUrl,
-          });
+          completeMedia("mp4");
         }
       };
 
@@ -469,11 +476,7 @@ async function extractSuperflixInBrowser(
             safeLabel(redirectUrl),
           );
 
-          finish(null, {
-            stream: redirectUrl,
-            tipo,
-            referer,
-          });
+          capture(redirectUrl, referer, 200);
         },
       );
 
@@ -492,7 +495,18 @@ async function extractSuperflixInBrowser(
           const referer =
             referers.get(details.id) ||
             details.referrer ||
-            embedUrl;
+              embedUrl;
+
+          if (/\.(?:vtt|srt|ass|ssa)(?:$|\?)/i.test(details.url) && details.statusCode >= 200 && details.statusCode < 400) {
+            subtitleTracks.set(details.url, {
+              file: details.url,
+              label: "Português",
+              kind: "captions",
+              default: subtitleTracks.size === 0,
+              referer,
+            });
+            console.log(`[superflix-overlay] legenda capturada: ${safeLabel(details.url)}`);
+          }
 
           if (
             isInteresting(details.url)

@@ -26,7 +26,7 @@ export function PlayerWakeLock() {
       if (nativeStateRef.current === enabled) return;
 
       try {
-        const bridge = (window as any)._obaflixBridge;
+        const bridge = (window as any).obaflixDesktop;
 
         if (typeof bridge?.setKeepScreenOn !== "function") {
           return;

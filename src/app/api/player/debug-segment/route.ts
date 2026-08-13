@@ -1,8 +1,7 @@
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import { assertSafeUrl } from "@/lib/ssrf";
 
 // Testa a cadeia completa de reprodução HLS a partir do servidor Vercel:
@@ -15,7 +14,12 @@ import { assertSafeUrl } from "@/lib/ssrf";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-const COMBOS = [
+type HeaderCombo = {
+  label: string;
+  headers: Record<string, string>;
+};
+
+const COMBOS: HeaderCombo[] = [
   { label: "sem headers", headers: {} },
   { label: "UA apenas", headers: { "User-Agent": UA } },
   {
@@ -79,7 +83,9 @@ async function probeUrl(
     const res = await fetch(url, {
       headers,
       signal: AbortSignal.timeout(timeout),
-      redirect: "follow",
+      // Diagnostic requests must not follow an attacker-controlled redirect
+      // to an internal address after the initial SSRF validation.
+      redirect: "manual",
     });
 
     const respHeaders: Record<string, string> = {};
@@ -144,8 +150,8 @@ function parseM3u8(text: string, baseUrl: string): { variants: string[]; segment
 }
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const guard = await requireAdmin(req);
+  if (guard) return guard;
 
   const masterUrl = req.nextUrl.searchParams.get("url");
   const refUrl = req.nextUrl.searchParams.get("ref") ?? "";
@@ -186,6 +192,7 @@ export async function GET(req: NextRequest) {
       variantResults = await Promise.all(
         COMBOS.map(async (c) => {
           const headers = resolveHeaders(c.headers, variantCdnOrigin, refUrl);
+          try { await assertSafeUrl(variantUrl!); } catch { return { label: c.label, headers_sent: headers, status: null, resp_headers: {}, error: "destino bloqueado" }; }
           const result = await probeUrl(variantUrl!, headers, true);
           return { label: c.label, headers_sent: headers, ...result };
         })
@@ -213,6 +220,7 @@ export async function GET(req: NextRequest) {
       segmentResults = await Promise.all(
         COMBOS.map(async (c) => {
           const headers = resolveHeaders(c.headers, segCdnOrigin, refUrl);
+          try { await assertSafeUrl(segmentUrl!); } catch { return { label: c.label, headers_sent: headers, status: null, resp_headers: {}, error: "destino bloqueado" }; }
           const result = await probeUrl(segmentUrl!, headers, true);
           return { label: c.label, headers_sent: headers, ...result };
         })

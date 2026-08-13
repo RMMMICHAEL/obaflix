@@ -1,3 +1,5 @@
+import { Redis } from "@upstash/redis";
+
 /**
  * Cliente Redis compartilhado.
  *
@@ -120,8 +122,6 @@ function buildUpstashClient(): RedisClient | null {
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return null;
 
-  // Importação dinâmica para não quebrar builds sem as variáveis configuradas
-  const { Redis } = require("@upstash/redis");
   const client = new Redis({ url, token });
 
   return {
@@ -129,14 +129,15 @@ function buildUpstashClient(): RedisClient | null {
       const args: any = { ex: opts?.ex, nx: opts?.nx };
       // remove undefined keys para a SDK não reclamar
       Object.keys(args).forEach(k => args[k] === undefined && delete args[k]);
-      return client.set(key, String(value), Object.keys(args).length ? args : undefined);
+      const result = await client.set(key, String(value), Object.keys(args).length ? args : undefined);
+      return result === "OK" ? "OK" : null;
     },
     get: (key) => client.get(key),
     del: (key) => client.del(key),
     incr: (key) => client.incr(key),
     expire: (key, seconds) => client.expire(key, seconds),
     async zadd(key, score, member) {
-      return client.zadd(key, { score, member });
+      return (await client.zadd(key, { score, member })) ?? 0;
     },
     zremrangebyscore: (key, min, max) => client.zremrangebyscore(key, min, max),
     zrem: (key, ...members) => client.zrem(key, ...members),
@@ -150,7 +151,11 @@ let _client: RedisClient | null = null;
 
 export function getRedis(): RedisClient {
   if (!_client) {
-    _client = buildUpstashClient() ?? new MemoryStore();
+    const distributed = buildUpstashClient();
+    if (!distributed && process.env.NODE_ENV === "production") {
+      throw new Error("Redis distribuído obrigatório em produção");
+    }
+    _client = distributed ?? new MemoryStore();
   }
   return _client;
 }

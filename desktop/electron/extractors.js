@@ -343,17 +343,21 @@ function detectProvider(embedUrl) {
     return null;
   }
 
-  if (pathname.includes("/rola3/") || pathname.includes("/rola4/") || hostname.includes("embedplayer") || /xn--kcksk7a2bl5le7b6doc1h3f/.test(hostname)) {
+  if (new URL(embedUrl).protocol !== "https:") return null;
+  const hostIs = (...allowed) => allowed.some((host) => hostname === host || hostname.endsWith("." + host));
+
+  if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) {
     return "embedplayer"; // rola3 (Embv) / rola4 (Xnn)
   }
-  if (hostname.includes("lulu")) return "lulu";
-  if (hostname.includes("hide") || hostname.includes("playhide")) return "hide";
-  if (hostname.includes("wish")) return "wish"; // streamwish, hlswish, playerwish
-  if (hostname.includes("llanfair") || pathname.includes("/rola/")) return "rola2";
-  if (hostname.includes("boltcdn") || hostname.includes("bolt")) return "bolt";
-  if (hostname.includes("bigshare") || hostname.includes("big")) return "big";
-  if (hostname.includes("watchplay")) return "watchplayer";
-  if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return "superflix";
+  if (hostIs("megafrixapi.com") && pathname.includes("voltz.php")) return "voltz";
+  if (hostIs("luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com")) return "lulu";
+  if (hostIs("playhide.shop", "hidehide.shop", "vidhidehub.com")) return "hide";
+  if (hostIs("streamwish.com", "playerwish.com", "hlswish.com", "wishonly.site", "cdnwish.com", "asnwish.com", "swishsrv.com")) return "wish";
+  if (hostIs("llanfairpwllgwyngy.com")) return "rola2";
+  if (hostIs("boltcdn.xyz", "upbolt.to")) return "bolt";
+  if (hostIs("bigshare.link")) return "big";
+  if (hostIs("v1.watchplay.shop")) return "watchplayer";
+  if (hostIs("superflixapi.pro")) return "superflix";
   return null;
 }
 
@@ -368,6 +372,7 @@ async function extractStream(embedUrl) {
 
   let stream;
   let referer = embedUrl;
+  let subtitles = [];
   switch (provider) {
     case "embedplayer": stream = await extractEmbedPlayer(embedUrl); break;
     case "hide": stream = await extractHide(embedUrl, id); break;
@@ -385,12 +390,13 @@ async function extractStream(embedUrl) {
       });
       stream = result.stream;
       referer = result.referer;
+      subtitles = result.subtitles || [];
       break;
     }
     default: throw new Error(`Provider sem extrator: ${provider}`);
   }
 
-  return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", provider, referer };
+  return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", provider, referer, subtitles };
 }
 
 module.exports = { detectProvider, extractStream };

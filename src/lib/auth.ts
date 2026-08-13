@@ -4,6 +4,10 @@ import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { getServerSession } from "next-auth";
 import { prisma } from "./prisma";
+import { checkRateLimit } from "./requestSecurity";
+import crypto from "crypto";
+
+const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 
 /**
  * Autoriza apenas usuários autenticados com role "admin".
@@ -37,8 +41,16 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
   }
 
   // Token direto (console script do painel Megaflix)
-  if (req?.headers.get("x-admin-token")) {
-    if (req.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN) {
+  const suppliedAdminToken = req?.headers.get("x-admin-token");
+  if (suppliedAdminToken) {
+    const expectedAdminToken = process.env.ADMIN_SECRET_TOKEN ?? "";
+    const forwarded = req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rate = await checkRateLimit(`admin-token:${forwarded}`, 30, 60);
+    const validLength = expectedAdminToken.length >= 32 && suppliedAdminToken.length === expectedAdminToken.length;
+    const validToken = validLength && crypto.timingSafeEqual(
+      Buffer.from(suppliedAdminToken), Buffer.from(expectedAdminToken)
+    );
+    if (rate.allowed && validToken) {
       return null; // autorizado
     }
     return addCors(
@@ -52,14 +64,18 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
   if (!session?.user) {
     return addCors(NextResponse.json({ error: "Não autenticado" }, { status: 401 }), origin);
   }
-  if ((session.user as { role?: string }).role !== "admin") {
+  const sessionUserId = (session.user as { id?: string }).id;
+  const currentUser = sessionUserId
+    ? await prisma.user.findUnique({ where: { id: sessionUserId }, select: { role: true } })
+    : null;
+  if (currentUser?.role !== "admin") {
     return addCors(NextResponse.json({ error: "Não autorizado" }, { status: 403 }), origin);
   }
   return null;
 }
 
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: 8 * 60 * 60 },
   pages: { signIn: "/login" },
   cookies: {
     sessionToken: {
@@ -95,13 +111,26 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         senha: { label: "Senha", type: "password" },
       },
-      async authorize(credentials: any) {
-        if (!credentials?.email || !credentials?.senha) return null;
-        const user = await prisma.user.findUnique({ where: { email: credentials.email.toLowerCase().trim() } });
-        if (!user) return null;
+      async authorize(credentials: any, request: any) {
+        if (typeof credentials?.email !== "string" || typeof credentials?.senha !== "string") return null;
+        if (credentials.email.length > 254 || credentials.senha.length > 128) return null;
+        const email = credentials.email.toLowerCase().trim();
+        const forwarded = request?.headers?.["x-forwarded-for"];
+        const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() || "unknown";
+        const [ipRate, accountRate] = await Promise.all([
+          checkRateLimit(`login:ip:${ip}`, 40, 15 * 60),
+          checkRateLimit(`login:account:${email}`, 12, 15 * 60),
+        ]);
+        if (!ipRate.allowed || !accountRate.allowed) return null;
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) {
+          await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
+          return null;
+        }
         if (!user.senhaHash) {
           // Conta criada via Google — não tem senha, retorna erro específico
-          throw new Error("google-account");
+          await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
+          return null;
         }
         const ok = await bcrypt.compare(credentials.senha, user.senhaHash);
         if (!ok) return null;

@@ -85,8 +85,8 @@ function toFilmCard(row: FilmRow): RecommendationCard {
     logo: row.logo,
     ano: row.ano,
     nota: row.nota,
-    urlDub: row.urlDub,
-    urlLeg: row.urlLeg,
+    urlDub: row.urlDub ? "disponivel" : null,
+    urlLeg: row.urlLeg ? "disponivel" : null,
   };
 }
 

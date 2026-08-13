@@ -6,6 +6,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.content.Intent
+import android.net.Uri
+import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
@@ -42,6 +45,18 @@ class PlayerWebViewClient(
     private val onPageReady: ((WebView) -> Unit)? = null,
 ) : WebViewClient() {
 
+    private val allowedAppHost = Uri.parse(BuildConfig.OBAFLIX_URL).host ?: ""
+
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+        if (!request.isForMainFrame) return false
+        val uri = request.url
+        if (uri.scheme == "https" && uri.host == allowedAppHost) return false
+        if (uri.scheme == "http" || uri.scheme == "https") {
+            runCatching { view.context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+        }
+        return true
+    }
+
     override fun onPageFinished(view: WebView, url: String) {
         super.onPageFinished(view, url)
         onPageReady?.invoke(view)
@@ -63,11 +78,11 @@ class PlayerWebViewClient(
         if (path == "/api/player/extract") {
             val embedUrl = request.url.getQueryParameter("url") ?: return null
             if (PlayerExtractors.detectProvider(embedUrl) != null) {
-                Log.d(TAG, "[intercept/extract] → nativo: ${embedUrl.take(80)}")
+                Log.d(TAG, "[intercept/extract] → nativo")
                 return try {
                     val result = runBlocking { StreamExtractor.extract(embedUrl) }
                     val tipo = if (result.stream.contains(".mp4")) "mp4" else "hls"
-                    Log.d(TAG, "[intercept/extract] sucesso: tipo=$tipo stream=${result.stream.take(100)}")
+                    Log.d(TAG, "[intercept/extract] sucesso: tipo=$tipo")
                     val json = JSONObject().apply {
                         put("stream", result.stream)
                         put("tipo", tipo)
@@ -100,7 +115,7 @@ class PlayerWebViewClient(
             val hasSig = request.url.getQueryParameter("sig") != null
             val isNative = request.url.getQueryParameter("native") == "1"
             if (!hasSig && isNative) {
-                Log.d(TAG, "[intercept/proxy] manifest → CDN direto: ${cdnUrl.take(100)}")
+                Log.d(TAG, "[intercept/proxy] manifest → CDN direto")
                 return fetchCdnDirect(cdnUrl, request)
             }
             // sig= ou sem native=1: deixa seguir para o proxy Vercel normal (não é rola3/4 nativo)
@@ -115,7 +130,7 @@ class PlayerWebViewClient(
         //    porque Electron registra o listener para "*://*/*".
         val cdnHostname = ObaflixApp.playerState.cdnHostname
         if (cdnHostname != null && (host == cdnHostname || host.endsWith(".$cdnHostname"))) {
-            Log.d(TAG, "[intercept/cdn] request direto ao CDN: ${request.url.toString().take(100)}")
+            Log.d(TAG, "[intercept/cdn] request direto ao CDN")
             return fetchCdnDirect(request.url.toString(), request)
         }
 
@@ -130,7 +145,7 @@ class PlayerWebViewClient(
         // original. Uma navegação POST (ex.: submit de formulário sem JS) viraria GET — por
         // segurança, deixa esses casos raros seguirem o fluxo nativo normal da WebView (com CSP).
         if (request.isForMainFrame && request.method.equals("GET", ignoreCase = true) &&
-            (host.contains("obaflix") || host.contains("vercel"))
+            host == allowedAppHost
         ) {
             Log.d(TAG, "[intercept/csp] documento principal, removendo CSP: $host$path")
             return fetchDocumentWithoutCsp(request)
@@ -172,7 +187,7 @@ class PlayerWebViewClient(
             Log.d(TAG, "[intercept/cdn] resposta ${response.code} de $cdnHost (${response.header("Content-Type") ?: "?"})")
 
             if (!response.isSuccessful) {
-                Log.w(TAG, "[intercept/cdn] status não-2xx: ${response.code} ${response.message} — $cdnUrl")
+                Log.w(TAG, "[intercept/cdn] status não-2xx: ${response.code} ${response.message}")
             }
 
             val contentType = response.header("Content-Type", "application/octet-stream")!!
@@ -207,19 +222,51 @@ class PlayerWebViewClient(
                     URL(cdnUrl).let { "${it.protocol}://${it.host}" }
                 } catch (_: Exception) { "" }
 
+                val absoluteUriScheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
+
+                fun resolvePlaylistUri(raw: String): String {
+                    val value = raw.trim()
+                    return when {
+                        // http:, https:, data:, skd: e outros esquemas absolutos
+                        absoluteUriScheme.containsMatchIn(value) -> value
+                        // URL relativa ao protocolo
+                        value.startsWith("//") -> "https:$value"
+                        // URL relativa à raiz do CDN
+                        value.startsWith("/") -> cdnOrigin + value
+                        // URL relativa ao diretório atual do manifesto
+                        else -> cdnBase + value
+                    }
+                }
+
+                val doubleQuotedUri = Regex(
+                    "URI\\s*=\\s*\"([^\"]+)\"",
+                    RegexOption.IGNORE_CASE,
+                )
+                val singleQuotedUri = Regex(
+                    "URI\\s*=\\s*'([^']+)'",
+                    RegexOption.IGNORE_CASE,
+                )
+
+                fun rewriteTagUris(line: String): String {
+                    val doubleRewritten = doubleQuotedUri.replace(line) { match ->
+                        "URI=\"${resolvePlaylistUri(match.groupValues[1])}\""
+                    }
+                    return singleQuotedUri.replace(doubleRewritten) { match ->
+                        "URI='${resolvePlaylistUri(match.groupValues[1])}'"
+                    }
+                }
+
                 val rewritten = normalized.split("\n").joinToString("\n") { line ->
                     val trimmed = line.trim()
                     when {
-                        // Linhas vazias, comentários e tags EXT-X: inalteradas
-                        trimmed.isEmpty() || trimmed.startsWith("#") -> line
-                        // URI já absoluta: mantém (branch 3 vai interceptar se for CDN)
-                        trimmed.startsWith("http://") || trimmed.startsWith("https://") -> line
-                        // Protocol-relative: força https
-                        trimmed.startsWith("//") -> "https:$trimmed"
-                        // Root-relative (/hls/<token> etc): resolve contra a origem do CDN
-                        trimmed.startsWith("/") -> cdnOrigin + trimmed
-                        // Path-relative (segment.ts etc): resolve contra a base do CDN
-                        else -> cdnBase + trimmed
+                        trimmed.isEmpty() -> line
+
+                        // Mantém a tag, mas torna absolutas URLs presentes em
+                        // EXT-X-MEDIA, EXT-X-KEY, EXT-X-MAP e I-FRAME-STREAM-INF.
+                        trimmed.startsWith("#") -> rewriteTagUris(line)
+
+                        // Linhas normais representam playlists ou segmentos.
+                        else -> resolvePlaylistUri(trimmed)
                     }
                 }
                 Log.d(TAG, "[intercept/cdn] m3u8 reescrito (${normalized.lines().size} linhas): base=$cdnBase")
@@ -236,7 +283,7 @@ class PlayerWebViewClient(
                 )
             }
         } catch (e: Exception) {
-            Log.e(TAG, "[intercept/cdn] erro ao buscar $cdnUrl: ${e.message}")
+            Log.e(TAG, "[intercept/cdn] erro ao buscar mídia: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -325,7 +372,7 @@ class PlayerWebViewClient(
                 """  }catch(_){return'['+typeof x+']';}""" +
                 """}""" +
                 """function toast(msg){""" +
-                """  try{window._obaflixBridge&&window._obaflixBridge.logError(msg.slice(0,300));}catch(_){}""" +
+                """  try{console.debug('[native-debug] '+msg.slice(0,300));}catch(_){}""" +
                 """}""" +
                 // console.error: Toast + logcat original. Sem overlay, sem recursão.
                 """var _b=false;""" +
