@@ -74,19 +74,27 @@ class ObaflixBridge(
         embedUrl: String
     ) {
         if (!authorized(capability) || callbackId.length > 128 || embedUrl.length > 4096) return
+        val provider = PlayerExtractors.detectProvider(embedUrl) ?: "desconhecido"
         Log.d(
             TAG,
             "[bridge] extractStream chamado: " +
-                "id=$callbackId"
+                "id=$callbackId provider=$provider"
         )
 
         scope.launch {
             try {
-                val result = StreamExtractor.extract(embedUrl)
+                val result = if (provider == "redecanais") {
+                    RedeCanaisExtractor.extract(webView, embedUrl)
+                } else {
+                    StreamExtractor.extract(embedUrl)
+                }
 
                 val json = JSONObject().apply {
                     put("stream", result.stream)
-                    put("tipo", if (result.stream.contains(".mp4")) "mp4" else "hls")
+                    put(
+                        "tipo",
+                        if (provider == "redecanais" || result.stream.contains(".mp4")) "mp4" else "hls",
+                    )
                     if (result.referer != null) {
                         put("referer", result.referer)
                     } else {
@@ -112,16 +120,19 @@ class ObaflixBridge(
 
                 resolveCallback(callbackId, json)
             } catch (e: Exception) {
+                val detail = e.message?.takeIf { it.isNotBlank() && it != "null" }
+                    ?: e.javaClass.simpleName.takeIf { it.isNotBlank() }
+                    ?: "Falha nativa sem detalhes"
                 Log.e(
                     TAG,
                     "[bridge] extractStream falhou: " +
-                        "id=$callbackId erro=${e.message}"
+                        "id=$callbackId provider=$provider erro=$detail"
                 )
 
                 val json = JSONObject()
                     .put(
                         "error",
-                        e.message ?: "Erro desconhecido"
+                        "$provider: $detail"
                     )
                     .toString()
 

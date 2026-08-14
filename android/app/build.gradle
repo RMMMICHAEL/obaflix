@@ -11,9 +11,8 @@ android {
         applicationId "com.obaflix"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
-
+        versionCode 7
+        versionName "1.0.7"
         buildConfigField "String", "OBAFLIX_URL", '"https://obaflix.vercel.app"'
     }
 
@@ -28,7 +27,7 @@ android {
         }
         debug {
             // Para dev local: alterar OBAFLIX_URL para http://10.0.2.2:3000 (emulador)
-            // ou http://<IP-LAN>:3000 (dispositivo físico)
+            // ou http://<IP-LAN>:3000 (dispositivo fÃ­sico)
         }
     }
 
@@ -41,7 +40,7 @@ android {
         jvmTarget = '1.8'
     }
 
-    // Signing — cria android/key.properties (não commitado) com:
+    // Signing â€” cria android/key.properties (nÃ£o commitado) com:
     // storeFile, storePassword, keyAlias, keyPassword
     def keystorePropsFile = rootProject.file("key.properties")
     if (keystorePropsFile.exists()) {

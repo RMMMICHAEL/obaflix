@@ -28,6 +28,7 @@ residencial do usuário + CDN direto, sem proxy Vercel) para **todos os provider
 | Big (Bigshare) | `bigshare`/`big` no hostname | `extractBig` | `route.ts extractBig` |
 | WatchPlayer | `v1.watchplay.shop` | `extractWatchplayer` | `extractWatchplayer` (também usado pelo PlayerFlix atual) |
 | Voltz | `voltz.php` em `megafrixapi.com` ou `vods.faz-o-eli.online` | `extractVoltz` | `extractVoltz` |
+| RedeCanais (Player 7) | URL de conteúdo, `watch.php` ou `player3/server.php` em `redecanais.capital` | `RedeCanaisExtractor` (WebView efêmero, Android) | não exibido no site |
 
 O site web (não-Electron/Android) continua **sempre** usando o fluxo `route.ts` +
 `/api/player/proxy` para todos os providers — nada mudou para usuários web. A única mudança é
@@ -152,6 +153,19 @@ ObaflixBridge.extractStream(callbackId, embedUrl)
 `PlayerWebViewClient.shouldInterceptRequest` também trocou `isRola34Url` por
 `PlayerExtractors.detectProvider(embedUrl) != null` no branch que intercepta
 `/api/player/extract` (mesmo papel do `onBeforeRequest` do Electron).
+
+### RedeCanais (Player 7)
+
+O RedeCanais é diferente dos extratores HTTP: a página gera a URL MP4 temporária
+executando uma VM JavaScript ofuscada. No Android, `RedeCanaisExtractor` abre a URL
+cadastrada em um WebView de 1×1, observa `/__RC__/proxy?src=...`, valida que `src`
+aponta para o proxy HTTPS esperado do Cloudflare Pages e destrói o WebView assim que
+captura a URL. Tokens e queries não são gravados nos logs.
+
+O Player 7 só aparece quando `urlDub` ou `urlLeg` já contém uma URL válida de
+`redecanais.capital`. Não existe busca automática por título: resultados textuais
+ambíguos poderiam associar o filme ou episódio errado. Como a URL assinada expira,
+falhas posteriores usam a mesma rotina de reextração nativa do `CustomPlayer`.
 
 ## Como adicionar um novo player
 

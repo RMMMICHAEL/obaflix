@@ -158,7 +158,10 @@ object PlayerExtractors {
         fun parse(html: String): String? {
             val declared = Regex("""const\s+stream\s*=\s*["']([^"']+)["']""")
                 .find(html)?.groupValues?.getOrNull(1)
-            if (declared != null && declared.startsWith("http")) return declared
+            if (declared != null) {
+                val normalized = declared.replaceFirst(Regex("^httpss://", RegexOption.IGNORE_CASE), "https://")
+                if (normalized.startsWith("http")) return normalized
+            }
             findM3u8(html)?.let { return it }
             return Regex(
                 """https?://[^\s<>"']+\.(?:mp4|m3u8)[^\s<>"']*""",
@@ -166,10 +169,26 @@ object PlayerExtractors {
             ).find(html)?.value
         }
 
-        parse(fetchHtml(embedUrl, REFERER_DEFAULT))?.let { return it }
+        suspend fun validate(candidate: String): String = withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(candidate)
+                .addHeader("User-Agent", UA_NATIVE)
+                .addHeader("Referer", embedUrl)
+                .addHeader("Range", "bytes=0-0")
+                .build()
+            ObaflixApp.httpClient.newCall(request).execute().use { response ->
+                if (response.code == 404 || response.code == 410) {
+                    throw Exception("mídia indisponível no Player 3 (HTTP ${response.code})")
+                }
+            }
+            candidate
+        }
+
+        parse(fetchHtml(embedUrl, REFERER_DEFAULT))?.let { return validate(it) }
         kotlinx.coroutines.delay(1200)
-        return parse(fetchHtml(embedUrl, REFERER_DEFAULT))
-            ?: throw Exception("stream não encontrado (Voltz)")
+        val candidate = parse(fetchHtml(embedUrl, REFERER_DEFAULT))
+            ?: throw Exception("stream não encontrado no Player 3")
+        return validate(candidate)
     }
     suspend fun extractEmbedPlayer(
         embedUrl: String,
@@ -199,6 +218,121 @@ object PlayerExtractors {
             ?: json.optString("videoSource").takeIf { it.isNotEmpty() }
             ?: json.optString("src").takeIf { it.isNotEmpty() }
             ?: throw Exception("securedLink não encontrado")
+    }
+
+    private fun decodePlayerflixEmbed(value: String): String? {
+        val candidate = value.trim()
+        if (candidate.isEmpty()) return null
+
+        fun validUrl(raw: String): String? = runCatching {
+            val parsed = URL(raw.trim())
+            if (parsed.protocol == "https" || parsed.protocol == "http") parsed.toString() else null
+        }.getOrNull()
+
+        validUrl(candidate)?.let { return it }
+        return runCatching {
+            String(Base64.getDecoder().decode(candidate), Charsets.UTF_8)
+        }.getOrNull()?.let(::validUrl)
+    }
+
+    private fun parsePlayerflixEmbeds(body: String): List<String> {
+        val result = linkedSetOf<String>()
+        runCatching {
+            val options = JSONObject(body)
+                .optJSONObject("data")
+                ?.optJSONArray("options")
+            if (options != null) {
+                for (index in 0 until options.length()) {
+                    val embed = options.optJSONObject(index)?.optString("embed").orEmpty()
+                    decodePlayerflixEmbed(embed)?.let(result::add)
+                }
+            }
+        }
+
+        Regex("""data-embed=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(body)
+            .forEach { match -> decodePlayerflixEmbed(match.groupValues[1])?.let(result::add) }
+
+        return result.toList()
+    }
+
+    suspend fun extractPlayerflix(ajaxUrl: String): NativeExtractResult = withContext(Dispatchers.IO) {
+        val input = URL(ajaxUrl)
+        val query = input.query.orEmpty()
+            .split("&")
+            .mapNotNull { part ->
+                val key = part.substringBefore("=", "")
+                val value = part.substringAfter("=", "")
+                if (key.isEmpty()) null else key to java.net.URLDecoder.decode(value, "UTF-8")
+            }
+            .toMap()
+        val type = query["type"]?.takeIf { it == "movie" } ?: "tv"
+        val id = query["id"].orEmpty()
+        val season = query["season"] ?: "1"
+        val episode = query["episode"] ?: "1"
+        if (id.isEmpty()) throw Exception("ID PlayerFlix não encontrado")
+
+        val referer = if (type == "tv") {
+            "https://playerflix.ink/serie/$id/$season/$episode"
+        } else {
+            "https://playerflix.ink/filme/$id"
+        }
+        val request = Request.Builder()
+            .url(ajaxUrl)
+            .get()
+            .addHeader("User-Agent", UA_NATIVE)
+            .addHeader("Accept", "application/json, text/plain, */*")
+            .addHeader("Accept-Language", "pt-BR,pt;q=0.5")
+            .addHeader("Referer", referer)
+            .addHeader("X-Requested-With", "XMLHttpRequest")
+            .addHeader("Sec-Fetch-Dest", "empty")
+            .addHeader("Sec-Fetch-Mode", "cors")
+            .addHeader("Sec-Fetch-Site", "same-origin")
+            .build()
+        val response = ObaflixApp.httpClient.newCall(request).execute()
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw Exception("PlayerFlix HTTP ${response.code}")
+
+        val embeds = parsePlayerflixEmbeds(body)
+        // A API atual do PlayerFlix fornece WatchPlayer como opção principal. O CDN
+        // *.hclod.qzz.io valida o Referer do WatchPlayer e devolve 403 quando recebe o
+        // Referer do EmbedPlayer legado. Por isso a ordem precisa ser a mesma do extrator web.
+        val watchPlayer = embeds.firstOrNull { candidate ->
+            runCatching { URL(candidate).host == "v1.watchplay.shop" }.getOrDefault(false)
+        }
+        val failures = mutableListOf<String>()
+        if (watchPlayer != null) {
+            try {
+                return@withContext NativeExtractResult(
+                    stream = extractWatchplayer(watchPlayer),
+                    referer = watchPlayer,
+                )
+            } catch (error: Exception) {
+                failures.add("WatchPlayer: ${error.message}")
+            }
+        }
+
+        val embedPlayer = embeds.firstOrNull { candidate ->
+            runCatching { URL(candidate).host.endsWith("embedplayer2.xyz") }.getOrDefault(false)
+        } ?: embeds.firstOrNull { candidate ->
+            runCatching { URL(candidate).host.contains("embedplayer") }.getOrDefault(false)
+        }
+
+        if (embedPlayer != null) {
+            try {
+                return@withContext NativeExtractResult(
+                    stream = extractEmbedPlayer(embedPlayer, ""),
+                    referer = embedPlayer,
+                )
+            } catch (error: Exception) {
+                failures.add("EmbedPlayer: ${error.message}")
+            }
+        }
+
+        throw Exception(
+            if (failures.isEmpty()) "servidor compatível não encontrado no PlayerFlix"
+            else "PlayerFlix falhou: ${failures.joinToString(" | ").take(300)}"
+        )
     }
 
     suspend fun extractHide(embedUrl: String, id: String): String {
@@ -374,6 +508,7 @@ object PlayerExtractors {
         if (parsed.protocol != "https") return null
         fun hostIs(vararg allowed: String): Boolean = allowed.any { host == it || host.endsWith(".$it") }
 
+        if (hostIs("playerflix.ink") && path.contains("/inc/Ajax.php")) return "playerflix"
         if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) return "embedplayer"
         if (hostIs("megafrixapi.com", "vods.faz-o-eli.online") && path.contains("voltz.php")) return "voltz"
         if (hostIs("luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com")) return "lulu"
@@ -384,6 +519,7 @@ object PlayerExtractors {
         if (hostIs("bigshare.link")) return "big"
         if (hostIs("v1.watchplay.shop")) return "watchplayer"
         if (hostIs("superflixapi.pro")) return "superflix"
+        if (hostIs("redecanais.capital") && RedeCanaisExtractor.isSupportedUrl(embedUrl)) return "redecanais"
         return null
     }
 
@@ -394,6 +530,7 @@ object PlayerExtractors {
         val id = parsed.path.split("/").lastOrNull { it.isNotEmpty() } ?: ""
 
         if (provider == "superflix") return SuperflixExtractor.extract(embedUrl)
+        if (provider == "playerflix") return extractPlayerflix(embedUrl)
 
         val stream = when (provider) {
             "voltz" -> extractVoltz(embedUrl)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, Headphones } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, Settings2, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -65,6 +65,9 @@ type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
 interface Fonte { label: string; embedUrl: string; tokenized: boolean; }
 interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
+interface QualityLevel { label?: string; height?: number; width?: number; bitrate?: number; }
+interface AudioTrack { name?: string; label?: string; language?: string; }
+interface CaptionTrack { id?: string | number; label?: string; language?: string; }
 
 // Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
 // Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
@@ -93,6 +96,7 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("bigshare") || hostname.includes("big")) return true;
     if (hostname.includes("watchplay")) return true;
     if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return true;
+    if (hostname === "redecanais.capital" || hostname.endsWith(".redecanais.capital")) return true;
     return false;
   } catch {
     return false;
@@ -106,6 +110,30 @@ function isSuperflixUrl(url: string) {
   } catch {
     return false;
   }
+}
+
+function isPlayerflixAjaxUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "playerflix.ink" && parsed.pathname === "/inc/Ajax.php";
+  } catch {
+    return false;
+  }
+}
+
+function friendlyPlayerError(error: unknown, label: string): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const detail = raw.trim();
+  if (!detail || detail === "null" || /erro desconhecido/i.test(detail)) {
+    return `${label}: o servidor não informou a causa da falha.`;
+  }
+  if (/handshake failed|sslhandshake/i.test(detail)) {
+    return `${label}: o servidor recusou a conexão segura. Tente novamente ou escolha outro servidor.`;
+  }
+  if (/stream n[aã]o encontrado|servidor compatível não encontrado/i.test(detail)) {
+    return `${label}: nenhuma mídia disponível foi encontrada para este título.`;
+  }
+  return detail.startsWith(`${label}:`) ? detail : `${label}: ${detail}`;
 }
 
 // Monta a URL do proxy para o path nativo Electron (rola3/4 via IPC, CDN com IP do usuário).
@@ -217,6 +245,8 @@ export function CustomPlayer({
   const mp4CooldownUntilRef = useRef(0); // timestamp (ms) até quando re-extração MP4 está em cooldown após falha
   const serverSwitchCountRef = useRef(0); // total de trocas automáticas de servidor nesta sessão
   const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
+  const userQualityRef = useRef<number | null>(null); // null = automática; índice do JW quando o usuário fixa uma qualidade
+  const userCaptionRef = useRef<number | null>(null); // null = seleção inicial; 0 = desligada; >0 = faixa escolhida
   const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
   // Representa "nenhum frame válido foi exibido ainda" para esta fonte.
   // Definido true na montagem e em cada switchFonte; definido false pelo evento firstFrame
@@ -240,7 +270,6 @@ export function CustomPlayer({
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetControlsTimerRef = useRef<() => void>(() => {});
-  const toggleAudioTrackRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     unmountedRef.current = false;
@@ -282,6 +311,10 @@ export function CustomPlayer({
 
   const wishFonte = parsedFontes.find((fonte) =>
     isProvider(fonte, "wish"),
+  );
+
+  const redeCanaisFonte = parsedFontes.find((fonte) =>
+    isProvider(fonte, "redecanais.capital"),
   );
 
   // Player 1: PlayerFlix
@@ -355,6 +388,16 @@ export function CustomPlayer({
     });
   }
 
+  // Player 7: RedeCanais — somente Android. A URL do conteúdo precisa estar
+  // cadastrada em urlDub/urlLeg; o app não escolhe resultados por título para
+  // evitar reproduzir um filme ou episódio diferente por engano.
+  if (isAndroid && redeCanaisFonte) {
+    allFontes.push({
+      ...redeCanaisFonte,
+      label: "Player 7",
+    });
+  }
+
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
@@ -370,7 +413,14 @@ export function CustomPlayer({
   // Controls UI
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [hasMultiAudio, setHasMultiAudio] = useState(false);
+  const [qualityLevels, setQualityLevels] = useState<QualityLevel[]>([]);
+  const [currentQuality, setCurrentQuality] = useState(0);
+  const [visualQualityLabel, setVisualQualityLabel] = useState("");
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [currentAudioTrack, setCurrentAudioTrack] = useState(0);
+  const [captionTracks, setCaptionTracks] = useState<CaptionTrack[]>([]);
+  const [currentCaption, setCurrentCaption] = useState(0);
+  const [showPlaybackSettings, setShowPlaybackSettings] = useState(false);
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
   const [showRetry, setShowRetry] = useState(false);
@@ -561,7 +611,14 @@ export function CustomPlayer({
     setPlaying(false);
     setPosition(0);
     setDuration(0);
-    setHasMultiAudio(false);
+    setQualityLevels([]);
+    setCurrentQuality(0);
+    setVisualQualityLabel("");
+    setAudioTracks([]);
+    setCurrentAudioTrack(0);
+    setCaptionTracks([]);
+    setCurrentCaption(0);
+    setShowPlaybackSettings(false);
     setAutoPlayBlocked(false);
     setNextEpCountdown(null);
     autoSkipDoneRef.current = false;
@@ -599,26 +656,35 @@ export function CustomPlayer({
       let tipo: string;
       let playerUrl: string;
 
-      // O provedor documenta o SuperFlix como iframe. No Android, a WebView
-      // executa a validação JavaScript que o extrator OkHttp não consegue concluir.
+      // No Android o iframe fica visível apenas durante a validação Cloudflare. Em
+      // paralelo, o bridge aguarda cf_clearance e então troca a página do provedor
+      // pela mídia extraída localmente. Isso evita terminar no 404 do iframe.
       if (isAndroid && isSuperflixUrl(embedUrl)) {
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
         setStatus("playing");
-        return;
-      }
-
-      // Vidsrc já é um player embed completo. Carrega direto no iframe para não
+        if (!desktop) return;
+        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; error?: string } =
+          await desktop.extractStream(embedUrl);
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        tipo = data.tipo ?? "hls";
+        playerUrl = buildElectronProxyUrl(data.stream, data.referer);
+        streamRefererRef.current = data.referer ?? null;
+        directStreamRef.current = data.stream;
+        setSubtitleTracks((data.subtitles ?? []).map((track) => ({
+          ...track,
+          file: buildElectronProxyUrl(track.file, track.referer || data.referer),
+          kind: "captions",
+        })));
+      } else if (embedUrl.startsWith("https://vidsrc-embed.ru/embed/")) {
+        // Vidsrc já é um player embed completo. Carrega direto no iframe para não
       // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que deve
       // continuar dentro do player do próprio provedor.
-      if (embedUrl.startsWith("https://vidsrc-embed.ru/embed/")) {
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
         setStatus("playing");
         return;
-      }
-
-      if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
+      } else if (desktop && (supportsNativeDesktopExtraction(embedUrl) || (isAndroid && isPlayerflixAjaxUrl(embedUrl)))) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; error?: string } =
           await desktop.extractStream(embedUrl);
@@ -685,7 +751,7 @@ export function CustomPlayer({
       if (fonteIdx < allFontes.length - 1) {
         switchFonte(fonteIdx + 1);
       } else {
-        setError(e.message || "Nenhuma fonte funcionou");
+        setError(friendlyPlayerError(e, fonte?.label ?? "Player"));
         setStatus("error");
       }
     }
@@ -835,21 +901,15 @@ export function CustomPlayer({
         }
       }
 
-      // Expõe alternância de áudio à UI via ref (substitui addButton, que não funciona com controls:false)
-      toggleAudioTrackRef.current = () => {
-        const tracks: any[] = player.getAudioTracks() ?? [];
-        if (tracks.length <= 1) return;
-        const cur = player.getCurrentAudioTrack();
-        const next = (cur + 1) % tracks.length;
-        userAudioTrackRef.current = next;
-        safeSetAudioTrack(next);
-      };
-
       // ── Auto-seleciona áudio em português, exceto se o usuário já escolheu manualmente ──
-      player.on("audioTracks", () => {
+      player.on("audioTracks", (event: { tracks?: AudioTrack[]; currentTrack?: number }) => {
         if (unmountedRef.current) return;
-        const tracks: any[] = player.getAudioTracks() ?? [];
-        setHasMultiAudio(tracks.length > 1);
+        const tracks: AudioTrack[] = event?.tracks ?? player.getAudioTracks() ?? [];
+        const active = typeof event?.currentTrack === "number"
+          ? event.currentTrack
+          : player.getCurrentAudioTrack();
+        setAudioTracks(tracks);
+        setCurrentAudioTrack(Math.max(0, active));
         if (tracks.length <= 1) return;
 
         if (userAudioTrackRef.current !== null) {
@@ -868,6 +928,77 @@ export function CustomPlayer({
           return n.includes("pt") || n.includes("por") || n.includes("portugu");
         });
         if (ptIdx > 0) safeSetAudioTrack(ptIdx);
+      });
+
+      player.on("audioTrackChanged", (event: { tracks?: AudioTrack[]; currentTrack?: number }) => {
+        if (unmountedRef.current) return;
+        if (event?.tracks) setAudioTracks(event.tracks);
+        const active = typeof event?.currentTrack === "number"
+          ? event.currentTrack
+          : player.getCurrentAudioTrack();
+        setCurrentAudioTrack(Math.max(0, active));
+      });
+
+      // O manifesto HLS do Player 1 fornece Auto + 360p + 720p. Como os
+      // controles nativos do JW estão ocultos, espelha a API no menu customizado.
+      player.on("levels", (event: { levels?: QualityLevel[] }) => {
+        if (unmountedRef.current) return;
+        const levels: QualityLevel[] = event?.levels ?? player.getQualityLevels() ?? [];
+        setQualityLevels(levels);
+        const desired = userQualityRef.current;
+        if (desired !== null && desired >= 0 && desired < levels.length) {
+          player.setCurrentQuality(desired);
+          setCurrentQuality(desired);
+        } else {
+          setCurrentQuality(Math.max(0, player.getCurrentQuality?.() ?? 0));
+        }
+      });
+
+      player.on("levelsChanged", (event: { currentQuality?: number }) => {
+        if (unmountedRef.current) return;
+        const active = typeof event?.currentQuality === "number"
+          ? event.currentQuality
+          : player.getCurrentQuality?.();
+        setCurrentQuality(Math.max(0, active ?? 0));
+      });
+
+      player.on("visualQuality", (event: { mode?: string; level?: QualityLevel }) => {
+        if (unmountedRef.current) return;
+        const rawLabel = event?.level?.label?.trim();
+        const resolved = rawLabel && rawLabel.toLowerCase() !== "auto"
+          ? rawLabel
+          : event?.level?.height
+            ? `${event.level.height}p`
+            : "";
+        setVisualQualityLabel(event?.mode === "auto" ? resolved : "");
+      });
+
+      // A lista sempre inclui o item 0 (legendas desligadas). Na primeira
+      // carga, replica o EmbedMovies e ativa automaticamente a faixa portuguesa.
+      player.on("captionsList", (event: { tracks?: CaptionTrack[]; track?: number }) => {
+        if (unmountedRef.current) return;
+        const captions: CaptionTrack[] = event?.tracks ?? player.getCaptionsList?.() ?? [];
+        setCaptionTracks(captions);
+        setCurrentCaption(Math.max(0, event?.track ?? player.getCurrentCaptions?.() ?? 0));
+        if (captions.length <= 1) return;
+
+        const desired = userCaptionRef.current;
+        if (desired !== null && desired >= 0 && desired < captions.length) {
+          player.setCurrentCaptions(desired);
+          return;
+        }
+
+        const ptIdx = captions.findIndex((track) => {
+          const name = `${track.label ?? ""} ${track.language ?? ""}`.toLowerCase();
+          return name.includes("pt") || name.includes("por") || name.includes("portugu");
+        });
+        if (ptIdx > 0) player.setCurrentCaptions(ptIdx);
+      });
+
+      player.on("captionsChanged", (event: { tracks?: CaptionTrack[]; track?: number }) => {
+        if (unmountedRef.current) return;
+        if (event?.tracks) setCaptionTracks(event.tracks);
+        setCurrentCaption(Math.max(0, event?.track ?? player.getCurrentCaptions?.() ?? 0));
       });
 
       player.on("volume", ({ volume: vol }: any) => {
@@ -1310,7 +1441,22 @@ export function CustomPlayer({
   const btnCls = "flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 bg-white/10 text-white hover:bg-white hover:text-black active:bg-white active:text-black";
   const pct = duration > 0 ? Math.min((position / duration) * 100, 100) : 0;
   const showCustomControls = streamTipo !== "iframe";
-  const showOverlay = !playing || status !== "playing" || controlsVisible;
+  const showOverlay = !playing || status !== "playing" || controlsVisible || showPlaybackSettings || showSources;
+  const hasPlaybackSettings = qualityLevels.length > 1 || audioTracks.length > 1 || captionTracks.length > 1;
+
+  const qualityName = (level: QualityLevel, index: number) => {
+    if (index === 0) return visualQualityLabel ? `Automática (${visualQualityLabel})` : "Automática";
+    return level.label || (level.height ? `${level.height}p` : `Qualidade ${index}`);
+  };
+
+  const languageName = (track: AudioTrack | CaptionTrack, fallback: string) => {
+    const raw = ("name" in track ? track.name : undefined) || track.label || track.language || fallback;
+    const normalized = raw.toLowerCase();
+    if (normalized === "off" || normalized.includes("desativ")) return "Desativadas";
+    if (normalized.includes("por") || normalized === "pt" || normalized.startsWith("pt-")) return "Português";
+    if (normalized.includes("eng") || normalized === "en" || normalized.startsWith("en-")) return "Inglês";
+    return raw;
+  };
 
   return (
     <div
@@ -1346,8 +1492,6 @@ export function CustomPlayer({
             : "autoplay; fullscreen; picture-in-picture"}
           allowFullScreen
           referrerPolicy="origin-when-cross-origin"
-          // A integração oficial do Superflix não usa sandbox. Restringi-lo
-          // impede partes do fluxo de validação da Cloudflare no Android WebView.
           sandbox={isSuperflixUrl(streamUrl)
             ? undefined
             : "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"}
@@ -1429,7 +1573,11 @@ export function CustomPlayer({
                   <button
                     title="Selecionar servidor"
                     className={`h-10 md:h-12 px-3 md:px-4 rounded-full flex items-center gap-1.5 flex-shrink-0 transition-all duration-200 bg-white/10 text-white text-xs md:text-sm font-medium hover:bg-white hover:text-black active:bg-white active:text-black${showSources ? " !bg-white !text-black" : ""}`}
-                    onClick={(e) => { e.stopPropagation(); setShowSources((s) => !s); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowPlaybackSettings(false);
+                      setShowSources((s) => !s);
+                    }}
                   >
                     Servidor
                     <ChevronRight className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 ${showSources ? "rotate-90" : ""}`} />
@@ -1452,17 +1600,6 @@ export function CustomPlayer({
                     </div>
                   )}
                 </div>
-              )}
-
-              {/* Áudio (múltiplas faixas) */}
-              {hasMultiAudio && streamTipo !== "iframe" && (
-                <button
-                  title="Alternar idioma do áudio"
-                  className={btnCls}
-                  onClick={() => toggleAudioTrackRef.current()}
-                >
-                  <Headphones className="w-5 h-5" />
-                </button>
               )}
 
               {/* Chromecast */}
@@ -1508,7 +1645,7 @@ export function CustomPlayer({
         </div>
 
         {/* ── Middle: logo + info ── */}
-        <div className="self-start pointer-events-none px-3 sm:px-4 md:px-12 max-w-[240px] sm:max-w-sm md:max-w-3xl lg:max-w-4xl xl:max-w-5xl [@media(max-height:540px)]:max-w-[220px] [@media(max-height:540px)]:px-2.5">
+        {showCustomControls && <div className="self-start pointer-events-none px-3 sm:px-4 md:px-12 max-w-[240px] sm:max-w-sm md:max-w-3xl lg:max-w-4xl xl:max-w-5xl [@media(max-height:540px)]:max-w-[220px] [@media(max-height:540px)]:px-2.5">
           {logoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -1531,7 +1668,7 @@ export function CustomPlayer({
               {sinopse}
             </p>
           )}
-        </div>
+        </div>}
 
         {/* ── Bottom: controles customizados ── */}
         {showCustomControls ? (
@@ -1663,8 +1800,94 @@ export function CustomPlayer({
                 </button>
               </div>
 
-              {/* Direita: próximo ep + tela cheia */}
+              {/* Direita: ajustes + próximo ep + tela cheia */}
               <div className="flex items-center gap-1 md:gap-1.5">
+                {hasPlaybackSettings && (
+                  <div className="relative">
+                    <button
+                      title="Qualidade, áudio e legendas"
+                      className={`${btnCls}${showPlaybackSettings ? " !bg-white !text-black" : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setShowSources(false);
+                        setShowPlaybackSettings((visible) => !visible);
+                        resetControlsTimerRef.current();
+                      }}
+                    >
+                      <Settings2 className="w-5 h-5" />
+                    </button>
+
+                    {showPlaybackSettings && (
+                      <div
+                        className="absolute right-0 bottom-full mb-2 w-64 max-h-[58vh] overflow-y-auto rounded-2xl border border-white/10 bg-zinc-950/95 p-2 text-white shadow-2xl backdrop-blur-xl"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <p className="px-2 pb-2 pt-1 text-xs font-semibold text-white/90">Reprodução</p>
+
+                        {qualityLevels.length > 1 && (
+                          <div className="mb-2 border-t border-white/10 pt-2">
+                            <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/45">Qualidade</p>
+                            {qualityLevels.map((level, index) => (
+                              <button
+                                key={`quality-${index}`}
+                                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-xs transition-colors ${currentQuality === index ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                                onClick={() => {
+                                  userQualityRef.current = index === 0 ? null : index;
+                                  jwRef.current?.setCurrentQuality?.(index);
+                                  setCurrentQuality(index);
+                                }}
+                              >
+                                <span>{qualityName(level, index)}</span>
+                                {currentQuality === index && <Check className="h-4 w-4 text-[#E50914]" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {audioTracks.length > 1 && (
+                          <div className="mb-2 border-t border-white/10 pt-2">
+                            <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/45">Áudio</p>
+                            {audioTracks.map((track, index) => (
+                              <button
+                                key={`audio-${index}`}
+                                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-xs transition-colors ${currentAudioTrack === index ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                                onClick={() => {
+                                  userAudioTrackRef.current = index;
+                                  jwRef.current?.setCurrentAudioTrack?.(index);
+                                  setCurrentAudioTrack(index);
+                                }}
+                              >
+                                <span>{languageName(track, `Faixa ${index + 1}`)}</span>
+                                {currentAudioTrack === index && <Check className="h-4 w-4 text-[#E50914]" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {captionTracks.length > 1 && (
+                          <div className="border-t border-white/10 pt-2">
+                            <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/45">Legendas</p>
+                            {captionTracks.map((track, index) => (
+                              <button
+                                key={`caption-${String(track.id ?? index)}`}
+                                className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-xs transition-colors ${currentCaption === index ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                                onClick={() => {
+                                  userCaptionRef.current = index;
+                                  jwRef.current?.setCurrentCaptions?.(index);
+                                  setCurrentCaption(index);
+                                }}
+                              >
+                                <span>{index === 0 ? "Desativadas" : languageName(track, `Legenda ${index}`)}</span>
+                                {currentCaption === index && <Check className="h-4 w-4 text-[#E50914]" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {nextUrl && (
                   <button
                     title="Próximo episódio"
@@ -1759,19 +1982,33 @@ export function CustomPlayer({
         <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center bg-black/75 gap-5">
           <AlertCircle size={44} className="text-[#E50914]" strokeWidth={1.5} />
           <p className="text-white/80 text-sm max-w-xs text-center leading-relaxed">{error}</p>
-          <button
-            onClick={() => extract(fonte?.embedUrl ?? "")}
-            className="bg-white text-black text-xs font-bold px-5 py-2.5 rounded-full hover:bg-zinc-200 transition"
-          >
-            Tentar novamente
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`)}
+              className="flex items-center gap-2 border border-white/20 bg-white/10 text-white text-xs font-bold px-5 py-2.5 rounded-full hover:bg-white/20 transition"
+            >
+              <ArrowLeft size={15} /> Voltar
+            </button>
+            <button
+              onClick={() => extract(fonte?.embedUrl ?? "")}
+              className="bg-white text-black text-xs font-bold px-5 py-2.5 rounded-full hover:bg-zinc-200 transition"
+            >
+              Tentar novamente
+            </button>
+          </div>
         </div>
       )}
 
       {/* Sem fontes */}
       {status === "idle" && allFontes.length === 0 && (
-        <div className="absolute inset-0 z-[99999] flex items-center justify-center">
-          <p className="text-white/30 text-sm">Nenhuma fonte disponível</p>
+        <div className="absolute inset-0 z-[99999] flex flex-col gap-4 items-center justify-center">
+          <p className="text-white/50 text-sm">Nenhuma fonte disponível</p>
+          <button
+            onClick={() => router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`)}
+            className="flex items-center gap-2 border border-white/20 bg-white/10 text-white text-xs font-bold px-5 py-2.5 rounded-full"
+          >
+            <ArrowLeft size={15} /> Voltar
+          </button>
         </div>
       )}
 
