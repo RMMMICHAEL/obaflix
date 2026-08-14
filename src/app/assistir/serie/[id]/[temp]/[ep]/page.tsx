@@ -5,6 +5,18 @@ import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
 import { imgUrl, getTVImages, pickLogo, logoUrl as buildLogoUrl } from "@/lib/tmdb";
 
+// Fontes RedeCanais confirmadas pelos HARs fornecidos. Manter o endpoint
+// interno do player evita depender da automação da página externa do episódio.
+const REDECANAIS_EPISODES: Record<string, string> = {
+  "4607:1:1": "https://redecanais.capital/player3/server.php?categoria=vod&server=RCServer01&subfolder=videos&vid=LOSTT01EP01&gid=0B265dpk7MD54cWtsLXVGSmhWeFk",
+  "69050:1:1": "https://redecanais.capital/player3/server.php?categoria=vod&server=RCServer13&subfolder=ondemand&vid=RVDLT01EP01",
+};
+
+function getRedeCanaisEpisodeUrl(tmdbId: string | null, temporada: number, numeroEp: number) {
+  if (!tmdbId) return null;
+  return REDECANAIS_EPISODES[`${tmdbId}:${temporada}:${numeroEp}`] ?? null;
+}
+
 // Busca URLs extras do warez2 para o episódio (voltz como player 1)
 async function getWarez2Ep(
   serieId: string,
@@ -103,7 +115,11 @@ export default async function AssistirEpPage({
     : undefined;
 
   // Voltz (e outros players do warez2) ficam em primeiro na lista
-  const urlDub = mergeEpUrls(warez.br, episodio.urlDub);
+  const redeCanaisUrl = getRedeCanaisEpisodeUrl(serie.tmdbId, temporada, numeroEp);
+  const urlDub = mergeEpUrls(
+    redeCanaisUrl ? [...warez.br, redeCanaisUrl] : warez.br,
+    episodio.urlDub,
+  );
   const urlLeg = mergeEpUrls(warez.eng, episodio.urlLeg);
 
   return (
