@@ -69,6 +69,91 @@ interface QualityLevel { label?: string; height?: number; width?: number; bitrat
 interface AudioTrack { name?: string; label?: string; language?: string; }
 interface CaptionTrack { id?: string | number; label?: string; language?: string; }
 
+type CaptionColor = "softWhite" | "warmYellow" | "cyan";
+type CaptionSize = "small" | "standard" | "large" | "extraLarge";
+type CaptionEdgeStyle = "uniform" | "dropshadow" | "none";
+
+interface CaptionPreferences {
+  color: CaptionColor;
+  size: CaptionSize;
+  backgroundOpacity: number;
+  edgeStyle: CaptionEdgeStyle;
+}
+
+const CAPTION_PREFERENCES_KEY = "obaflix.caption-preferences.v1";
+const CAPTION_COLORS: Record<CaptionColor, { label: string; value: string }> = {
+  softWhite: { label: "Branco", value: "#f5f4f2" },
+  warmYellow: { label: "Amarelo", value: "#ffd866" },
+  cyan: { label: "Ciano", value: "#7ee7f2" },
+};
+const CAPTION_SIZES: Record<CaptionSize, { label: string; scale: number }> = {
+  small: { label: "Pequena", scale: 0.84 },
+  standard: { label: "Padrão", scale: 1 },
+  large: { label: "Grande", scale: 1.2 },
+  extraLarge: { label: "Extra", scale: 1.42 },
+};
+const DEFAULT_CAPTION_PREFERENCES: CaptionPreferences = {
+  color: "softWhite",
+  size: "standard",
+  backgroundOpacity: 68,
+  edgeStyle: "uniform",
+};
+
+function readCaptionPreferences(value: string | null): CaptionPreferences {
+  if (!value) return DEFAULT_CAPTION_PREFERENCES;
+  try {
+    const parsed = JSON.parse(value) as Partial<CaptionPreferences>;
+    const color = parsed.color && parsed.color in CAPTION_COLORS
+      ? parsed.color
+      : DEFAULT_CAPTION_PREFERENCES.color;
+    const size = parsed.size && parsed.size in CAPTION_SIZES
+      ? parsed.size
+      : DEFAULT_CAPTION_PREFERENCES.size;
+    const backgroundOpacity = typeof parsed.backgroundOpacity === "number"
+      ? Math.min(100, Math.max(0, Math.round(parsed.backgroundOpacity)))
+      : DEFAULT_CAPTION_PREFERENCES.backgroundOpacity;
+    const edgeStyle = parsed.edgeStyle === "uniform" || parsed.edgeStyle === "dropshadow" || parsed.edgeStyle === "none"
+      ? parsed.edgeStyle
+      : DEFAULT_CAPTION_PREFERENCES.edgeStyle;
+    return { color, size, backgroundOpacity, edgeStyle };
+  } catch {
+    return DEFAULT_CAPTION_PREFERENCES;
+  }
+}
+
+function captionFontSize(preferences: CaptionPreferences) {
+  const viewportHeight = typeof window === "undefined" ? 720 : window.innerHeight;
+  const base = Math.min(34, Math.max(20, Math.round(viewportHeight * 0.052)));
+  return Math.round(base * CAPTION_SIZES[preferences.size].scale);
+}
+
+function jwCaptionStyles(preferences: CaptionPreferences) {
+  return {
+    backgroundColor: "#101014",
+    backgroundOpacity: preferences.backgroundOpacity,
+    color: CAPTION_COLORS[preferences.color].value,
+    edgeColor: "#09090d",
+    edgeStyle: preferences.edgeStyle,
+    fontFamily: "Arial, Helvetica, sans-serif",
+    fontOpacity: 100,
+    fontSize: captionFontSize(preferences),
+    windowColor: "#101014",
+    windowOpacity: 0,
+  };
+}
+
+function captionTextShadow(edgeStyle: CaptionEdgeStyle) {
+  if (edgeStyle === "none") return "none";
+  if (edgeStyle === "dropshadow") return "0 0.12em 0.18em rgba(9, 9, 13, 0.98)";
+  return [
+    "-0.055em -0.055em 0 #09090d",
+    "0.055em -0.055em 0 #09090d",
+    "-0.055em 0.055em 0 #09090d",
+    "0.055em 0.055em 0 #09090d",
+    "0 0.1em 0.16em rgba(9, 9, 13, 0.92)",
+  ].join(",");
+}
+
 // Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
 // Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
 // essas fontes só aparecem quando isDesktop=true (não funcionam com IP de datacenter).
@@ -421,6 +506,10 @@ export function CustomPlayer({
   const [captionTracks, setCaptionTracks] = useState<CaptionTrack[]>([]);
   const [currentCaption, setCurrentCaption] = useState(0);
   const [showPlaybackSettings, setShowPlaybackSettings] = useState(false);
+  const [showCaptionAppearance, setShowCaptionAppearance] = useState(false);
+  const [captionPreferences, setCaptionPreferences] = useState<CaptionPreferences>(DEFAULT_CAPTION_PREFERENCES);
+  const [captionPreferencesReady, setCaptionPreferencesReady] = useState(false);
+  const captionPreferencesRef = useRef(DEFAULT_CAPTION_PREFERENCES);
   const [autoPlayBlocked, setAutoPlayBlocked] = useState(false);
   const [nextEpCountdown, setNextEpCountdown] = useState<number | null>(null);
   const [showRetry, setShowRetry] = useState(false);
@@ -432,6 +521,38 @@ export function CustomPlayer({
   const [showSources, setShowSources] = useState(false);
 
   const fonte = allFontes[fonteIdx];
+
+  useEffect(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(CAPTION_PREFERENCES_KEY);
+    } catch {
+      // O player continua com o padrão acessível quando o armazenamento é bloqueado.
+    }
+    const saved = readCaptionPreferences(stored);
+    captionPreferencesRef.current = saved;
+    setCaptionPreferences(saved);
+    setCaptionPreferencesReady(true);
+  }, []);
+
+  useEffect(() => {
+    captionPreferencesRef.current = captionPreferences;
+    if (captionPreferencesReady) {
+      try {
+        window.localStorage.setItem(CAPTION_PREFERENCES_KEY, JSON.stringify(captionPreferences));
+      } catch {
+        // Preferências continuam válidas durante a sessão quando o storage é bloqueado.
+      }
+    }
+
+    const applyStyles = () => {
+      const player = jwRef.current;
+      if (player?.setCaptions) player.setCaptions(jwCaptionStyles(captionPreferences));
+    };
+    applyStyles();
+    window.addEventListener("resize", applyStyles);
+    return () => window.removeEventListener("resize", applyStyles);
+  }, [captionPreferences, captionPreferencesReady]);
 
   // ── Chromecast SDK ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -805,6 +926,8 @@ export function CustomPlayer({
         autostart: true,
         displaytitle: false,
         displaydescription: false,
+        renderCaptionsNatively: false,
+        captions: jwCaptionStyles(captionPreferencesRef.current),
         hls: { bufferingGoal: 80 },
         width: "100%",
         height: "100%",
@@ -978,6 +1101,7 @@ export function CustomPlayer({
       player.on("captionsList", (event: { tracks?: CaptionTrack[]; track?: number }) => {
         if (unmountedRef.current) return;
         const captions: CaptionTrack[] = event?.tracks ?? player.getCaptionsList?.() ?? [];
+        player.setCaptions?.(jwCaptionStyles(captionPreferencesRef.current));
         setCaptionTracks(captions);
         setCurrentCaption(Math.max(0, event?.track ?? player.getCurrentCaptions?.() ?? 0));
         if (captions.length <= 1) return;
@@ -1438,6 +1562,47 @@ export function CustomPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamTipo, nextUrl, saveProgress]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || streamTipo !== "native") return;
+
+    const available: CaptionTrack[] = [
+      { id: "off", label: "Desativadas" },
+      ...subtitleTracks.map((track, index) => ({
+        id: `native-${index}`,
+        label: track.label || "Português",
+      })),
+    ];
+    setCaptionTracks(available);
+
+    if (subtitleTracks.length === 0) {
+      setCurrentCaption(0);
+      return;
+    }
+
+    const requested = userCaptionRef.current;
+    const active = requested !== null && requested >= 0 && requested < available.length
+      ? requested
+      : 1;
+    Array.from(video.textTracks).forEach((track, index) => {
+      track.mode = active === index + 1 ? "showing" : "disabled";
+    });
+    setCurrentCaption(active);
+  }, [streamTipo, subtitleTracks]);
+
+  const selectCaptionTrack = (index: number) => {
+    userCaptionRef.current = index;
+    if (jwRef.current?.setCurrentCaptions) {
+      jwRef.current.setCurrentCaptions(index);
+    }
+    if (videoRef.current && streamTipo === "native") {
+      Array.from(videoRef.current.textTracks).forEach((track, trackIndex) => {
+        track.mode = index === trackIndex + 1 ? "showing" : "disabled";
+      });
+    }
+    setCurrentCaption(index);
+  };
+
   const btnCls = "flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 bg-white/10 text-white hover:bg-white hover:text-black active:bg-white active:text-black";
   const pct = duration > 0 ? Math.min((position / duration) * 100, 100) : 0;
   const showCustomControls = streamTipo !== "iframe";
@@ -1458,12 +1623,46 @@ export function CustomPlayer({
     return raw;
   };
 
+  const resolvedCaptionFontSize = captionFontSize(captionPreferences);
+  const captionBackground = `rgba(16, 16, 20, ${captionPreferences.backgroundOpacity / 100})`;
+  const captionColor = CAPTION_COLORS[captionPreferences.color].value;
+  const captionShadow = captionTextShadow(captionPreferences.edgeStyle);
+  const captionCss = `
+    #jw-player-container .jw-text-track-container {
+      bottom: clamp(4.75rem, 12vh, 8.5rem) !important;
+    }
+    #jw-player-container .jw-text-track-cue,
+    #jw-player-container .jw-text-track-display span,
+    #jw-player-container .jw-captions-text {
+      color: ${captionColor} !important;
+      font-family: Arial, Helvetica, sans-serif !important;
+      font-size: ${resolvedCaptionFontSize}px !important;
+      font-weight: 650 !important;
+      line-height: 1.28 !important;
+      letter-spacing: 0.005em !important;
+      background: ${captionBackground} !important;
+      padding: 0.08em 0.3em !important;
+      border-radius: 0.12em !important;
+      text-shadow: ${captionShadow} !important;
+    }
+    video[data-obaflix-player]::cue {
+      color: ${captionColor};
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: ${resolvedCaptionFontSize}px;
+      font-weight: 650;
+      line-height: 1.28;
+      background-color: ${captionBackground};
+      text-shadow: ${captionShadow};
+    }
+  `;
+
   return (
     <div
       ref={containerRef}
       className="fixed inset-0 z-50 bg-black select-none touch-none"
       onMouseMove={() => { if (playing && status === "playing") resetControlsTimerRef.current(); }}
     >
+      <style>{captionCss}</style>
       {/* ── Video elements ── */}
       <div
         id="jw-player-container"
@@ -1476,10 +1675,22 @@ export function CustomPlayer({
       {streamTipo === "native" && (
         <video
           ref={videoRef}
+          data-obaflix-player
           className="absolute inset-0 w-full h-full object-contain"
           playsInline
           preload="auto"
-        />
+        >
+          {subtitleTracks.map((track, index) => (
+            <track
+              key={`${track.file}-${index}`}
+              src={track.file}
+              kind="captions"
+              srcLang={track.label?.toLowerCase().includes("ing") ? "en" : "pt-BR"}
+              label={track.label || "Português"}
+              default={track.default ?? index === 0}
+            />
+          ))}
+        </video>
       )}
 
       {streamTipo === "iframe" && streamUrl && (
@@ -1819,7 +2030,7 @@ export function CustomPlayer({
 
                     {showPlaybackSettings && (
                       <div
-                        className="absolute right-0 bottom-full mb-2 w-64 max-h-[58vh] overflow-y-auto rounded-2xl border border-white/10 bg-zinc-950/95 p-2 text-white shadow-2xl backdrop-blur-xl"
+                        className="absolute right-0 bottom-full mb-2 w-[min(21rem,calc(100vw-1rem))] max-h-[72dvh] overflow-y-auto overscroll-contain touch-auto rounded-2xl border border-white/10 bg-zinc-950 p-2 text-white shadow-2xl sm:max-h-[62vh]"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <p className="px-2 pb-2 pt-1 text-xs font-semibold text-white/90">Reprodução</p>
@@ -1871,16 +2082,124 @@ export function CustomPlayer({
                               <button
                                 key={`caption-${String(track.id ?? index)}`}
                                 className={`flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-xs transition-colors ${currentCaption === index ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
-                                onClick={() => {
-                                  userCaptionRef.current = index;
-                                  jwRef.current?.setCurrentCaptions?.(index);
-                                  setCurrentCaption(index);
-                                }}
+                                onClick={() => selectCaptionTrack(index)}
                               >
                                 <span>{index === 0 ? "Desativadas" : languageName(track, `Legenda ${index}`)}</span>
                                 {currentCaption === index && <Check className="h-4 w-4 text-[#E50914]" />}
                               </button>
                             ))}
+
+                            <button
+                              className="mt-1 flex min-h-10 w-full items-center justify-between rounded-lg px-2 text-left text-xs font-semibold text-zinc-100/85 transition-colors hover:bg-zinc-100/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-100/60"
+                              aria-expanded={showCaptionAppearance}
+                              onClick={() => setShowCaptionAppearance((visible) => !visible)}
+                            >
+                              <span>Personalizar legenda</span>
+                              <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${showCaptionAppearance ? "rotate-90" : ""}`} />
+                            </button>
+
+                            {showCaptionAppearance && (
+                              <div className="px-2 pb-2 pt-1">
+                                <div
+                                  className="mb-4 flex min-h-16 items-center justify-center rounded-xl bg-zinc-900 px-3 py-3 text-center"
+                                  aria-label="Prévia da legenda"
+                                >
+                                  <span
+                                    style={{
+                                      color: captionColor,
+                                      backgroundColor: captionBackground,
+                                      fontFamily: "Arial, Helvetica, sans-serif",
+                                      fontSize: `${Math.min(22, resolvedCaptionFontSize)}px`,
+                                      fontWeight: 650,
+                                      lineHeight: 1.28,
+                                      padding: "0.08em 0.3em",
+                                      textShadow: captionShadow,
+                                    }}
+                                  >
+                                    Exemplo de legenda
+                                  </span>
+                                </div>
+
+                                <fieldset>
+                                  <legend className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-white/45">Cor</legend>
+                                  <div className="flex gap-2">
+                                    {(Object.entries(CAPTION_COLORS) as [CaptionColor, { label: string; value: string }][]).map(([key, option]) => (
+                                      <button
+                                        key={key}
+                                        title={option.label}
+                                        aria-label={`Cor ${option.label}`}
+                                        aria-pressed={captionPreferences.color === key}
+                                        className={`h-10 flex-1 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-100/70 ${captionPreferences.color === key ? "border-zinc-100/80 bg-zinc-100/10" : "border-zinc-100/10 hover:border-zinc-100/30"}`}
+                                        onClick={() => setCaptionPreferences((current) => ({ ...current, color: key }))}
+                                      >
+                                        <span className="mx-auto block h-4 w-4 rounded-full border border-zinc-950/20" style={{ backgroundColor: option.value }} />
+                                      </button>
+                                    ))}
+                                  </div>
+                                </fieldset>
+
+                                <fieldset className="mt-4">
+                                  <legend className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-white/45">Tamanho</legend>
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    {(Object.entries(CAPTION_SIZES) as [CaptionSize, { label: string; scale: number }][]).map(([key, option]) => (
+                                      <button
+                                        key={key}
+                                        aria-pressed={captionPreferences.size === key}
+                                        className={`min-h-10 rounded-lg px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-100/70 ${captionPreferences.size === key ? "bg-zinc-100 text-zinc-950" : "bg-zinc-100/5 text-zinc-100/70 hover:bg-zinc-100/10 hover:text-zinc-100"}`}
+                                        onClick={() => setCaptionPreferences((current) => ({ ...current, size: key }))}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </fieldset>
+
+                                <label className="mt-4 block">
+                                  <span className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-white/45">
+                                    <span>Fundo</span>
+                                    <span>{captionPreferences.backgroundOpacity}%</span>
+                                  </span>
+                                  <input
+                                    className="mt-2 h-10 w-full accent-red-600"
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="10"
+                                    value={captionPreferences.backgroundOpacity}
+                                    onChange={(event) => setCaptionPreferences((current) => ({
+                                      ...current,
+                                      backgroundOpacity: Number(event.target.value),
+                                    }))}
+                                  />
+                                </label>
+
+                                <label className="mt-3 block text-[10px] font-semibold uppercase tracking-wider text-white/45">
+                                  Contorno
+                                  <select
+                                    className="mt-2 min-h-10 w-full rounded-lg border border-zinc-100/10 bg-zinc-900 px-3 text-xs font-medium normal-case tracking-normal text-zinc-100 outline-none focus:border-zinc-100/40"
+                                    value={captionPreferences.edgeStyle}
+                                    onChange={(event) => setCaptionPreferences((current) => ({
+                                      ...current,
+                                      edgeStyle: event.target.value as CaptionEdgeStyle,
+                                    }))}
+                                  >
+                                    <option value="uniform">Contorno forte</option>
+                                    <option value="dropshadow">Sombra</option>
+                                    <option value="none">Sem contorno</option>
+                                  </select>
+                                </label>
+
+                                <div className="mt-4 flex items-center justify-between border-t border-zinc-100/10 pt-3">
+                                  <span className="text-[10px] text-zinc-100/45">Salvo neste aparelho</span>
+                                  <button
+                                    className="min-h-9 rounded-lg px-2 text-[11px] font-semibold text-zinc-100/65 transition-colors hover:bg-zinc-100/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-100/70"
+                                    onClick={() => setCaptionPreferences(DEFAULT_CAPTION_PREFERENCES)}
+                                  >
+                                    Restaurar padrão
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
