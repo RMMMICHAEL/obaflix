@@ -2,6 +2,8 @@ package com.obaflix.bridge
 
 import android.util.Log
 import com.obaflix.ObaflixApp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.URL
 import java.net.InetAddress
 
@@ -23,7 +25,9 @@ object StreamExtractor {
         val stream = nativeResult.stream
         val parsedStream = URL(stream)
         if (parsedStream.protocol != "https") throw Exception("Stream inseguro")
-        val addresses = InetAddress.getAllByName(parsedStream.host)
+        val addresses = withContext(Dispatchers.IO) {
+            InetAddress.getAllByName(parsedStream.host)
+        }
         if (addresses.isEmpty() || addresses.any {
                 it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
                     it.isSiteLocalAddress || it.isMulticastAddress
@@ -33,7 +37,7 @@ object StreamExtractor {
 
         try {
             val cdnHost = URL(stream).host
-            ObaflixApp.playerState.cdnHostname = cdnHost
+            ObaflixApp.playerState.resetCdnHosts(cdnHost)
             ObaflixApp.playerState.embedReferer = nativeResult.referer
             Log.d(
                 TAG,

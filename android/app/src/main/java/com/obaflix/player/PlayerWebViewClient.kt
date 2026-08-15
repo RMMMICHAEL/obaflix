@@ -6,7 +6,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.content.Intent
 import android.net.Uri
 import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
@@ -47,12 +46,55 @@ class PlayerWebViewClient(
 
     private val allowedAppHost = Uri.parse(BuildConfig.OBAFLIX_URL).host ?: ""
 
-    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-        if (!request.isForMainFrame) return false
+    private fun header(request: WebResourceRequest, name: String): String? =
+        request.requestHeaders.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
+
+    private fun superflixMediaKind(request: WebResourceRequest): String? {
+        if (!ObaflixApp.playerState.superflixObservationActive) return null
+        if (!request.method.equals("GET", ignoreCase = true)) return null
+
         val uri = request.url
+        if (!uri.scheme.equals("https", ignoreCase = true)) return null
+        val host = uri.host.orEmpty().lowercase()
+        val path = uri.path.orEmpty().lowercase()
+        if (host == allowedAppHost || host.contains("doubleclick") || host.contains("googlevideo") ||
+            host.contains("googlesyndication") || path.contains("/ads/") || path.contains("/advert")
+        ) return null
+
+        val hls = path.endsWith(".m3u8") || path.endsWith("/master.txt") ||
+            path.contains("/cdn/hls/") ||
+            ((host.contains("embedplayer") || host.contains("hclod") || host.endsWith(".qzz.io")) &&
+                Regex("^/m(?:3|d)/", RegexOption.IGNORE_CASE).containsMatchIn(path))
+        if (hls) return "hls"
+
+        val fileName = path.substringAfterLast('/')
+        val isMediaElement = header(request, "Sec-Fetch-Dest")?.equals("video", ignoreCase = true) == true
+        val hasRange = header(request, "Range") != null
+        val mp4 = path.endsWith(".mp4") &&
+            !fileName.startsWith("init") && !fileName.contains("segment") && !fileName.contains("chunk") &&
+            (isMediaElement || hasRange)
+        return if (mp4) "mp4" else null
+    }
+
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+        val uri = request.url
+        val providerHost = uri.host.orEmpty().lowercase()
+        if ((providerHost.endsWith("superflixapi.pro") || providerHost.contains("vizero") ||
+                providerHost.contains("warezcdn")) && !uri.path.orEmpty().startsWith("/cdn-cgi/")
+        ) {
+            // Sem query para não registrar tokens; host+path identifica a rota que
+            // terminou em 404 caso o provedor mude novamente.
+            Log.d(
+                TAG,
+                "[provider/navigation] main=${request.isForMainFrame} url=${uri.scheme}://$providerHost${uri.path}",
+            )
+        }
+        if (!request.isForMainFrame) return false
         if (uri.scheme == "https" && uri.host == allowedAppHost) return false
         if (uri.scheme == "http" || uri.scheme == "https") {
-            runCatching { view.context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+            Log.w(TAG, "[navigation] bloqueada navegação externa no frame principal: ${uri.host}")
         }
         return true
     }
@@ -72,6 +114,19 @@ class PlayerWebViewClient(
     ): WebResourceResponse? {
         val path = request.url.path ?: ""
         val host = request.url.host ?: ""
+
+        superflixMediaKind(request)?.let { kind ->
+            val referer = header(request, "Referer")
+            ObaflixApp.playerState.observeSuperflixMedia(request.url.toString(), referer, kind)
+            Log.d(TAG, "[provider/media] kind=$kind host=$host path=$path")
+        }
+
+        val isSuperflixSignedRoute = host.endsWith("superflixapi.pro") &&
+            (request.url.getQueryParameter("cfv") != null || path.startsWith("/player/redirect"))
+        if (isSuperflixSignedRoute || host.contains("vizero") || host.contains("warezcdn")) {
+            ObaflixApp.playerState.observeSuperflixUrl(request.url.toString())
+            Log.d(TAG, "[provider/observed] host=$host path=$path")
+        }
 
         // 1. Extração nativa (rola3/rola4/hide/lulu/rola2/wish/bolt/big) → StreamExtractor
         //    (usa OkHttp com IP do usuário) — ver PlayerExtractors.detectProvider().
@@ -122,14 +177,15 @@ class PlayerWebViewClient(
             return null
         }
 
-        // 3. Requisições diretas ao MESMO host do CDN (segmentos, sub-playlists de áudio,
-        //    chaves de criptografia) — o manifest do CDN referencia esses recursos com URL
-        //    absoluta, e o hls.js os busca diretamente, fora do path /api/player/proxy.
+        // 3. Requisições diretas aos hosts descobertos na cadeia HLS. O Player 1 começa em
+        //    embedplayer2.xyz, mas suas sub-playlists apontam os fragmentos para hcloud.qzz.io.
+        //    Todos os hosts só são liberados depois de aparecerem num manifesto já autorizado.
         //    Sem este branch, essas requisições saem sem Referer/Origin/CORS → 403 do CDN.
         //    Equivale ao branch "isCdnReq" do onBeforeSendHeaders (main.js), que é universal
         //    porque Electron registra o listener para "*://*/*".
-        val cdnHostname = ObaflixApp.playerState.cdnHostname
-        if (cdnHostname != null && (host == cdnHostname || host.endsWith(".$cdnHostname"))) {
+        if (request.method.equals("GET", ignoreCase = true) &&
+            ObaflixApp.playerState.isAllowedCdnHost(host)
+        ) {
             Log.d(TAG, "[intercept/cdn] request direto ao CDN")
             return fetchCdnDirect(request.url.toString(), request)
         }
@@ -158,7 +214,7 @@ class PlayerWebViewClient(
         return try {
             val state = ObaflixApp.playerState
             val reqBuilder = Request.Builder().url(cdnUrl).get()
-                .addHeader("User-Agent", UA)
+                .addHeader("User-Agent", ObaflixApp.webViewUserAgent ?: UA)
                 // Headers necessários para CDNs com bot-detection — sem eles, alguns CDNs
                 // retornam 403 porque a request não parece vir de um browser real.
                 .addHeader("Accept", "*/*")
@@ -167,10 +223,13 @@ class PlayerWebViewClient(
                 .addHeader("Sec-Fetch-Mode", "cors")
                 .addHeader("Sec-Fetch-Site", "cross-site")
 
+            CookieManager.getInstance().getCookie(cdnUrl)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { reqBuilder.addHeader("Cookie", it) }
+
             // Injeta Referer e Origin do embed se o CDN hostname corresponder
             val cdnHost = try { URL(cdnUrl).host } catch (_: Exception) { "" }
-            val isCdnHost = state.cdnHostname != null &&
-                (cdnHost == state.cdnHostname || cdnHost.endsWith(".${state.cdnHostname}"))
+            val isCdnHost = state.isAllowedCdnHost(cdnHost)
             if (isCdnHost && state.embedReferer != null) {
                 reqBuilder.addHeader("Referer", state.embedReferer!!)
                 try {
@@ -190,10 +249,21 @@ class PlayerWebViewClient(
                 Log.w(TAG, "[intercept/cdn] status não-2xx: ${response.code} ${response.message}")
             }
 
-            val contentType = response.header("Content-Type", "application/octet-stream")!!
+            val upstreamContentType = response.header("Content-Type", "application/octet-stream")!!
+            val mediaPath = runCatching { URL(cdnUrl).path.lowercase() }.getOrDefault("")
+            // Alguns hosts hclod/qzz entregam init.mp4 e fragmentos .m4s como text/css,
+            // embora o corpo seja fMP4 válido. O WebView respeita esse MIME incorreto e o
+            // hls.js encerra com fragLoadError; normalize antes de devolver a resposta.
+            val contentType = when {
+                mediaPath.endsWith(".mp4") || mediaPath.endsWith(".m4s") -> "video/mp4"
+                mediaPath.endsWith(".vtt") -> "text/vtt"
+                else -> upstreamContentType.substringBefore(';').trim()
+                    .ifEmpty { "application/octet-stream" }
+            }
             val headers = mutableMapOf(
                 "Cache-Control" to "public, max-age=3600",
                 "Access-Control-Allow-Origin" to "*",
+                "Access-Control-Allow-Headers" to "Range",
             )
             response.header("Content-Range")?.let { headers["Content-Range"] = it }
             response.header("Content-Length")?.let { headers["Content-Length"] = it }
@@ -209,7 +279,7 @@ class PlayerWebViewClient(
             // levelLoadError. A correção: reescrever URIs relativas para absolutas (CDN)
             // antes de entregar o M3U8 ao hls.js. Depois de reescritas, as requisições
             // aos níveis/segmentos caem no branch 3 (host CDN) e seguem pelo fetchCdnDirect.
-            val ct = contentType.lowercase()
+            val ct = upstreamContentType.lowercase()
             val urlLower = cdnUrl.lowercase()
             val parsedCdnUrl = runCatching { URL(cdnUrl) }.getOrNull()
             val isExtensionlessEmbedPlayerPlaylist = parsedCdnUrl != null &&
@@ -232,7 +302,7 @@ class PlayerWebViewClient(
 
                 fun resolvePlaylistUri(raw: String): String {
                     val value = raw.trim()
-                    return when {
+                    val resolved = when {
                         // http:, https:, data:, skd: e outros esquemas absolutos
                         absoluteUriScheme.containsMatchIn(value) -> value
                         // URL relativa ao protocolo
@@ -242,6 +312,11 @@ class PlayerWebViewClient(
                         // URL relativa ao diretório atual do manifesto
                         else -> cdnBase + value
                     }
+                    runCatching {
+                        val mediaUrl = URL(resolved)
+                        if (mediaUrl.protocol == "https") state.allowCdnHost(mediaUrl.host)
+                    }
+                    return resolved
                 }
 
                 val doubleQuotedUri = Regex(

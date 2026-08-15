@@ -1,8 +1,10 @@
 package com.obaflix.bridge
 
 import android.util.Log
+import android.webkit.CookieManager
 import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -42,6 +44,12 @@ object SuperflixExtractor {
     private const val UA =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
+
+    private class CloudflareChallengeException : Exception(
+        "SuperFlix aguardando validação do Cloudflare"
+    )
+
+    private fun userAgent(): String = ObaflixApp.webViewUserAgent ?: UA
 
     private fun findSubtitleTracks(html: String, baseUrl: String): List<SubtitleTrack> {
         val normalized = normalizeHtml(html)
@@ -90,9 +98,22 @@ object SuperflixExtractor {
 
         private val values = linkedMapOf<String, Cookie>()
 
+        fun seed(url: String, cookieHeader: String?) {
+            if (cookieHeader.isNullOrBlank()) return
+            val host = try { URL(url).host.lowercase() } catch (_: Exception) { return }
+            cookieHeader.split(";").forEach { raw ->
+                val part = raw.trim()
+                val eq = part.indexOf('=')
+                if (eq <= 0) return@forEach
+                val name = part.substring(0, eq)
+                val value = part.substring(eq + 1)
+                values["$host|$name"] = Cookie(host, name, value)
+            }
+        }
+
         fun absorb(url: String, setCookieHeaders: List<String>) {
             val host = try { URL(url).host.lowercase() } catch (_: Exception) { return }
-            for (raw in setCookieHeaders) {
+        for (raw in setCookieHeaders) {
                 val parts = raw.split(";").map { it.trim() }.toMutableList()
                 if (parts.isEmpty()) continue
                 val first = parts.removeAt(0)
@@ -110,6 +131,9 @@ object SuperflixExtractor {
                     }
                 }
                 values["$domain|$name"] = Cookie(domain, name, value)
+                // Compartilha cookies novos com o WebView. Isso mantém a sessão do
+                // desafio e a extração OkHttp no mesmo contexto do aplicativo.
+                runCatching { CookieManager.getInstance().setCookie(url, raw) }
             }
         }
 
@@ -166,9 +190,11 @@ object SuperflixExtractor {
 
     private fun isCloudflareChallenge(html: String): Boolean {
         val text = html.lowercase()
-        return text.contains("/cdn-cgi/challenge-platform/") ||
-            text.contains("cf_chl_opt") ||
-            text.contains("challenge-running") ||
+        return text.contains("name=\"cf_embed_challenge\"") ||
+            text.contains("name='cf_embed_challenge'") ||
+            text.contains("turnstilesitekey") ||
+            (text.contains("<title>verificação</title>") && text.contains("cf-turnstile")) ||
+            text.contains("cf_chl_opt") || text.contains("challenge-running") ||
             text.contains("just a moment...")
     }
 
@@ -345,7 +371,7 @@ object SuperflixExtractor {
     ): HttpResult = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url(url)
-            .addHeader("User-Agent", UA)
+            .addHeader("User-Agent", userAgent())
             .addHeader("Accept", accept)
             .addHeader("Accept-Language", "pt-BR,pt;q=0.7,en-US;q=0.3,en;q=0.2")
             .addHeader("Sec-Fetch-Dest", dest)
@@ -418,9 +444,10 @@ object SuperflixExtractor {
         client: OkHttpClient,
         cookies: CookieStore,
         embedUrl: String,
+        initialReferer: String? = com.obaflix.BuildConfig.OBAFLIX_URL + "/",
     ): Page {
         var current = embedUrl
-        var referer: String? = com.obaflix.BuildConfig.OBAFLIX_URL + "/"
+        var referer: String? = initialReferer
         val visited = linkedSetOf<String>()
 
         repeat(SUPERFLIX_TIMEOUT_HOPS) { hop ->
@@ -430,8 +457,11 @@ object SuperflixExtractor {
             log("page", "hop=$hop url=${safeUrl(page.url)} bytes=${page.html.length}")
 
             if (isCloudflareChallenge(page.html)) {
-                throw Exception("SuperFlix exigiu validação do navegador; tentando o próximo servidor")
+                throw CloudflareChallengeException()
             }
+
+            val delegatedProvider = PlayerExtractors.detectProvider(page.url)
+            if (delegatedProvider != null && delegatedProvider != "superflix") return page
 
             if (parsed.host.contains("warezcdn") && findPageToken(page.html) != null) return page
 
@@ -577,17 +607,27 @@ object SuperflixExtractor {
         return NativeExtractResult(direct, fallbackPage.url, findSubtitleTracks(fallbackPage.html, fallbackPage.url))
     }
 
-    suspend fun extract(embedUrl: String): NativeExtractResult {
+    private suspend fun extractWithCookies(
+        embedUrl: String,
+        initialCookieHeader: String?,
+        initialReferer: String? = com.obaflix.BuildConfig.OBAFLIX_URL + "/",
+    ): NativeExtractResult {
         val input = try { URL(embedUrl) } catch (_: Exception) { throw Exception("URL SuperFlix inválida") }
-        if (!input.host.endsWith("superflixapi.pro")) throw Exception("URL SuperFlix inválida")
+        if (!isChainHost(input.host)) throw Exception("URL SuperFlix inválida")
 
         val client = ObaflixApp.httpClient.newBuilder()
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
         val cookies = CookieStore()
+        cookies.seed(embedUrl, initialCookieHeader)
 
-        val warezPage = resolveWarezPage(client, cookies, embedUrl)
+        val warezPage = resolveWarezPage(client, cookies, embedUrl, initialReferer)
+        val delegatedProvider = PlayerExtractors.detectProvider(warezPage.url)
+        if (delegatedProvider != null && delegatedProvider != "superflix") {
+            log("delegate", "provider=$delegatedProvider url=${safeUrl(warezPage.url)}")
+            return PlayerExtractors.extractResult(warezPage.url)
+        }
         val pageToken = findPageToken(warezPage.html)
             ?: throw Exception("page_token não encontrado na página WarezCDN")
         val payload = decodeTokenPayload(pageToken)
@@ -618,5 +658,65 @@ object SuperflixExtractor {
         }
 
         throw Exception("todas as fontes SuperFlix falharam: ${failures.joinToString(" | ").take(500)}")
+    }
+
+    suspend fun extract(embedUrl: String): NativeExtractResult {
+        // Primeiro aproveita uma validação Cloudflare já existente no WebView.
+        val cookieManager = CookieManager.getInstance()
+        val playerState = ObaflixApp.playerState
+        playerState.resetSuperflixObservation()
+
+        try {
+            var cookieHeader = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+
+            try {
+                return extractWithCookies(embedUrl, cookieHeader)
+            } catch (_: CloudflareChallengeException) {
+                log("cloudflare", "aguardando validação do WebView")
+            }
+
+            // O iframe visível executa a validação e o player original. Além das páginas
+            // assinadas, o WebViewClient observa o primeiro manifesto/MP4 real solicitado
+            // pelo player. Essa URL pode ser entregue diretamente ao player nativo sem
+            // reimplementar o JavaScript protegido do provedor.
+            val deadline = System.currentTimeMillis() + 120_000L
+            var lastObserved: String? = null
+            while (System.currentTimeMillis() < deadline) {
+                delay(350L)
+
+                playerState.observedSuperflixMedia?.let { media ->
+                    log("media", "capturada kind=${media.kind} url=${safeUrl(media.url)}")
+                    return NativeExtractResult(
+                        stream = media.url,
+                        referer = media.referer ?: embedUrl,
+                    )
+                }
+
+                val current = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+                if (!current.isNullOrBlank()) cookieHeader = current
+
+                val observed = playerState.observedSuperflixUrl
+                if (!observed.isNullOrBlank() && observed != lastObserved) {
+                    lastObserved = observed
+                    try {
+                        log("cloudflare", "URL validada observada: ${safeUrl(observed)}")
+                        return extractWithCookies(observed, cookieHeader, embedUrl)
+                    } catch (error: CloudflareChallengeException) {
+                        // O token ainda pode estar sendo finalizado; continua aguardando.
+                    } catch (error: Exception) {
+                        log("cloudflare_retry", error.message?.take(160) ?: error.javaClass.simpleName)
+                    }
+                } else if (!current.isNullOrBlank() && current.contains("cf_clearance=")) {
+                    try {
+                        log("cloudflare", "cf_clearance recebido; retomando extração")
+                        return extractWithCookies(embedUrl, cookieHeader)
+                    } catch (_: CloudflareChallengeException) { }
+                }
+            }
+
+            throw Exception("SuperFlix abriu, mas nenhuma mídia foi observada em 2 minutos")
+        } finally {
+            playerState.finishSuperflixObservation()
+        }
     }
 }

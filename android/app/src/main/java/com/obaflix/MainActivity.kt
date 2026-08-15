@@ -36,9 +36,9 @@ class MainActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         configureWebView()
 
-        // A rota raiz é o contrato publicado do app. A tela /android ainda está
-        // em desenvolvimento e não pode ser requisito para o player nativo.
-        webView.loadUrl(BuildConfig.OBAFLIX_URL)
+        // O aplicativo sempre começa na experiência Android. Essa rota valida a
+        // sessão no servidor e redireciona para /login antes de mostrar o catálogo.
+        webView.loadUrl(BuildConfig.OBAFLIX_URL + "/android")
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
             setSupportZoom(false)
             userAgentString = userAgentString.replace("wv", "") +
                 " ObaflixApp/1.0"
+            ObaflixApp.webViewUserAgent = userAgentString
         }
 
         // O Superflix roda em um iframe de outro domínio. A validação da

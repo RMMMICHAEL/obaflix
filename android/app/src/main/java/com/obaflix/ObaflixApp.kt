@@ -11,6 +11,9 @@ class ObaflixApp : Application() {
         lateinit var httpClient: OkHttpClient
             private set
 
+        @Volatile
+        var webViewUserAgent: String? = null
+
         val playerState = PlayerState()
     }
 
