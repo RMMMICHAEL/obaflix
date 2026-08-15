@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import type { Prisma } from "@prisma/client";
 
 export type RecommendationKind = "filme" | "serie" | "anime" | "desenho";
@@ -218,8 +219,25 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   ].sort((a, b) => b.score - a.score);
 
   const rows: RecommendationRow[] = [];
-  const personalized = ranked.slice(0, 24).map((item) => item.card);
+  const usedAcrossRows = new Set<string>();
+  const cardKey = (card: RecommendationCard) => `${card.tipo}:${card.id}`;
+  const takeUnseen = (cards: RecommendationCard[], limit: number) => {
+    const selected: RecommendationCard[] = [];
+    const selectedKeys = new Set<string>();
+    for (const card of cards) {
+      const key = cardKey(card);
+      if (usedAcrossRows.has(key) || selectedKeys.has(key)) continue;
+      selectedKeys.add(key);
+      selected.push(card);
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  };
+  const reserve = (cards: RecommendationCard[]) => cards.forEach((card) => usedAcrossRows.add(cardKey(card)));
+
+  const personalized = takeUnseen(ranked.map((item) => item.card), 24);
   if (personalized.length >= 6) {
+    reserve(personalized);
     rows.push({
       id: "for-you",
       titulo: signals.size > 0 ? "Escolhidos para você" : "Boas histórias para começar",
@@ -233,11 +251,11 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   if (seedEntry) {
     const seed = signalMedia.get(seedEntry[0]);
     const seedGenres = new Set<number>((seed?.generos ?? []).map((genre: { generoId: number }) => genre.generoId));
-    const similar = ranked
+    const similar = takeUnseen(ranked
       .filter((item) => item.row.generos?.some((genre: { generoId: number }) => seedGenres.has(genre.generoId)))
-      .slice(0, 20)
-      .map((item) => item.card);
+      .map((item) => item.card), 20);
     if (seed?.titulo && similar.length >= 6) {
+      reserve(similar);
       rows.push({ id: "because-seed", titulo: `Porque você gostou de ${seed.titulo}`, items: similar });
     }
   }
@@ -250,13 +268,26 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
       return "episodios" in media ? toSeriesCard(media) : toFilmCard(media);
     })
     .filter(Boolean) as RecommendationCard[];
-  if (watchlistCards.length > 0) rows.push({ id: "my-list", titulo: "Minha lista", items: watchlistCards });
+  const uniqueWatchlistCards = takeUnseen(watchlistCards, 24);
+  if (uniqueWatchlistCards.length > 0) {
+    reserve(uniqueWatchlistCards);
+    rows.push({ id: "my-list", titulo: "Minha lista", items: uniqueWatchlistCards });
+  }
 
-  const anime = ranked.filter((item) => item.card.tipo === "anime").slice(0, 20).map((item) => item.card);
-  if (anime.length >= 6) rows.push({ id: "anime-radar", titulo: "Animes para entrar no seu radar", items: anime });
+  const excludedAnimeTitles = new Set<string>(ANIME_HOME_EXCLUSIONS);
+  const anime = takeUnseen(ranked
+    .filter((item) => item.card.tipo === "anime" && !excludedAnimeTitles.has(item.card.titulo))
+    .map((item) => item.card), 20);
+  if (anime.length >= 6) {
+    reserve(anime);
+    rows.push({ id: "anime-radar", titulo: "Animes para entrar no seu radar", items: anime });
+  }
 
-  const dubbed = ranked.filter((item) => Boolean(item.card.urlDub)).slice(0, 20).map((item) => item.card);
-  if (dubbed.length >= 6) rows.push({ id: "dubbed", titulo: "Dublados para maratonar", items: dubbed });
+  const dubbed = takeUnseen(ranked.filter((item) => Boolean(item.card.urlDub)).map((item) => item.card), 20);
+  if (dubbed.length >= 6) {
+    reserve(dubbed);
+    rows.push({ id: "dubbed", titulo: "Dublados para maratonar", items: dubbed });
+  }
 
   return { rows, signalCount: signals.size };
 }

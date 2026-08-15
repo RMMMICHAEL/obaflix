@@ -5,15 +5,18 @@ import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
+import { CollectionsRow } from "@/components/ui/CollectionsRow";
+import { AwardRow } from "@/components/ui/AwardRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { editorialAliases, matchEditorialEntries, OSCAR_FILMS } from "@/lib/editorialCatalog";
 
 export const dynamic = "force-dynamic";
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 
 const selBrowse = {
-  id: true, titulo: true, poster: true, background: true, logo: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, urlDub: true, urlLeg: true, createdAt: true,
 } as const;
 
@@ -114,7 +117,7 @@ export default async function FilmesPage({
   }
 
   // Browse mode — hero + genre rows
-  const [heroRaw, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura] =
+  const [heroRaw, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura, oscarRaw] =
     await Promise.all([
       prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
@@ -127,7 +130,28 @@ export default async function FilmesPage({
       prisma.filme.findMany({ where: { generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 53 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({
+        where: {
+          AND: [
+            { OR: [
+              { titulo: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
+              { tituloOriginal: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
+            ] },
+            { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+          ],
+        },
+        select: selBrowse,
+      }),
     ]);
+
+  const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
+    id: item.id,
+    tipo: "filme" as const,
+    titulo: item.titulo,
+    poster: item.poster ?? null,
+    ano: item.ano ?? null,
+    count: entry.value ?? 0,
+  }));
 
   const heroItems = heroRaw.map((f) => ({
     id: f.id, tipo: "filme" as const,
@@ -147,6 +171,15 @@ export default async function FilmesPage({
             <FilterBar generos={generos} anos={anos} label="filmes" />
           </Suspense>
         </div>
+
+        <CollectionsRow />
+
+        <AwardRow
+          title="Filmes com mais Oscars"
+          description="Títulos disponíveis no catálogo, em ordem pelo número de estatuetas conquistadas."
+          unit="Oscar"
+          items={oscarItems}
+        />
 
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} verTodosHref="/filmes?ordem=recente" />}
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/filmes?ordem=nota" />}

@@ -1,27 +1,42 @@
 import { Suspense } from "react";
-import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
+import { KidsHero } from "@/components/ui/KidsHero";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { ANIMATION_STUDIOS, matchStudioTitles } from "@/lib/editorialCatalog";
+import type { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 
 const selBrowse = {
-  id: true, titulo: true, poster: true, background: true, logo: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, createdAt: true,
 } as const;
 
-const selHero = { id: true, titulo: true, sinopse: true, background: true } as const;
-
 const selGrid = {
   id: true, titulo: true, poster: true, ano: true, nota: true,
-} as const;
+} satisfies Prisma.SerieSelect;
+
+const selAnimationFilm = {
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
+  ano: true, nota: true, urlDub: true, urlLeg: true,
+} satisfies Prisma.FilmeSelect;
+
+const selAnimationSeries = {
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
+  ano: true, nota: true, tipo: true,
+  episodios: {
+    where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+    select: { urlDub: true, urlLeg: true },
+    take: 12,
+  },
+} satisfies Prisma.SerieSelect;
 
 function toRow(s: any) {
   return {
@@ -107,9 +122,8 @@ export default async function DesenhoPage({
   }
 
   // Browse mode
-  const [heroRaw, avaliados, recentes, acao, aventura, comedia, familia, animacao] =
+  const [avaliados, recentes, acao, aventura, comedia, familia, animacao, animationFilms, animationSeries] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "desenho", background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -117,19 +131,66 @@ export default async function DesenhoPage({
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 10751 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 16 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({
+        where: {
+          generos: { some: { generoId: 16 } },
+          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+        },
+        orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
+        take: 2500,
+        select: selAnimationFilm,
+      }),
+      prisma.serie.findMany({
+        where: {
+          OR: [{ generos: { some: { generoId: 16 } } }, { tipo: { in: ["anime", "desenho"] } }],
+          episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } },
+        },
+        orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
+        take: 2500,
+        select: selAnimationSeries,
+      }),
     ]);
 
-  const heroItems = heroRaw.map((s) => ({
-    id: s.id, tipo: "desenho" as const,
-    titulo: s.titulo, sinopse: s.sinopse ?? null,
-    background: s.background!, trailerKey: null,
-  }));
+  const animationCandidates = [
+    ...animationFilms.map((item) => ({ ...item, tipo: "filme" as const })),
+    ...animationSeries.map((item) => ({
+      ...item,
+      tipo: (item.tipo === "anime" ? "anime" : "desenho") as "anime" | "desenho",
+      urlDub: item.episodios.some((episode) => Boolean(episode.urlDub)) ? "disponível" : null,
+      urlLeg: item.episodios.some((episode) => Boolean(episode.urlLeg)) ? "disponível" : null,
+    })),
+  ];
+
+  const toAnimationRow = (item: (typeof animationCandidates)[number]) => ({
+    id: item.id,
+    tipo: item.tipo,
+    titulo: item.titulo,
+    poster: item.poster ?? null,
+    background: item.background ?? null,
+    logo: item.logo ?? null,
+    ano: item.ano ?? null,
+    nota: item.nota ?? null,
+    urlDub: item.urlDub ?? null,
+    urlLeg: item.urlLeg ?? null,
+  });
+
+  const studioRows = ANIMATION_STUDIOS
+    .map((studio) => ({
+      ...studio,
+      items: matchStudioTitles(studio.titles, animationCandidates).slice(0, 24).map(toAnimationRow),
+    }))
+    .filter((studio) => studio.items.length >= 2);
+
+  const featured = studioRows
+    .flatMap((studio) => studio.items.slice(0, 1))
+    .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id && candidate.tipo === item.tipo) === index)
+    .slice(0, 3);
 
   return (
-    <div className="min-h-screen pb-12">
-      {heroItems.length > 0 && <HeroSlider items={heroItems} />}
+    <div className="min-h-screen bg-[oklch(0.145_0.025_272)] pb-12">
+      <KidsHero items={featured} />
 
-      <div className={`mt-3 ${!heroItems.length ? "pt-20" : ""}`}>
+      <div className="mt-3">
         <ContinuarAssistindo />
 
         <div className="px-4 md:px-8 py-4">
@@ -137,6 +198,37 @@ export default async function DesenhoPage({
             <FilterBar generos={generos} anos={anos} label="desenhos" />
           </Suspense>
         </div>
+
+        {studioRows.length > 0 && (
+          <section id="estudios" className="scroll-mt-24 px-6 pb-2 pt-4 md:px-12">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[oklch(0.77_0.10_278)]">Escolha um estúdio</p>
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-2 scrollbar-hide" aria-label="Estúdios de animação">
+              {studioRows.map((studio) => (
+                <a
+                  key={studio.id}
+                  href={`#studio-${studio.id}`}
+                  className="inline-flex min-h-10 shrink-0 items-center rounded-full bg-[oklch(0.21_0.04_272)] px-4 text-sm font-semibold text-[oklch(0.91_0.015_275)] ring-1 ring-white/10 transition-colors hover:bg-[oklch(0.25_0.055_272)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                  style={{ outlineColor: studio.accent }}
+                >
+                  <span className="mr-2 h-2 w-2 rounded-full" style={{ backgroundColor: studio.accent }} aria-hidden="true" />
+                  {studio.name}
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {animationFilms.length > 0 && (
+          <LandscapeRow titulo="Filmes de animação para toda a família" items={animationFilms.slice(0, 24).map((item) => toAnimationRow({ ...item, tipo: "filme" }))} />
+        )}
+
+        {studioRows.map((studio) => (
+          <LazyRow key={studio.id}>
+            <div id={`studio-${studio.id}`} className="scroll-mt-24">
+              <LandscapeRow titulo={studio.name} items={studio.items} />
+            </div>
+          </LazyRow>
+        ))}
 
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/desenhos?ordem=nota" />}
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  verTodosHref="/desenhos?ordem=recente" />}

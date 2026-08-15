@@ -73,7 +73,7 @@ export default async function ColecaoPage({ params }: { params: { id: string } }
         {/* Back button */}
         <div className="absolute top-6 left-6 md:left-12">
           <Link
-            href="/"
+            href="/filmes"
             className="inline-flex items-center gap-2 text-white/70 hover:text-white transition-colors text-sm"
           >
             <ArrowLeft size={16} />

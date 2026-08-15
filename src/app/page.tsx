@@ -4,9 +4,9 @@ import { LazyRow } from "@/components/ui/LazyRow";
 import { RankRow } from "@/components/ui/RankRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
-import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
 import { prisma } from "@/lib/prisma";
+import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
   getTrending,
   discoverMovies, discoverTV,
@@ -192,7 +192,9 @@ export default async function HomePage() {
   }
 
   const trending    = tmdbList(tmdbTrending?.results ?? [], "filme").slice(0, 20);
-  const animeList   = tmdbList(tmdbAnime?.results ?? [], "anime").slice(0, 24);
+  const animeList   = tmdbList(tmdbAnime?.results ?? [], "anime")
+    .filter((item) => !ANIME_HOME_EXCLUSIONS.some((title) => title === item.titulo))
+    .slice(0, 24);
   const comediaList = tmdbList(tmdbComedia?.results ?? [], "filme").slice(0, 24);
   const terrorList  = tmdbList(tmdbTerror?.results ?? [], "filme").slice(0, 24);
   const ficcaoList  = tmdbList(tmdbFiccao?.results ?? [], "filme").slice(0, 24);
@@ -266,9 +268,6 @@ export default async function HomePage() {
         {trending.length > 0 && (
           <LandscapeRow titulo="Em Alta" items={trending} />
         )}
-
-        {/* Coleções */}
-        <CollectionsRow />
 
         {/* Top 10 Filmes — baseado na popularidade real do TMDB */}
         {top10FilmesCards.length > 0 && (

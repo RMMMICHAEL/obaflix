@@ -1,38 +1,39 @@
-import Image from "next/image";
-import Link from "next/link";
-import { ChevronRight } from "lucide-react";
-import { getCollection, imgUrl } from "@/lib/tmdb";
+import { getCollection } from "@/lib/tmdb";
+import { CollectionRail, type CollectionRailItem } from "./CollectionRail";
 
 const COLECOES = [
   { id: 10,    nome: "Star Wars" },
   { id: 1241,  nome: "Harry Potter" },
   { id: 9485,  nome: "Velozes e Furiosos" },
   { id: 86311, nome: "Os Vingadores" },
-  { id: 131296, nome: "Transformers" },
-  { id: 33671,  nome: "Batman" },
-  { id: 87097,  nome: "Missão: Impossível" },
-  { id: 8650,   nome: "James Bond" },
-  { id: 2150,   nome: "Piratas do Caribe" },
+  { id: 8650,   nome: "Transformers" },
+  { id: 120794, nome: "Batman" },
+  { id: 87359,  nome: "Missão: Impossível" },
+  { id: 645,    nome: "James Bond" },
+  { id: 295,    nome: "Piratas do Caribe" },
   { id: 119,    nome: "O Senhor dos Anéis" },
-  { id: 295130, nome: "O Hobbit" },
-  { id: 748,    nome: "Matrix" },
-  { id: 422837, nome: "Homem-Aranha" },
-  { id: 131292, nome: "Thor" },
-  { id: 531241, nome: "Homem de Ferro" },
-  { id: 86055,  nome: "Planeta dos Macacos" },
-  { id: 656,    nome: "Alien" },
-  { id: 2806,   nome: "Predador" },
-  { id: 230,    nome: "Shrek" },
-  { id: 2980,   nome: "Toy Story" },
+  { id: 121938, nome: "O Hobbit" },
+  { id: 2344,   nome: "Matrix" },
+  { id: 556,    nome: "Homem-Aranha" },
+  { id: 131296, nome: "Thor" },
+  { id: 131292, nome: "Homem de Ferro" },
+  { id: 173710, nome: "Planeta dos Macacos" },
+  { id: 8091,   nome: "Alien" },
+  { id: 399,    nome: "Predador" },
+  { id: 2150,   nome: "Shrek" },
+  { id: 10194,  nome: "Toy Story" },
+  { id: 87118,  nome: "Carros" },
+  { id: 468222, nome: "Os Incríveis" },
+  { id: 137697, nome: "Procurando Nemo" },
+  { id: 137696, nome: "Monstros S.A." },
+  { id: 14740,  nome: "Madagascar" },
+  { id: 77816,  nome: "Kung Fu Panda" },
+  { id: 89137,  nome: "Como Treinar o Seu Dragão" },
+  { id: 86066,  nome: "Meu Malvado Favorito" },
+  { id: 8354,   nome: "A Era do Gelo" },
+  { id: 185103, nome: "Hotel Transilvânia" },
+  { id: 386382, nome: "Frozen" },
 ];
-
-interface CollectionCard {
-  id: number;
-  nome: string;
-  poster: string | null;
-  backdrop: string | null;
-  count: number;
-}
 
 export async function CollectionsRow() {
   const results = await Promise.all(
@@ -45,11 +46,11 @@ export async function CollectionsRow() {
         poster: data.poster_path ?? null,
         backdrop: data.backdrop_path ?? null,
         count: data.parts?.length ?? 0,
-      } as CollectionCard;
+      } as CollectionRailItem;
     })
   );
 
-  const cards = results.filter((r): r is CollectionCard => r !== null && (r.poster !== null || r.backdrop !== null));
+  const cards = results.filter((r): r is CollectionRailItem => r !== null && (r.poster !== null || r.backdrop !== null));
   if (cards.length === 0) return null;
 
   return (
@@ -58,42 +59,7 @@ export async function CollectionsRow() {
         Coleções
       </h2>
 
-      <div className="relative -mx-6 md:-mx-12">
-        <button className="absolute right-0 top-0 bottom-0 z-20 w-12 md:w-16 flex items-center justify-center bg-gradient-to-l from-black to-transparent opacity-0 group-hover/row:opacity-100 transition-opacity">
-          <ChevronRight className="w-7 h-7" />
-        </button>
-
-        <div className="flex gap-3 overflow-x-auto scrollbar-hide px-6 md:px-12 scroll-smooth">
-          {cards.map((card) => (
-            <Link
-              key={card.id}
-              href={`/colecao/${card.id}`}
-              className="group/card relative shrink-0 w-[140px] sm:w-[160px] md:w-[200px]"
-            >
-              <div className="relative aspect-[2/3] rounded-lg overflow-hidden bg-zinc-900">
-                {(card.poster || card.backdrop) && (
-                  <Image
-                    src={imgUrl(card.poster ?? card.backdrop, "w342")}
-                    alt={card.nome}
-                    fill
-                    className="object-cover transition-transform duration-300 group-hover/card:scale-105"
-                    sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
-                    loading="lazy"
-                  />
-                )}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 group-hover/card:opacity-100 transition-opacity duration-200" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-              </div>
-              <p className="mt-2 text-sm font-medium text-gray-200 truncate group-hover/card:text-white transition-colors duration-200">
-                {card.nome}
-              </p>
-              {card.count > 0 && (
-                <p className="text-[11px] text-zinc-500 mt-0.5">{card.count} filmes</p>
-              )}
-            </Link>
-          ))}
-        </div>
-      </div>
+      <CollectionRail cards={cards} />
     </section>
   );
 }
