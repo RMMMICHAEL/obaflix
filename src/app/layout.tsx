@@ -3,6 +3,7 @@ import { Inter, Bebas_Neue } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Navbar } from "@/components/layout/Navbar";
+import { AndroidShell } from "@/components/layout/AndroidShell";
 import { DesktopUpdateBanner } from "@/components/ui/DesktopUpdateBanner";
 import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
 
@@ -43,6 +44,7 @@ export default function RootLayout({
       >
         <Providers>
           <PlayerWakeLock />
+          <AndroidShell />
           <Navbar />
           <main>{children}</main>
           <DesktopUpdateBanner />

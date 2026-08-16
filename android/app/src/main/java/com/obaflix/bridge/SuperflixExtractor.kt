@@ -51,11 +51,34 @@ object SuperflixExtractor {
 
     private fun userAgent(): String = ObaflixApp.webViewUserAgent ?: UA
 
+    /**
+     * O SuperFlix ainda publica algumas URLs absolutas como HTTP, embora o CDN
+     * aceite HTTPS. WebView e OkHttp bloqueiam essas URLs por política de
+     * cleartext/mixed content, então promovemos somente mídia e legendas para
+     * HTTPS em vez de liberar tráfego inseguro para o aplicativo inteiro.
+     */
+    private fun secureTransportUrl(raw: String): String? = try {
+        val parsed = URL(raw)
+        when (parsed.protocol.lowercase()) {
+            "https" -> parsed.toString()
+            "http" -> URL(
+                "https",
+                parsed.host,
+                if (parsed.port == 80) -1 else parsed.port,
+                parsed.file,
+            ).toString()
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     private fun findSubtitleTracks(html: String, baseUrl: String): List<SubtitleTrack> {
         val normalized = normalizeHtml(html)
         val found = linkedMapOf<String, SubtitleTrack>()
         fun add(raw: String?, label: String? = null) {
-            val file = resolveUrl(raw, baseUrl) ?: return
+            val resolved = resolveUrl(raw, baseUrl) ?: return
+            val file = secureTransportUrl(resolved) ?: return
             if (!Regex("""\.(?:vtt|srt|ass|ssa)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(file)) return
             found.putIfAbsent(file, SubtitleTrack(file, label?.takeIf { it.isNotBlank() } ?: "Português"))
         }
@@ -203,11 +226,22 @@ object SuperflixExtractor {
         val found = linkedSetOf<String>()
 
         fun add(raw: String) {
-            val absolute = resolveUrl(raw, baseUrl) ?: return
+            val candidate = normalizeHtml(raw).trim()
+            // Páginas do SuperFlix contêm exemplos/template como `${url}` e
+            // `${thumb}`. Eles não são navegação real e acabavam consumindo o
+            // limite de hops até o erro "cadeia excedeu o limite".
+            if (candidate.contains('$') || candidate.contains('{') || candidate.contains('}')) return
+            val absolute = resolveUrl(candidate, baseUrl) ?: return
             val parsed = try { URL(absolute) } catch (_: Exception) { return }
             // Scripts do desafio Cloudflare pertencem ao mesmo host, mas não são
             // páginas da cadeia SuperFlix/Vizero/WarezCDN.
             if (parsed.path.startsWith("/cdn-cgi/", ignoreCase = true)) return
+            val isSuperflix = parsed.host.equals("superflixapi.pro", ignoreCase = true) ||
+                parsed.host.endsWith(".superflixapi.pro", ignoreCase = true)
+            if (isSuperflix &&
+                parsed.query?.contains("cfv=", ignoreCase = true) != true &&
+                !parsed.path.startsWith("/player/", ignoreCase = true)
+            ) return
             if (isChainHost(parsed.host)) found.add(absolute)
         }
 
@@ -267,7 +301,9 @@ object SuperflixExtractor {
 
     private fun sourceScore(id: String, context: String): Int {
         val text = context.lowercase()
-        var score = if (id.startsWith("native_media:")) 100 else 0
+        // No Android o servidor alternativo costuma entregar HLS/HTTPS e é mais
+        // completo. O servidor nativo permanece disponível como fallback.
+        var score = if (id.startsWith("native_media:")) 0 else 100
         if (Regex("""dublad|portugu|pt-br""").containsMatchIn(text)) score += 40
         if (Regex("""legend|subtitle|\bleg\b""").containsMatchIn(text)) score -= 10
         if (Regex("""full\s*hd|1080|\bhd\b""").containsMatchIn(text)) score += 5
@@ -336,7 +372,8 @@ object SuperflixExtractor {
         )
         for (pattern in patterns) {
             val candidate = pattern.find(normalized)?.groupValues?.getOrNull(1)
-            resolveUrl(candidate, baseUrl)?.let { return it }
+            val resolved = resolveUrl(candidate, baseUrl) ?: continue
+            secureTransportUrl(resolved)?.let { return it }
         }
         return null
     }
@@ -555,8 +592,10 @@ object SuperflixExtractor {
 
         if (parsed.path.contains("/player/native/media/")) {
             val mediaPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
-            val mediaSource = findNativeMediaSource(mediaPage.html, mediaPage.url)
+            val rawMediaSource = findNativeMediaSource(mediaPage.html, mediaPage.url)
                 ?: throw Exception("media-source não encontrado no player nativo")
+            val mediaSource = secureTransportUrl(rawMediaSource)
+                ?: throw Exception("media-source sem transporte HTTPS")
             val subtitles = findSubtitleTracks(mediaPage.html, mediaPage.url)
 
             val mediaResponse = requestOnce(
@@ -572,8 +611,10 @@ object SuperflixExtractor {
             )
 
             if (mediaResponse.status in 300..399) {
-                val finalUrl = resolveUrl(mediaResponse.headers["Location"], mediaSource)
+                val redirected = resolveUrl(mediaResponse.headers["Location"], mediaSource)
                     ?: throw Exception("media-source sem Location final")
+                val finalUrl = secureTransportUrl(redirected)
+                    ?: throw Exception("media-source final sem HTTPS")
                 return NativeExtractResult(finalUrl, null, subtitles)
             }
 
@@ -591,14 +632,20 @@ object SuperflixExtractor {
         ) {
             val warez = URL(warezPageUrl)
             val r = "${warez.protocol}://${warez.host}/"
+            val subtitles = runCatching {
+                val embedPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
+                findSubtitleTracks(embedPage.html, embedPage.url)
+            }.getOrDefault(emptyList())
             val stream = PlayerExtractors.extractEmbedPlayer(resolvedUrl, r)
-            return NativeExtractResult(stream, resolvedUrl)
+            return NativeExtractResult(stream, resolvedUrl, subtitles)
         }
 
         if (Regex("""\.(?:mp4|m3u8)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(resolvedUrl) ||
             Regex("""/master\.txt(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(resolvedUrl)
         ) {
-            return NativeExtractResult(resolvedUrl, warezPageUrl)
+            val stream = secureTransportUrl(resolvedUrl)
+                ?: throw Exception("mídia direta sem transporte HTTPS")
+            return NativeExtractResult(stream, warezPageUrl)
         }
 
         val fallbackPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
