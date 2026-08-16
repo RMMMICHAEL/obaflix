@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { CalendarDays, ChevronRight, ListFilter, Play, Search, Star, Trophy, X } from "lucide-react";
 import { AwardRow, type AwardRowItem } from "@/components/ui/AwardRow";
+import { imgUrl } from "@/lib/tmdb";
 
 export interface ChartItem {
   id: string;
@@ -20,13 +21,17 @@ export interface ChartItem {
   disponivel: boolean;
 }
 
-type TabId = "top-filmes" | "top-series" | "pop-filmes" | "pop-series";
+type RankingTabId = "top-filmes" | "top-series" | "pop-filmes" | "pop-series";
+type AwardTabId = "oscars" | "emmys";
+type TabId = RankingTabId | AwardTabId;
 
 const TABS: { id: TabId; label: string; eyebrow: string }[] = [
   { id: "top-filmes", label: "Top filmes", eyebrow: "IMDb Top 250" },
   { id: "top-series", label: "Top séries", eyebrow: "IMDb Top 250" },
   { id: "pop-filmes", label: "Filmes em alta", eyebrow: "Popularidade TMDB" },
   { id: "pop-series", label: "Séries em alta", eyebrow: "Popularidade TMDB" },
+  { id: "oscars", label: "Oscars", eyebrow: "Premiação do cinema" },
+  { id: "emmys", label: "Emmys", eyebrow: "Premiação da televisão" },
 ];
 
 function normalize(value: string) {
@@ -59,16 +64,17 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
   const [search, setSearch] = useState("");
   const [genre, setGenre] = useState("");
   const [releaseYear, setReleaseYear] = useState("");
-  const allItems: Record<TabId, ChartItem[]> = {
+  const allItems: Record<RankingTabId, ChartItem[]> = {
     "top-filmes": topFilmes,
     "top-series": topSeries,
     "pop-filmes": popFilmes,
     "pop-series": popSeries,
   };
 
-  const sourceItems = allItems[tab];
+  const isAwardTab = tab === "oscars" || tab === "emmys";
+  const sourceItems = isAwardTab ? [] : allItems[tab];
   const items = useMemo(() => deduplicate(sourceItems), [sourceItems]);
-  const isSeries = tab === "top-series" || tab === "pop-series";
+  const isSeries = tab === "top-series" || tab === "pop-series" || tab === "emmys";
   const tipoPath = isSeries ? "serie" : "filme";
   const activeTab = TABS.find((item) => item.id === tab)!;
   const genreOptions = useMemo(() => {
@@ -95,7 +101,22 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
     });
   }, [genre, items, releaseYear, search]);
 
-  const hero = filtered.find((item) => item.disponivel) ?? filtered[0];
+  const selectedAwardItems = tab === "oscars" ? oscarItems : emmyItems;
+  const awardHero = isAwardTab ? selectedAwardItems[0] : undefined;
+  const hero: ChartItem | undefined = awardHero ? {
+    id: awardHero.id,
+    titulo: awardHero.titulo,
+    ano: awardHero.ano ? String(awardHero.ano) : "",
+    nota: 0,
+    poster: awardHero.poster ? imgUrl(awardHero.poster, "w500") : null,
+    background: awardHero.poster ? imgUrl(awardHero.poster, "original") : null,
+    logo: null,
+    sinopse: `${awardHero.count} ${tab === "oscars" ? "Oscars conquistados" : "prêmios Emmy conquistados"}. Disponível no catálogo Obaflix.`,
+    detalhe: tab === "oscars" ? "Cinema" : "Televisão",
+    generos: [],
+    rank: awardHero.count,
+    disponivel: true,
+  } : (filtered.find((item) => item.disponivel) ?? filtered[0]);
   const hasActiveFilters = Boolean(search || genre || releaseYear);
 
   const heroHref = hero ? `/${tipoPath}/${hero.id}` : "#";
@@ -122,7 +143,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
                 <Trophy size={16} className="text-[oklch(0.68_0.22_28)]" />
                 {activeTab.eyebrow}
                 <span className="h-1 w-1 rounded-full bg-current opacity-50" />
-                Número {hero.rank}
+                {isAwardTab ? `${hero.rank} ${tab === "oscars" ? "Oscars" : "Emmys"}` : `Número ${hero.rank}`}
               </div>
 
               {hero.logo ? (
@@ -136,7 +157,9 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
                 {hero.nota > 0 && <span className="flex items-center gap-1.5 text-[oklch(0.84_0.16_88)]"><Star size={15} fill="currentColor" /> {hero.nota.toFixed(1)}</span>}
                 {hero.ano && <span>{hero.ano}</span>}
                 {hero.detalhe && <span>{hero.detalhe}</span>}
-                <span className="rounded border border-[oklch(0.7_0.01_25/0.55)] px-1.5 py-0.5 text-[10px] uppercase tracking-wider">Top {hero.rank}</span>
+                <span className="rounded border border-[oklch(0.7_0.01_25/0.55)] px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
+                  {isAwardTab ? `${hero.rank} ${tab === "oscars" ? "Oscars" : "Emmys"}` : `Top ${hero.rank}`}
+                </span>
               </div>
 
               {hero.sinopse && <p className="mb-7 line-clamp-4 max-w-[65ch] text-sm leading-relaxed text-[oklch(0.84_0.012_25)] md:text-base">{hero.sinopse}</p>}
@@ -156,7 +179,7 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
         </section>
       )}
 
-      <section className="relative z-20 mx-auto -mt-1 max-w-7xl px-4 md:px-14">
+      <section className={`relative z-20 mx-auto max-w-7xl px-4 md:px-14 ${hero ? "-mt-1" : "pt-24"}`}>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-[oklch(0.62_0.16_28)]">Curadoria mundial</p>
@@ -178,6 +201,26 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
           </div>
         </div>
 
+        {isAwardTab ? (
+          <div className="mt-7 border-t border-[oklch(0.28_0.009_25/0.65)] pt-3">
+            {tab === "oscars" ? (
+              <AwardRow
+                title="Filmes com mais Oscars"
+                description="Títulos disponíveis no catálogo, em ordem pelo número de estatuetas conquistadas."
+                unit="Oscar"
+                items={oscarItems}
+              />
+            ) : (
+              <AwardRow
+                title="Séries mais premiadas no Emmy"
+                description="Produções disponíveis no catálogo, organizadas pelo total de prêmios Emmy."
+                unit="Emmy"
+                items={emmyItems}
+              />
+            )}
+          </div>
+        ) : (
+          <>
         <div className="mb-8 mt-5 border-y border-[oklch(0.28_0.009_25/0.65)] py-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
             <label className="flex min-h-11 flex-1 items-center gap-2 rounded-lg border border-[oklch(0.34_0.01_25)] bg-[oklch(0.14_0.008_25)] px-3 focus-within:border-[oklch(0.58_0.02_25)]">
@@ -249,25 +292,8 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
             <p className="mt-1 text-sm text-[oklch(0.58_0.01_25)]">Ajuste o gênero, o ano ou o título buscado.</p>
           </div>
         )}
-      </section>
-
-      <section className="mx-auto mt-14 max-w-7xl border-t border-[oklch(0.28_0.009_25/0.65)] pt-8">
-        <div className="px-6 md:px-12">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[oklch(0.62_0.16_28)]">Premiações</p>
-          <h2 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">Títulos que fizeram história</h2>
-        </div>
-        <AwardRow
-          title="Filmes com mais Oscars"
-          description="Títulos disponíveis no catálogo, em ordem pelo número de estatuetas conquistadas."
-          unit="Oscar"
-          items={oscarItems}
-        />
-        <AwardRow
-          title="Séries mais premiadas no Emmy"
-          description="Produções disponíveis no catálogo, organizadas pelo total de prêmios Emmy."
-          unit="Emmy"
-          items={emmyItems}
-        />
+          </>
+        )}
       </section>
     </main>
   );

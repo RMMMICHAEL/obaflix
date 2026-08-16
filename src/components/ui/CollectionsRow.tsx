@@ -22,20 +22,22 @@ const FILM_COLLECTIONS = [
   { id: 399,    nome: "Predador" },
 ];
 
-const ANIMATION_COLLECTIONS = [
-  { id: 2150,   nome: "Shrek" },
-  { id: 10194,  nome: "Toy Story" },
-  { id: 87118,  nome: "Carros" },
-  { id: 468222, nome: "Os Incríveis" },
-  { id: 137697, nome: "Procurando Nemo" },
-  { id: 137696, nome: "Monstros S.A." },
-  { id: 14740,  nome: "Madagascar" },
-  { id: 77816,  nome: "Kung Fu Panda" },
-  { id: 89137,  nome: "Como Treinar o Seu Dragão" },
-  { id: 86066,  nome: "Meu Malvado Favorito" },
-  { id: 8354,   nome: "A Era do Gelo" },
-  { id: 185103, nome: "Hotel Transilvânia" },
-  { id: 386382, nome: "Frozen" },
+// Metadados estáveis das coleções de animação. Mantê-los locais evita 13
+// chamadas ao TMDB durante a abertura da página infantil.
+const ANIMATION_COLLECTION_CARDS: CollectionRailItem[] = [
+  { id: 2150, nome: "Shrek: Coleção", poster: "/FlCOvuibrkww69JUcXLy3pOCBw.jpg", backdrop: "/lhsd1zCsq5UquvcNalmhuddV3tI.jpg", count: 5 },
+  { id: 10194, nome: "Toy Story: Coleção", poster: "/vgloOQGIDJJkIq1nTv9y3n2TokC.jpg", backdrop: "/hApclyB9NEZEQujAVajzi5iWE4a.jpg", count: 5 },
+  { id: 87118, nome: "Carros: Coleção", poster: "/3xgI2de9NV3HdvVKq2HBjS7uQRx.jpg", backdrop: "/A8DqaTGwZ8iCEjWMNRsZumzfKLw.jpg", count: 3 },
+  { id: 468222, nome: "Os Incríveis: Coleção", poster: "/l7GqbzkJwowYRIXAtUz2iCPi64a.jpg", backdrop: "/6oi6V1O9MJRNnfV8E9JMntmFqBD.jpg", count: 3 },
+  { id: 137697, nome: "Procurando Nemo: Coleção", poster: "/cCovtlN16ykvyFYnzKyv3dFtceG.jpg", backdrop: "/yzqaKAhglTrkeOfuIXYYArf0WnA.jpg", count: 2 },
+  { id: 137696, nome: "Monstros S.A.: Coleção", poster: "/vdCXiJl9jJlwa0YlOL8qHjL0hy6.jpg", backdrop: "/x4Mq7gDRhbqDjw4SkemLvd1yzF3.jpg", count: 2 },
+  { id: 14740, nome: "Madagascar: Coleção", poster: "/jehSFsO0ViCSrGmQeRXo9mjenVp.jpg", backdrop: "/lzTIAbvMeGWB7PUrmBZXulGA28M.jpg", count: 3 },
+  { id: 77816, nome: "Kung Fu Panda: Coleção", poster: "/2niOAGSPxhdcRfbcXGDg4doNp9z.jpg", backdrop: "/2nbtv33hEk2CTnuMhTGZgsFdi3K.jpg", count: 4 },
+  { id: 89137, nome: "Como Treinar o Seu Dragão: Coleção", poster: "/cUBgJx9G4CdKhOlj7R7kWbEQMAY.jpg", backdrop: "/mvcfPkOvgDJG2lEAxTz0NKqoQLo.jpg", count: 3 },
+  { id: 86066, nome: "Meu Malvado Favorito: Coleção", poster: "/vCXbRZwV09KChsc0MoQbMUHkRK1.jpg", backdrop: "/37xamYKRUGCRux532lKcZdVGYuR.jpg", count: 4 },
+  { id: 8354, nome: "A Era do Gelo: Coleção", poster: "/f5PM3zXVhd8O1YnPqbkI3gHsWe4.jpg", backdrop: "/ovWkSikbJUMwwmUdD6WTa1bbFrh.jpg", count: 7 },
+  { id: 185103, nome: "Hotel Transilvânia: Coleção", poster: "/hmBT5J6rWZaYA8qbbZkcSJnivHe.jpg", backdrop: "/5MJt6g7k9gADQH4xHn5mOEMa3Vr.jpg", count: 5 },
+  { id: 386382, nome: "Frozen: Coleção", poster: "/xibZTW6FdC9Nd8sJQks95rYa6JV.jpg", backdrop: "/s3vdRkK7KZFUDC8HEJo2GRKyVhW.jpg", count: 4 },
 ];
 
 async function CollectionSection({
@@ -78,5 +80,10 @@ export function CollectionsRow() {
 }
 
 export function AnimationCollectionsRow() {
-  return <CollectionSection collections={ANIMATION_COLLECTIONS} title="Coleções de animação" />;
+  return (
+    <section className="relative px-6 py-3 md:px-12">
+      <h2 className="mb-3 text-lg font-bold md:text-xl">Coleções de animação</h2>
+      <CollectionRail cards={ANIMATION_COLLECTION_CARDS} />
+    </section>
+  );
 }

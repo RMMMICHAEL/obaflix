@@ -1,8 +1,9 @@
 import { Suspense } from "react";
-import Link from "next/link";
+import { unstable_cache } from "next/cache";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { KidsHero } from "@/components/ui/KidsHero";
+import { KidsStudioBrowser } from "@/components/ui/KidsStudioBrowser";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
@@ -10,7 +11,7 @@ import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/Ep
 import { AnimationCollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
-import { ANIMATION_STUDIOS, matchStudioTitles } from "@/lib/editorialCatalog";
+import { ANIMATION_STUDIOS } from "@/lib/editorialCatalog";
 import type { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -20,21 +21,16 @@ const NEW_EP_MS = 48 * 60 * 60 * 1000;
 
 const selBrowse = {
   id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
-  sinopse: true, ano: true, nota: true, createdAt: true,
+  ano: true, nota: true, createdAt: true,
+} as const;
+
+const selBrowseWithGenres = {
+  ...selBrowse,
+  generos: { select: { generoId: true } },
 } as const;
 
 const selGrid = {
   id: true, titulo: true, poster: true, ano: true, nota: true,
-} satisfies Prisma.SerieSelect;
-
-const selAnimationFilm = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
-  ano: true, nota: true, urlDub: true, urlLeg: true,
-} satisfies Prisma.FilmeSelect;
-
-const selAnimationSeries = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
-  ano: true, nota: true, tipo: true,
 } satisfies Prisma.SerieSelect;
 
 function toRow(s: any) {
@@ -53,6 +49,39 @@ function toGrid(s: any) {
   };
 }
 
+const getBrowseData = unstable_cache(
+  async () => Promise.all([
+    prisma.genero.findMany({
+      where: { series: { some: { serie: { tipo: "desenho" } } } },
+      orderBy: { nome: "asc" },
+    }),
+    prisma.serie.findMany({
+      where: { tipo: "desenho", ano: { not: null } },
+      select: { ano: true },
+      distinct: ["ano"],
+      orderBy: { ano: "desc" },
+    }),
+    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 72, select: selBrowseWithGenres }),
+    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { createdAt: "desc" }, take: 18, select: selBrowse }),
+    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 18, select: selBrowse }),
+    prisma.episodio.findMany({
+      where: {
+        serie: { tipo: "desenho" },
+        OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: {
+        id: true, serieId: true, titulo: true, thumbnail: true,
+        temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
+        serie: { select: { titulo: true, poster: true } },
+      },
+    }),
+  ]),
+  ["desenhos-browse-v3"],
+  { revalidate: 120, tags: ["desenhos"] },
+);
+
 export default async function DesenhoPage({
   searchParams,
 }: {
@@ -67,25 +96,6 @@ export default async function DesenhoPage({
   const limit = 24;
   const skip = (page - 1) * limit;
   const selectedStudio = ANIMATION_STUDIOS.find((studio) => studio.id === searchParams.studio) ?? ANIMATION_STUDIOS[0];
-  const studioTitleFilters = selectedStudio.titles.flatMap((title) => ([
-    { titulo: { startsWith: title, mode: "insensitive" as const } },
-    { tituloOriginal: { startsWith: title, mode: "insensitive" as const } },
-  ]));
-
-  const [generosRaw, anosRaw] = await Promise.all([
-    prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "desenho" } } } },
-      orderBy: { nome: "asc" },
-    }),
-    prisma.serie.findMany({
-      where: { tipo: "desenho", ano: { not: null } },
-      select: { ano: true },
-      distinct: ["ano"],
-      orderBy: { ano: "desc" },
-    }),
-  ]);
-  const generos = groupGenres(generosRaw);
-  const anos = anosRaw.map((a) => a.ano!).filter(Boolean) as number[];
 
   if (isFiltered) {
     const where: any = { tipo: "desenho" };
@@ -101,10 +111,22 @@ export default async function DesenhoPage({
       : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
-    const [series, total] = await Promise.all([
+    const [generosRaw, anosRaw, series, total] = await Promise.all([
+      prisma.genero.findMany({
+        where: { series: { some: { serie: { tipo: "desenho" } } } },
+        orderBy: { nome: "asc" },
+      }),
+      prisma.serie.findMany({
+        where: { tipo: "desenho", ano: { not: null } },
+        select: { ano: true },
+        distinct: ["ano"],
+        orderBy: { ano: "desc" },
+      }),
       prisma.serie.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
       prisma.serie.count({ where }),
     ]);
+    const generos = groupGenres(generosRaw);
+    const anos = anosRaw.map((item) => item.ano!).filter(Boolean) as number[];
     const pages = Math.ceil(total / limit);
 
     return (
@@ -125,80 +147,22 @@ export default async function DesenhoPage({
     );
   }
 
-  // Browse mode. As consultas de estúdio são direcionadas apenas ao estúdio
-  // selecionado, evitando carregar milhares de títulos a cada visita.
-  const [populares, recentes, avaliados, epsRecentesRaw, acao, aventura, comedia, familia, animationFilms, animationSeries] =
-    await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.episodio.findMany({
-        where: {
-          serie: { tipo: "desenho" },
-          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
-        },
-        orderBy: { createdAt: "desc" },
-        take: 24,
-        select: {
-          id: true, serieId: true, titulo: true, thumbnail: true,
-          temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
-          serie: { select: { titulo: true, poster: true } },
-        },
-      }),
-      prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "desenho", generos: { some: { generoId: 10751 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({
-        where: {
-          AND: [
-            { generos: { some: { generoId: 16 } } },
-            { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-            { OR: studioTitleFilters },
-          ],
-        },
-        orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-        take: 120,
-        select: selAnimationFilm,
-      }),
-      prisma.serie.findMany({
-        where: {
-          AND: [
-            { OR: [{ generos: { some: { generoId: 16 } } }, { tipo: { in: ["anime", "desenho"] } }] },
-            { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
-            { OR: studioTitleFilters },
-          ],
-        },
-        orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-        take: 80,
-        select: selAnimationSeries,
-      }),
-    ]);
+  // Browse mode. A vitrine compartilhada fica em cache curto; a grade de
+  // estúdios é carregada separadamente apenas quando se aproxima da tela.
+  const [generosRaw, anosRaw, popularCatalog, recentes, avaliados, epsRecentesRaw] =
+    await getBrowseData();
 
-  const animationCandidates = [
-    ...animationFilms.map((item) => ({ ...item, tipo: "filme" as const })),
-    ...animationSeries.map((item) => ({
-      ...item,
-      tipo: (item.tipo === "anime" ? "anime" : "desenho") as "anime" | "desenho",
-      urlDub: null,
-      urlLeg: null,
-    })),
-  ];
+  const generos = groupGenres(generosRaw);
+  const anos = anosRaw.map((item) => item.ano!).filter(Boolean) as number[];
+  const populares = popularCatalog.slice(0, 18);
+  const byGenre = (genreId: number) => popularCatalog
+    .filter((item) => item.generos.some((genre) => genre.generoId === genreId))
+    .slice(0, 12);
+  const acao = byGenre(28);
+  const aventura = byGenre(12);
+  const comedia = byGenre(35);
+  const familia = byGenre(10751);
 
-  const toAnimationRow = (item: (typeof animationCandidates)[number]) => ({
-    id: item.id,
-    tipo: item.tipo,
-    titulo: item.titulo,
-    poster: item.poster ?? null,
-    background: item.background ?? null,
-    logo: item.logo ?? null,
-    ano: item.ano ?? null,
-    nota: item.nota ?? null,
-    urlDub: item.urlDub ?? null,
-    urlLeg: item.urlLeg ?? null,
-  });
-
-  const studioItems = matchStudioTitles(selectedStudio.titles, animationCandidates).slice(0, 36).map(toAnimationRow);
   const featured = populares.slice(0, 3).map(toRow);
   const epsRecentesItems: EpisodioRecenteItem[] = epsRecentesRaw.map((episode) => ({
     episodioId: episode.id,
@@ -210,7 +174,7 @@ export default async function DesenhoPage({
     temporada: episode.temporada,
     numeroEp: episode.numeroEp,
     tipo: "desenho",
-    isNovoEpisodio: Date.now() - episode.createdAt.getTime() < NEW_EP_MS,
+    isNovoEpisodio: Date.now() - new Date(episode.createdAt).getTime() < NEW_EP_MS,
     urlDub: episode.urlDub ?? null,
     urlLeg: episode.urlLeg ?? null,
   }));
@@ -232,43 +196,12 @@ export default async function DesenhoPage({
         <ContinuarAssistindo />
         {avaliados.length > 0 && <LandscapeRow titulo="Melhores de Todos os Tempos" items={avaliados.map(toRow)} verTodosHref="/desenhos?ordem=nota" />}
 
-        <Suspense fallback={<CollectionRowSkeleton />}><AnimationCollectionsRow /></Suspense>
+        <LazyRow height={260}><AnimationCollectionsRow /></LazyRow>
 
-        <section id="estudios" className="scroll-mt-24 px-6 py-8 md:px-12">
-          <div className="grid gap-7 lg:grid-cols-[210px_minmax(0,1fr)]">
-            <div>
-              <p className="mb-3 text-xs font-bold uppercase tracking-[0.14em] text-[oklch(0.82_0.10_96)]">Estúdios</p>
-              <nav className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide lg:max-h-[520px] lg:flex-col lg:overflow-y-auto lg:pr-2" aria-label="Estúdios de animação">
-                {ANIMATION_STUDIOS.map((studio) => {
-                  const active = studio.id === selectedStudio.id;
-                  return (
-                    <Link
-                      key={studio.id}
-                      href={`/desenhos?studio=${studio.id}#estudios`}
-                      aria-current={active ? "page" : undefined}
-                      className={`inline-flex min-h-11 shrink-0 items-center rounded-xl px-4 text-sm font-bold transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[oklch(0.92_0.12_96)] ${active ? "bg-[oklch(0.87_0.16_96)] text-[oklch(0.24_0.06_205)]" : "bg-[oklch(0.24_0.07_190)] text-[oklch(0.92_0.025_190)] hover:bg-[oklch(0.29_0.08_190)]"}`}
-                    >
-                      <span className="mr-2 h-2 w-2 rounded-full" style={{ backgroundColor: studio.accent }} aria-hidden="true" />
-                      {studio.name}
-                    </Link>
-                  );
-                })}
-              </nav>
-            </div>
-
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[oklch(0.70_0.055_205)]">Infantil / {selectedStudio.name}</p>
-              <h2 className="mt-1 text-2xl font-black tracking-tight">{selectedStudio.name}</h2>
-              {studioItems.length > 0 ? (
-                <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-                  {studioItems.map((item) => <ContentCard key={`${item.tipo}-${item.id}`} {...item} />)}
-                </div>
-              ) : (
-                <p className="mt-8 rounded-xl bg-[oklch(0.21_0.045_205)] p-6 text-sm text-[oklch(0.76_0.035_205)]">Nenhum título disponível deste estúdio no catálogo atual.</p>
-              )}
-            </div>
-          </div>
-        </section>
+        <KidsStudioBrowser
+          initialStudioId={selectedStudio.id}
+          studios={ANIMATION_STUDIOS.map(({ id, name, accent }) => ({ id, name, accent }))}
+        />
 
         {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"     items={acao.map(toRow)}      verTodosHref="/genero/28" /></LazyRow>}
         {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura" items={aventura.map(toRow)}  verTodosHref="/genero/12" /></LazyRow>}
@@ -288,10 +221,6 @@ function FilterBarSkeleton() {
       <div className="h-9 w-24 rounded-full bg-white/[0.06] animate-pulse" />
     </div>
   );
-}
-
-function CollectionRowSkeleton() {
-  return <div className="mx-6 my-5 h-72 animate-pulse rounded-xl bg-[oklch(0.21_0.045_205)] md:mx-12" aria-hidden="true" />;
 }
 
 function EmptyState() {
