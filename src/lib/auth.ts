@@ -8,6 +8,8 @@ import { checkRateLimit } from "./requestSecurity";
 import crypto from "crypto";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const USE_SECURE_COOKIES = process.env.NODE_ENV === "production" || process.env.NEXTAUTH_URL?.startsWith("https://") === true;
 
 /**
  * Autoriza apenas usuários autenticados com role "admin".
@@ -75,25 +77,28 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
 }
 
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt", maxAge: 8 * 60 * 60 },
+  session: { strategy: "jwt", maxAge: SESSION_MAX_AGE },
+  jwt: { maxAge: SESSION_MAX_AGE },
+  useSecureCookies: USE_SECURE_COOKIES,
   pages: { signIn: "/login" },
   cookies: {
     sessionToken: {
-      name: "__Secure-next-auth.session-token",
+      name: `${USE_SECURE_COOKIES ? "__Secure-" : ""}next-auth.session-token`,
       options: {
         httpOnly: true,
-        secure: true,
-        sameSite: "strict",
+        secure: USE_SECURE_COOKIES,
+        sameSite: "lax",
         path: "/",
+        maxAge: SESSION_MAX_AGE,
       },
     },
     callbackUrl: {
-      name: "__Secure-next-auth.callback-url",
-      options: { httpOnly: true, secure: true, sameSite: "strict", path: "/" },
+      name: `${USE_SECURE_COOKIES ? "__Secure-" : ""}next-auth.callback-url`,
+      options: { httpOnly: true, secure: USE_SECURE_COOKIES, sameSite: "lax", path: "/" },
     },
     csrfToken: {
-      name: "__Host-next-auth.csrf-token",
-      options: { httpOnly: true, secure: true, sameSite: "strict", path: "/" },
+      name: `${USE_SECURE_COOKIES ? "__Host-" : ""}next-auth.csrf-token`,
+      options: { httpOnly: true, secure: USE_SECURE_COOKIES, sameSite: "lax", path: "/" },
     },
   },
   providers: [

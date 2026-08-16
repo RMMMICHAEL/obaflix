@@ -1,12 +1,13 @@
 "use client";
 
-import { Suspense, useState } from "react";
-import { signIn } from "next-auth/react";
+import { Suspense, useEffect, useState } from "react";
+import { signIn, useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 function LoginForm() {
   const router = useRouter();
+  const { status } = useSession();
   const searchParams = useSearchParams();
   const requestedCallback = searchParams.get("callbackUrl") ?? "/";
   const callbackUrl = requestedCallback.startsWith("/") && !requestedCallback.startsWith("//")
@@ -17,13 +18,21 @@ function LoginForm() {
   const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace(callbackUrl);
+      router.refresh();
+    }
+  }, [callbackUrl, router, status]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setErro("");
     const res = await signIn("credentials", { email, senha: senha, redirect: false });
     if (res?.ok) {
-      router.push(callbackUrl);
+      router.replace(callbackUrl);
+      router.refresh();
     } else if (res?.error === "google-account") {
       setErro('Esta conta foi criada com o Google. Use o botão "Entrar com Google" acima.');
     } else {
@@ -31,6 +40,10 @@ function LoginForm() {
     }
     setLoading(false);
   };
+
+  if (status === "loading" || status === "authenticated") {
+    return <div className="min-h-screen bg-zinc-950" aria-label="Verificando sessão" />;
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4">

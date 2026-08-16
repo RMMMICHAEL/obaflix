@@ -5,14 +5,14 @@ import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
-import { AwardRow } from "@/components/ui/AwardRow";
+import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
-import { editorialAliases, EMMY_SERIES, matchEditorialEntries } from "@/lib/editorialCatalog";
 
 export const dynamic = "force-dynamic";
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
+const NEW_EP_MS = 48 * 60 * 60 * 1000;
 
 const selBrowse = {
   id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
@@ -112,12 +112,25 @@ export default async function SeriesPage({
   // "Mais Populares" usa popularidade real do TMDB (não histórico de
   // visualização interno — com um usuário só na base, isso só refletia o que
   // essa pessoa tinha acabado de assistir, não popularidade de verdade).
-  const [heroRaw, recentes, avaliadas, populares, drama, crime, comedia, misterio, ficcao, terror, romance, acao, emmyRaw] =
+  const [heroRaw, recentes, avaliadas, populares, epsRecentesRaw, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.episodio.findMany({
+        where: {
+          serie: { tipo: "serie" },
+          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+        },
+        orderBy: { createdAt: "desc" },
+        take: 24,
+        select: {
+          id: true, serieId: true, titulo: true, thumbnail: true,
+          temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
+          serie: { select: { titulo: true, poster: true } },
+        },
+      }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -126,28 +139,21 @@ export default async function SeriesPage({
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 27 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10759 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({
-        where: {
-          tipo: "serie",
-          AND: [
-            { OR: [
-              { titulo: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
-              { tituloOriginal: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
-            ] },
-            { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
-          ],
-        },
-        select: selBrowse,
-      }),
     ]);
 
-  const emmyItems = matchEditorialEntries(EMMY_SERIES, emmyRaw).map(({ item, entry }) => ({
-    id: item.id,
-    tipo: "serie" as const,
-    titulo: item.titulo,
-    poster: item.poster ?? null,
-    ano: item.ano ?? null,
-    count: entry.value ?? 0,
+  const epsRecentesItems: EpisodioRecenteItem[] = epsRecentesRaw.map((episode) => ({
+    episodioId: episode.id,
+    serieId: episode.serieId,
+    titulo: episode.titulo ?? null,
+    serieTitulo: episode.serie.titulo,
+    poster: episode.serie.poster ?? null,
+    thumbnail: episode.thumbnail ?? null,
+    temporada: episode.temporada,
+    numeroEp: episode.numeroEp,
+    tipo: "serie",
+    isNovoEpisodio: Date.now() - episode.createdAt.getTime() < NEW_EP_MS,
+    urlDub: episode.urlDub ?? null,
+    urlLeg: episode.urlLeg ?? null,
   }));
 
   const heroItems = heroRaw.map((s) => ({
@@ -169,15 +175,9 @@ export default async function SeriesPage({
           </Suspense>
         </div>
 
-        <AwardRow
-          title="Séries mais premiadas no Emmy"
-          description="Produções disponíveis no catálogo, organizadas pelo total de prêmios Emmy."
-          unit="Emmy"
-          items={emmyItems}
-        />
-
+        {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
+        <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
         {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
-        {populares.length > 0  && <LandscapeRow titulo="Mais Populares"          items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
         {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}
         {drama.length > 0      && <LazyRow><LandscapeRow titulo="Drama"               items={drama.map(toRow)}      verTodosHref="/genero/18" /></LazyRow>}
         {crime.length > 0      && <LazyRow><LandscapeRow titulo="Crime"               items={crime.map(toRow)}      verTodosHref="/genero/80" /></LazyRow>}

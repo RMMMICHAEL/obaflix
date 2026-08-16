@@ -6,10 +6,8 @@ import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { ContentCard } from "@/components/ui/ContentCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
-import { AwardRow } from "@/components/ui/AwardRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
-import { editorialAliases, matchEditorialEntries, OSCAR_FILMS } from "@/lib/editorialCatalog";
 
 export const dynamic = "force-dynamic";
 
@@ -117,9 +115,10 @@ export default async function FilmesPage({
   }
 
   // Browse mode — hero + genre rows
-  const [heroRaw, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura, oscarRaw] =
+  const [heroRaw, populares, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura] =
     await Promise.all([
-      prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
@@ -130,28 +129,7 @@ export default async function FilmesPage({
       prisma.filme.findMany({ where: { generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 53 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
       prisma.filme.findMany({ where: { generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({
-        where: {
-          AND: [
-            { OR: [
-              { titulo: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
-              { tituloOriginal: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
-            ] },
-            { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-          ],
-        },
-        select: selBrowse,
-      }),
     ]);
-
-  const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
-    id: item.id,
-    tipo: "filme" as const,
-    titulo: item.titulo,
-    poster: item.poster ?? null,
-    ano: item.ano ?? null,
-    count: entry.value ?? 0,
-  }));
 
   const heroItems = heroRaw.map((f) => ({
     id: f.id, tipo: "filme" as const,
@@ -172,17 +150,10 @@ export default async function FilmesPage({
           </Suspense>
         </div>
 
-        <CollectionsRow />
-
-        <AwardRow
-          title="Filmes com mais Oscars"
-          description="Títulos disponíveis no catálogo, em ordem pelo número de estatuetas conquistadas."
-          unit="Oscar"
-          items={oscarItems}
-        />
-
+        {populares.length > 0 && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/filmes?ordem=popular" />}
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} verTodosHref="/filmes?ordem=recente" />}
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/filmes?ordem=nota" />}
+        <Suspense fallback={<CollectionRowSkeleton />}><CollectionsRow /></Suspense>
         {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"            items={acao.map(toRow)}      verTodosHref="/genero/28" /></LazyRow>}
         {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"         items={comedia.map(toRow)}   verTodosHref="/genero/35" /></LazyRow>}
         {terror.length > 0    && <LazyRow><LandscapeRow titulo="Terror"          items={terror.map(toRow)}    verTodosHref="/genero/27" /></LazyRow>}
@@ -205,6 +176,10 @@ function FilterBarSkeleton() {
       <div className="h-9 w-24 rounded-full bg-white/[0.06] animate-pulse" />
     </div>
   );
+}
+
+function CollectionRowSkeleton() {
+  return <div className="mx-6 my-5 h-72 animate-pulse rounded-xl bg-zinc-900/70 md:mx-12" aria-hidden="true" />;
 }
 
 function EmptyState() {

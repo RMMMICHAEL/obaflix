@@ -1,10 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { imgUrl } from "@/lib/tmdb";
 import { MelhoresClient, type ChartItem } from "./MelhoresClient";
+import { editorialAliases, EMMY_SERIES, matchEditorialEntries, OSCAR_FILMS } from "@/lib/editorialCatalog";
 
 // Lido do banco (top250/popularRank), não mais buscado ao vivo do TMDB — os
-// crons/scripts que mantêm esses campos são os únicos que escrevem aqui.
-// revalidatePath("/melhores") é chamado por eles quando o rank muda.
+// Os scripts locais que mantêm esses campos são os únicos que escrevem aqui.
 export const dynamic = "force-dynamic";
 
 const selFilme = {
@@ -18,6 +18,10 @@ const selSerie = {
   top250: true, popularRank: true,
   generos: { select: { genero: { select: { nome: true } } } },
   _count: { select: { episodios: true } },
+} as const;
+
+const awardSelect = {
+  id: true, titulo: true, tituloOriginal: true, poster: true, ano: true,
 } as const;
 
 function uniqueGenres(rows: Array<{ genero: { nome: string } }>) {
@@ -64,12 +68,46 @@ function serieToChart(s: any, rankField: "top250" | "popularRank"): ChartItem {
 }
 
 export default async function MelhoresPage() {
-  const [topFilmes, topSeries, popFilmes, popSeries] = await Promise.all([
+  const [topFilmes, topSeries, popFilmes, popSeries, oscarRaw, emmyRaw] = await Promise.all([
     prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selFilme }),
     prisma.serie.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selSerie }),
     prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selFilme }),
     prisma.serie.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selSerie }),
+    prisma.filme.findMany({
+      where: {
+        AND: [
+          { OR: [
+            { titulo: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
+            { tituloOriginal: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
+          ] },
+          { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+        ],
+      },
+      select: awardSelect,
+    }),
+    prisma.serie.findMany({
+      where: {
+        tipo: "serie",
+        AND: [
+          { OR: [
+            { titulo: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
+            { tituloOriginal: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
+          ] },
+          { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
+        ],
+      },
+      select: awardSelect,
+    }),
   ]);
+
+  const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
+    id: item.id, tipo: "filme" as const, titulo: item.titulo,
+    poster: item.poster ?? null, ano: item.ano ?? null, count: entry.value ?? 0,
+  }));
+  const emmyItems = matchEditorialEntries(EMMY_SERIES, emmyRaw).map(({ item, entry }) => ({
+    id: item.id, tipo: "serie" as const, titulo: item.titulo,
+    poster: item.poster ?? null, ano: item.ano ?? null, count: entry.value ?? 0,
+  }));
 
   return (
     <MelhoresClient
@@ -77,6 +115,8 @@ export default async function MelhoresPage() {
       topSeries={topSeries.map((s) => serieToChart(s, "top250"))}
       popFilmes={popFilmes.map((f) => filmeToChart(f, "popularRank"))}
       popSeries={popSeries.map((s) => serieToChart(s, "popularRank"))}
+      oscarItems={oscarItems}
+      emmyItems={emmyItems}
     />
   );
 }

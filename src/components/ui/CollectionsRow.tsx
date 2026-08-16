@@ -1,7 +1,7 @@
 import { getCollection } from "@/lib/tmdb";
 import { CollectionRail, type CollectionRailItem } from "./CollectionRail";
 
-const COLECOES = [
+const FILM_COLLECTIONS = [
   { id: 10,    nome: "Star Wars" },
   { id: 1241,  nome: "Harry Potter" },
   { id: 9485,  nome: "Velozes e Furiosos" },
@@ -20,6 +20,9 @@ const COLECOES = [
   { id: 173710, nome: "Planeta dos Macacos" },
   { id: 8091,   nome: "Alien" },
   { id: 399,    nome: "Predador" },
+];
+
+const ANIMATION_COLLECTIONS = [
   { id: 2150,   nome: "Shrek" },
   { id: 10194,  nome: "Toy Story" },
   { id: 87118,  nome: "Carros" },
@@ -35,9 +38,15 @@ const COLECOES = [
   { id: 386382, nome: "Frozen" },
 ];
 
-export async function CollectionsRow() {
+async function CollectionSection({
+  collections,
+  title,
+}: {
+  collections: typeof FILM_COLLECTIONS;
+  title: string;
+}) {
   const results = await Promise.all(
-    COLECOES.map(async (c) => {
+    collections.map(async (c) => {
       const data = await getCollection(c.id);
       if (!data) return null;
       return {
@@ -56,10 +65,18 @@ export async function CollectionsRow() {
   return (
     <section className="relative px-6 md:px-12 py-3 group/row">
       <h2 className="text-lg md:text-xl font-bold mb-3 flex items-center gap-3">
-        Coleções
+        {title}
       </h2>
 
       <CollectionRail cards={cards} />
     </section>
   );
+}
+
+export function CollectionsRow() {
+  return <CollectionSection collections={FILM_COLLECTIONS} title="Coleções" />;
+}
+
+export function AnimationCollectionsRow() {
+  return <CollectionSection collections={ANIMATION_COLLECTIONS} title="Coleções de animação" />;
 }

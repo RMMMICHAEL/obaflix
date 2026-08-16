@@ -103,6 +103,8 @@ export default async function HomePage() {
     // de correspondência no banco).
     dbPopFilmes,
     dbPopSeries,
+    dbBestFilmes,
+    dbBestSeries,
     dbEpsRecentes,
     ...dbGeneroFilmes
   ] = await Promise.all([
@@ -120,6 +122,8 @@ export default async function HomePage() {
     prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
     prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selSerie }),
+    prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selFilme }),
+    prisma.serie.findMany({ where: { tipo: "serie", top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selSerie }),
     // Episódios recentes — últimos 24 adicionados com info da série
     prisma.episodio.findMany({
       orderBy: { createdAt: "desc" },
@@ -206,8 +210,8 @@ export default async function HomePage() {
   // por falta de correspondência com listas ao vivo do TMDB.
   const popMovies = dbPopFilmes.map((f) => dbToCard(f, "filme"));
   const popTV     = dbPopSeries.map((s) => dbToCard(s, "serie"));
-  const top10FilmesCards = popMovies.slice(0, 10);
-  const top10SeriesCards = popTV.slice(0, 10);
+  const top10FilmesCards = (dbBestFilmes.length ? dbBestFilmes : dbPopFilmes.slice(0, 10)).map((item) => dbToCard(item, "filme"));
+  const top10SeriesCards = (dbBestSeries.length ? dbBestSeries : dbPopSeries.slice(0, 10)).map((item) => dbToCard(item, "serie"));
 
   const heroItems = heroRaw.map((item: any, i: number) => {
     const db = mergeMap(item).get(String(item.id));
@@ -259,19 +263,9 @@ export default async function HomePage() {
       <HeroSlider items={heroItems as any} />
 
       <div className="mt-3">
-        {/* Continuar Assistindo */}
-        <ContinuarAssistindo />
-
-        <PersonalizedRows />
-
         {/* Em Alta */}
         {trending.length > 0 && (
           <LandscapeRow titulo="Em Alta" items={trending} />
-        )}
-
-        {/* Top 10 Filmes — baseado na popularidade real do TMDB */}
-        {top10FilmesCards.length > 0 && (
-          <RankRow titulo="Top 10 Filmes" items={top10FilmesCards} verTodosHref="/filmes" />
         )}
 
         {/* Novos Filmes */}
@@ -281,29 +275,35 @@ export default async function HomePage() {
           </LazyRow>
         )}
 
-        {/* Filmes Populares */}
-        {popMovies.length > 0 && (
-          <LazyRow>
-            <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
-          </LazyRow>
-        )}
-
         {/* Episódios Recentes */}
         <LazyRow>
           <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
         </LazyRow>
 
-        {/* Top 10 Séries — baseado na popularidade real do TMDB */}
-        {top10SeriesCards.length > 0 && (
-          <LazyRow>
-            <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/series" />
-          </LazyRow>
-        )}
-
         {/* Novas Séries */}
         {dbRecSeries.length > 0 && (
           <LazyRow>
             <LandscapeRow titulo="Novas Séries" items={dbRecSeries.map((s) => dbToCard(s, "serie"))} verTodosHref="/series" />
+          </LazyRow>
+        )}
+
+        {/* Melhores conteúdos de todos os tempos */}
+        {top10FilmesCards.length > 0 && (
+          <RankRow titulo="Top 10 Filmes" items={top10FilmesCards} verTodosHref="/melhores" />
+        )}
+        {top10SeriesCards.length > 0 && (
+          <LazyRow>
+            <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/melhores" />
+          </LazyRow>
+        )}
+
+        <ContinuarAssistindo />
+        <PersonalizedRows />
+
+        {/* Filmes Populares */}
+        {popMovies.length > 0 && (
+          <LazyRow>
+            <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
           </LazyRow>
         )}
 

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { CalendarDays, ChevronRight, ListFilter, Play, Search, Star, Trophy, X } from "lucide-react";
+import { AwardRow, type AwardRowItem } from "@/components/ui/AwardRow";
 
 export interface ChartItem {
   id: string;
@@ -49,10 +50,12 @@ interface Props {
   topSeries: ChartItem[];
   popFilmes: ChartItem[];
   popSeries: ChartItem[];
+  oscarItems: AwardRowItem[];
+  emmyItems: AwardRowItem[];
 }
 
-export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: Props) {
-  const [tab, setTab] = useState<TabId>("top-filmes");
+export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, oscarItems, emmyItems }: Props) {
+  const [tab, setTab] = useState<TabId>("pop-filmes");
   const [search, setSearch] = useState("");
   const [genre, setGenre] = useState("");
   const [releaseYear, setReleaseYear] = useState("");
@@ -246,6 +249,25 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries }: P
             <p className="mt-1 text-sm text-[oklch(0.58_0.01_25)]">Ajuste o gênero, o ano ou o título buscado.</p>
           </div>
         )}
+      </section>
+
+      <section className="mx-auto mt-14 max-w-7xl border-t border-[oklch(0.28_0.009_25/0.65)] pt-8">
+        <div className="px-6 md:px-12">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[oklch(0.62_0.16_28)]">Premiações</p>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight md:text-3xl">Títulos que fizeram história</h2>
+        </div>
+        <AwardRow
+          title="Filmes com mais Oscars"
+          description="Títulos disponíveis no catálogo, em ordem pelo número de estatuetas conquistadas."
+          unit="Oscar"
+          items={oscarItems}
+        />
+        <AwardRow
+          title="Séries mais premiadas no Emmy"
+          description="Produções disponíveis no catálogo, organizadas pelo total de prêmios Emmy."
+          unit="Emmy"
+          items={emmyItems}
+        />
       </section>
     </main>
   );

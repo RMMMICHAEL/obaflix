@@ -120,7 +120,7 @@ export default async function AnimesPage({
     heroRaw, populares, avaliados, recentes, lancamentos, epsRecentesRaw, tmdbTrendingTV,
     acao, aventura, comedia, drama, misterio, romance,
   ] = await Promise.all([
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, background: { not: null } }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+    prisma.serie.findMany({ where: { ...animeCatalogWhere, background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
     prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
     prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
     prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
@@ -189,12 +189,11 @@ export default async function AnimesPage({
           </Suspense>
         </div>
 
-        {populares.length > 0    && <LandscapeRow titulo="Populares"               items={populares.map(toRow)}   verTodosHref="/animes?ordem=popular" />}
-        {emAlta.length > 0       && <LandscapeRow titulo="Em Alta"                items={emAlta.map(toRow)} />}
-        {avaliados.length > 0    && <LazyRow><LandscapeRow titulo="Mais Bem Avaliados"      items={avaliados.map(toRow)}   verTodosHref="/animes?ordem=nota" /></LazyRow>}
+        {emAlta.length > 0       && <LandscapeRow titulo="Em Alta" items={emAlta.map(toRow)} />}
         <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
         {lancamentos.length > 0  && <LazyRow><LandscapeRow titulo="Lançamentos"             items={lancamentos.map(toRow)} verTodosHref="/animes?ordem=lancamento" /></LazyRow>}
         {recentes.length > 0     && <LazyRow><LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}    verTodosHref="/animes?ordem=recente" /></LazyRow>}
+        {avaliados.length > 0    && <LazyRow><LandscapeRow titulo="Melhores de Todos os Tempos" items={avaliados.map(toRow)} verTodosHref="/animes?ordem=nota" /></LazyRow>}
         {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"     items={acao.map(toRow)}      verTodosHref="/animes?genero=28" /></LazyRow>}
         {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura" items={aventura.map(toRow)}  verTodosHref="/animes?genero=12" /></LazyRow>}
         {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"  items={comedia.map(toRow)}   verTodosHref="/animes?genero=35" /></LazyRow>}
