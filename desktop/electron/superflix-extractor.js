@@ -11,6 +11,16 @@ const DEFAULT_UA =
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_PAGE_HOPS = 7;
 
+// Orçamento para inspecionar servidores antes de escolher. Cada fonte custa um POST
+// em player/source mais uma leitura de manifesto; o limite evita que uma página com
+// muitos servidores atrase demais o início da reprodução.
+const PROBE_BUDGET_MS = 14000;
+
+// Master HLS com várias qualidades e legendas — não vale a pena procurar mais.
+const EXCELLENT_SCORE = 110;
+
+const hlsManifest = require("./hls-manifest");
+
 function slog(step, detail = "") {
   console.log(`[superflix/${step}]${detail ? ` ${detail}` : ""}`);
 }
@@ -52,6 +62,23 @@ function resolveUrl(candidate, baseUrl) {
   }
 }
 
+/**
+ * O SuperFlix ainda publica algumas URLs absolutas como HTTP, embora o CDN aceite
+ * HTTPS. Promove somente mídia e legendas, mantendo o resto da cadeia intacto.
+ */
+function secureTransportUrl(raw) {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "https:") return parsed.toString();
+    if (parsed.protocol !== "http:") return null;
+    parsed.protocol = "https:";
+    if (parsed.port === "80") parsed.port = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function isChainHost(hostname) {
   const host = String(hostname || "").toLowerCase();
   return (
@@ -66,10 +93,21 @@ function collectChainUrls(html, baseUrl) {
   const seen = new Set();
 
   const add = (raw) => {
-    const absolute = resolveUrl(raw, baseUrl);
+    const candidate = normalizeHtml(raw).trim();
+    // Páginas do SuperFlix contêm templates JavaScript como `${url}` e `${thumb}`.
+    // Eles não são navegação real e consumiam o limite de hops até o erro
+    // "cadeia excedeu o limite".
+    if (/[${}]/.test(candidate)) return;
+    const absolute = resolveUrl(candidate, baseUrl);
     if (!absolute || seen.has(absolute)) return;
     try {
       const parsed = new URL(absolute);
+      // Scripts do desafio Cloudflare pertencem ao mesmo host, mas não são páginas
+      // da cadeia SuperFlix/Vizero/WarezCDN.
+      if (parsed.pathname.toLowerCase().startsWith("/cdn-cgi/")) return;
+      const isSuperflix =
+        parsed.hostname === "superflixapi.pro" || parsed.hostname.endsWith(".superflixapi.pro");
+      if (isSuperflix && !parsed.searchParams.has("cfv") && !parsed.pathname.startsWith("/player/")) return;
       if (!isChainHost(parsed.hostname)) return;
       seen.add(absolute);
       found.push(absolute);
@@ -136,9 +174,16 @@ function findPageToken(html) {
   return null;
 }
 
+/**
+ * Heurística de HTML usada apenas para decidir a ORDEM em que os servidores são
+ * inspecionados. A escolha final vem de profileScore(), que mede o que cada
+ * servidor realmente entregou.
+ */
 function sourceScore(id, context) {
   const text = String(context || "").toLowerCase();
-  let score = id.startsWith("native_media:") ? 100 : 0;
+  // O servidor alternativo costuma entregar HLS/HTTPS e é mais completo.
+  // O servidor nativo permanece disponível como fallback.
+  let score = id.startsWith("native_media:") ? 0 : 100;
   if (/dublad|portugu|pt-br/.test(text)) score += 40;
   if (/legend|subtitle|leg\b/.test(text)) score -= 10;
   if (/full\s*hd|1080|hd/.test(text)) score += 5;
@@ -201,7 +246,8 @@ function findDirectMedia(html, baseUrl) {
   for (const pattern of patterns) {
     const candidate = normalized.match(pattern)?.[1];
     const resolved = resolveUrl(candidate, baseUrl);
-    if (resolved) return resolved;
+    const secure = resolved ? secureTransportUrl(resolved) : null;
+    if (secure) return secure;
   }
   return null;
 }
@@ -211,7 +257,8 @@ function findSubtitleTracks(html, baseUrl) {
   const tracks = [];
   const seen = new Set();
   const add = (raw, label = "Português") => {
-    const file = resolveUrl(raw, baseUrl);
+    const resolved = resolveUrl(raw, baseUrl);
+    const file = resolved ? secureTransportUrl(resolved) : null;
     if (!file || seen.has(file) || !/\.(?:vtt|srt|ass|ssa)(?:$|\?)/i.test(file)) return;
     seen.add(file);
     tracks.push({ file, label: label || "Português", kind: "captions", default: tracks.length === 0, referer: baseUrl });
@@ -443,9 +490,11 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       ua,
       referer: warezPageUrl,
     });
-    const mediaSource = findNativeMediaSource(mediaPage.text, mediaPage.url);
+    const rawMediaSource = findNativeMediaSource(mediaPage.text, mediaPage.url);
     const subtitles = findSubtitleTracks(mediaPage.text, mediaPage.url);
-    if (!mediaSource) throw new Error("media-source não encontrado no player nativo");
+    if (!rawMediaSource) throw new Error("media-source não encontrado no player nativo");
+    const mediaSource = secureTransportUrl(rawMediaSource);
+    if (!mediaSource) throw new Error("media-source sem transporte HTTPS");
 
     const mediaResponse = await requestOnce(fetchImpl, jar, mediaSource, {
       ua,
@@ -458,9 +507,10 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     });
 
     if (mediaResponse.status >= 300 && mediaResponse.status < 400) {
-      const finalUrl = resolveUrl(mediaResponse.headers.get("location"), mediaSource);
-      if (!finalUrl) throw new Error("media-source sem Location final");
-      return { stream: finalUrl, referer: null, tipo: "mp4", subtitles };
+      const redirected = resolveUrl(mediaResponse.headers.get("location"), mediaSource);
+      const finalUrl = redirected ? secureTransportUrl(redirected) : null;
+      if (!finalUrl) throw new Error("media-source sem Location final em HTTPS");
+      return { stream: finalUrl, referer: null, tipo: looksLikeHlsUrl(finalUrl) ? "hls" : "mp4", subtitles };
     }
 
     const contentType = mediaResponse.headers.get("content-type") || "";
@@ -476,15 +526,24 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     /\/video\/[a-f0-9]{16,}/i.test(parsed.pathname)
   ) {
     if (typeof extractEmbedPlayer !== "function") throw new Error("extrator embedplayer indisponível");
-    const stream = await extractEmbedPlayer(resolvedUrl, `${new URL(warezPageUrl).origin}/`);
-    return { stream, referer: resolvedUrl, tipo: stream.includes(".mp4") ? "mp4" : "hls", subtitles: [] };
+    // Legendas ficam no HTML do embed; sem elas o player abre só com o áudio.
+    const subtitles = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl })
+      .then((page) => findSubtitleTracks(page.text, page.url))
+      .catch(() => []);
+    const raw = await extractEmbedPlayer(resolvedUrl, `${new URL(warezPageUrl).origin}/`);
+    const stream = secureTransportUrl(raw);
+    if (!stream) throw new Error("embedplayer sem transporte HTTPS");
+    // tipo fica em aberto quando a URL não tem extensão: profileSource() resolve.
+    return { stream, referer: resolvedUrl, tipo: looksLikeMp4Url(stream) ? "mp4" : null, subtitles };
   }
 
   if (/\.(?:mp4|m3u8)(?:$|\?)/i.test(resolvedUrl) || /\/master\.txt(?:$|\?)/i.test(resolvedUrl)) {
+    const stream = secureTransportUrl(resolvedUrl);
+    if (!stream) throw new Error("mídia direta sem transporte HTTPS");
     return {
-      stream: resolvedUrl,
+      stream,
       referer: warezPageUrl,
-      tipo: resolvedUrl.includes(".mp4") ? "mp4" : "hls",
+      tipo: looksLikeMp4Url(stream) ? "mp4" : "hls",
       subtitles: [],
     };
   }
@@ -495,9 +554,130 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
   return {
     stream: direct,
     referer: fallbackPage.url,
-    tipo: direct.includes(".mp4") ? "mp4" : "hls",
+    tipo: looksLikeMp4Url(direct) ? "mp4" : null,
     subtitles: findSubtitleTracks(fallbackPage.text, fallbackPage.url),
   };
+}
+
+function looksLikeHlsUrl(url) {
+  return /\.m3u8(?:$|\?)/i.test(url) || /\/master\.txt(?:$|\?)/i.test(url) || /\/cdn\/hls\//i.test(url);
+}
+
+function looksLikeMp4Url(url) {
+  return /\.mp4(?:$|\?)/i.test(url);
+}
+
+/**
+ * Nota de qualidade real da fonte. Um master HLS vale mais que um HLS simples, que
+ * vale mais que um MP4 — porque só o master carrega várias qualidades, faixas de
+ * áudio e legendas para o JW Player montar os menus.
+ */
+function profileScore(tipo, info, hasSubtitles, sourceId) {
+  let score;
+  if (info?.isMaster) score = 70 + Math.min(info.variants.length, 5) * 6;
+  else if (tipo === "hls") score = 45;
+  else score = 20;
+
+  if ((info?.audioTracks?.length || 0) >= 2) score += 35;
+  if (hasSubtitles) score += 25;
+  // Desempate: historicamente o servidor alternativo é o mais estável.
+  if (!sourceId.startsWith("native_media:")) score += 3;
+  return score;
+}
+
+/**
+ * Descobre o que a fonte entrega sem baixar mídia à toa: quando a URL não denuncia
+ * o formato, um Range de 1 byte revela o Content-Type; o corpo só é lido quando o
+ * alvo é mesmo um manifesto.
+ */
+async function profileSource(fetchImpl, jar, sourceId, candidate, ua) {
+  const url = candidate.stream;
+  let tipo = candidate.tipo || (looksLikeHlsUrl(url) ? "hls" : looksLikeMp4Url(url) ? "mp4" : null);
+
+  // O corpo só é lido quando há indício positivo de manifesto. Sem essa trava, uma
+  // URL sem extensão classificada como HLS por padrão faria o extrator baixar o
+  // filme inteiro para a memória.
+  let readsManifest = tipo === "hls";
+
+  if (!tipo) {
+    const head = await requestOnce(fetchImpl, jar, url, {
+      ua,
+      referer: candidate.referer,
+      accept: "*/*",
+      dest: "video",
+      mode: "no-cors",
+      headers: { Range: "bytes=0-0" },
+      readBody: false,
+    }).catch(() => null);
+    const contentType = (head?.headers.get("content-type") || "").toLowerCase();
+    if (/mpegurl|m3u/.test(contentType)) {
+      tipo = "hls";
+      readsManifest = true;
+    } else if (/mp4|octet-stream/.test(contentType)) {
+      tipo = "mp4";
+    } else {
+      // Formato indefinido: mantém o padrão histórico ("hls"), mas sem tentar
+      // interpretar o corpo.
+      tipo = "hls";
+    }
+  }
+
+  let info = null;
+  if (readsManifest) {
+    const manifest = await requestOnce(fetchImpl, jar, url, {
+      ua,
+      referer: candidate.referer,
+      accept: "*/*",
+      dest: "empty",
+      mode: "cors",
+    }).catch(() => null);
+    if (manifest?.ok) {
+      const body = await manifest.text().catch(() => "");
+      if (hlsManifest.looksLikeManifest(body)) info = hlsManifest.parse(body, url);
+    }
+  }
+
+  const subtitles = new Map();
+  for (const track of candidate.subtitles || []) subtitles.set(track.file, track);
+  // As legendas declaradas no master costumam apontar para uma sub-playlist .m3u8,
+  // que o próprio hls.js resolve. Só um arquivo VTT/SRT direto pode virar `track` do
+  // JW Player; o resto apenas conta como capacidade da fonte.
+  for (const track of info?.subtitles || []) {
+    if (!/\.(?:vtt|srt)(?:$|\?)/i.test(track.file)) continue;
+    const file = secureTransportUrl(track.file);
+    if (file && !subtitles.has(file)) {
+      subtitles.set(file, { ...track, file, default: subtitles.size === 0, referer: candidate.referer });
+    }
+  }
+
+  const hasSubtitles = subtitles.size > 0 || (info?.subtitles.length || 0) > 0;
+  const score = profileScore(tipo, info, hasSubtitles, sourceId);
+  slog(
+    "profile",
+    `source=${sourceId} tipo=${tipo} master=${Boolean(info?.isMaster)} ` +
+      `qualidades=${info?.variants.length || 0} audios=${info?.audioTracks.length || 0} ` +
+      `legendas=${subtitles.size} noManifesto=${info?.subtitles.length || 0} nota=${score}`,
+  );
+
+  return {
+    sourceId,
+    score,
+    result: {
+      ...candidate,
+      tipo,
+      subtitles: [...subtitles.values()],
+      isMaster: Boolean(info?.isMaster),
+      qualities: (info?.variants || []).map((variant) => variant.label),
+      audioTracks: info?.audioTracks || [],
+    },
+  };
+}
+
+/** `exp` do token da cadeia, normalizado para epoch em milissegundos. */
+function tokenExpiry(payload) {
+  const exp = Number(payload?.exp);
+  if (!Number.isFinite(exp) || exp <= 0) return null;
+  return exp < 100000000000 ? exp * 1000 : exp;
 }
 
 async function extractSuperflix(embedUrl, options = {}) {
@@ -525,11 +705,18 @@ async function extractSuperflix(embedUrl, options = {}) {
   slog("sources", `total=${sourceIds.length} native=${sourceIds.filter((id) => id.startsWith("native_media:")).length}`);
 
   const failures = [];
+  const profiles = [];
+  const expiresAt = tokenExpiry(tokenPayload);
+  const probeDeadline = Date.now() + PROBE_BUDGET_MS;
+
+  // Inspeciona os servidores em vez de aceitar o primeiro que responde: o primeiro
+  // funcional costuma ser um MP4 de qualidade única, enquanto outro servidor entrega
+  // um master HLS com qualidades, áudio e legendas.
   for (const sourceId of sourceIds) {
     try {
       const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua);
       if (!targetUrl) throw new Error("video_url inválida");
-      const result = await resolveSource(
+      const candidate = await resolveSource(
         fetchImpl,
         jar,
         targetUrl,
@@ -538,16 +725,35 @@ async function extractSuperflix(embedUrl, options = {}) {
         ua,
         options.extractEmbedPlayer,
       );
-      slog("ok", `source=${sourceId.startsWith("native_media:") ? "native" : "embed"} tipo=${result.tipo} host=${safeUrlLabel(result.stream)}`);
-      return result;
+      const profile = await profileSource(fetchImpl, jar, sourceId, candidate, ua);
+      profiles.push(profile);
+      if (profile.score >= EXCELLENT_SCORE) {
+        slog("probe_stop", `fonte completa encontrada em ${sourceId}`);
+        break;
+      }
     } catch (error) {
       const message = error?.message || String(error);
       failures.push(`${sourceId}: ${message}`);
       slog("source_skip", `source=${sourceId} erro=${message.slice(0, 100)}`);
     }
+    if (Date.now() > probeDeadline && profiles.length) {
+      slog("probe_stop", `orçamento de inspeção esgotado com ${profiles.length} fonte(s)`);
+      break;
+    }
   }
 
-  throw new Error(`todas as fontes SuperFlix falharam: ${failures.join(" | ").slice(0, 500)}`);
+  if (!profiles.length) {
+    throw new Error(`todas as fontes SuperFlix falharam: ${failures.join(" | ").slice(0, 500)}`);
+  }
+
+  const best = profiles.reduce((a, b) => (b.score > a.score ? b : a));
+  slog(
+    "ok",
+    `escolhida=${best.sourceId.startsWith("native_media:") ? "native" : "embed"} ` +
+      `nota=${best.score} entre=${profiles.length} tipo=${best.result.tipo} ` +
+      `host=${safeUrlLabel(best.result.stream)}`,
+  );
+  return { ...best.result, expiresAt };
 }
 
 module.exports = {
@@ -560,6 +766,12 @@ module.exports = {
     findSourceIds,
     findNativeMediaSource,
     findDirectMedia,
+    findSubtitleTracks,
     decodeTokenPayload,
+    secureTransportUrl,
+    profileScore,
+    tokenExpiry,
+    looksLikeHlsUrl,
+    looksLikeMp4Url,
   },
 };

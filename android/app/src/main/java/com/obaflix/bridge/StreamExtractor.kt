@@ -13,6 +13,11 @@ data class ExtractResult(
     val stream: String,
     val referer: String?,
     val subtitles: List<SubtitleTrack> = emptyList(),
+    val tipo: String? = null,
+    val isMaster: Boolean = false,
+    val qualities: List<String> = emptyList(),
+    val audioTracks: List<String> = emptyList(),
+    val expiresAt: Long? = null,
 )
 
 // Dispatcher genérico: delega a extração real para PlayerExtractors e atualiza o
@@ -52,6 +57,11 @@ object StreamExtractor {
             stream = stream,
             referer = nativeResult.referer,
             subtitles = nativeResult.subtitles,
+            tipo = nativeResult.tipo,
+            isMaster = nativeResult.isMaster,
+            qualities = nativeResult.qualities,
+            audioTracks = nativeResult.audioTracks,
+            expiresAt = nativeResult.expiresAt,
         )
     }
 }

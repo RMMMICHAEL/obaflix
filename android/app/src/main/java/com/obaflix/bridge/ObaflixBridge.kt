@@ -5,7 +5,9 @@ import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
@@ -25,6 +27,11 @@ class ObaflixBridge(
     private val scope: CoroutineScope,
     private val capability: String,
 ) {
+
+    // Extração em andamento. Trocar de episódio rápido deixava a cadeia anterior
+    // rodando: ela continuava competindo pela mesma sessão do provedor e podia
+    // resolver depois da nova, sobrescrevendo o stream correto.
+    private var activeExtraction: Job? = null
 
     private fun authorized(value: String): Boolean = value == capability
 
@@ -81,7 +88,10 @@ class ObaflixBridge(
                 "id=$callbackId provider=$provider"
         )
 
-        scope.launch {
+        // A Promise da extração anterior fica sem resolver de propósito: rejeitá-la
+        // faria o CustomPlayer entender que a fonte falhou e pular para a próxima.
+        activeExtraction?.cancel()
+        activeExtraction = scope.launch {
             try {
                 val result = if (provider == "redecanais") {
                     RedeCanaisExtractor.extract(webView, embedUrl)
@@ -93,7 +103,8 @@ class ObaflixBridge(
                     put("stream", result.stream)
                     put(
                         "tipo",
-                        if (provider == "redecanais" || result.stream.contains(".mp4")) "mp4" else "hls",
+                        result.tipo
+                            ?: if (provider == "redecanais" || result.stream.contains(".mp4")) "mp4" else "hls",
                     )
                     if (result.referer != null) {
                         put("referer", result.referer)
@@ -110,6 +121,12 @@ class ObaflixBridge(
                             })
                         }
                     })
+                    // Metadados da fonte escolhida: o player usa para saber que o
+                    // manifesto já traz qualidades/áudios e quando o token expira.
+                    put("isMaster", result.isMaster)
+                    put("qualities", org.json.JSONArray(result.qualities))
+                    put("audioTracks", org.json.JSONArray(result.audioTracks))
+                    put("expiresAt", result.expiresAt ?: JSONObject.NULL)
                 }.toString()
 
                 Log.d(
@@ -119,6 +136,9 @@ class ObaflixBridge(
                 )
 
                 resolveCallback(callbackId, json)
+            } catch (e: CancellationException) {
+                Log.d(TAG, "[bridge] extractStream cancelado: id=$callbackId")
+                throw e
             } catch (e: Exception) {
                 val detail = e.message?.takeIf { it.isNotBlank() && it != "null" }
                     ?: e.javaClass.simpleName.takeIf { it.isNotBlank() }

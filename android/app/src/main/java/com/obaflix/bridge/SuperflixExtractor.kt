@@ -20,11 +20,31 @@ import java.util.Base64
 private const val SUPERFLIX_TAG = "Obaflix/Superflix"
 private const val SUPERFLIX_TIMEOUT_HOPS = 7
 
+/**
+ * Orçamento para inspecionar servidores antes de escolher. Cada fonte custa um
+ * POST em player/source mais uma leitura de manifesto; o limite evita que uma
+ * página com muitos servidores atrase demais o início da reprodução.
+ */
+private const val SUPERFLIX_PROBE_BUDGET_MS = 14_000L
+
+/** Master HLS com várias qualidades e legendas — não vale a pena procurar mais. */
+private const val SUPERFLIX_EXCELLENT_SCORE = 110
+
+/** Espera depois da primeira mídia observada, para o player pedir as legendas. */
+private const val SUPERFLIX_SUBTITLE_GRACE_MS = 1_800L
+
 /** Resultado nativo com Referer opcional para o CDN final. */
 data class NativeExtractResult(
     val stream: String,
     val referer: String?,
     val subtitles: List<SubtitleTrack> = emptyList(),
+    /** "hls" ou "mp4" quando conhecido; null deixa a decisão para o chamador. */
+    val tipo: String? = null,
+    val isMaster: Boolean = false,
+    val qualities: List<String> = emptyList(),
+    val audioTracks: List<String> = emptyList(),
+    /** Epoch em milissegundos em que o token da cadeia expira, quando declarado. */
+    val expiresAt: Long? = null,
 )
 
 data class SubtitleTrack(
@@ -110,6 +130,13 @@ object SuperflixExtractor {
         val id: String,
         val score: Int,
         val index: Int,
+    )
+
+    /** Uma fonte já resolvida e medida, pronta para ser comparada com as outras. */
+    private data class MediaProfile(
+        val sourceId: String,
+        val result: NativeExtractResult,
+        val score: Int,
     )
 
     private class CookieStore {
@@ -299,6 +326,11 @@ object SuperflixExtractor {
         return null
     }
 
+    /**
+     * Heurística de HTML usada apenas para decidir a ORDEM em que os servidores
+     * são inspecionados. A escolha final vem de [profileScore], que mede o que
+     * cada servidor realmente entregou.
+     */
     private fun sourceScore(id: String, context: String): Int {
         val text = context.lowercase()
         // No Android o servidor alternativo costuma entregar HLS/HTTPS e é mais
@@ -615,14 +647,19 @@ object SuperflixExtractor {
                     ?: throw Exception("media-source sem Location final")
                 val finalUrl = secureTransportUrl(redirected)
                     ?: throw Exception("media-source final sem HTTPS")
-                return NativeExtractResult(finalUrl, null, subtitles)
+                return NativeExtractResult(
+                    finalUrl,
+                    null,
+                    subtitles,
+                    tipo = if (looksLikeHlsUrl(finalUrl)) "hls" else "mp4",
+                )
             }
 
             val contentType = mediaResponse.headers["Content-Type"].orEmpty()
             if (mediaResponse.status in 200..299 &&
                 (contentType.contains("video/mp4", ignoreCase = true) || contentType.contains("octet-stream", ignoreCase = true))
             ) {
-                return NativeExtractResult(mediaSource, mediaPage.url, subtitles)
+                return NativeExtractResult(mediaSource, mediaPage.url, subtitles, tipo = "mp4")
             }
             throw Exception("media-source HTTP ${mediaResponse.status}")
         }
@@ -645,13 +682,165 @@ object SuperflixExtractor {
         ) {
             val stream = secureTransportUrl(resolvedUrl)
                 ?: throw Exception("mídia direta sem transporte HTTPS")
-            return NativeExtractResult(stream, warezPageUrl)
+            return NativeExtractResult(
+                stream,
+                warezPageUrl,
+                tipo = if (looksLikeMp4Url(stream)) "mp4" else "hls",
+            )
         }
 
         val fallbackPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
         val direct = findDirectMedia(fallbackPage.html, fallbackPage.url)
             ?: throw Exception("mídia não encontrada em ${safeUrl(fallbackPage.url)}")
-        return NativeExtractResult(direct, fallbackPage.url, findSubtitleTracks(fallbackPage.html, fallbackPage.url))
+        return NativeExtractResult(
+            direct,
+            fallbackPage.url,
+            findSubtitleTracks(fallbackPage.html, fallbackPage.url),
+            tipo = if (looksLikeMp4Url(direct)) "mp4" else null,
+        )
+    }
+
+    private fun looksLikeHlsUrl(url: String): Boolean =
+        Regex("""\.m3u8(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(url) ||
+            Regex("""/master\.txt(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(url) ||
+            url.contains("/cdn/hls/", ignoreCase = true)
+
+    private fun looksLikeMp4Url(url: String): Boolean =
+        Regex("""\.mp4(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(url)
+
+    /**
+     * Nota de qualidade real da fonte. Um master HLS vale mais que um HLS simples,
+     * que vale mais que um MP4 — porque só o master carrega várias qualidades,
+     * faixas de áudio e legendas para o JW Player montar os menus.
+     */
+    private fun profileScore(
+        tipo: String,
+        info: HlsMediaInfo?,
+        hasSubtitles: Boolean,
+        sourceId: String,
+    ): Int {
+        var score = when {
+            info != null && info.isMaster -> 70 + minOf(info.variants.size, 5) * 6
+            tipo == "hls" -> 45
+            else -> 20
+        }
+        if ((info?.audioTracks?.size ?: 0) >= 2) score += 35
+        if (hasSubtitles) score += 25
+        // Desempate: historicamente o servidor alternativo é o mais estável.
+        if (!sourceId.startsWith("native_media:")) score += 3
+        return score
+    }
+
+    /**
+     * Descobre o que a fonte entrega sem baixar mídia à toa.
+     *
+     * Quando a URL não denuncia o formato, um Range de 1 byte revela o
+     * Content-Type; o corpo só é lido quando o alvo é mesmo um manifesto.
+     */
+    private suspend fun profileSource(
+        client: OkHttpClient,
+        cookies: CookieStore,
+        sourceId: String,
+        candidate: NativeExtractResult,
+    ): MediaProfile {
+        val url = candidate.stream
+        var tipo = candidate.tipo
+            ?: when {
+                looksLikeHlsUrl(url) -> "hls"
+                looksLikeMp4Url(url) -> "mp4"
+                else -> null
+            }
+
+        // O corpo só é lido quando há indício positivo de manifesto. Sem essa trava,
+        // uma URL sem extensão classificada como HLS por padrão faria o extrator
+        // baixar o filme inteiro para a memória.
+        var readsManifest = tipo == "hls"
+
+        if (tipo == null) {
+            val head = runCatching {
+                requestOnce(
+                    client = client,
+                    cookies = cookies,
+                    url = url,
+                    referer = candidate.referer,
+                    accept = "*/*",
+                    dest = "video",
+                    mode = "no-cors",
+                    extraHeaders = mapOf("Range" to "bytes=0-0"),
+                    readBody = false,
+                )
+            }.getOrNull()
+            val contentType = head?.headers?.get("Content-Type").orEmpty().lowercase()
+            when {
+                contentType.contains("mpegurl") || contentType.contains("m3u") -> {
+                    tipo = "hls"
+                    readsManifest = true
+                }
+                contentType.contains("mp4") || contentType.contains("octet-stream") -> tipo = "mp4"
+                // Formato indefinido: mantém o padrão histórico do bridge ("hls"),
+                // mas sem tentar interpretar o corpo.
+                else -> tipo = "hls"
+            }
+        }
+
+        var info: HlsMediaInfo? = null
+        if (readsManifest) {
+            val manifest = runCatching {
+                requestOnce(
+                    client = client,
+                    cookies = cookies,
+                    url = url,
+                    referer = candidate.referer,
+                    accept = "*/*",
+                    dest = "empty",
+                    mode = "cors",
+                )
+            }.getOrNull()
+            if (manifest != null && manifest.status in 200..299 &&
+                HlsManifest.looksLikeManifest(manifest.body)
+            ) {
+                info = HlsManifest.parse(manifest.body, url)
+            }
+        }
+
+        val subtitles = linkedMapOf<String, SubtitleTrack>()
+        candidate.subtitles.forEach { subtitles.putIfAbsent(it.file, it) }
+        // As legendas declaradas no master costumam apontar para uma sub-playlist
+        // .m3u8, que o próprio hls.js resolve. Só um arquivo VTT/SRT direto pode
+        // virar `track` do JW Player; o resto apenas conta como capacidade da fonte.
+        info?.subtitles?.forEach { track ->
+            if (!Regex("""\.(?:vtt|srt)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(track.file)) return@forEach
+            secureTransportUrl(track.file)?.let { file ->
+                subtitles.putIfAbsent(file, track.copy(file = file))
+            }
+        }
+
+        val hasSubtitles = subtitles.isNotEmpty() || info?.subtitles?.isNotEmpty() == true
+        val score = profileScore(tipo, info, hasSubtitles, sourceId)
+        log(
+            "profile",
+            "source=$sourceId tipo=$tipo master=${info?.isMaster == true} " +
+                "qualidades=${info?.variants?.size ?: 0} audios=${info?.audioTracks?.size ?: 0} " +
+                "legendas=${subtitles.size} noManifesto=${info?.subtitles?.size ?: 0} nota=$score",
+        )
+
+        return MediaProfile(
+            sourceId = sourceId,
+            score = score,
+            result = candidate.copy(
+                subtitles = subtitles.values.toList(),
+                tipo = tipo,
+                isMaster = info?.isMaster == true,
+                qualities = info?.variants?.map { it.label }.orEmpty(),
+                audioTracks = info?.audioTracks.orEmpty(),
+            ),
+        )
+    }
+
+    /** `exp` do token da cadeia, normalizado para epoch em milissegundos. */
+    private fun tokenExpiry(payload: JSONObject?): Long? {
+        val exp = payload?.optLong("exp", 0L)?.takeIf { it > 0L } ?: return null
+        return if (exp < 100_000_000_000L) exp * 1000L else exp
     }
 
     private suspend fun extractWithCookies(
@@ -690,28 +879,84 @@ object SuperflixExtractor {
 
         log("sources", "total=${sourceIds.size} native=${sourceIds.count { it.startsWith("native_media:") }}")
         val failures = mutableListOf<String>()
+        val profiles = mutableListOf<MediaProfile>()
+        val expiresAt = tokenExpiry(payload)
+        val probeDeadline = System.currentTimeMillis() + SUPERFLIX_PROBE_BUDGET_MS
 
+        // Inspeciona os servidores em vez de aceitar o primeiro que responde: o
+        // primeiro funcional costuma ser um MP4 de qualidade única, enquanto outro
+        // servidor entrega um master HLS com qualidades, áudio e legendas.
         for (sourceId in sourceIds) {
             try {
                 val target = postSource(client, cookies, warezPage, pageToken, sourceId, host)
-                val result = resolveSource(client, cookies, target, warezPage.url)
-                val tipo = if (result.stream.contains(".mp4", ignoreCase = true)) "mp4" else "hls"
-                log("ok", "source=${if (sourceId.startsWith("native_media:")) "native" else "embed"} tipo=$tipo host=${safeUrl(result.stream)}")
-                return result
+                val candidate = resolveSource(client, cookies, target, warezPage.url)
+                val profile = profileSource(client, cookies, sourceId, candidate)
+                profiles.add(profile)
+                if (profile.score >= SUPERFLIX_EXCELLENT_SCORE) {
+                    log("probe_stop", "fonte completa encontrada em $sourceId")
+                    break
+                }
             } catch (e: Exception) {
                 failures.add("$sourceId: ${e.message}")
                 log("source_skip", "source=$sourceId erro=${e.message?.take(100)}")
             }
+            if (System.currentTimeMillis() > probeDeadline && profiles.isNotEmpty()) {
+                log("probe_stop", "orçamento de inspeção esgotado com ${profiles.size} fonte(s)")
+                break
+            }
         }
 
-        throw Exception("todas as fontes SuperFlix falharam: ${failures.joinToString(" | ").take(500)}")
+        val best = profiles.maxByOrNull { it.score }
+            ?: throw Exception("todas as fontes SuperFlix falharam: ${failures.joinToString(" | ").take(500)}")
+
+        log(
+            "ok",
+            "escolhida=${if (best.sourceId.startsWith("native_media:")) "native" else "embed"} " +
+                "nota=${best.score} entre=${profiles.size} tipo=${best.result.tipo} " +
+                "host=${safeUrl(best.result.stream)}",
+        )
+        return best.result.copy(expiresAt = expiresAt)
+    }
+
+    /**
+     * Depois da primeira mídia, o player ainda pede as legendas. Retornar na hora
+     * descartava esse pedido e o episódio abria sem faixa em português. A espera
+     * também permite trocar um MP4 recém-visto por um manifesto HLS que apareça
+     * logo em seguida.
+     */
+    private suspend fun awaitObservedMedia(
+        playerState: PlayerState,
+        embedUrl: String,
+        first: ObservedSuperflixMedia,
+    ): NativeExtractResult {
+        val deadline = System.currentTimeMillis() + SUPERFLIX_SUBTITLE_GRACE_MS
+        var media = first
+        while (System.currentTimeMillis() < deadline) {
+            delay(150L)
+            playerState.observedSuperflixMedia?.let { media = it }
+            if (media.kind == "hls" && playerState.observedSuperflixSubtitles.isNotEmpty()) break
+        }
+
+        val subtitles = playerState.observedSuperflixSubtitles.mapNotNull { observed ->
+            secureTransportUrl(observed.url)?.let { SubtitleTrack(it) }
+        }
+        log(
+            "media",
+            "consolidada kind=${media.kind} legendas=${subtitles.size} url=${safeUrl(media.url)}",
+        )
+        return NativeExtractResult(
+            stream = media.url,
+            referer = media.referer ?: embedUrl,
+            subtitles = subtitles,
+            tipo = media.kind,
+        )
     }
 
     suspend fun extract(embedUrl: String): NativeExtractResult {
         // Primeiro aproveita uma validação Cloudflare já existente no WebView.
         val cookieManager = CookieManager.getInstance()
         val playerState = ObaflixApp.playerState
-        playerState.resetSuperflixObservation()
+        val observation = playerState.beginSuperflixObservation()
 
         try {
             var cookieHeader = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
@@ -733,10 +978,7 @@ object SuperflixExtractor {
 
                 playerState.observedSuperflixMedia?.let { media ->
                     log("media", "capturada kind=${media.kind} url=${safeUrl(media.url)}")
-                    return NativeExtractResult(
-                        stream = media.url,
-                        referer = media.referer ?: embedUrl,
-                    )
+                    return awaitObservedMedia(playerState, embedUrl, media)
                 }
 
                 val current = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
@@ -763,7 +1005,7 @@ object SuperflixExtractor {
 
             throw Exception("SuperFlix abriu, mas nenhuma mídia foi observada em 2 minutos")
         } finally {
-            playerState.finishSuperflixObservation()
+            playerState.finishSuperflixObservation(observation)
         }
     }
 }

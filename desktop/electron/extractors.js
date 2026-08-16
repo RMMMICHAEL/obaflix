@@ -373,6 +373,8 @@ async function extractStream(embedUrl) {
   let stream;
   let referer = embedUrl;
   let subtitles = [];
+  // Preenchido apenas pelos extratores que inspecionam o manifesto (SuperFlix).
+  let mediaInfo = null;
   switch (provider) {
     case "embedplayer": stream = await extractEmbedPlayer(embedUrl); break;
     case "hide": stream = await extractHide(embedUrl, id); break;
@@ -391,12 +393,31 @@ async function extractStream(embedUrl) {
       stream = result.stream;
       referer = result.referer;
       subtitles = result.subtitles || [];
+      mediaInfo = {
+        tipo: result.tipo,
+        isMaster: Boolean(result.isMaster),
+        qualities: result.qualities || [],
+        audioTracks: result.audioTracks || [],
+        expiresAt: result.expiresAt ?? null,
+      };
       break;
     }
     default: throw new Error(`Provider sem extrator: ${provider}`);
   }
 
-  return { stream, tipo: stream.includes(".mp4") ? "mp4" : "hls", provider, referer, subtitles };
+  return {
+    stream,
+    // O tipo medido vence a adivinhação pela extensão: URLs de HLS sem extensão
+    // (e MP4 servidos por rota assinada) eram classificados errado.
+    tipo: mediaInfo?.tipo || (stream.includes(".mp4") ? "mp4" : "hls"),
+    provider,
+    referer,
+    subtitles,
+    isMaster: mediaInfo?.isMaster ?? false,
+    qualities: mediaInfo?.qualities ?? [],
+    audioTracks: mediaInfo?.audioTracks ?? [],
+    expiresAt: mediaInfo?.expiresAt ?? null,
+  };
 }
 
 module.exports = { detectProvider, extractStream };

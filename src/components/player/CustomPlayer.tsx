@@ -328,6 +328,8 @@ export function CustomPlayer({
   const suppressErrorUntilRef = useRef(0); // timestamp (ms) até quando "error" do JW deve ser ignorado (eco tardio da mídia anterior pós-load())
   const lastReExtractSuccessAtRef = useRef(0); // timestamp (ms) da última renovação bem-sucedida — usado pro cooldown mínimo
   const mp4CooldownUntilRef = useRef(0); // timestamp (ms) até quando re-extração MP4 está em cooldown após falha
+  const streamExpiresAtRef = useRef<number | null>(null); // epoch (ms) declarado pelo token da cadeia (SuperFlix); null = desconhecido
+  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // renovação agendada antes do token expirar
   const serverSwitchCountRef = useRef(0); // total de trocas automáticas de servidor nesta sessão
   const userAudioTrackRef = useRef<number | null>(null); // null = sem escolha manual; senão, índice escolhido pelo usuário — mantido durante todo o episódio (até remontagem por key={episodio.id})
   const userQualityRef = useRef<number | null>(null); // null = automática; índice do JW quando o usuário fixa uma qualidade
@@ -722,7 +724,9 @@ export function CustomPlayer({
   const switchFonte = useCallback((idx: number) => {
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
+    if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
     if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+    streamExpiresAtRef.current = null;
     setFonteIdx(idx);
     setStatus("idle");
     setStreamUrl(null);
@@ -785,9 +789,10 @@ export function CustomPlayer({
         setStreamUrl(embedUrl);
         setStatus("playing");
         if (!desktop) return;
-        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; error?: string } =
+        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
         playerUrl = buildElectronProxyUrl(data.stream, data.referer);
         streamRefererRef.current = data.referer ?? null;
@@ -807,9 +812,10 @@ export function CustomPlayer({
         return;
       } else if (desktop && (supportsNativeDesktopExtraction(embedUrl) || (isAndroid && isPlayerflixAjaxUrl(embedUrl)))) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
-        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; error?: string } =
+        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
         // No Electron, usamos a URL direta (DevTools do Electron é local, não exposto)
         playerUrl = tipo === "iframe" ? data.stream! : buildElectronProxyUrl(data.stream!, data.referer);
@@ -1233,6 +1239,9 @@ export function CustomPlayer({
             // anterior logo após load() trocar a fonte.
             suppressErrorUntilRef.current = Date.now() + 2000;
             lastReExtractSuccessAtRef.current = Date.now();
+            // O novo token tem validade própria; sem isso o agendamento preventivo
+            // continuaria mirando o horário do token que acabou de ser substituído.
+            streamExpiresAtRef.current = data.expiresAt ?? null;
             lastLoadAtRef.current = Date.now(); // [DIAG]
             jwRef.current.load([{ file: newUrl, type: renewedType, tracks: renewedTracks }]);
             setSubtitleTracks(renewedTracks);
@@ -1262,6 +1271,36 @@ export function CustomPlayer({
           .finally(() => {
             reExtractingRef.current = false;
           });
+      }
+
+      // Renovação preventiva: o SuperFlix declara `exp` no token da cadeia. Renovar
+      // pouco antes evita que o usuário veja o erro de token expirado no meio do
+      // episódio. Só age dentro de uma janela plausível — um `exp` muito curto ou
+      // muito longo provavelmente não descreve a validade da mídia, e nesse caso o
+      // comportamento antigo (renovar ao falhar) continua valendo.
+      const EXPIRY_RENEW_MARGIN_MS = 60_000;
+      const EXPIRY_MIN_AHEAD_MS = 120_000;
+      const EXPIRY_MAX_AHEAD_MS = 6 * 60 * 60 * 1000;
+
+      if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
+      const expiresAt = streamExpiresAtRef.current;
+      const embedUrlForExpiry = fonte?.embedUrl;
+      const aheadMs = expiresAt ? expiresAt - Date.now() : 0;
+      if (
+        expiresAt && embedUrlForExpiry &&
+        aheadMs >= EXPIRY_MIN_AHEAD_MS && aheadMs <= EXPIRY_MAX_AHEAD_MS &&
+        (window as any).obaflixDesktop
+      ) {
+        expiryTimerRef.current = setTimeout(() => {
+          expiryTimerRef.current = null;
+          if (unmountedRef.current || reExtractingRef.current) return;
+          // Pausado ou já em erro: a renovação reativa cuida quando voltar a tocar.
+          if (jwRef.current?.getState?.() !== "playing") return;
+          recoveryLog("log", "token-expiry", null, reExtractCountRef.current + 1,
+            fonteIdx, allFontes.length, progressoRef.current, -1,
+            `token expira em ${Math.round(EXPIRY_RENEW_MARGIN_MS / 1000)}s; renovando antes`);
+          runReExtract(embedUrlForExpiry, fonteIdx, allFontes.length);
+        }, aheadMs - EXPIRY_RENEW_MARGIN_MS);
       }
 
       // [DIAG] Captura warnings do JW Player (333500/334001/330000) com URL do recurso que falhou
@@ -1458,6 +1497,7 @@ export function CustomPlayer({
     return () => {
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
+      if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

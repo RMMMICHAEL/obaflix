@@ -78,6 +78,22 @@ class PlayerWebViewClient(
         return if (mp4) "mp4" else null
     }
 
+    /**
+     * O player do provedor pede a legenda depois da mídia. Sem registrar esses
+     * pedidos, a extração terminava antes deles e o episódio abria sem legenda.
+     */
+    private fun observeSuperflixSubtitle(request: WebResourceRequest) {
+        if (!ObaflixApp.playerState.superflixObservationActive) return
+        val uri = request.url
+        if (!uri.scheme.equals("https", ignoreCase = true)) return
+        val host = uri.host.orEmpty().lowercase()
+        if (host == allowedAppHost) return
+        val path = uri.path.orEmpty().lowercase()
+        if (!Regex("""\.(?:vtt|srt)$""").containsMatchIn(path)) return
+        ObaflixApp.playerState.observeSuperflixSubtitle(uri.toString(), header(request, "Referer"))
+        Log.d(TAG, "[provider/subtitle] host=$host path=$path")
+    }
+
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url
         val providerHost = uri.host.orEmpty().lowercase()
@@ -120,6 +136,7 @@ class PlayerWebViewClient(
             ObaflixApp.playerState.observeSuperflixMedia(request.url.toString(), referer, kind)
             Log.d(TAG, "[provider/media] kind=$kind host=$host path=$path")
         }
+        observeSuperflixSubtitle(request)
 
         val isSuperflixSignedRoute = host.endsWith("superflixapi.pro") &&
             (request.url.getQueryParameter("cfv") != null || path.startsWith("/player/redirect"))

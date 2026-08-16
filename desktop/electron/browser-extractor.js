@@ -8,6 +8,10 @@ const APP_URL =
 
 let activeExtraction = null;
 
+// Janela de espera após a primeira mídia, para capturar legendas e um eventual
+// manifesto HLS melhor. Igual ao SUPERFLIX_SUBTITLE_GRACE_MS do extrator Android.
+const MEDIA_SETTLE_MS = 1800;
+
 function safeLabel(raw) {
   try {
     const url = new URL(raw);
@@ -265,6 +269,7 @@ async function extractSuperflixInBrowser(
     (resolve, reject) => {
       const subtitleTracks = new Map();
       let mediaFinishTimer = null;
+      let pendingMedia = null;
 
       const cleanup = () => {
         if (timeout) {
@@ -364,15 +369,17 @@ async function extractSuperflixInBrowser(
         }
 
         const completeMedia = (tipo) => {
+          // Um MP4 visto primeiro não pode travar a escolha: se um manifesto HLS
+          // aparecer dentro da janela, ele traz qualidades, áudio e legendas.
+          if (pendingMedia && !(tipo === "hls" && pendingMedia.tipo !== "hls")) return;
+          pendingMedia = { stream, tipo, referer: referer || embedUrl };
           if (mediaFinishTimer) return;
-          // Dá ao player incorporado uma pequena janela para requisitar VTT/SRT
-          // depois que o manifesto/vídeo começa a carregar.
+          // Dá ao player incorporado uma janela para requisitar VTT/SRT depois que
+          // o manifesto/vídeo começa a carregar. Mesma espera do extrator Android.
           mediaFinishTimer = setTimeout(() => finish(null, {
-            stream,
-            tipo,
-            referer: referer || embedUrl,
+            ...pendingMedia,
             subtitles: [...subtitleTracks.values()],
-          }), 1200);
+          }), MEDIA_SETTLE_MS);
         };
 
         if (isHls(stream)) {

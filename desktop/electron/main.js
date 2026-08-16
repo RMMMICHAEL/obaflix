@@ -76,10 +76,20 @@ else {
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
   try {
-    const { stream, tipo, provider, referer, subtitles } = await extractStreamNative(embedUrl);
+    const native = await extractStreamNative(embedUrl);
+    const { stream, tipo, provider, referer, subtitles } = native;
     console.log(`[extract] provider=${provider} stream_resolved=true`);
     await assertPublicHttpsStream(stream);
-    return { stream, tipo, referer, subtitles: subtitles || [] };
+    return {
+      stream,
+      tipo,
+      referer,
+      subtitles: subtitles || [],
+      isMaster: native.isMaster ?? false,
+      qualities: native.qualities ?? [],
+      audioTracks: native.audioTracks ?? [],
+      expiresAt: native.expiresAt ?? null,
+    };
   } catch (error) {
     const provider = detectProvider(embedUrl);
     const message = error?.message || String(error);
