@@ -5,6 +5,7 @@ import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect } from "react";
 import { Search, User, Menu, X, ChevronDown } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
+import { useAppMode } from "./AppMode";
 
 const NAV_LINKS = [
   { href: "/", label: "Início" },
@@ -24,6 +25,10 @@ export function Navbar() {
   const [userOpen, setUserOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
+  // Mesmo contexto que o AndroidShell consulta: em modo app esta navbar sai da
+  // árvore, em vez de ficar renderizada e apenas escondida por CSS.
+  const appMode = useAppMode();
+
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -35,8 +40,11 @@ export function Navbar() {
     if (q.trim()) { router.push(`/buscar?q=${encodeURIComponent(q.trim())}`); setMenuOpen(false); }
   };
 
+  if (appMode === "android") return null;
+
   return (
     <nav
+      data-site-navbar
       className={`fixed top-0 left-0 right-0 z-40 transition-colors duration-300 ${
         scrolled ? "bg-zinc-950" : "bg-gradient-to-b from-black/80 to-transparent"
       }`}

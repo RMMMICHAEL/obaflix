@@ -16,13 +16,33 @@ const MAX_PAGE_HOPS = 7;
 // muitos servidores atrase demais o início da reprodução.
 const PROBE_BUDGET_MS = 14000;
 
+// Teto de servidores inspecionados. Sem ele, uma página com 10 servidores mortos
+// gastava 10 × (POST + até 7 hops + manifesto) antes de desistir — era esse o
+// caminho que fazia a extração levar dezenas de segundos.
+const MAX_PROBED_SOURCES = 5;
+
+// Timeout por requisição durante a inspeção. Mais curto que o DEFAULT_TIMEOUT_MS
+// porque aqui estamos sondando alternativas, não carregando a fonte definitiva:
+// um servidor que não responde em 6 s não é o que vai iniciar a reprodução rápido.
+const PROBE_TIMEOUT_MS = 6000;
+
 // Master HLS com várias qualidades e legendas — não vale a pena procurar mais.
 const EXCELLENT_SCORE = 110;
 
+// Nota a partir da qual a fonte já é boa o bastante para começar a tocar. Continuar
+// procurando acima disso troca segundos de espera por um ganho marginal.
+const GOOD_ENOUGH_SCORE = 76;
+
 const hlsManifest = require("./hls-manifest");
 
+// O extrator também roda fora do Electron (scripts de diagnóstico), então o logger
+// é opcional: sem ele, cai no console como antes.
+let log = null;
+try { log = require("./logger"); } catch { /* fora do app */ }
+
 function slog(step, detail = "") {
-  console.log(`[superflix/${step}]${detail ? ` ${detail}` : ""}`);
+  if (log) log.debug(`superflix.${step}`, detail || "-");
+  else console.log(`[superflix/${step}]${detail ? ` ${detail}` : ""}`);
 }
 
 function safeUrlLabel(raw) {
@@ -748,7 +768,7 @@ function profileScore(tipo, info, hasSubtitles, option) {
  * o formato, um Range de 1 byte revela o Content-Type; o corpo só é lido quando o
  * alvo é mesmo um manifesto.
  */
-async function profileSource(fetchImpl, jar, option, candidate, ua) {
+async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const url = candidate.stream;
   let tipo = candidate.tipo || (looksLikeHlsUrl(url) ? "hls" : looksLikeMp4Url(url) ? "mp4" : null);
 
@@ -766,6 +786,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua) {
       mode: "no-cors",
       headers: { Range: "bytes=0-0" },
       readBody: false,
+      timeoutMs,
     }).catch(() => null);
     const contentType = (head?.headers.get("content-type") || "").toLowerCase();
     if (/mpegurl|m3u/.test(contentType)) {
@@ -788,6 +809,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua) {
       accept: "*/*",
       dest: "empty",
       mode: "cors",
+      timeoutMs,
     }).catch(() => null);
     if (manifest?.ok) {
       const body = await manifest.text().catch(() => "");
@@ -873,9 +895,29 @@ async function extractSuperflix(embedUrl, options = {}) {
   // Inspeciona os servidores em vez de aceitar o primeiro que responde: o primeiro
   // funcional costuma ser um MP4 de qualidade única, enquanto outro servidor entrega
   // um master HLS com qualidades, áudio e legendas.
+  let probed = 0;
   for (const sourceOption of sourceOptions) {
+    // O corte é avaliado ANTES de gastar mais uma rodada. Antes ele só rodava no
+    // fim da iteração e apenas quando já havia alguma fonte boa, então uma fila de
+    // servidores mortos ignorava o orçamento inteiro e estourava o tempo de espera.
+    if (probed > 0 && Date.now() > probeDeadline) {
+      slog("probe_stop", `orçamento de ${PROBE_BUDGET_MS}ms esgotado após ${probed} servidor(es), ${profiles.length} aproveitável(is)`);
+      break;
+    }
+    if (probed >= MAX_PROBED_SOURCES) {
+      slog("probe_stop", `limite de ${MAX_PROBED_SOURCES} servidores inspecionados atingido`);
+      break;
+    }
+
+    probed += 1;
+    const sourceStart = Date.now();
+    let mark = sourceStart;
+    const lap = (name) => { const d = Date.now() - mark; mark = Date.now(); return `${name}:${d}ms`; };
+    const laps = [];
+
     try {
       const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceOption.id, host, ua);
+      laps.push(lap("post_source"));
       if (!targetUrl) throw new Error("video_url inválida");
       const candidate = await resolveSource(
         fetchImpl,
@@ -886,22 +928,28 @@ async function extractSuperflix(embedUrl, options = {}) {
         ua,
         options.extractEmbedPlayer,
       );
-      const profile = await profileSource(fetchImpl, jar, sourceOption, candidate, ua);
+      laps.push(lap("resolve_source"));
+      const profile = await profileSource(fetchImpl, jar, sourceOption, candidate, ua, PROBE_TIMEOUT_MS);
+      laps.push(lap("profile"));
       profiles.push(profile);
+      slog("source_ok", `source=${sourceOption.label} nota=${profile.score} total=${Date.now() - sourceStart}ms ${laps.join(" ")}`);
+
       if (profile.score >= EXCELLENT_SCORE) {
         slog("probe_stop", `fonte completa encontrada em ${sourceOption.label}`);
+        break;
+      }
+      // Já dá para começar a tocar: parar aqui vale mais que achar algo 5% melhor.
+      if (profile.score >= GOOD_ENOUGH_SCORE) {
+        slog("probe_stop", `fonte boa o bastante em ${sourceOption.label} (nota=${profile.score})`);
         break;
       }
     } catch (error) {
       const message = error?.message || String(error);
       failures.push(`${sourceOption.label}: ${message}`);
-      slog("source_skip", `source=${sourceOption.label} erro=${message.slice(0, 100)}`);
-    }
-    if (Date.now() > probeDeadline && profiles.length) {
-      slog("probe_stop", `orçamento de inspeção esgotado com ${profiles.length} fonte(s)`);
-      break;
+      slog("source_skip", `source=${sourceOption.label} total=${Date.now() - sourceStart}ms ${laps.join(" ")} erro=${message.slice(0, 100)}`);
     }
   }
+  slog("probe_resumo", `inspecionados=${probed}/${sourceOptions.length} aproveitaveis=${profiles.length} falhas=${failures.length}`);
 
   if (!profiles.length) {
     throw new Error(`todas as fontes SuperFlix falharam: ${failures.join(" | ").slice(0, 500)}`);

@@ -35,7 +35,10 @@ const nextConfig = {
           // Imagens: TMDB, Google, dados inline
           "img-src 'self' data: blob: https://image.tmdb.org https://lh3.googleusercontent.com",
           // Frames: players embed conhecidos (iframes de fallback)
-          "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com https://superflixapi.pro https://*.superflixapi.pro",
+          // Servidores sem extrator nativo caem no iframe; se o host não estiver
+          // aqui o player some sem erro visível (foi o caso de strmup/vidnest,
+          // servidores 3 e 4 de várias séries — Teen Wolf entre elas).
+          "frame-src https://playhide.shop https://luluvdo.com https://lulu.gg https://streamwish.com https://playerwish.com https://hlswish.com https://superflixapi.pro https://*.superflixapi.pro https://strmup.to https://*.strmup.to https://vidnest.live https://*.vidnest.live",
           // HLS.js baixa segmentos diretamente dos CDNs dinâmicos dos provedores.
           "connect-src 'self' https:",
           // A reprodução nativa também pode consumir mídia HTTPS diretamente.

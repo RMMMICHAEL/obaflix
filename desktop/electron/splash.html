@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Obaflix</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #111116;
+    color: #f4f4f5;
+    font-family: system-ui, "Segoe UI", Arial, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+  #shell {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 1.75rem;
+  }
+  .wordmark {
+    font-size: clamp(2rem, 5vw, 3.25rem);
+    font-weight: 900;
+    letter-spacing: -0.055em;
+    color: #e50914;
+    line-height: 1;
+  }
+  .wordmark span { color: #fff; }
+  .spinner {
+    width: 44px; height: 44px;
+    border: 4px solid rgba(255,255,255,.16);
+    border-top-color: #e50914;
+    border-radius: 50%;
+    animation: spin 900ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status { font-size: .8rem; color: #71717a; min-height: 1.2em; }
+  #error { display: none; flex-direction: column; align-items: center; gap: 1rem; }
+  #error.on { display: flex; }
+  #error p { font-size: .95rem; color: #d4d4d8; text-align: center; max-width: 32ch; }
+  #error small { display: block; margin-top: .5rem; font-size: .72rem; color: #52525b; word-break: break-all; }
+  #retry {
+    padding: .6rem 1.6rem;
+    border: 0; border-radius: .5rem;
+    background: #e50914; color: #fff;
+    font-size: .9rem; font-weight: 700;
+    cursor: pointer;
+  }
+  #retry:hover { background: #b80710; }
+  .off { display: none !important; }
+  #version { position: fixed; right: 12px; bottom: 10px; font-size: .7rem; color: #3f3f46; }
+</style>
+</head>
+<body>
+  <div id="shell">
+    <div class="wordmark">OBA<span>FLIX</span></div>
+    <div id="loading">
+      <div class="spinner"></div>
+    </div>
+    <div id="status">Conectando…</div>
+    <div id="error">
+      <p>Não foi possível conectar ao Obaflix.<small id="reason"></small></p>
+      <button id="retry" type="button">Reconectar</button>
+    </div>
+  </div>
+  <div id="version"></div>
+
+  <script>
+    // O main process fala com esta tela por executeJavaScript.
+    // Ela nunca faz rede sozinha — só mostra estado.
+    window.obaflixSplash = {
+      status(text) {
+        document.getElementById("status").textContent = text || "";
+      },
+      error(reason) {
+        document.getElementById("loading").classList.add("off");
+        document.getElementById("status").classList.add("off");
+        document.getElementById("reason").textContent = reason || "";
+        document.getElementById("error").classList.add("on");
+      },
+      reset() {
+        document.getElementById("loading").classList.remove("off");
+        document.getElementById("status").classList.remove("off");
+        document.getElementById("error").classList.remove("on");
+      },
+      version(v) {
+        document.getElementById("version").textContent = v ? "v" + v : "";
+      },
+    };
+
+    document.getElementById("retry").addEventListener("click", function () {
+      window.obaflixSplash.reset();
+      window.obaflixSplash.status("Reconectando…");
+      // O main process observa esta navegação e refaz o loadURL do site.
+      location.hash = "#retry-" + Date.now();
+    });
+  </script>
+</body>
+</html>

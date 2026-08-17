@@ -4,8 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { Film, Home, Search, Tv, UserRound, X } from "lucide-react";
-
-const PLAYER_ROUTES = ["/assistir/", "/player"];
+import { isPlayerRoute, useAppMode } from "./AppMode";
 
 const NAV_ITEMS = [
   { href: "/android", label: "Início", icon: Home },
@@ -18,34 +17,13 @@ const NAV_ITEMS = [
 export function AndroidShell() {
   const pathname = usePathname();
   const router = useRouter();
-  const [nativeAndroid, setNativeAndroid] = useState(false);
+  const mode = useAppMode();
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const routePreview = pathname === "/android" || pathname.startsWith("/android/");
-  const isPlayer = PLAYER_ROUTES.some((route) => pathname.startsWith(route));
-  const enabled = (routePreview || nativeAndroid) && !isPlayer;
-
-  useEffect(() => {
-    const desktop = (window as any).obaflixDesktop;
-    if (routePreview) sessionStorage.setItem("obaflixAndroidMode", "1");
-    const android = desktop?.platform === "android" ||
-      (window as any).__OBAFLIX_ANDROID__ === true ||
-      /ObaflixApp\//i.test(navigator.userAgent) ||
-      sessionStorage.getItem("obaflixAndroidMode") === "1";
-    setNativeAndroid(android);
-  }, [pathname, routePreview]);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const appMode = routePreview || nativeAndroid;
-    root.classList.toggle("obaflix-android-app", appMode);
-    root.classList.toggle("obaflix-player-mode", appMode && isPlayer);
-    return () => {
-      root.classList.remove("obaflix-player-mode");
-      if (!nativeAndroid) root.classList.remove("obaflix-android-app");
-    };
-  }, [isPlayer, nativeAndroid, routePreview]);
+  // A decisão de modo e a classe no <html> ficam no AppModeProvider; aqui só
+  // resta a regra própria do shell: nas rotas de player ele não aparece.
+  const enabled = mode === "android" && !isPlayerRoute(pathname);
 
   useEffect(() => setSearchOpen(false), [pathname]);
 

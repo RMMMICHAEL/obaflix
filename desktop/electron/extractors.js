@@ -9,6 +9,13 @@
 const { createContext, runInContext } = require("vm");
 const { extractSuperflix } = require("./superflix-extractor");
 
+// Opcional: os scripts de diagnóstico carregam este módulo fora do Electron.
+let log = null;
+try { log = require("./logger"); } catch { /* fora do app */ }
+const elog = (level, scope, message, fields) => {
+  if (log) log[level](scope, message, fields);
+};
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
@@ -21,6 +28,7 @@ const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
 async function fetchHtml(url, referer = REFERER_DEFAULT, timeoutMs = 8000) {
+  const started = Date.now();
   const res = await fetch(url, {
     headers: {
       "User-Agent": UA,
@@ -33,6 +41,9 @@ async function fetchHtml(url, referer = REFERER_DEFAULT, timeoutMs = 8000) {
     },
     redirect: "follow",
     signal: AbortSignal.timeout(timeoutMs),
+  });
+  elog("debug", "extract.http", "GET", {
+    http: res.status, dur: `${Date.now() - started}ms`, url: log ? log.shortUrl(url, 110) : url,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} em ${url}`);
   return res.text();
@@ -369,6 +380,8 @@ async function extractStream(embedUrl) {
 
   const parsed = new URL(embedUrl);
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+  const started = Date.now();
+  elog("info", "extract.provider", "iniciando extrator", { provider, host: parsed.hostname });
 
   let stream;
   let referer = embedUrl;
@@ -404,6 +417,13 @@ async function extractStream(embedUrl) {
     }
     default: throw new Error(`Provider sem extrator: ${provider}`);
   }
+
+  elog("info", "extract.provider", "extrator concluído", {
+    provider,
+    dur: `${Date.now() - started}ms`,
+    cdn: (() => { try { return new URL(stream).hostname; } catch { return "?"; } })(),
+    legendas: subtitles.length,
+  });
 
   return {
     stream,
