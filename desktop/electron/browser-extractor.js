@@ -1,6 +1,60 @@
 ﻿"use strict";
 
-const { WebContentsView } = require("electron");
+const { WebContentsView, webFrameMain } = require("electron");
+
+/** Destinos de compartilhamento do provedor — o botão do Telegram e afins. */
+function ehHostDeCompartilhamento(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return /(^|\.)(t\.me|telegram\.me|telegram\.org|wa\.me|whatsapp\.com|facebook\.com|twitter\.com|x\.com)$/.test(host);
+}
+
+/**
+ * Roda dentro do iframe do provedor, via webFrameMain (privilégio de processo
+ * principal, então não esbarra em same-origin).
+ *
+ * Neutraliza o que tira o usuário da nossa organização: o rodapé de
+ * compartilhamento e os links que saem da tela de servidores. A identificação é
+ * pelo texto e pelo destino porque a marcação do provedor é ofuscada e não tem
+ * classe estável para ancorar seletor.
+ */
+const LIMPEZA_PAGINA_PROVEDOR = `
+(() => {
+  const ROTULOS = ["copiar link", "copiar", "copy link", "telegram"];
+
+  function limpar() {
+    document.querySelectorAll("a,button,li,div,span").forEach((el) => {
+      const texto = (el.textContent || "").trim().toLowerCase();
+      if (!texto || texto.length > 24) return;
+      if (!ROTULOS.includes(texto)) return;
+      const alvo = el.closest("a,button,li") || el;
+      alvo.style.setProperty("display", "none", "important");
+    });
+
+    document.querySelectorAll("a[href]").forEach((a) => {
+      let destino;
+      try { destino = new URL(a.href, location.href); } catch (e) { return; }
+      const saiDaOrigem = destino.origin !== location.origin;
+      const noPlayer = destino.pathname.indexOf("/player/") === 0 ||
+        destino.search.indexOf("cfv=") >= 0 ||
+        destino.pathname === location.pathname;
+      if (saiDaOrigem || !noPlayer) {
+        a.style.setProperty("pointer-events", "none", "important");
+        a.removeAttribute("target");
+      }
+    });
+  }
+
+  limpar();
+  // O modal de servidores monta depois do load, então repete por alguns
+  // segundos em vez de depender de um único instante.
+  let restantes = 30;
+  const timer = setInterval(() => {
+    limpar();
+    if (--restantes <= 0) clearInterval(timer);
+  }, 500);
+  return true;
+})()
+`;
 
 const APP_URL =
   process.env.OBAFLIX_URL ||
@@ -103,17 +157,46 @@ function createWrapperHtml() {
       background: #000;
     }
 
-    #loading {
+    /* Mesmo carregamento dos outros players do app: fundo preto e spinner com o
+       topo vermelho da marca, sem texto sobre o provedor. */
+    #superflix-loading {
       position: fixed;
       inset: 0;
       z-index: 10;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #fff;
       background: #000;
-      font: 16px Arial, sans-serif;
       pointer-events: none;
+    }
+
+    #superflix-spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid rgba(255,255,255,.2);
+      border-top-color: #E50914;
+      border-radius: 50%;
+      animation: sf-spin 1s linear infinite;
+    }
+
+    @keyframes sf-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    #superflix-aviso {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 2147483646;
+      display: none;
+      padding: 14px 64px 26px;
+      background: linear-gradient(180deg, rgba(0,0,0,.92), rgba(0,0,0,0));
+      color: #fff;
+      font: 14px/1.45 Arial, Helvetica, sans-serif;
+      text-align: center;
+      pointer-events: none;
+      text-shadow: 0 1px 3px rgba(0,0,0,.9);
     }
 
     #close-superflix {
@@ -139,8 +222,13 @@ function createWrapperHtml() {
 </head>
 
 <body>
-  <div id="loading">
-    Carregando servidores do SuperFlix...
+  <div id="superflix-loading">
+    <div id="superflix-spinner"></div>
+  </div>
+
+  <div id="superflix-aviso">
+    Escolha um servidor para assistir. Recomendamos o Servidor Alternativo, se
+    estiver disponível.
   </div>
 
   <button
@@ -580,6 +668,96 @@ async function extractSuperflixInBrowser(
         },
       );
 
+      // Telegram e afins abrem janela nova; nada aqui deve escapar do overlay.
+      webContents.setWindowOpenHandler(
+        ({ url }) => {
+          console.log(
+            `[superflix-overlay] popup bloqueado: ${safeLabel(url)}`,
+          );
+
+          return { action: "deny" };
+        },
+      );
+
+      // A seta de voltar do provedor leva para a página de episódio deles, que
+      // foge da nossa organização. Bloquear a navegação deixa o botão sem efeito
+      // sem precisar adivinhar o seletor dele.
+      let primeiraNavegacaoDoIframe = true;
+
+      webContents.on(
+        "will-frame-navigate",
+        (event) => {
+          if (event.isMainFrame) return;
+
+          if (primeiraNavegacaoDoIframe) {
+            primeiraNavegacaoDoIframe = false;
+            return;
+          }
+
+          let destino;
+          try {
+            destino = new URL(event.url);
+          } catch (_) {
+            return;
+          }
+
+          // Lista do que BLOQUEAR, não do que permitir. Uma lista de permissão
+          // derrubaria o desafio do Cloudflare, que navega frames para
+          // challenges.cloudflare.com, e a troca para o host do servidor
+          // escolhido, que muda de domínio.
+          const ehSuperflix =
+            destino.hostname === "superflixapi.pro" ||
+            destino.hostname.endsWith(".superflixapi.pro");
+
+          const parteDoPlayer =
+            destino.pathname.startsWith("/player/") ||
+            destino.pathname.startsWith("/cdn-cgi/") ||
+            destino.searchParams.has("cfv") ||
+            destino.pathname === input.pathname;
+
+          const ehCompartilhamento = ehHostDeCompartilhamento(destino.hostname);
+
+          // Navegar para outra página de conteúdo do provedor é a seta de voltar.
+          if (!ehCompartilhamento && !(ehSuperflix && !parteDoPlayer)) return;
+
+          event.preventDefault();
+
+          console.log(
+            `[superflix-overlay] navegacao do iframe bloqueada: ${safeLabel(event.url)}`,
+          );
+        },
+      );
+
+      webContents.on(
+        "did-frame-finish-load",
+        (_event, isMainFrame, frameProcessId, frameRoutingId) => {
+          if (isMainFrame || settled) return;
+
+          let frame = null;
+          try {
+            frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+          } catch (_) {
+            return;
+          }
+          if (!frame) return;
+
+          frame
+            .executeJavaScript(LIMPEZA_PAGINA_PROVEDOR)
+            .then(() => {
+              console.log(
+                "[superflix-overlay] botoes do provedor neutralizados",
+              );
+            })
+            .catch((error) => {
+              // Falhar aqui é cosmético: a navegação já está bloqueada.
+              console.warn(
+                "[superflix-overlay] limpeza da pagina falhou: " +
+                  String(error?.message || error).slice(0, 80),
+              );
+            });
+        },
+      );
+
       webContents.once(
         "render-process-gone",
         () => {
@@ -636,11 +814,21 @@ async function extractSuperflixInBrowser(
                 );
               }
 
+              const aviso =
+                document.getElementById(
+                  "superflix-aviso"
+                );
+
               frame.addEventListener(
                 "load",
                 () => {
                   if (loading) {
                     loading.remove();
+                  }
+
+                  if (aviso) {
+                    aviso.style.display =
+                      "block";
                   }
                 },
                 {
