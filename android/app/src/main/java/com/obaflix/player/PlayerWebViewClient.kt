@@ -94,6 +94,35 @@ class PlayerWebViewClient(
         Log.d(TAG, "[provider/subtitle] host=$host path=$path")
     }
 
+    /**
+     * Navegações que tiram o usuário da tela de servidores: a seta de voltar, que
+     * leva para a página de episódio do provedor, e os botões de compartilhamento.
+     *
+     * A regra lista o que BLOQUEAR, não o que permitir — uma lista de permissão
+     * derrubaria o desafio do Cloudflare, que navega frames para
+     * challenges.cloudflare.com, e a troca para o host do servidor escolhido, que
+     * muda de domínio no meio da cadeia.
+     */
+    private fun isProviderEscapeNavigation(uri: Uri): Boolean {
+        val host = uri.host.orEmpty().lowercase()
+        if (Regex("""(^|\.)(t\.me|telegram\.me|telegram\.org|wa\.me|whatsapp\.com|facebook\.com|twitter\.com|x\.com)$""")
+                .containsMatchIn(host)
+        ) return true
+
+        val isSuperflix = host == "superflixapi.pro" || host.endsWith(".superflixapi.pro")
+        if (!isSuperflix) return false
+
+        val path = uri.path.orEmpty()
+        // O app entra sempre pela forma numérica (/serie/{tmdbId}/{t}/{ep}); o
+        // provedor navega internamente por slug (/serie/dexter-new-blood). É isso
+        // que separa a nossa entrada do "voltar" dele.
+        val belongsToPlayer = path.startsWith("/player/", ignoreCase = true) ||
+            path.startsWith("/cdn-cgi/", ignoreCase = true) ||
+            uri.getQueryParameter("cfv") != null ||
+            Regex("""^/(?:serie|filme)/\d+""", RegexOption.IGNORE_CASE).containsMatchIn(path)
+        return !belongsToPlayer
+    }
+
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url
         val providerHost = uri.host.orEmpty().lowercase()
@@ -107,7 +136,13 @@ class PlayerWebViewClient(
                 "[provider/navigation] main=${request.isForMainFrame} url=${uri.scheme}://$providerHost${uri.path}",
             )
         }
-        if (!request.isForMainFrame) return false
+        if (!request.isForMainFrame) {
+            if (isProviderEscapeNavigation(uri)) {
+                Log.d(TAG, "[provider/navigation] bloqueada: $providerHost${uri.path}")
+                return true
+            }
+            return false
+        }
         if (uri.scheme == "https" && uri.host == allowedAppHost) return false
         if (uri.scheme == "http" || uri.scheme == "https") {
             Log.w(TAG, "[navigation] bloqueada navegação externa no frame principal: ${uri.host}")

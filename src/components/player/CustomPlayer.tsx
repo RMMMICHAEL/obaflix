@@ -787,7 +787,10 @@ export function CustomPlayer({
       if (isAndroid && isSuperflixUrl(embedUrl)) {
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
-        setStatus("playing");
+        // Mantém o carregamento padrão do app por cima até a página do provedor
+        // aparecer, em vez de expor o iframe cru com o carregamento dele. O
+        // iframe já está no DOM, então o desafio do Cloudflare roda por baixo.
+        setStatus("extracting");
         if (!desktop) return;
         const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
           await desktop.extractStream(embedUrl);
@@ -891,6 +894,16 @@ export function CustomPlayer({
     if (!fonte?.embedUrl) return;
     extract(fonte.embedUrl);
   }, [fonte?.embedUrl, extract]);
+
+  // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
+  // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
+  // spinner esperando um evento que não vem.
+  useEffect(() => {
+    if (status !== "extracting" || streamTipo !== "iframe") return;
+    if (!streamUrl || !isSuperflixUrl(streamUrl)) return;
+    const timer = setTimeout(() => setStatus("playing"), 10000);
+    return () => clearTimeout(timer);
+  }, [status, streamTipo, streamUrl]);
 
   // ── JW Player setup (hls / mp4) ──────────────────────────────────────────────
   useEffect(() => {
@@ -1735,10 +1748,24 @@ export function CustomPlayer({
         </video>
       )}
 
+      {streamTipo === "iframe" && streamUrl && isSuperflixUrl(streamUrl) && status === "playing" && (
+        <div className="absolute top-0 left-0 right-0 z-[9998] px-14 pt-4 pb-7 text-center pointer-events-none bg-gradient-to-b from-black/90 to-transparent">
+          <p className="text-white text-[13px] md:text-sm leading-snug drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
+            Escolha um servidor para assistir. Recomendamos o Servidor Alternativo, se estiver disponível.
+          </p>
+        </div>
+      )}
+
       {streamTipo === "iframe" && streamUrl && (
         <iframe
           key={streamUrl}
           src={streamUrl}
+          onLoad={() => {
+            // Cross-origin não deixa ler o conteúdo, mas o evento de load chega.
+            // É o sinal de que a tela de servidores já está desenhada e o
+            // carregamento padrão pode sair.
+            if (isSuperflixUrl(streamUrl)) setStatus("playing");
+          }}
           className="absolute inset-0 w-full h-full border-0 touch-auto"
           allow={isSuperflixUrl(streamUrl)
             ? "autoplay *; encrypted-media *; picture-in-picture *; fullscreen *; clipboard-write *; accelerometer *; gyroscope *; web-share *"
