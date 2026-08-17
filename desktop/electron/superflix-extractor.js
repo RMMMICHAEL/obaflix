@@ -515,7 +515,11 @@ async function fetchPage(fetchImpl, jar, startUrl, options) {
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) throw new Error(`redirect ${response.status} sem Location em ${safeUrlLabel(url)}`);
-      const next = resolveUrl(location, url);
+      // O provedor redireciona para HTTP em parte da cadeia. No Android isso morre
+      // por politica de cleartext antes de chegar a midia; aqui a promocao mantem
+      // os dois extratores com o mesmo comportamento.
+      const resolvido = resolveUrl(location, url);
+      const next = resolvido ? secureTransportUrl(resolvido) : null;
       if (!next) throw new Error(`Location inválido em ${safeUrlLabel(url)}`);
       referer = url;
       url = next;
@@ -628,7 +632,9 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
   let resolvedUrl = targetUrl;
   if (first.status >= 300 && first.status < 400) {
     const location = first.headers.get("location");
-    resolvedUrl = resolveUrl(location, targetUrl);
+    // Mesmo motivo do fetchPage: o destino do player/redirect pode vir em HTTP.
+    const resolvido = resolveUrl(location, targetUrl);
+    resolvedUrl = resolvido ? secureTransportUrl(resolvido) : null;
     if (!resolvedUrl) throw new Error("player/redirect sem Location válido");
   } else if (!first.ok) {
     throw new Error(`player/redirect HTTP ${first.status}`);

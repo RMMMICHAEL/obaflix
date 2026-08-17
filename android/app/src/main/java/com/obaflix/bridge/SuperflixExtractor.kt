@@ -664,7 +664,11 @@ object SuperflixExtractor {
             if (result.status in 300..399) {
                 val location = result.headers["Location"]
                     ?: throw Exception("redirect ${result.status} sem Location em ${safeUrl(url)}")
-                val next = resolveUrl(location, url)
+                // O provedor redireciona para HTTP em parte da cadeia. Como o app
+                // roda com cleartext desligado, seguir o Location como veio aborta
+                // com "CLEARTEXT communication not permitted" antes de chegar à
+                // mídia. Até aqui só a mídia final era promovida a HTTPS.
+                val next = resolveUrl(location, url)?.let { secureTransportUrl(it) }
                     ?: throw Exception("Location inválido em ${safeUrl(url)}")
                 currentReferer = url
                 url = next
@@ -796,7 +800,9 @@ object SuperflixExtractor {
         )
 
         val resolvedUrl = if (first.status in 300..399) {
-            resolveUrl(first.headers["Location"], targetUrl)
+            // Mesmo motivo do fetchPage: o destino do player/redirect pode vir em
+            // HTTP e a requisição seguinte morreria por política de cleartext.
+            resolveUrl(first.headers["Location"], targetUrl)?.let { secureTransportUrl(it) }
                 ?: throw Exception("player/redirect sem Location válido")
         } else {
             if (first.status !in 200..299) throw Exception("player/redirect HTTP ${first.status}")
