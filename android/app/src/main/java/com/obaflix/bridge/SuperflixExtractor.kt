@@ -33,8 +33,14 @@ private const val SUPERFLIX_EXCELLENT_SCORE = 110
 /** Espera depois da primeira mídia observada, para o player pedir as legendas. */
 private const val SUPERFLIX_SUBTITLE_GRACE_MS = 1_800L
 
-/** Intervalo entre tentativas da cadeia direta enquanto o WebView abre a sessão. */
-private const val SUPERFLIX_DIRECT_RETRY_MS = 2_500L
+/**
+ * A cadeia direta é caríssima: percorre páginas, bootstrap e player/source. Um
+ * intervalo fixo curto virava ~48 tentativas em 2 minutos, o que derruba a sessão
+ * e provoca novo desafio. Poucas tentativas com espera crescente, e depois o fluxo
+ * apenas aguarda a escolha do usuário.
+ */
+private const val SUPERFLIX_DIRECT_RETRY_BASE_MS = 3_000L
+private const val SUPERFLIX_DIRECT_RETRY_MAX = 3
 
 /** Resultado nativo com Referer opcional para o CDN final. */
 data class NativeExtractResult(
@@ -1174,6 +1180,7 @@ object SuperflixExtractor {
             val deadline = System.currentTimeMillis() + 120_000L
             var lastObserved: String? = null
             var proximaTentativaDireta = 0L
+            var tentativasDiretas = 0
             while (System.currentTimeMillis() < deadline) {
                 delay(350L)
 
@@ -1197,12 +1204,16 @@ object SuperflixExtractor {
                         log("cloudflare_retry", error.message?.take(160) ?: error.javaClass.simpleName)
                     }
                 } else if (!current.isNullOrBlank() && current.contains("cf_clearance=") &&
+                    tentativasDiretas < SUPERFLIX_DIRECT_RETRY_MAX &&
                     System.currentTimeMillis() >= proximaTentativaDireta
                 ) {
-                    // Com o desafio resolvido a cadeia completa costuma funcionar sem
-                    // o usuário escolher servidor. O intervalo evita refazê-la a cada
-                    // 350ms enquanto o provedor ainda não liberou a sessão.
-                    proximaTentativaDireta = System.currentTimeMillis() + SUPERFLIX_DIRECT_RETRY_MS
+                    // Com o desafio resolvido a cadeia completa pode funcionar sem o
+                    // usuário escolher servidor. Se não funcionar em poucas tentativas,
+                    // para de insistir e deixa a escolha manual seguir — insistir só
+                    // castigava a sessão que a escolha manual ainda vai usar.
+                    tentativasDiretas += 1
+                    proximaTentativaDireta = System.currentTimeMillis() +
+                        SUPERFLIX_DIRECT_RETRY_BASE_MS * (1L shl (tentativasDiretas - 1))
                     try {
                         log("cloudflare", "cf_clearance recebido; retomando extração")
                         val direto = extractWithCookies(embedUrl, cookieHeader)

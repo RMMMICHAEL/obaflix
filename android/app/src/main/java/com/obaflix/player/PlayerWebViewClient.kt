@@ -95,32 +95,23 @@ class PlayerWebViewClient(
     }
 
     /**
-     * Navegações que tiram o usuário da tela de servidores: a seta de voltar, que
-     * leva para a página de episódio do provedor, e os botões de compartilhamento.
+     * Só os destinos de compartilhamento do provedor — o botão do Telegram e afins.
      *
-     * A regra lista o que BLOQUEAR, não o que permitir — uma lista de permissão
-     * derrubaria o desafio do Cloudflare, que navega frames para
-     * challenges.cloudflare.com, e a troca para o host do servidor escolhido, que
-     * muda de domínio no meio da cadeia.
+     * A versão anterior também bloqueava navegações do SuperFlix para fora da tela
+     * de servidores, para neutralizar a seta de voltar. Isso quebrou a extração: a
+     * página do provedor usa iframe interno de mesma origem (visível no log como
+     * "Blocked a frame with origin superflixapi.pro from accessing a frame with
+     * origin superflixapi.pro"), e o shouldOverrideUrlLoading do WebView não informa
+     * qual frame está navegando — então não há como distinguir o "voltar" do usuário
+     * de um frame interno necessário, e o filtro derrubava os dois.
+     *
+     * No Electron a seta continua neutralizada, porque lá o webFrameMain permite
+     * agir dentro do frame certo. No Android ela segue funcionando.
      */
     private fun isProviderEscapeNavigation(uri: Uri): Boolean {
         val host = uri.host.orEmpty().lowercase()
-        if (Regex("""(^|\.)(t\.me|telegram\.me|telegram\.org|wa\.me|whatsapp\.com|facebook\.com|twitter\.com|x\.com)$""")
-                .containsMatchIn(host)
-        ) return true
-
-        val isSuperflix = host == "superflixapi.pro" || host.endsWith(".superflixapi.pro")
-        if (!isSuperflix) return false
-
-        val path = uri.path.orEmpty()
-        // O app entra sempre pela forma numérica (/serie/{tmdbId}/{t}/{ep}); o
-        // provedor navega internamente por slug (/serie/dexter-new-blood). É isso
-        // que separa a nossa entrada do "voltar" dele.
-        val belongsToPlayer = path.startsWith("/player/", ignoreCase = true) ||
-            path.startsWith("/cdn-cgi/", ignoreCase = true) ||
-            uri.getQueryParameter("cfv") != null ||
-            Regex("""^/(?:serie|filme)/\d+""", RegexOption.IGNORE_CASE).containsMatchIn(path)
-        return !belongsToPlayer
+        return Regex("""(^|\.)(t\.me|telegram\.me|telegram\.org|wa\.me|whatsapp\.com|facebook\.com|twitter\.com|x\.com)$""")
+            .containsMatchIn(host)
     }
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {

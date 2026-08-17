@@ -898,10 +898,14 @@ export function CustomPlayer({
   // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
   // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
   // spinner esperando um evento que não vem.
+  //
+  // O limite é curto de propósito: o carregamento cobre o iframe e, como a
+  // escolha do servidor é manual, cada segundo a mais é um segundo em que o
+  // toque do usuário não passa.
   useEffect(() => {
     if (status !== "extracting" || streamTipo !== "iframe") return;
     if (!streamUrl || !isSuperflixUrl(streamUrl)) return;
-    const timer = setTimeout(() => setStatus("playing"), 10000);
+    const timer = setTimeout(() => setStatus("playing"), 4000);
     return () => clearTimeout(timer);
   }, [status, streamTipo, streamUrl]);
 
