@@ -132,9 +132,29 @@ object SuperflixExtractor {
         val index: Int,
     )
 
+    /**
+     * Um servidor oferecido para o conteúdo, venha ele de /player/bootstrap
+     * (protocolo atual) ou da varredura do HTML (protocolo legado).
+     */
+    private data class SourceOption(
+        val id: String,
+        val label: String,
+        /** null quando o caminho legado não informa; true = MP4 direto do provedor. */
+        val isFile: Boolean?,
+        val orderScore: Int,
+    ) {
+        /**
+         * Servidor incorporado em vez de arquivo direto. Cobre `native_media:` e
+         * `native_media_v2:` — o prefixo mudou e o teste antigo por `native_media:`
+         * passou a classificar todo servidor nativo como alternativo.
+         */
+        val isEmbedServer: Boolean
+            get() = isFile?.not() ?: !id.startsWith("native_media")
+    }
+
     /** Uma fonte já resolvida e medida, pronta para ser comparada com as outras. */
     private data class MediaProfile(
-        val sourceId: String,
+        val option: SourceOption,
         val result: NativeExtractResult,
         val score: Int,
     )
@@ -342,13 +362,20 @@ object SuperflixExtractor {
         return score
     }
 
+    /**
+     * Aceita o ID numérico simples, o `native_media:123` antigo e o
+     * `native_media_v2:262627:131927:1:1:171230:<md5>` atual. A validação anterior
+     * exigia dígitos após o prefixo e descartava todos os servidores nativos novos.
+     */
+    private val sourceIdPattern = Regex("""^(?:native_media(?:_v\d+)?:[A-Za-z0-9:_-]+|\d+)$""")
+
     private fun findSourceIds(html: String): List<String> {
         val normalized = normalizeHtml(html)
         val found = linkedMapOf<String, SourceCandidate>()
 
         fun add(id: String, index: Int) {
             val clean = id.trim()
-            if (!Regex("""^(?:native_media:)?\d+$""").matches(clean)) return
+            if (!sourceIdPattern.matches(clean)) return
             val from = maxOf(0, index - 300)
             val to = minOf(normalized.length, index + 300)
             val score = sourceScore(clean, normalized.substring(from, to))
@@ -358,13 +385,14 @@ object SuperflixExtractor {
             }
         }
 
-        Regex("""native_media:\d+""", RegexOption.IGNORE_CASE).findAll(normalized)
+        Regex("""native_media(?:_v\d+)?:[A-Za-z0-9:_-]+""", RegexOption.IGNORE_CASE).findAll(normalized)
             .forEach { add(it.value, it.range.first) }
 
+        val idFragment = """((?:native_media(?:_v\d+)?:)?[A-Za-z0-9:_-]+)"""
         val patterns = listOf(
-            Regex("""(?:video[_-]?id|data-video-id|data-player-id|data-source-id|data-id)\s*[:=]\s*["']?((?:native_media:)?\d+)""", RegexOption.IGNORE_CASE),
-            Regex("""name=["']video_id["'][^>]*value=["']((?:native_media:)?\d+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""value=["']((?:native_media:)?\d+)["'][^>]*name=["']video_id["']""", RegexOption.IGNORE_CASE),
+            Regex("""(?:video[_-]?id|data-video-id|data-player-id|data-source-id|data-id)\s*[:=]\s*["']?$idFragment""", RegexOption.IGNORE_CASE),
+            Regex("""name=["']video_id["'][^>]*value=["']$idFragment["']""", RegexOption.IGNORE_CASE),
+            Regex("""value=["']$idFragment["'][^>]*name=["']video_id["']""", RegexOption.IGNORE_CASE),
         )
         for (pattern in patterns) {
             pattern.findAll(normalized).forEach { add(it.groupValues[1], it.range.first) }
@@ -373,6 +401,147 @@ object SuperflixExtractor {
         return found.values
             .sortedWith(compareByDescending<SourceCandidate> { it.score }.thenBy { it.index })
             .map { it.id }
+    }
+
+    /**
+     * `contentid` que /player/bootstrap exige. É um identificador interno do
+     * SuperFlix — não é o TMDB nem o `embed_item_id` do token — então só resta
+     * procurá-lo na página.
+     */
+    private fun findContentId(html: String): String? {
+        val normalized = normalizeHtml(html)
+        val patterns = listOf(
+            Regex("""["']?content[_-]?id["']?\s*[:=]\s*["']?(\d{2,12})""", RegexOption.IGNORE_CASE),
+            Regex("""name=["']contentid["'][^>]*value=["'](\d{2,12})["']""", RegexOption.IGNORE_CASE),
+            Regex("""value=["'](\d{2,12})["'][^>]*name=["']contentid["']""", RegexOption.IGNORE_CASE),
+            Regex("""data-content-id=["'](\d{2,12})["']""", RegexOption.IGNORE_CASE),
+            Regex("""contentid=(\d{2,12})""", RegexOption.IGNORE_CASE),
+        )
+        for (pattern in patterns) {
+            pattern.find(normalized)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return null
+    }
+
+    /** Extrai tipo/temporada/episódio de um caminho como /serie/dexter/1/1 ou /filme/xxx. */
+    private fun contentCoordinates(path: String): Triple<String, String?, String?> {
+        val parts = path.split('/').filter { it.isNotBlank() }
+        val tipo = parts.firstOrNull()?.lowercase()?.takeIf { it == "serie" || it == "filme" } ?: "filme"
+        if (tipo != "serie") return Triple(tipo, null, null)
+        return Triple(tipo, parts.getOrNull(2), parts.getOrNull(3))
+    }
+
+    /**
+     * Pede a lista de servidores ao protocolo atual. Antes essa lista era raspada
+     * do HTML de uma página Vizero/WarezCDN que saiu da cadeia; agora vem em JSON,
+     * já com o nome e o tipo de cada servidor.
+     */
+    private suspend fun fetchBootstrap(
+        client: OkHttpClient,
+        cookies: CookieStore,
+        page: Page,
+        pageToken: String,
+        contentId: String,
+        contentPath: String,
+    ): List<SourceOption> {
+        val pageUrl = URL(page.url)
+        val origin = "${pageUrl.protocol}://${pageUrl.host}"
+        val (tipo, season, episode) = contentCoordinates(contentPath)
+
+        val form = FormBody.Builder()
+            .add("contentid", contentId)
+            .add("type", tipo)
+        if (season != null) form.add("season", season)
+        if (episode != null) form.add("episode", episode)
+        form.add("_token", "")
+            .add("page_token", pageToken)
+            // O provedor envia o token nas duas grafias; manter as duas evita
+            // depender de qual delas o backend lê.
+            .add("pageToken", pageToken)
+
+        val result = requestOnce(
+            client = client,
+            cookies = cookies,
+            url = "$origin/player/bootstrap",
+            referer = page.url,
+            method = "POST",
+            body = form.build(),
+            accept = "*/*",
+            dest = "empty",
+            mode = "cors",
+            extraHeaders = mapOf(
+                "Origin" to origin,
+                "X-Requested-With" to "XMLHttpRequest",
+            ),
+        )
+        if (result.status !in 200..299) throw Exception("player/bootstrap HTTP ${result.status}")
+
+        val options = JSONObject(result.body).optJSONObject("data")?.optJSONArray("options")
+            ?: throw Exception("player/bootstrap sem options")
+
+        val parsed = mutableListOf<SourceOption>()
+        for (index in 0 until options.length()) {
+            val option = options.optJSONObject(index) ?: continue
+            // ID vem como número nos servidores incorporados e como string nos nativos.
+            val id = option.opt("ID")?.toString()?.trim().orEmpty()
+            if (id.isEmpty() || id == "null") continue
+            val name = option.optString("name").takeIf { it.isNotBlank() } ?: "Servidor $id"
+            val isFile = option.optBoolean("is_file", false)
+            parsed.add(
+                SourceOption(
+                    id = id,
+                    label = name,
+                    isFile = isFile,
+                    orderScore = 0,
+                ).let { it.copy(orderScore = optionOrderScore(it)) }
+            )
+        }
+        return parsed
+    }
+
+    /** Ordem de inspeção — não decide a escolha final, só quem é sondado primeiro. */
+    private fun optionOrderScore(option: SourceOption): Int {
+        val text = option.label.lowercase()
+        var score = if (option.isEmbedServer) 100 else 0
+        if (Regex("""dublad|portugu|pt-br""").containsMatchIn(text)) score += 40
+        if (Regex("""legend|subtitle|\bleg\b""").containsMatchIn(text)) score -= 10
+        if (Regex("""full\s*hd|1080|\bhd\b""").containsMatchIn(text)) score += 5
+        return score
+    }
+
+    /**
+     * Lista de servidores pelo protocolo atual, caindo para a varredura de HTML
+     * quando o `contentid` não está na página ou o bootstrap não responde.
+     */
+    private suspend fun resolveOptions(
+        client: OkHttpClient,
+        cookies: CookieStore,
+        page: Page,
+        pageToken: String,
+        payload: JSONObject?,
+    ): List<SourceOption> {
+        val contentId = findContentId(page.html)
+        if (contentId != null) {
+            val contentPath = payload?.optString("embed_content_path")?.takeIf { it.isNotBlank() }
+                ?: runCatching { URL(page.url).path }.getOrDefault("")
+            val bootstrap = runCatching {
+                fetchBootstrap(client, cookies, page, pageToken, contentId, contentPath)
+            }.getOrElse { error ->
+                log("bootstrap_skip", error.message?.take(120) ?: error.javaClass.simpleName)
+                emptyList()
+            }
+            if (bootstrap.isNotEmpty()) {
+                log("bootstrap", "servidores=" + bootstrap.joinToString(", ") { it.label })
+                return bootstrap.sortedByDescending { it.orderScore }
+            }
+        } else {
+            log("bootstrap_skip", "contentid não encontrado na página")
+        }
+
+        // Protocolo legado: os IDs vinham no HTML e o rótulo era o texto ao redor.
+        return findSourceIds(page.html).mapIndexed { index, id ->
+            SourceOption(id = id, label = id, isFile = null, orderScore = -index)
+        }
     }
 
     private fun findNativeMediaSource(html: String, baseUrl: String): String? {
@@ -532,6 +701,11 @@ object SuperflixExtractor {
             val delegatedProvider = PlayerExtractors.detectProvider(page.url)
             if (delegatedProvider != null && delegatedProvider != "superflix") return page
 
+            // Protocolo atual: a própria página do SuperFlix traz page_token e
+            // contentid, e a lista de servidores vem de /player/bootstrap. Seguir
+            // links daqui só levava a becos, já que Vizero/WarezCDN saíram da cadeia.
+            if (findPageToken(page.html) != null && findContentId(page.html) != null) return page
+
             if (parsed.host.contains("warezcdn") && findPageToken(page.html) != null) return page
 
             val candidates = collectChainUrls(page.html, page.url).filterNot { visited.contains(it) }
@@ -562,7 +736,14 @@ object SuperflixExtractor {
     ): String {
         val pageUrl = URL(warezPage.url)
         val origin = "${pageUrl.protocol}://${pageUrl.host}"
-        val endpoint = "$origin/player/source?host=${java.net.URLEncoder.encode(host, "UTF-8")}"
+        // Sem Vizero/WarezCDN na cadeia, host e site vão vazios e o endpoint perde a
+        // query. Mandar "vizero.buzz" (o antigo padrão) descrevia um salto que não
+        // acontece mais.
+        val endpoint = if (host.isBlank()) {
+            "$origin/player/source"
+        } else {
+            "$origin/player/source?host=${java.net.URLEncoder.encode(host, "UTF-8")}"
+        }
         val form = FormBody.Builder()
             .add("video_id", sourceId)
             .add("page_token", pageToken)
@@ -717,7 +898,7 @@ object SuperflixExtractor {
         tipo: String,
         info: HlsMediaInfo?,
         hasSubtitles: Boolean,
-        sourceId: String,
+        option: SourceOption,
     ): Int {
         var score = when {
             info != null && info.isMaster -> 70 + minOf(info.variants.size, 5) * 6
@@ -727,7 +908,7 @@ object SuperflixExtractor {
         if ((info?.audioTracks?.size ?: 0) >= 2) score += 35
         if (hasSubtitles) score += 25
         // Desempate: historicamente o servidor alternativo é o mais estável.
-        if (!sourceId.startsWith("native_media:")) score += 3
+        if (option.isEmbedServer) score += 3
         return score
     }
 
@@ -740,7 +921,7 @@ object SuperflixExtractor {
     private suspend fun profileSource(
         client: OkHttpClient,
         cookies: CookieStore,
-        sourceId: String,
+        option: SourceOption,
         candidate: NativeExtractResult,
     ): MediaProfile {
         val url = candidate.stream
@@ -816,16 +997,16 @@ object SuperflixExtractor {
         }
 
         val hasSubtitles = subtitles.isNotEmpty() || info?.subtitles?.isNotEmpty() == true
-        val score = profileScore(tipo, info, hasSubtitles, sourceId)
+        val score = profileScore(tipo, info, hasSubtitles, option)
         log(
             "profile",
-            "source=$sourceId tipo=$tipo master=${info?.isMaster == true} " +
+            "source=${option.label} tipo=$tipo master=${info?.isMaster == true} " +
                 "qualidades=${info?.variants?.size ?: 0} audios=${info?.audioTracks?.size ?: 0} " +
                 "legendas=${subtitles.size} noManifesto=${info?.subtitles?.size ?: 0} nota=$score",
         )
 
         return MediaProfile(
-            sourceId = sourceId,
+            option = option,
             score = score,
             result = candidate.copy(
                 subtitles = subtitles.values.toList(),
@@ -873,11 +1054,14 @@ object SuperflixExtractor {
                 ?.firstOrNull { it.startsWith("host=") }
                 ?.substringAfter("host=")
                 ?.let { URLDecoder.decode(it, "UTF-8") }
-            ?: "vizero.buzz"
-        val sourceIds = findSourceIds(warezPage.html)
-        if (sourceIds.isEmpty()) throw Exception("nenhum video_id encontrado na página WarezCDN")
+            ?: ""
+        val sourceOptions = resolveOptions(client, cookies, warezPage, pageToken, payload)
+        if (sourceOptions.isEmpty()) throw Exception("nenhum servidor encontrado para o conteúdo")
 
-        log("sources", "total=${sourceIds.size} native=${sourceIds.count { it.startsWith("native_media:") }}")
+        log(
+            "sources",
+            "total=${sourceOptions.size} nativos=${sourceOptions.count { !it.isEmbedServer }}",
+        )
         val failures = mutableListOf<String>()
         val profiles = mutableListOf<MediaProfile>()
         val expiresAt = tokenExpiry(payload)
@@ -886,19 +1070,19 @@ object SuperflixExtractor {
         // Inspeciona os servidores em vez de aceitar o primeiro que responde: o
         // primeiro funcional costuma ser um MP4 de qualidade única, enquanto outro
         // servidor entrega um master HLS com qualidades, áudio e legendas.
-        for (sourceId in sourceIds) {
+        for (option in sourceOptions) {
             try {
-                val target = postSource(client, cookies, warezPage, pageToken, sourceId, host)
+                val target = postSource(client, cookies, warezPage, pageToken, option.id, host)
                 val candidate = resolveSource(client, cookies, target, warezPage.url)
-                val profile = profileSource(client, cookies, sourceId, candidate)
+                val profile = profileSource(client, cookies, option, candidate)
                 profiles.add(profile)
                 if (profile.score >= SUPERFLIX_EXCELLENT_SCORE) {
-                    log("probe_stop", "fonte completa encontrada em $sourceId")
+                    log("probe_stop", "fonte completa encontrada em ${option.label}")
                     break
                 }
             } catch (e: Exception) {
-                failures.add("$sourceId: ${e.message}")
-                log("source_skip", "source=$sourceId erro=${e.message?.take(100)}")
+                failures.add("${option.label}: ${e.message}")
+                log("source_skip", "source=${option.label} erro=${e.message?.take(100)}")
             }
             if (System.currentTimeMillis() > probeDeadline && profiles.isNotEmpty()) {
                 log("probe_stop", "orçamento de inspeção esgotado com ${profiles.size} fonte(s)")
@@ -911,9 +1095,8 @@ object SuperflixExtractor {
 
         log(
             "ok",
-            "escolhida=${if (best.sourceId.startsWith("native_media:")) "native" else "embed"} " +
-                "nota=${best.score} entre=${profiles.size} tipo=${best.result.tipo} " +
-                "host=${safeUrl(best.result.stream)}",
+            "escolhida=${best.option.label} nota=${best.score} entre=${profiles.size} " +
+                "tipo=${best.result.tipo} host=${safeUrl(best.result.stream)}",
         )
         return best.result.copy(expiresAt = expiresAt)
     }

@@ -19,11 +19,18 @@ const {
   findSourceIds,
   findDirectMedia,
   findSubtitleTracks,
+  findContentId,
+  contentCoordinates,
+  optionOrderScore,
+  ehServidorIncorporado,
   decodeTokenPayload,
   secureTransportUrl,
   profileScore,
   tokenExpiry,
 } = _test;
+
+/** Opção como o /player/bootstrap devolve, para os testes de ranking. */
+const opcao = (id, label, isFile) => ({ id, label, isFile });
 
 /** Monta um token no formato payload.assinatura, com payload falso. */
 function fakeToken(payload) {
@@ -82,20 +89,73 @@ test("HTML não é aceito como manifesto", () => {
 test("ranking prefere master HLS a HLS simples e a MP4", () => {
   const master = hlsManifest.parse(MASTER_MANIFEST, MANIFEST_BASE);
   const simples = hlsManifest.parse(MEDIA_MANIFEST, MANIFEST_BASE);
+  const embed = opcao("152777", "Servidor 152777", false);
 
-  const notaMaster = profileScore("hls", master, true, "123");
-  const notaSimples = profileScore("hls", simples, false, "123");
-  const notaMp4 = profileScore("mp4", null, false, "native_media:9");
+  const notaMaster = profileScore("hls", master, true, embed);
+  const notaSimples = profileScore("hls", simples, false, embed);
+  const notaMp4 = profileScore("mp4", null, false, opcao("native_media_v2:1:2:1:1:3:abc", "MP4 Dublado", true));
 
   assert.ok(notaMaster > notaSimples, `${notaMaster} > ${notaSimples}`);
   assert.ok(notaSimples > notaMp4, `${notaSimples} > ${notaMp4}`);
   // Um MP4 com legenda ainda perde para um master completo — o master traz
   // qualidades e áudio, que não dá para reconstruir a partir de um MP4.
-  assert.ok(notaMaster > profileScore("mp4", null, true, "123"));
+  assert.ok(notaMaster > profileScore("mp4", null, true, embed));
 });
 
-test("empate entre fontes iguais favorece o servidor alternativo", () => {
-  assert.ok(profileScore("hls", null, false, "123") > profileScore("hls", null, false, "native_media:123"));
+test("empate entre fontes iguais favorece o servidor incorporado", () => {
+  const embed = opcao("152777", "Servidor 152777", false);
+  const arquivo = opcao("native_media_v2:262627:131927:1:1:171230:abc", "MP4 Dublado", true);
+  assert.ok(profileScore("hls", null, false, embed) > profileScore("hls", null, false, arquivo));
+});
+
+test("native_media_v2 conta como arquivo direto, não como servidor alternativo", () => {
+  // O teste antigo era startsWith("native_media:") e o prefixo virou
+  // native_media_v2:, o que classificava todo servidor nativo como alternativo.
+  assert.equal(ehServidorIncorporado(opcao("native_media_v2:262627:131927:1:1:171230:abc", "MP4 Dublado")), false);
+  assert.equal(ehServidorIncorporado(opcao("native_media:262627", "MP4 Dublado")), false);
+  assert.equal(ehServidorIncorporado(opcao("152777", "Servidor 152777")), true);
+  // O is_file do bootstrap tem precedência sobre o palpite pelo prefixo.
+  assert.equal(ehServidorIncorporado(opcao("152777", "Servidor", true)), false);
+});
+
+test("IDs do protocolo atual são aceitos na varredura de HTML", () => {
+  const html = [
+    '<div data-video-id="native_media_v2:262627:131927:1:1:171230:ed30d8ad975b394a3be785ea0cd2ad07"></div>',
+    '<div data-video-id="152777"></div>',
+    '<div data-video-id="native_media:99"></div>',
+  ].join("");
+
+  const ids = findSourceIds(html);
+  assert.ok(ids.includes("native_media_v2:262627:131927:1:1:171230:ed30d8ad975b394a3be785ea0cd2ad07"));
+  assert.ok(ids.includes("152777"));
+  assert.ok(ids.includes("native_media:99"));
+});
+
+test("contentid é localizado nas formas conhecidas", () => {
+  assert.equal(findContentId('<input name="contentid" value="122952">'), "122952");
+  assert.equal(findContentId('{"contentid":122952}'), "122952");
+  assert.equal(findContentId('<div data-content-id="122952"></div>'), "122952");
+  assert.equal(findContentId("<p>sem nada aqui</p>"), null);
+});
+
+test("coordenadas do conteúdo saem do caminho do token", () => {
+  assert.deepEqual(contentCoordinates("/serie/dexter-new-blood/1/1"), {
+    tipo: "serie", season: "1", episode: "1",
+  });
+  assert.deepEqual(contentCoordinates("/filme/duna-parte-2"), {
+    tipo: "filme", season: null, episode: null,
+  });
+});
+
+test("servidor incorporado é sondado antes do MP4, e dublado antes de legendado", () => {
+  const opcoes = [
+    opcao("native_media_v2:a:b:1:1:c:d", "MP4 Legendado", true),
+    opcao("native_media_v2:e:f:1:1:g:h", "MP4 Dublado", true),
+    opcao("152777", "Servidor 152777", false),
+  ].map((o) => Object.assign(o, { orderScore: optionOrderScore(o) }))
+    .sort((a, b) => b.orderScore - a.orderScore);
+
+  assert.deepEqual(opcoes.map((o) => o.label), ["Servidor 152777", "MP4 Dublado", "MP4 Legendado"]);
 });
 
 test("templates JavaScript e scripts do Cloudflare não viram hops", () => {
@@ -145,6 +205,66 @@ test("ordem de inspeção começa pelo servidor alternativo", () => {
   ].join("");
 
   assert.deepEqual(findSourceIds(html), ["777", "native_media:4242"]);
+});
+
+test("bootstrap real do provedor vira a lista de servidores", async () => {
+  // Corpo capturado de POST /player/bootstrap (HAR de 2026-08-16). Os IDs longos
+  // são o formato real; nenhum token ou cookie acompanha esta fixture.
+  const RESPOSTA_REAL = JSON.stringify({
+    data: {
+      options: [
+        { ID: 152777, type: 1, name: "Servidor 152777", is_file: false, can_download: false },
+        {
+          ID: "native_media_v2:262627:131927:1:1:171230:ed30d8ad975b394a3be785ea0cd2ad07",
+          type: 1, name: "MP4 Dublado", is_file: true, can_download: false,
+        },
+        {
+          ID: "native_media_v2:262637:131927:1:1:171603:8a3677b5fb998b85fa47bb6d4d1248f6",
+          type: 2, name: "MP4 Legendado", is_file: true, can_download: false,
+        },
+      ],
+      flags: { mp4_active: true, native_player_active: true },
+    },
+  });
+
+  let corpoEnviado = null;
+  let urlChamada = null;
+  const fetchStub = async (url, init) => {
+    urlChamada = url;
+    corpoEnviado = new URLSearchParams(init.body);
+    return new Response(RESPOSTA_REAL, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const opcoes = await _test.fetchBootstrap(
+    fetchStub,
+    _test.createCookieJar(),
+    { url: "https://superflixapi.pro/serie/dexter-new-blood/1/1", html: "" },
+    "TOKEN_FALSO.ASSINATURA_FALSA",
+    "122952",
+    "/serie/dexter-new-blood/1/1",
+    "UA-de-teste",
+  );
+
+  assert.equal(urlChamada, "https://superflixapi.pro/player/bootstrap");
+  // Campos exatamente como o provedor recebe, incluindo as duas grafias do token.
+  assert.equal(corpoEnviado.get("contentid"), "122952");
+  assert.equal(corpoEnviado.get("type"), "serie");
+  assert.equal(corpoEnviado.get("season"), "1");
+  assert.equal(corpoEnviado.get("episode"), "1");
+  assert.equal(corpoEnviado.get("page_token"), "TOKEN_FALSO.ASSINATURA_FALSA");
+  assert.equal(corpoEnviado.get("pageToken"), "TOKEN_FALSO.ASSINATURA_FALSA");
+
+  assert.deepEqual(opcoes.map((o) => o.label), ["Servidor 152777", "MP4 Dublado", "MP4 Legendado"]);
+  // ID numérico e ID em string precisam sobreviver os dois.
+  assert.equal(opcoes[0].id, "152777");
+  assert.equal(opcoes[1].id, "native_media_v2:262627:131927:1:1:171230:ed30d8ad975b394a3be785ea0cd2ad07");
+  assert.equal(opcoes[0].isFile, false);
+  assert.equal(opcoes[1].isFile, true);
+  // O servidor incorporado precisa ser sondado primeiro.
+  assert.ok(opcoes[0].orderScore > opcoes[1].orderScore);
 });
 
 test("mídia e legenda em HTTP são promovidas para HTTPS", () => {

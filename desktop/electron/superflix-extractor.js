@@ -190,25 +190,38 @@ function sourceScore(id, context) {
   return score;
 }
 
+// Aceita o ID numérico simples, o `native_media:123` antigo e o
+// `native_media_v2:262627:131927:1:1:171230:<md5>` atual. A validação anterior
+// exigia dígitos após o prefixo e descartava todos os servidores nativos novos.
+const SOURCE_ID_PATTERN = /^(?:native_media(?:_v\d+)?:[A-Za-z0-9:_-]+|\d+)$/;
+
+/** Servidor incorporado em vez de arquivo MP4 direto. */
+function ehServidorIncorporado(option) {
+  if (typeof option.isFile === "boolean") return !option.isFile;
+  return !option.id.startsWith("native_media");
+}
+
 function findSourceIds(html) {
   const normalized = normalizeHtml(html);
   const items = new Map();
 
   const add = (id, index) => {
     const clean = String(id || "").trim();
-    if (!/^(?:native_media:)?\d+$/.test(clean)) return;
+    if (!SOURCE_ID_PATTERN.test(clean)) return;
     const context = normalized.slice(Math.max(0, index - 300), Math.min(normalized.length, index + 300));
     const score = sourceScore(clean, context);
     const previous = items.get(clean);
     if (!previous || score > previous.score) items.set(clean, { id: clean, score, index });
   };
 
-  for (const match of normalized.matchAll(/native_media:\d+/gi)) add(match[0], match.index || 0);
+  for (const match of normalized.matchAll(/native_media(?:_v\d+)?:[A-Za-z0-9:_-]+/gi)) {
+    add(match[0], match.index || 0);
+  }
 
   const patterns = [
-    /(?:video[_-]?id|data-video-id|data-player-id|data-source-id|data-id)\s*[:=]\s*["']?((?:native_media:)?\d+)/gi,
-    /name=["']video_id["'][^>]*value=["']((?:native_media:)?\d+)["']/gi,
-    /value=["']((?:native_media:)?\d+)["'][^>]*name=["']video_id["']/gi,
+    /(?:video[_-]?id|data-video-id|data-player-id|data-source-id|data-id)\s*[:=]\s*["']?((?:native_media(?:_v\d+)?:)?[A-Za-z0-9:_-]+)/gi,
+    /name=["']video_id["'][^>]*value=["']((?:native_media(?:_v\d+)?:)?[A-Za-z0-9:_-]+)["']/gi,
+    /value=["']((?:native_media(?:_v\d+)?:)?[A-Za-z0-9:_-]+)["'][^>]*name=["']video_id["']/gi,
   ];
   for (const pattern of patterns) {
     for (const match of normalized.matchAll(pattern)) add(match[1], match.index || 0);
@@ -217,6 +230,133 @@ function findSourceIds(html) {
   return [...items.values()]
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((item) => item.id);
+}
+
+/**
+ * `contentid` que /player/bootstrap exige. É um identificador interno do
+ * SuperFlix — não é o TMDB nem o `embed_item_id` do token — então só resta
+ * procurá-lo na página.
+ */
+function findContentId(html) {
+  const normalized = normalizeHtml(html);
+  const patterns = [
+    /["']?content[_-]?id["']?\s*[:=]\s*["']?(\d{2,12})/i,
+    /name=["']contentid["'][^>]*value=["'](\d{2,12})["']/i,
+    /value=["'](\d{2,12})["'][^>]*name=["']contentid["']/i,
+    /data-content-id=["'](\d{2,12})["']/i,
+    /contentid=(\d{2,12})/i,
+  ];
+  for (const pattern of patterns) {
+    const found = normalized.match(pattern)?.[1];
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Extrai tipo/temporada/episódio de um caminho como /serie/dexter/1/1 ou /filme/xxx. */
+function contentCoordinates(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  const primeiro = (parts[0] || "").toLowerCase();
+  const tipo = primeiro === "serie" || primeiro === "filme" ? primeiro : "filme";
+  if (tipo !== "serie") return { tipo, season: null, episode: null };
+  return { tipo, season: parts[2] || null, episode: parts[3] || null };
+}
+
+/** Ordem de inspeção — não decide a escolha final, só quem é sondado primeiro. */
+function optionOrderScore(option) {
+  const text = String(option.label || "").toLowerCase();
+  let score = ehServidorIncorporado(option) ? 100 : 0;
+  if (/dublad|portugu|pt-br/.test(text)) score += 40;
+  if (/legend|subtitle|leg\b/.test(text)) score -= 10;
+  if (/full\s*hd|1080|hd/.test(text)) score += 5;
+  return score;
+}
+
+/**
+ * Pede a lista de servidores ao protocolo atual. Antes essa lista era raspada do
+ * HTML de uma página Vizero/WarezCDN que saiu da cadeia; agora vem em JSON, já
+ * com o nome e o tipo de cada servidor.
+ */
+async function fetchBootstrap(fetchImpl, jar, page, pageToken, contentId, contentPath, ua) {
+  const origin = new URL(page.url).origin;
+  const { tipo, season, episode } = contentCoordinates(contentPath);
+
+  const form = new URLSearchParams();
+  form.set("contentid", contentId);
+  form.set("type", tipo);
+  if (season) form.set("season", season);
+  if (episode) form.set("episode", episode);
+  form.set("_token", "");
+  form.set("page_token", pageToken);
+  // O provedor envia o token nas duas grafias; manter as duas evita depender de
+  // qual delas o backend lê.
+  form.set("pageToken", pageToken);
+
+  const response = await requestOnce(fetchImpl, jar, `${origin}/player/bootstrap`, {
+    ua,
+    method: "POST",
+    referer: page.url,
+    dest: "empty",
+    mode: "cors",
+    accept: "*/*",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Origin: origin,
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    body: form.toString(),
+  });
+
+  const text = await response.text();
+  if (!response.ok) throw new Error(`player/bootstrap HTTP ${response.status}`);
+  const json = JSON.parse(text);
+  const options = json?.data?.options;
+  if (!Array.isArray(options)) throw new Error("player/bootstrap sem options");
+
+  const parsed = [];
+  for (const option of options) {
+    // ID vem como número nos servidores incorporados e como string nos nativos.
+    const id = option?.ID === undefined || option.ID === null ? "" : String(option.ID).trim();
+    if (!id) continue;
+    const item = {
+      id,
+      label: option.name || `Servidor ${id}`,
+      isFile: Boolean(option.is_file),
+    };
+    item.orderScore = optionOrderScore(item);
+    parsed.push(item);
+  }
+  return parsed;
+}
+
+/**
+ * Lista de servidores pelo protocolo atual, caindo para a varredura de HTML
+ * quando o `contentid` não está na página ou o bootstrap não responde.
+ */
+async function resolveOptions(fetchImpl, jar, page, pageToken, payload, ua) {
+  const contentId = findContentId(page.html);
+  if (contentId) {
+    const contentPath = payload?.embed_content_path || new URL(page.url).pathname;
+    const bootstrap = await fetchBootstrap(fetchImpl, jar, page, pageToken, contentId, contentPath, ua)
+      .catch((error) => {
+        slog("bootstrap_skip", String(error?.message || error).slice(0, 120));
+        return [];
+      });
+    if (bootstrap.length) {
+      slog("bootstrap", "servidores=" + bootstrap.map((o) => o.label).join(", "));
+      return bootstrap.sort((a, b) => b.orderScore - a.orderScore);
+    }
+  } else {
+    slog("bootstrap_skip", "contentid não encontrado na página");
+  }
+
+  // Protocolo legado: os IDs vinham no HTML e o rótulo era o texto ao redor.
+  return findSourceIds(page.html).map((id, index) => ({
+    id,
+    label: id,
+    isFile: null,
+    orderScore: -index,
+  }));
 }
 
 function findNativeMediaSource(html, baseUrl) {
@@ -408,6 +548,13 @@ async function resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer) {
     const parsed = new URL(finalUrl);
     slog("page", `hop=${hop} url=${safeUrlLabel(finalUrl)} bytes=${page.text.length}`);
 
+    // Protocolo atual: a própria página do SuperFlix traz page_token e contentid,
+    // e a lista de servidores vem de /player/bootstrap. Seguir links daqui só
+    // levava a becos, já que Vizero/WarezCDN saíram da cadeia.
+    if (findPageToken(page.text) && findContentId(page.text)) {
+      return { url: finalUrl, html: page.text };
+    }
+
     if (parsed.hostname.includes("warezcdn") && findPageToken(page.text)) {
       return { url: finalUrl, html: page.text };
     }
@@ -434,7 +581,12 @@ async function resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer) {
 
 async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua) {
   const origin = new URL(warezPage.url).origin;
-  const endpoint = `${origin}/player/source?host=${encodeURIComponent(host)}`;
+  // Sem Vizero/WarezCDN na cadeia, host e site vão vazios e o endpoint perde a
+  // query. Mandar "vizero.buzz" (o antigo padrão) descrevia um salto que não
+  // acontece mais.
+  const endpoint = host
+    ? `${origin}/player/source?host=${encodeURIComponent(host)}`
+    : `${origin}/player/source`;
   const form = new URLSearchParams({
     video_id: sourceId,
     page_token: pageToken,
@@ -572,7 +724,7 @@ function looksLikeMp4Url(url) {
  * vale mais que um MP4 — porque só o master carrega várias qualidades, faixas de
  * áudio e legendas para o JW Player montar os menus.
  */
-function profileScore(tipo, info, hasSubtitles, sourceId) {
+function profileScore(tipo, info, hasSubtitles, option) {
   let score;
   if (info?.isMaster) score = 70 + Math.min(info.variants.length, 5) * 6;
   else if (tipo === "hls") score = 45;
@@ -581,7 +733,7 @@ function profileScore(tipo, info, hasSubtitles, sourceId) {
   if ((info?.audioTracks?.length || 0) >= 2) score += 35;
   if (hasSubtitles) score += 25;
   // Desempate: historicamente o servidor alternativo é o mais estável.
-  if (!sourceId.startsWith("native_media:")) score += 3;
+  if (ehServidorIncorporado(option)) score += 3;
   return score;
 }
 
@@ -590,7 +742,7 @@ function profileScore(tipo, info, hasSubtitles, sourceId) {
  * o formato, um Range de 1 byte revela o Content-Type; o corpo só é lido quando o
  * alvo é mesmo um manifesto.
  */
-async function profileSource(fetchImpl, jar, sourceId, candidate, ua) {
+async function profileSource(fetchImpl, jar, option, candidate, ua) {
   const url = candidate.stream;
   let tipo = candidate.tipo || (looksLikeHlsUrl(url) ? "hls" : looksLikeMp4Url(url) ? "mp4" : null);
 
@@ -651,16 +803,16 @@ async function profileSource(fetchImpl, jar, sourceId, candidate, ua) {
   }
 
   const hasSubtitles = subtitles.size > 0 || (info?.subtitles.length || 0) > 0;
-  const score = profileScore(tipo, info, hasSubtitles, sourceId);
+  const score = profileScore(tipo, info, hasSubtitles, option);
   slog(
     "profile",
-    `source=${sourceId} tipo=${tipo} master=${Boolean(info?.isMaster)} ` +
+    `source=${option.label} tipo=${tipo} master=${Boolean(info?.isMaster)} ` +
       `qualidades=${info?.variants.length || 0} audios=${info?.audioTracks.length || 0} ` +
       `legendas=${subtitles.size} noManifesto=${info?.subtitles.length || 0} nota=${score}`,
   );
 
   return {
-    sourceId,
+    option,
     score,
     result: {
       ...candidate,
@@ -698,11 +850,14 @@ async function extractSuperflix(embedUrl, options = {}) {
   if (!pageToken) throw new Error("page_token não encontrado na página WarezCDN");
 
   const tokenPayload = decodeTokenPayload(pageToken) || {};
-  const host = tokenPayload.embed_context_host || new URL(warezPage.url).searchParams.get("host") || "vizero.buzz";
-  const sourceIds = findSourceIds(warezPage.html);
-  if (!sourceIds.length) throw new Error("nenhum video_id encontrado na página WarezCDN");
+  const host = tokenPayload.embed_context_host || new URL(warezPage.url).searchParams.get("host") || "";
+  const sourceOptions = await resolveOptions(fetchImpl, jar, warezPage, pageToken, tokenPayload, ua);
+  if (!sourceOptions.length) throw new Error("nenhum servidor encontrado para o conteúdo");
 
-  slog("sources", `total=${sourceIds.length} native=${sourceIds.filter((id) => id.startsWith("native_media:")).length}`);
+  slog(
+    "sources",
+    `total=${sourceOptions.length} nativos=${sourceOptions.filter((o) => !ehServidorIncorporado(o)).length}`,
+  );
 
   const failures = [];
   const profiles = [];
@@ -712,9 +867,9 @@ async function extractSuperflix(embedUrl, options = {}) {
   // Inspeciona os servidores em vez de aceitar o primeiro que responde: o primeiro
   // funcional costuma ser um MP4 de qualidade única, enquanto outro servidor entrega
   // um master HLS com qualidades, áudio e legendas.
-  for (const sourceId of sourceIds) {
+  for (const sourceOption of sourceOptions) {
     try {
-      const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua);
+      const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceOption.id, host, ua);
       if (!targetUrl) throw new Error("video_url inválida");
       const candidate = await resolveSource(
         fetchImpl,
@@ -725,16 +880,16 @@ async function extractSuperflix(embedUrl, options = {}) {
         ua,
         options.extractEmbedPlayer,
       );
-      const profile = await profileSource(fetchImpl, jar, sourceId, candidate, ua);
+      const profile = await profileSource(fetchImpl, jar, sourceOption, candidate, ua);
       profiles.push(profile);
       if (profile.score >= EXCELLENT_SCORE) {
-        slog("probe_stop", `fonte completa encontrada em ${sourceId}`);
+        slog("probe_stop", `fonte completa encontrada em ${sourceOption.label}`);
         break;
       }
     } catch (error) {
       const message = error?.message || String(error);
-      failures.push(`${sourceId}: ${message}`);
-      slog("source_skip", `source=${sourceId} erro=${message.slice(0, 100)}`);
+      failures.push(`${sourceOption.label}: ${message}`);
+      slog("source_skip", `source=${sourceOption.label} erro=${message.slice(0, 100)}`);
     }
     if (Date.now() > probeDeadline && profiles.length) {
       slog("probe_stop", `orçamento de inspeção esgotado com ${profiles.length} fonte(s)`);
@@ -749,9 +904,8 @@ async function extractSuperflix(embedUrl, options = {}) {
   const best = profiles.reduce((a, b) => (b.score > a.score ? b : a));
   slog(
     "ok",
-    `escolhida=${best.sourceId.startsWith("native_media:") ? "native" : "embed"} ` +
-      `nota=${best.score} entre=${profiles.length} tipo=${best.result.tipo} ` +
-      `host=${safeUrlLabel(best.result.stream)}`,
+    `escolhida=${best.option.label} nota=${best.score} entre=${profiles.length} ` +
+      `tipo=${best.result.tipo} host=${safeUrlLabel(best.result.stream)}`,
   );
   return { ...best.result, expiresAt };
 }
@@ -767,6 +921,12 @@ module.exports = {
     findNativeMediaSource,
     findDirectMedia,
     findSubtitleTracks,
+    findContentId,
+    contentCoordinates,
+    fetchBootstrap,
+    createCookieJar,
+    optionOrderScore,
+    ehServidorIncorporado,
     decodeTokenPayload,
     secureTransportUrl,
     profileScore,

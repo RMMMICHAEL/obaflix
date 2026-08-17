@@ -1280,7 +1280,9 @@ export function CustomPlayer({
       // comportamento antigo (renovar ao falhar) continua valendo.
       const EXPIRY_RENEW_MARGIN_MS = 60_000;
       const EXPIRY_MIN_AHEAD_MS = 120_000;
-      const EXPIRY_MAX_AHEAD_MS = 6 * 60 * 60 * 1000;
+      // Um page_token real do SuperFlix mediu 6h00m23s de validade. Com o teto em
+      // exatamente 6h o agendamento era descartado por 23 segundos e nunca rodava.
+      const EXPIRY_MAX_AHEAD_MS = 12 * 60 * 60 * 1000;
 
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       const expiresAt = streamExpiresAtRef.current;
