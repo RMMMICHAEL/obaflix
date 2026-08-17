@@ -458,13 +458,22 @@ export function CustomPlayer({
     });
   }
 
-  // Player 5: WatchPlay — somente filmes
-  if (isDesktop && tmdbId && conteudoTipo === "filme") {
-    allFontes.push({
-      label: "Player 5",
-      embedUrl: `https://v1.watchplay.shop/movie/${tmdbId}`,
-      tokenized: false,
-    });
+  // Player 5: WatchPlay. Os extratores (Kotlin, Electron e rota web) já tratavam
+  // /tvshow desde sempre; era só aqui que a fonte não chegava a ser oferecida.
+  if (isDesktop && tmdbId) {
+    if (conteudoTipo === "filme") {
+      allFontes.push({
+        label: "Player 5",
+        embedUrl: `https://v1.watchplay.shop/movie/${encodeURIComponent(tmdbId)}`,
+        tokenized: false,
+      });
+    } else if (conteudoTipo === "serie" && temporada && numeroEp) {
+      allFontes.push({
+        label: "Player 5",
+        embedUrl: `https://v1.watchplay.shop/tvshow/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`,
+        tokenized: false,
+      });
+    }
   }
 
   // Player 6: Wish
