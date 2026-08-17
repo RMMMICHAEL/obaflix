@@ -33,6 +33,9 @@ private const val SUPERFLIX_EXCELLENT_SCORE = 110
 /** Espera depois da primeira mídia observada, para o player pedir as legendas. */
 private const val SUPERFLIX_SUBTITLE_GRACE_MS = 1_800L
 
+/** Intervalo entre tentativas da cadeia direta enquanto o WebView abre a sessão. */
+private const val SUPERFLIX_DIRECT_RETRY_MS = 2_500L
+
 /** Resultado nativo com Referer opcional para o CDN final. */
 data class NativeExtractResult(
     val stream: String,
@@ -1145,9 +1148,17 @@ object SuperflixExtractor {
             var cookieHeader = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
 
             try {
-                return extractWithCookies(embedUrl, cookieHeader)
+                val direto = extractWithCookies(embedUrl, cookieHeader)
+                log("direto", "resolvido sem interação do usuário")
+                return direto
             } catch (_: CloudflareChallengeException) {
                 log("cloudflare", "aguardando validação do WebView")
+            } catch (error: Exception) {
+                // Falhar aqui não pode encerrar a extração. O WebView ainda vai
+                // abrir a sessão, e a tentativa direta se repete adiante com o
+                // cookie válido. Antes, qualquer erro que não fosse Cloudflare
+                // abortava tudo e sobrava só a escolha manual de servidor.
+                log("direto_falhou", error.message?.take(160) ?: error.javaClass.simpleName)
             }
 
             // O iframe visível executa a validação e o player original. Além das páginas
@@ -1156,6 +1167,7 @@ object SuperflixExtractor {
             // reimplementar o JavaScript protegido do provedor.
             val deadline = System.currentTimeMillis() + 120_000L
             var lastObserved: String? = null
+            var proximaTentativaDireta = 0L
             while (System.currentTimeMillis() < deadline) {
                 delay(350L)
 
@@ -1178,11 +1190,22 @@ object SuperflixExtractor {
                     } catch (error: Exception) {
                         log("cloudflare_retry", error.message?.take(160) ?: error.javaClass.simpleName)
                     }
-                } else if (!current.isNullOrBlank() && current.contains("cf_clearance=")) {
+                } else if (!current.isNullOrBlank() && current.contains("cf_clearance=") &&
+                    System.currentTimeMillis() >= proximaTentativaDireta
+                ) {
+                    // Com o desafio resolvido a cadeia completa costuma funcionar sem
+                    // o usuário escolher servidor. O intervalo evita refazê-la a cada
+                    // 350ms enquanto o provedor ainda não liberou a sessão.
+                    proximaTentativaDireta = System.currentTimeMillis() + SUPERFLIX_DIRECT_RETRY_MS
                     try {
                         log("cloudflare", "cf_clearance recebido; retomando extração")
-                        return extractWithCookies(embedUrl, cookieHeader)
-                    } catch (_: CloudflareChallengeException) { }
+                        val direto = extractWithCookies(embedUrl, cookieHeader)
+                        log("direto", "resolvido após o desafio, sem escolha manual")
+                        return direto
+                    } catch (_: CloudflareChallengeException) {
+                    } catch (error: Exception) {
+                        log("direto_falhou", error.message?.take(160) ?: error.javaClass.simpleName)
+                    }
                 }
             }
 
