@@ -19,6 +19,10 @@
 .PARAMETER Dispositivo
     Endereco do emulador, quando o adb nao o encontra sozinho.
     MEmu costuma ser 127.0.0.1:21503 e LDPlayer 127.0.0.1:5555.
+    Sem este parametro o script tenta as portas conhecidas por conta propria.
+
+.PARAMETER Adb
+    Caminho do adb.exe. So e necessario se a busca automatica falhar.
 
 .EXAMPLE
     .\scripts\capturar-log-android.ps1
@@ -32,7 +36,8 @@
 param(
     [string]$Resumir,
     [string]$Arquivo,
-    [string]$Dispositivo
+    [string]$Dispositivo,
+    [string]$Adb
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,43 +94,106 @@ if ($Resumir) {
 }
 
 # ── Localiza o adb ────────────────────────────────────────────────────────────
+# Emuladores e o SDK costumam ser instalados fora do disco do sistema, entao a
+# lista fixa cobre so os casos comuns e a busca resolve o resto.
 $candidatos = @(
     "adb",
     "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe",
     "$env:ProgramFiles\Microvirt\MEmu\adb.exe",
     "${env:ProgramFiles(x86)}\Microvirt\MEmu\adb.exe",
-    "C:\Program Files\Microvirt\MEmuHyperv\adb.exe",
     "C:\LDPlayer\LDPlayer9\adb.exe",
-    "D:\LDPlayer\LDPlayer9\adb.exe",
     "C:\Program Files\BlueStacks_nxt\HD-Adb.exe"
 )
+if ($Adb) { $candidatos = @($Adb) + $candidatos }
 
-$adb = $null
-foreach ($candidato in $candidatos) {
-    $encontrado = Get-Command $candidato -ErrorAction SilentlyContinue
-    if ($encontrado) { $adb = $encontrado.Source; break }
-    if (Test-Path $candidato) { $adb = $candidato; break }
+function Find-Adb {
+    foreach ($candidato in $script:candidatos) {
+        if (-not $candidato) { continue }
+        $encontrado = Get-Command $candidato -ErrorAction SilentlyContinue
+        if ($encontrado) { return $encontrado.Source }
+        if (Test-Path $candidato) { return $candidato }
+    }
+
+    # Mesmos layouts de instalacao, mas em qualquer disco: e so Test-Path, entao
+    # sai barato e evita cair na varredura recursiva no caso comum de o SDK ou o
+    # emulador estarem no D:.
+    $relativos = @(
+        "Android\Sdk\platform-tools\adb.exe",
+        "platform-tools\adb.exe",
+        "Programas\Microvirt\MEmu\adb.exe",
+        "Program Files\Microvirt\MEmu\adb.exe",
+        "Program Files (x86)\Microvirt\MEmu\adb.exe",
+        "Microvirt\MEmu\adb.exe",
+        "LDPlayer\LDPlayer9\adb.exe",
+        "LDPlayer9\adb.exe",
+        "Nox\bin\adb.exe"
+    )
+    foreach ($disco in (Get-PSDrive -PSProvider FileSystem)) {
+        foreach ($relativo in $relativos) {
+            $caminho = Join-Path $disco.Root $relativo
+            if (Test-Path $caminho) { return $caminho }
+        }
+    }
+
+    Write-Host "adb nao esta nos caminhos usuais; procurando nos discos..." -ForegroundColor DarkGray
+    $raizes = @()
+    foreach ($disco in (Get-PSDrive -PSProvider FileSystem)) {
+        foreach ($sub in @("Android", "Programas", "Program Files", "Program Files (x86)", "LDPlayer", "Nox")) {
+            $caminho = Join-Path $disco.Root $sub
+            if (Test-Path $caminho) { $raizes += $caminho }
+        }
+    }
+    foreach ($raiz in $raizes) {
+        $achado = Get-ChildItem -Path $raiz -Filter "adb.exe" -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($achado) { return $achado.FullName }
+    }
+    return $null
 }
+
+$adb = Find-Adb
 if (-not $adb) {
-    throw "adb nao encontrado. Instale o platform-tools ou passe o caminho em `$env:PATH."
+    Write-Host ""
+    Write-Host "adb.exe nao encontrado." -ForegroundColor Red
+    Write-Host "Passe o caminho direto, por exemplo:" -ForegroundColor Yellow
+    Write-Host "  .\scripts\capturar-log-android.ps1 -Adb 'D:\Android\Sdk\platform-tools\adb.exe'"
+    return
 }
 Write-Host "adb: $adb" -ForegroundColor DarkGray
+
+function Get-Dispositivos {
+    return & $adb devices | Select-Object -Skip 1 | Where-Object { $_ -match "\tdevice$" }
+}
 
 if ($Dispositivo) {
     Write-Host "conectando em $Dispositivo..." -ForegroundColor DarkGray
     & $adb connect $Dispositivo | Out-Null
 }
 
-$dispositivos = & $adb devices | Select-Object -Skip 1 | Where-Object { $_ -match "\tdevice$" }
+$dispositivos = Get-Dispositivos
+if (-not $dispositivos -and -not $Dispositivo) {
+    # Emulador aberto nem sempre aparece sozinho: cada um escuta numa porta
+    # propria e o adb so a enxerga depois de um connect explicito.
+    Write-Host "nenhum dispositivo listado; tentando as portas conhecidas..." -ForegroundColor DarkGray
+    foreach ($porta in @("127.0.0.1:21503", "127.0.0.1:21513", "127.0.0.1:5555", "127.0.0.1:5556", "127.0.0.1:62001")) {
+        & $adb connect $porta 2>&1 | Out-Null
+        $dispositivos = Get-Dispositivos
+        if ($dispositivos) { Write-Host "conectado em $porta" -ForegroundColor DarkGray; break }
+    }
+}
+
 if (-not $dispositivos) {
     Write-Host ""
     Write-Host "Nenhum dispositivo conectado." -ForegroundColor Red
-    Write-Host "Com o emulador aberto, tente indicar a porta:" -ForegroundColor Yellow
-    Write-Host "  .\scripts\capturar-log-android.ps1 -Dispositivo 127.0.0.1:21503   # MEmu"
-    Write-Host "  .\scripts\capturar-log-android.ps1 -Dispositivo 127.0.0.1:5555    # LDPlayer"
+    Write-Host "Confira se o emulador esta aberto e com depuracao USB ligada." -ForegroundColor Yellow
+    Write-Host "Se souber a porta, passe direto:" -ForegroundColor Yellow
+    Write-Host "  .\scripts\capturar-log-android.ps1 -Dispositivo 127.0.0.1:21503"
     return
 }
-Write-Host "dispositivo: $(($dispositivos[0] -split '\s+')[0])" -ForegroundColor DarkGray
+# @() forca array: com um unico dispositivo o Where-Object devolve string, e
+# indexar direto pegava o primeiro CARACTERE do serial em vez do serial.
+$serial = (@($dispositivos)[0] -split '\s+')[0]
+Write-Host "dispositivo: $serial" -ForegroundColor DarkGray
 
 if (-not $Arquivo) {
     $Arquivo = "log-obaflix-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
