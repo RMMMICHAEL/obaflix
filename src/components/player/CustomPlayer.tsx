@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, Settings2, Check } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, PictureInPicture2, Settings2, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -509,6 +509,7 @@ export function CustomPlayer({
   // Controls UI
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPiP, setIsPiP] = useState(false);
   const [qualityLevels, setQualityLevels] = useState<QualityLevel[]>([]);
   const [currentQuality, setCurrentQuality] = useState(0);
   const [visualQualityLabel, setVisualQualityLabel] = useState("");
@@ -721,6 +722,58 @@ export function CustomPlayer({
     return () => document.removeEventListener("fullscreenchange", handler);
   }, []);
 
+  // ── Picture-in-picture ─────────────────────────────────────────────────────
+  // Dois caminhos de reproducao tem um <video> de verdade no DOM: o nativo, que e
+  // o nosso videoRef, e o do JW Player, que cria o proprio elemento dentro do
+  // container. O caminho "iframe" e de outra origem — nao ha elemento acessivel,
+  // entao o botao nem aparece em vez de aparecer quebrado.
+  const getVideoElement = useCallback((): HTMLVideoElement | null => {
+    if (streamTipo === "native") return videoRef.current;
+    if (streamTipo === "hls" || streamTipo === "mp4") {
+      return document.querySelector<HTMLVideoElement>("#jw-player-container video");
+    }
+    return null;
+  }, [streamTipo]);
+
+  const pipDisponivel =
+    typeof document !== "undefined" &&
+    document.pictureInPictureEnabled &&
+    streamTipo !== "iframe";
+
+  const togglePiP = useCallback(async () => {
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        return;
+      }
+      const video = getVideoElement();
+      if (!video) {
+        console.error("[player] PiP indisponivel: nenhum <video> acessivel para", streamTipo);
+        return;
+      }
+      // O JW Player marca o proprio elemento com disablePictureInPicture em
+      // algumas versoes; sem limpar isso o navegador recusa o pedido.
+      video.disablePictureInPicture = false;
+      await video.requestPictureInPicture();
+    } catch (error) {
+      const e = error as { name?: string; message?: string };
+      console.error("[player] PiP falhou:", e?.name, e?.message);
+    }
+  }, [getVideoElement, streamTipo]);
+
+  // O usuario pode sair do PiP pela janelinha do proprio sistema, entao o estado
+  // vem dos eventos do documento e nao do clique no botao.
+  useEffect(() => {
+    const entrou = () => setIsPiP(true);
+    const saiu = () => setIsPiP(false);
+    document.addEventListener("enterpictureinpicture", entrou);
+    document.addEventListener("leavepictureinpicture", saiu);
+    return () => {
+      document.removeEventListener("enterpictureinpicture", entrou);
+      document.removeEventListener("leavepictureinpicture", saiu);
+    };
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -750,11 +803,14 @@ export function CustomPlayer({
       } else if (e.code === "KeyF") {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.code === "KeyI") {
+        e.preventDefault();
+        togglePiP();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [streamTipo, toggleFullscreen]);
+  }, [streamTipo, toggleFullscreen, togglePiP]);
 
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number) => {
@@ -2329,6 +2385,17 @@ export function CustomPlayer({
                   >
                     <span className="hidden sm:inline text-xs font-medium">Próximo</span>
                     <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+                {pipDisponivel && (
+                  <button
+                    title={isPiP ? "Sair da janela flutuante" : "Janela flutuante"}
+                    aria-label={isPiP ? "Sair da janela flutuante" : "Assistir em janela flutuante"}
+                    aria-pressed={isPiP}
+                    className={btnCls}
+                    onClick={togglePiP}
+                  >
+                    <PictureInPicture2 className="w-5 h-5" />
                   </button>
                 )}
                 <button
