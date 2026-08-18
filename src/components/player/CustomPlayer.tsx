@@ -681,10 +681,37 @@ export function CustomPlayer({
     // O container do CustomPlayer é desmontado pelo router.push(nextUrl), mas o
     // documentElement permanece montado durante a navegação do Next.js.
     const el = document.documentElement;
-    if (!document.fullscreenElement) {
-      el.requestFullscreen?.().catch(() => {});
-    } else {
-      document.exitFullscreen?.().catch(() => {});
+    const bridge = (window as { obaflixDesktop?: { toggleFullscreen?: () => void } }).obaflixDesktop;
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch((error) => {
+        console.error("[player] exitFullscreen falhou:", error?.name, error?.message);
+        bridge?.toggleFullscreen?.();
+      });
+      return;
+    }
+
+    // No Electron, uma versao do app que nega a permissao "fullscreen" faz esta
+    // promise ficar PENDENTE para sempre: nao resolve nem rejeita, entao o botao
+    // parecia morto e nem o catch rodava. Por isso o fallback e por tempo, e nao
+    // so por erro — assim as instalacoes antigas do .exe tambem voltam a ter tela
+    // cheia, usando a janela nativa via bridge.
+    let resolvido = false;
+    el.requestFullscreen?.().then(
+      () => { resolvido = true; },
+      (error) => {
+        resolvido = true;
+        console.error("[player] requestFullscreen falhou:", error?.name, error?.message);
+        bridge?.toggleFullscreen?.();
+      },
+    );
+
+    if (bridge?.toggleFullscreen) {
+      window.setTimeout(() => {
+        if (resolvido || document.fullscreenElement) return;
+        console.error("[player] requestFullscreen ficou pendente — usando a janela nativa do Electron");
+        bridge.toggleFullscreen?.();
+      }, 700);
     }
   }, []);
 

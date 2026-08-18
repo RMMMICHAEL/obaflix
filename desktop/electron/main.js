@@ -390,10 +390,31 @@ function configureSession() {
     });
   });
 
-  // The streaming shell does not need camera, microphone, geolocation, USB,
-  // notifications or other privileged Chromium permissions.
-  ses.setPermissionCheckHandler(() => false);
-  ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  // ── Permissoes ──────────────────────────────────────────────────────────
+  // O app nao precisa de camera, microfone, geolocalizacao, USB nem notificacoes.
+  // Mas negar TUDO tambem derrubava o fullscreen: o Chromium trata
+  // element.requestFullscreen() como um pedido de permissao ("fullscreen"), entao
+  // o handler recusava a tela cheia da reproducao. Como o site engole a rejeicao
+  // com .catch(() => {}), o botao simplesmente nao fazia nada e nada era logado.
+  //
+  // "fullscreen" e "pointerLock" sao capacidades de apresentacao, sempre iniciadas
+  // por gesto do usuario e reversiveis com Esc — nao expoem dado nenhum.
+  // "mediaKeySystem" e o EME: sem ele, qualquer fonte protegida falha calada.
+  const PERMISSOES_LIBERADAS = new Set(["fullscreen", "pointerLock", "mediaKeySystem"]);
+
+  ses.setPermissionCheckHandler((_webContents, permission) => {
+    const liberada = PERMISSOES_LIBERADAS.has(permission);
+    if (!liberada) log.debug("permissao", "consulta negada", { permissao: permission });
+    return liberada;
+  });
+
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const liberada = PERMISSOES_LIBERADAS.has(permission);
+    log[liberada ? "debug" : "info"]("permissao", liberada ? "pedido liberado" : "pedido negado", {
+      permissao: permission,
+    });
+    callback(liberada);
+  });
 
   // ── Strip CSP do Vercel ─────────────────────────────────────────────────
   // O header Content-Security-Policy (connect-src 'self') bloqueia requests do
