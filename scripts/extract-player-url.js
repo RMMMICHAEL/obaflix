@@ -145,7 +145,19 @@ async function extract(embedUrl) {
   return results;
 }
 
-const embedUrl = process.argv[2];
+/** So aceita http(s): bloqueia file:, data:, javascript: e afins no page.goto. */
+function assertSafeUrl(raw) {
+  let u;
+  try { u = new URL(raw); }
+  catch { console.error("✖ URL invalida:", raw); process.exit(1); }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    console.error("✖ Esquema nao permitido:", u.protocol, "— use http: ou https:");
+    process.exit(1);
+  }
+  return u.href;
+}
+
+const embedUrl = process.argv[2] && assertSafeUrl(process.argv[2]);
 if (!embedUrl) {
   console.log("Uso: node scripts/extract-player-url.js <embed_url>");
   console.log('Ex:  node scripts/extract-player-url.js "https://vidsrc.to/embed/movie/tt30749092"');

@@ -13,7 +13,16 @@ import { join } from "path";
 
 const APP     = "https://app.megafrixapi.com/4.6.2";
 const OBAFLIX = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
-const TOKEN   = process.env.ADMIN_SECRET_TOKEN ?? "@Oba152535";
+const TOKEN   = requireToken();
+
+function requireToken(): string {
+  const t = process.env.ADMIN_SECRET_TOKEN;
+  if (!t) {
+    console.error("✖ ADMIN_SECRET_TOKEN não definido. Configure a variável de ambiente antes de rodar este script.");
+    process.exit(1);
+  }
+  return t;
+}
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");

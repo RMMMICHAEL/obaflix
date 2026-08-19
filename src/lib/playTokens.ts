@@ -47,6 +47,10 @@ function keys(): [Buffer, Buffer] {
   return [deriveKey(w), deriveKey(w - 1)];
 }
 
+// AES-256-GCM: IV de 96 bits e tag de 128 bits (valores completos, sem truncamento).
+const GCM_IV_BYTES = 12;
+const GCM_TAG_BYTES = 16;
+
 // ── Helpers criptográficos ────────────────────────────────────────────────────
 
 function hmacSign(data: string, key: Buffer): string {
@@ -242,8 +246,8 @@ export async function createStreamToken(
   };
 
   const plain = JSON.stringify(payload);
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const iv = crypto.randomBytes(GCM_IV_BYTES);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv, { authTagLength: GCM_TAG_BYTES });
   const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   const token = `${iv.toString("base64url")}.${enc.toString("base64url")}.${tag.toString("base64url")}`;
@@ -277,7 +281,9 @@ export async function resolveStreamToken(
       const iv = Buffer.from(parts[0], "base64url");
       const enc = Buffer.from(parts[1], "base64url");
       const tag = Buffer.from(parts[2], "base64url");
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+      // Tag GCM truncada enfraquece a resistencia a forja: exigimos os 16 bytes completos.
+      if (tag.length !== GCM_TAG_BYTES || iv.length !== GCM_IV_BYTES) continue;
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv, { authTagLength: GCM_TAG_BYTES });
       decipher.setAuthTag(tag);
       const plain = Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
       const p = JSON.parse(plain) as StreamTokenPayload;

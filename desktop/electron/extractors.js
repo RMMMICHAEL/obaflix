@@ -25,6 +25,12 @@ const REFERER_DEFAULT = "https://megaflix.lat/";
 // original de extractSecuredLink, anterior à generalização deste módulo.
 const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
 
+/** Escapa metacaracteres: season/episode vem da URL e entram num RegExp. */
+function escapeRegex(v) {
+  return String(v).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
 async function fetchHtml(url, referer = REFERER_DEFAULT, timeoutMs = 8000) {
@@ -319,7 +325,7 @@ async function extractWatchplayer(embedUrl) {
   let videoId;
   if (parts[0] === "tvshow") {
     const [, , season, episode] = parts;
-    const re = new RegExp(`data-contentid="(\\d+)"\\s+data-season="${season}"\\s+data-episode="${episode}"`);
+    const re = new RegExp(`data-contentid="(\\d+)"\\s+data-season="${escapeRegex(season)}"\\s+data-episode="${escapeRegex(episode)}"`);
     const contentId = html.match(re)?.[1];
     if (!contentId) throw new Error("episódio não encontrado (WatchPlayer)");
 

@@ -146,8 +146,18 @@ async function main() {
     process.exit(1);
   }
 
-  const templates = PLAYERS[tipo];
+  const templates = Object.prototype.hasOwnProperty.call(PLAYERS, tipo) ? PLAYERS[tipo] : null;
   if (!templates) { console.error("Tipo: 'filme' ou 'serie'"); process.exit(1); }
+
+  // Os ids entram em templates de URL — restringe a caracteres seguros para
+  // impedir que "&"/"?"/"//" reescrevam o destino do page.goto.
+  const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+  for (const [nome, valor] of [["id", id], ["temporada", temporada], ["episodio", episodio]]) {
+    if (valor !== undefined && !SAFE_ID.test(String(valor))) {
+      console.error(`✖ ${nome} invalido: ${valor}`);
+      process.exit(1);
+    }
+  }
 
   for (let i = 0; i < templates.length; i++) {
     const url = tipo === "filme"
