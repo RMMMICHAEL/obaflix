@@ -267,6 +267,26 @@ object SuperflixExtractor {
             host.contains("vizero") || host.contains("warezcdn")
     }
 
+    /**
+     * Nomeia o desafio encontrado, para o log dizer se ele se resolve sozinho.
+     *
+     * - embed_turnstile_interativo: portao proprio do SuperFlix. Exige resolver o
+     *   widget Turnstile e submeter o formulario; nenhuma espera passiva resolve.
+     * - turnstile: widget Turnstile sem o formulario de embed.
+     * - interstitial_cloudflare: "Just a moment"/challenge-running padrao, que
+     *   normalmente se resolve sozinho em alguns segundos.
+     */
+    private fun challengeKind(html: String): String {
+        val text = html.lowercase()
+        val temFormularioEmbed = text.contains("cf_embed_challenge")
+        val temTurnstile = text.contains("turnstilesitekey") || text.contains("cf-turnstile")
+        return when {
+            temFormularioEmbed && temTurnstile -> "embed_turnstile_interativo"
+            temTurnstile -> "turnstile"
+            else -> "interstitial_cloudflare"
+        }
+    }
+
     private fun isCloudflareChallenge(html: String): Boolean {
         val text = html.lowercase()
         return text.contains("name=\"cf_embed_challenge\"") ||
@@ -708,6 +728,12 @@ object SuperflixExtractor {
             log("page", "hop=$hop url=${safeUrl(page.url)} bytes=${page.html.length}")
 
             if (isCloudflareChallenge(page.html)) {
+                // Registra QUAL desafio veio. "cf_embed_challenge" + turnstileSiteKey
+                // e o portao interativo que o provedor colocou na frente do embed:
+                // ele exige que o widget Turnstile seja resolvido e o formulario
+                // submetido. Distinguir isso de um "Just a moment" comum importa,
+                // porque o segundo se resolve sozinho e o primeiro nao.
+                log("cloudflare_desafio", "tipo=${challengeKind(page.html)} url=${safeUrl(page.url)}")
                 throw CloudflareChallengeException()
             }
 
@@ -1165,6 +1191,13 @@ object SuperflixExtractor {
                 return direto
             } catch (_: CloudflareChallengeException) {
                 log("cloudflare", "aguardando validação do WebView")
+                // O portao do SuperFlix e interativo: so uma pessoa resolve. Em vez
+                // de esperar em silencio por algo que nunca chega sozinho, mostra a
+                // pagina do provedor para o usuario, como o Electron ja faz.
+                ObaflixApp.hostWebView?.get()?.let { host ->
+                    log("overlay", "abrindo desafio interativo para o usuario")
+                    SuperflixChallengeOverlay.abrir(host, embedUrl)
+                } ?: log("overlay", "WebView principal indisponivel; seguindo sem overlay")
             } catch (error: Exception) {
                 // Falhar aqui não pode encerrar a extração. O WebView ainda vai
                 // abrir a sessão, e a tentativa direta se repete adiante com o
@@ -1177,20 +1210,65 @@ object SuperflixExtractor {
             // assinadas, o WebViewClient observa o primeiro manifesto/MP4 real solicitado
             // pelo player. Essa URL pode ser entregue diretamente ao player nativo sem
             // reimplementar o JavaScript protegido do provedor.
-            val deadline = System.currentTimeMillis() + 120_000L
+            val inicioEspera = System.currentTimeMillis()
+            // Deadline movel: enquanto o overlay estiver aberto o usuario esta
+            // resolvendo o Turnstile e escolhendo servidor, e o relogio nao pode
+            // correr contra ele. O contador so volta a valer quando o overlay
+            // fecha — e a promise do extractStream fica pendente ate la, entao o
+            // CustomPlayer nao avanca para a proxima fonte no meio da interacao.
+            var deadline = inicioEspera + 120_000L
             var lastObserved: String? = null
             var proximaTentativaDireta = 0L
             var tentativasDiretas = 0
+            var proximoRelatorio = inicioEspera + 10_000L
+            var viuClearance = false
+            var overlayEsteveAberto = false
             while (System.currentTimeMillis() < deadline) {
                 delay(350L)
+
+                if (SuperflixChallengeOverlay.estaAberto) {
+                    // Empurra o prazo enquanto a interacao acontece.
+                    overlayEsteveAberto = true
+                    deadline = System.currentTimeMillis() + 120_000L
+                }
+
+                // Sem isto a espera ficava totalmente muda: o log mostrava
+                // "aguardando validacao" e nada mais ate o fallback cancelar, sem
+                // dizer se o cookie chegou, se alguma midia foi vista ou se
+                // simplesmente nada aconteceu.
+                if (System.currentTimeMillis() >= proximoRelatorio) {
+                    proximoRelatorio += 10_000L
+                    val segundos = (System.currentTimeMillis() - inicioEspera) / 1000
+                    log(
+                        "cloudflare_espera",
+                        "${segundos}s — cf_clearance=${if (viuClearance) "sim" else "nao"} " +
+                            "midia_observada=nao url_validada=${if (lastObserved != null) "sim" else "nao"}",
+                    )
+                }
 
                 playerState.observedSuperflixMedia?.let { media ->
                     log("media", "capturada kind=${media.kind} url=${safeUrl(media.url)}")
                     return awaitObservedMedia(playerState, embedUrl, media)
                 }
 
+                // Usuario fechou o overlay sem que midia aparecesse: desistiu do
+                // SuperFlix. Sai agora para o fallback tentar o proximo player, em
+                // vez de segurar a promise por mais dois minutos a toa.
+                if (overlayEsteveAberto && !SuperflixChallengeOverlay.estaAberto) {
+                    throw Exception(
+                        "SuperFlix: verificacao fechada antes de escolher um servidor",
+                    )
+                }
+
                 val current = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
                 if (!current.isNullOrBlank()) cookieHeader = current
+                if (current?.contains("cf_clearance=") == true && !viuClearance) {
+                    viuClearance = true
+                    log("cloudflare", "cf_clearance apareceu no CookieManager")
+                    // Grava no disco agora: sem o flush o cookie morre junto com o
+                    // processo e o desafio voltaria a cada episodio.
+                    SuperflixChallengeOverlay.persistirCookies()
+                }
 
                 val observed = playerState.observedSuperflixUrl
                 if (!observed.isNullOrBlank() && observed != lastObserved) {
@@ -1226,8 +1304,20 @@ object SuperflixExtractor {
                 }
             }
 
-            throw Exception("SuperFlix abriu, mas nenhuma mídia foi observada em 2 minutos")
+            // Mensagem diz a CONDICAO que produziu o resultado, nao so "indisponivel".
+            throw Exception(
+                if (!viuClearance) {
+                    "SuperFlix: desafio Turnstile do embed nao foi validado em 2 minutos " +
+                        "(cf_clearance nunca chegou) — o provedor exige resolver a verificacao"
+                } else {
+                    "SuperFlix: desafio validado (cf_clearance presente), mas nenhuma midia " +
+                        "foi observada em 2 minutos"
+                }
+            )
         } finally {
+            // Fecha em qualquer saida — sucesso, timeout ou cancelamento por troca
+            // de episodio —, senao o overlay ficaria cobrindo o app.
+            SuperflixChallengeOverlay.fechar()
             playerState.finishSuperflixObservation(observation)
         }
     }

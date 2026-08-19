@@ -10,9 +10,11 @@ import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.obaflix.bridge.ObaflixBridge
+import com.obaflix.bridge.SuperflixChallengeOverlay
 import com.obaflix.player.PlayerWebViewClient
 import java.util.UUID
 
@@ -58,6 +60,9 @@ class MainActivity : AppCompatActivity() {
             ObaflixApp.webViewUserAgent = userAgentString
         }
 
+        // Reassinada tambem apos rebuildWebViewAposCrash, que chama este metodo.
+        ObaflixApp.hostWebView = java.lang.ref.WeakReference(webView)
+
         // O Superflix roda em um iframe de outro domínio. A validação da
         // Cloudflare depende do cookie cf_clearance; sem cookies de terceiros o
         // desafio aparece, mas a sessão validada se perde na navegação seguinte.
@@ -72,7 +77,10 @@ class MainActivity : AppCompatActivity() {
             "_obaflixBridge",
         )
 
-        webView.webViewClient = PlayerWebViewClient { view -> injectBridgeShim(view) }
+        webView.webViewClient = PlayerWebViewClient(
+            onPageReady = { view -> injectBridgeShim(view) },
+            onRenderGone = { dead, crashed -> rebuildWebViewAposCrash(dead, crashed) },
+        )
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
@@ -103,6 +111,58 @@ class MainActivity : AppCompatActivity() {
                 showSystemUi()
             }
         }
+    }
+
+    /**
+     * Recria a WebView depois que o processo de renderizacao morreu.
+     *
+     * A instancia morta nao volta a funcionar: qualquer chamada nela lanca. Por
+     * isso ela sai da hierarquia e e destruida antes de uma nova entrar no mesmo
+     * lugar do container. O usuario perde a posicao do video, mas o aplicativo
+     * continua aberto — que era o comportamento quebrado que motivou isto.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun rebuildWebViewAposCrash(dead: WebView, crashed: Boolean) {
+        val container = findViewById<ViewGroup>(R.id.container)
+
+        // Se o renderer morreu com o player em tela cheia, a view do fullscreen
+        // fica orfa no container e cobriria a WebView nova.
+        fullscreenView?.let { container.removeView(it) }
+        fullscreenView = null
+        showSystemUi()
+
+        // A URL da instancia morta costuma continuar legivel; quando nao, volta
+        // para a home do app em vez de abrir uma tela em branco.
+        val destino = runCatching { dead.url }.getOrNull()
+            ?.takeIf { it.startsWith("http", ignoreCase = true) }
+            ?: (BuildConfig.OBAFLIX_URL + "/android")
+
+        val posicao = container.indexOfChild(dead).takeIf { it >= 0 } ?: 0
+        container.removeView(dead)
+        runCatching { dead.destroy() }
+
+        val nova = WebView(this)
+        nova.id = R.id.webView
+        nova.layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        container.addView(nova, posicao)
+
+        webView = nova
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
+        configureWebView()
+
+        val causa = if (crashed) "crash" else "encerramento por memoria"
+        Log.w(TAG, "[render] WebView recriada apos $causa; recarregando")
+        Toast.makeText(
+            this,
+            "A reproducao falhou e o player foi reiniciado. Tente outro servidor.",
+            Toast.LENGTH_LONG,
+        ).show()
+
+        webView.loadUrl(destino)
     }
 
     private fun injectBridgeShim(view: WebView) {
@@ -153,6 +213,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
+        // O overlay do desafio cobre a tela inteira; voltar precisa fecha-lo antes
+        // de qualquer outra coisa, senao o usuario fica preso nele.
+        if (SuperflixChallengeOverlay.estaAberto) {
+            SuperflixChallengeOverlay.fechar()
+            return
+        }
         if (fullscreenView != null) {
             webView.webChromeClient?.onHideCustomView()
             return
