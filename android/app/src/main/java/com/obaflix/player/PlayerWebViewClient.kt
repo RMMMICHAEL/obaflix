@@ -2,6 +2,7 @@ package com.obaflix.player
 
 import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -42,7 +43,29 @@ private const val TAG = "Obaflix"
  */
 class PlayerWebViewClient(
     private val onPageReady: ((WebView) -> Unit)? = null,
+    private val onRenderGone: ((WebView, Boolean) -> Unit)? = null,
 ) : WebViewClient() {
+
+    /**
+     * Morte do processo de renderizacao da WebView.
+     *
+     * Sem este override o valor padrao e "false", e nesse caso o Android mata o
+     * processo do aplicativo inteiro — o app "fecha sozinho" sem FATAL EXCEPTION
+     * no logcat, porque nao houve excecao Java nenhuma: quem morreu foi o
+     * renderer. Decodificar um MP4 invalido e uma das formas de chegar la.
+     *
+     * Retornar "true" avisa o sistema que o aplicativo assume o controle. A
+     * WebView morta fica inutilizavel, entao quem trata precisa descarta-la e
+     * criar outra; e o que rebuildWebViewAposCrash faz.
+     */
+    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+        val crashed = detail?.didCrash() ?: false
+        val motivo = if (crashed) "crash do renderer" else "renderer encerrado pelo sistema (memoria)"
+        Log.e(TAG, "[render] processo da WebView morreu: $motivo — app mantido vivo")
+        if (view == null) return true
+        onRenderGone?.invoke(view, crashed)
+        return true
+    }
 
     private val allowedAppHost = Uri.parse(BuildConfig.OBAFLIX_URL).host ?: ""
 
@@ -286,7 +309,6 @@ class PlayerWebViewClient(
             original.requestHeaders["Range"]?.let { reqBuilder.addHeader("Range", it) }
 
             val response = ObaflixApp.httpClient.newCall(reqBuilder.build()).execute()
-            Log.d(TAG, "[intercept/cdn] resposta ${response.code} de $cdnHost (${response.header("Content-Type") ?: "?"})")
 
             if (!response.isSuccessful) {
                 Log.w(TAG, "[intercept/cdn] status não-2xx: ${response.code} ${response.message}")
@@ -303,6 +325,16 @@ class PlayerWebViewClient(
                 else -> upstreamContentType.substringBefore(';').trim()
                     .ifEmpty { "application/octet-stream" }
             }
+            // Loga o tipo do provedor E o tipo entregue. Com apenas o primeiro, um
+            // CDN que marca todo arquivo como text/css fazia a captura parecer um
+            // defeito de reescrita, quando o corpo e fMP4 valido e ja e corrigido.
+            val tipoNoLog = if (contentType != upstreamContentType.substringBefore(';').trim()) {
+                "$upstreamContentType -> $contentType"
+            } else {
+                contentType
+            }
+            Log.d(TAG, "[intercept/cdn] resposta ${response.code} de $cdnHost ($tipoNoLog)")
+
             val headers = mutableMapOf(
                 "Cache-Control" to "public, max-age=3600",
                 "Access-Control-Allow-Origin" to "*",

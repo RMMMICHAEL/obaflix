@@ -48,7 +48,11 @@ $ErrorActionPreference = "Stop"
 $PadraoTag = '[VDIWEF]/Obaflix'
 
 # Linhas que respondem "por que ainda pede para escolher o servidor?".
-$PadraoRelevante = '\[direto\]|\[direto_falhou\]|\[bootstrap|\[cloudflare\]|\[sources\]|\[profile\]|\[probe_stop\]|\[source_skip\]|\[ok\]|\[media\]|\[page\]|\[provider/|\[bridge\]|\[extract\]|\[intercept/'
+# O segundo grupo garante que erro apareca na tela durante a captura: erro de JS
+# do WebView e excecao do Kotlin nao carregam nenhuma das etiquetas acima, entao
+# antes iam para o arquivo sem o operador ver nada acontecendo.
+$PadraoRelevante = '\[direto\]|\[direto_falhou\]|\[bootstrap|\[cloudflare\]|\[sources\]|\[profile\]|\[probe_stop\]|\[source_skip\]|\[ok\]|\[media\]|\[page\]|\[provider/|\[bridge\]|\[extract\]|\[intercept/' +
+                   '|\[JS\]|Exception|falhou|erro=|\bE/'
 
 function Read-ArquivoLog([string]$Caminho) {
     $bytes = [System.IO.File]::ReadAllBytes($Caminho)

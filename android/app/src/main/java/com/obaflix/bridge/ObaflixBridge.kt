@@ -140,8 +140,11 @@ class ObaflixBridge(
                 Log.d(TAG, "[bridge] extractStream cancelado: id=$callbackId")
                 throw e
             } catch (e: Exception) {
-                val detail = e.message?.takeIf { it.isNotBlank() && it != "null" }
-                    ?: e.javaClass.simpleName.takeIf { it.isNotBlank() }
+                // describe() nomeia a fase (DNS/TCP/TLS/HTTP) e a causa. Sem isso
+                // toda falha de rede chegava aqui como "Handshake failed", que nao
+                // distingue provedor fora do ar de TLS incompativel com o aparelho.
+                val detail = NetworkDiagnostics.describe(e, embedUrl)
+                    .takeIf { it.isNotBlank() && it != "null" }
                     ?: "Falha nativa sem detalhes"
                 Log.e(
                     TAG,

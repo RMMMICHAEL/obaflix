@@ -1,5 +1,6 @@
 package com.obaflix.bridge
 
+import android.util.Log
 import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,7 @@ private const val UA_NATIVE =
     "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
 private const val MOON_URL = "https://app.megafrixapi.com/moon.php"
 private const val REFERER_DEFAULT = "https://megaflix.lat/"
+private const val TAG = "Obaflix"
 
 object PlayerExtractors {
 
@@ -335,8 +337,41 @@ object PlayerExtractors {
         )
     }
 
+    /**
+     * Espelhos do Hide, na ordem de preferência.
+     *
+     * playhide.shop continua primeiro por ser o host canônico, mas o HTTPS dele
+     * passou a responder alerta TLS "internal_error" em qualquer versão do
+     * protocolo — com e sem SNI —, enquanto a porta 80 segue no ar. Como o app
+     * exige HTTPS (ver StreamExtractor), o provedor ficava inteiramente
+     * indisponível. Os espelhos abaixo negociam TLS 1.2 e 1.3 normalmente, então
+     * atendem tanto Android antigo quanto atual.
+     */
+    private val HIDE_HOSTS = listOf("playhide.shop", "hidehide.shop", "vidhidehub.com")
+
     suspend fun extractHide(embedUrl: String, id: String): String {
-        val html = fetchHtml("https://playhide.shop/v/$id", REFERER_DEFAULT)
+        val falhas = mutableListOf<String>()
+        var html: String? = null
+
+        for (host in HIDE_HOSTS) {
+            val alvo = "https://$host/v/$id"
+            try {
+                html = fetchHtml(alvo, REFERER_DEFAULT)
+                if (host != HIDE_HOSTS.first()) {
+                    Log.d(TAG, "[hide] espelho $host respondeu apos falha do host anterior")
+                }
+                break
+            } catch (e: Exception) {
+                val motivo = NetworkDiagnostics.describe(e, alvo)
+                falhas.add("$host: $motivo")
+                Log.w(TAG, "[hide] espelho indisponivel — $motivo")
+            }
+        }
+
+        if (html == null) {
+            throw Exception("PlayHide indisponivel em todos os espelhos — ${falhas.joinToString(" | ").take(300)}")
+        }
+
         val evalScript = extractEvalScript(html) ?: throw Exception("packer não encontrado (PlayHide)")
 
         val direct = directDecodePacker(evalScript)
