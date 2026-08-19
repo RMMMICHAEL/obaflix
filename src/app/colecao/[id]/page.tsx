@@ -5,10 +5,26 @@ import { ArrowLeft } from "lucide-react";
 import { getCollection, imgUrl } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import { mediaMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export default async function ColecaoPage({ params }: { params: { id: string } }) {
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
+  const id = Number(params.id);
+  if (!Number.isInteger(id)) return { title: "Coleção", robots: { index: false, follow: false } };
+  const colecao = await getCollection(id);
+  if (!colecao) return { title: "Coleção não encontrada", robots: { index: false, follow: false } };
+  return mediaMetadata({
+    title: colecao.name,
+    description: colecao.overview || `Conheça os filmes da coleção ${colecao.name} disponíveis no catálogo Obaflix.`,
+    path: `/colecao/${id}`,
+    image: colecao.backdrop_path ? imgUrl(colecao.backdrop_path, "original") : null,
+  });
+}
+
+export default async function ColecaoPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const colecaoId = Number(params.id);
   if (isNaN(colecaoId)) return notFound();
 

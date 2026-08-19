@@ -52,11 +52,12 @@ function mergeEpUrls(warezUrls: string[], dbUrl: string | null): string | null {
   return all.length > 0 ? all.join(",") : null;
 }
 
-export default async function AssistirEpPage({
-  params,
-}: {
-  params: { id: string; temp: string; ep: string };
-}) {
+export default async function AssistirEpPage(
+  props: {
+    params: Promise<{ id: string; temp: string; ep: string }>;
+  }
+) {
+  const params = await props.params;
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
   if (!userId) {

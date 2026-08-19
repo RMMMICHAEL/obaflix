@@ -16,7 +16,8 @@ import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export async function generateMetadata({ params }: { params: { id: string } }) {
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const filme = await prisma.filme.findUnique({
     where: { id: params.id },
     select: { titulo: true, sinopse: true, background: true, poster: true, ano: true },
@@ -34,7 +35,8 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   });
 }
 
-export default async function FilmePage({ params }: { params: { id: string } }) {
+export default async function FilmePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id as string | undefined;
 

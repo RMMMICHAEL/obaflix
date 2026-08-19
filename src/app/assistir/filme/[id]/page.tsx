@@ -31,7 +31,8 @@ function mergeFilmeUrls(warezUrls: string[], dbUrl: string | null): string | nul
   return all.length > 0 ? all.join(",") : null;
 }
 
-export default async function AssistirFilmePage({ params }: { params: { id: string } }) {
+export default async function AssistirFilmePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
   if (!userId) redirect(`/login?callbackUrl=${encodeURIComponent(`/assistir/filme/${params.id}`)}`);

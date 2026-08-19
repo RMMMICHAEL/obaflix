@@ -53,7 +53,9 @@ async function buildIco(source, sizes) {
   for (const size of sizes) {
     const image = sharp(source).resize(size, size, { fit: "cover", kernel: "lanczos3" });
     if (size >= 256) {
-      frames.push({ size, data: await image.png({ compressionLevel: 9 }).toBuffer(), png: true });
+      // ensureAlpha: sem canal alfa o sharp grava colorType 2 (RGB) e o decoder
+      // de ICO do Turbopack recusa o arquivo ("The PNG is not in RGBA format").
+      frames.push({ size, data: await image.ensureAlpha().png({ compressionLevel: 9 }).toBuffer(), png: true });
     } else {
       const { data } = await image.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
       frames.push({ size, data: frameDib(data, size), png: false });

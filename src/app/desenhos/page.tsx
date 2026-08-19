@@ -82,11 +82,12 @@ const getBrowseData = unstable_cache(
   { revalidate: 120, tags: ["desenhos"] },
 );
 
-export default async function DesenhoPage({
-  searchParams,
-}: {
-  searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string; studio?: string };
-}) {
+export default async function DesenhoPage(
+  props: {
+    searchParams: Promise<{ genero?: string; ano?: string; ordem?: string; q?: string; page?: string; studio?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const generoIds = parseGenreIds(searchParams.genero);
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;

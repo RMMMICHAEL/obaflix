@@ -59,7 +59,8 @@ function CatalogSection({ title, items }: { title: string; items: PersonCatalogI
   );
 }
 
-export async function generateMetadata({ params }: { params: { id: string } }) {
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const personId = Number(params.id);
   if (!Number.isInteger(personId) || personId <= 0) return { title: "Pessoa não encontrada" };
   const person = await getPerson(personId);
@@ -73,7 +74,8 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   });
 }
 
-export default async function PessoaPage({ params }: { params: { id: string } }) {
+export default async function PessoaPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const personId = Number(params.id);
   if (!Number.isInteger(personId) || personId <= 0) notFound();
 

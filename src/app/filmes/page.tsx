@@ -43,11 +43,12 @@ function toGrid(f: any) {
   };
 }
 
-export default async function FilmesPage({
-  searchParams,
-}: {
-  searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
-}) {
+export default async function FilmesPage(
+  props: {
+    searchParams: Promise<{ genero?: string; ano?: string; ordem?: string; q?: string; page?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const generoIds = parseGenreIds(searchParams.genero);
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;

@@ -3,7 +3,8 @@ import { getPersonCatalog } from "@/lib/person-catalog";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
+export async function GET(_request: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const personId = Number(params.id);
   if (!Number.isInteger(personId) || personId <= 0) {
     return NextResponse.json({ error: "ID de pessoa inválido" }, { status: 400 });
