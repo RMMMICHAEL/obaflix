@@ -37,12 +37,106 @@ const EMBED_HOSTNAMES = [
   "superflixapi.pro", "vizero.buzz", "warezcdn.lat",
 ];
 
+
+// Padroes usados na descoberta de hosts do CDN.
+const HOST_ABSOLUTO_RE = new RegExp("https?://([^/\\s\"']+)", "g");
+const QUEBRA_LINHA_RE = new RegExp("\\r?\\n");
+const STREAM_INF_RE = new RegExp("^#EXT-X-STREAM-INF:", "i");
+const EXT_MEDIA_RE = new RegExp("^#EXT-X-MEDIA:", "i");
+const URI_ATTR_RE = new RegExp("URI=\"([^\"]+)\"", "i");
+const PLAYLIST_URL_RE = new RegExp("\\.m3u8|/master\\.txt|/cdn/hls/|/m3/", "i");
 // Estado do player ativo — atualizado pelo servidor local após extração bem-sucedida.
 // O handler de onBeforeSendHeaders lê esse objeto em tempo de execução (closure por referência).
 const playerState = {
-  cdnHostname: null,   // hostname do CDN onde ficam os segmentos HLS (ex: cdn.boltcdn.xyz)
+  cdnHostname: null,   // hostname principal do manifesto (ex: cdn.boltcdn.xyz)
   embedReferer: null,  // Referer que o CDN espera em todo request (ex: https://embedplayer2.xyz/)
+  // Um provedor distribui os segmentos por dezenas de dominios distintos, listados
+  // dentro da sub-playlist (penumbra.sbs, permuta.sbs, bacurau.sbs...). Rastrear um
+  // hostname so deixava todos eles sem Referer/Origin e sem CORS: net::ERR_FAILED.
+  cdnHostnames: new Set(),
 };
+
+function allowCdnHost(host) {
+  const normalizado = String(host || "").toLowerCase().trim();
+  if (normalizado) playerState.cdnHostnames.add(normalizado);
+}
+
+function isAllowedCdnHost(host) {
+  const normalizado = String(host || "").toLowerCase();
+  if (!normalizado) return false;
+  for (const permitido of playerState.cdnHostnames) {
+    if (normalizado === permitido || normalizado.endsWith("." + permitido)) return true;
+  }
+  return false;
+}
+
+// Le uma playlist e registra todo host absoluto citado nela. O master costuma usar
+// caminhos relativos, entao os hosts dos segmentos so aparecem descendo um nivel.
+async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamento = { restantes: 4 }) {
+  let texto;
+  try {
+    const alvo = new URL(url);
+    if (alvo.protocol !== "https:") return;
+    const cabecalhos = { "User-Agent": UA, Accept: "*/*" };
+    if (referer) {
+      cabecalhos.Referer = referer;
+      try { cabecalhos.Origin = new URL(referer).origin; } catch { /**/ }
+    }
+    const resposta = await fetch(url, { headers: cabecalhos, signal: AbortSignal.timeout(8000) });
+    if (!resposta.ok) return;
+    texto = await resposta.text();
+  } catch {
+    return; // Aprender hosts e melhor-esforco: falhar aqui nao pode quebrar a reproducao.
+  }
+
+  if (!texto.trimStart().startsWith("#EXTM3U")) return;
+
+  for (const m of texto.matchAll(HOST_ABSOLUTO_RE)) allowCdnHost(m[1]);
+
+  if (profundidade <= 0) return;
+
+  // Desce nas variantes e nas trilhas de audio para alcancar os hosts de segmento.
+  const filhos = [];
+  const linhas = texto.split(QUEBRA_LINHA_RE);
+  for (let i = 0; i < linhas.length; i += 1) {
+    const linha = linhas[i].trim();
+    if (STREAM_INF_RE.test(linha)) {
+      const proxima = (linhas[i + 1] || "").trim();
+      if (proxima && !proxima.startsWith("#")) filhos.push(proxima);
+    } else if (EXT_MEDIA_RE.test(linha)) {
+      const uri = linha.match(URI_ATTR_RE)?.[1];
+      if (uri) filhos.push(uri);
+    }
+  }
+
+  for (const filho of filhos) {
+    if (orcamento.restantes <= 0) break;
+    orcamento.restantes -= 1;
+    let absoluto;
+    try { absoluto = new URL(filho, url).toString(); } catch { continue; }
+    await learnCdnHostsFromPlaylist(absoluto, referer, profundidade - 1, orcamento);
+  }
+}
+
+/** Registra o stream extraido e descobre todos os hosts que a cadeia HLS vai usar. */
+async function registerPlayerStream(stream, referer) {
+  let principal = "";
+  try { principal = new URL(stream).hostname; } catch { return; }
+
+  playerState.cdnHostname = principal;
+  playerState.embedReferer = referer || null;
+  playerState.cdnHostnames = new Set([principal.toLowerCase()]);
+
+  if (PLAYLIST_URL_RE.test(stream)) {
+    await learnCdnHostsFromPlaylist(stream, playerState.embedReferer);
+  }
+
+  log.info("player.cdn", "estado do player atualizado", {
+    cdn: principal,
+    hosts: playerState.cdnHostnames.size,
+    referer: log.shortUrl(playerState.embedReferer || "-", 80),
+  });
+}
 
 function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
@@ -222,12 +316,7 @@ function startLocalServer() {
           // Atualiza playerState: o CDN valida Referer = URL completa da página embed
           // (não apenas a origem). O mesmo Referer usado na extração POST.
           try {
-            playerState.cdnHostname = new URL(stream).hostname;
-            playerState.embedReferer = referer || null;
-            log.info("player.cdn", "estado do player atualizado", {
-              cdn: playerState.cdnHostname,
-              referer: log.shortUrl(playerState.embedReferer || "-", 80),
-            });
+            await registerPlayerStream(stream, referer);
           } catch { /**/ }
 
           res.writeHead(200, { ...CORS, "Content-Type": "application/json" });
@@ -436,8 +525,7 @@ function configureSession() {
         delete rh["Content-Security-Policy"];
         delete rh["content-security-policy-report-only"];
       }
-      const cdnHost = playerState.cdnHostname;
-      if (cdnHost && (responseHost === cdnHost || responseHost.endsWith("." + cdnHost))) {
+      if (isAllowedCdnHost(responseHost)) {
         rh["Access-Control-Allow-Origin"] = [OBAFLIX_ORIGIN];
         rh["Vary"] = ["Origin"];
       }
@@ -531,11 +619,7 @@ function configureSession() {
     // Equivale ao que o ExoPlayer do MegaFlix faz: envia Referer em todo request de mídia.
     // playerState é atualizado pelo servidor local após extração bem-sucedida.
     // Usa endsWith para cobrir subdomínios do CDN (ex: cdn.dahds13.xyz).
-    const isCdnReq =
-      playerState.cdnHostname &&
-      playerState.embedReferer &&
-      (reqHostname === playerState.cdnHostname ||
-        reqHostname.endsWith("." + playerState.cdnHostname));
+    const isCdnReq = playerState.embedReferer && isAllowedCdnHost(reqHostname);
     if (isCdnReq) {
       const embedOriginForCdn = (() => {
         try { const u = new URL(playerState.embedReferer); return u.origin; } catch { return ""; }
@@ -695,12 +779,7 @@ ipcMain.handle("extract-stream", async (event, embedUrl) => {
     const { stream, tipo, referer, subtitles } = await extractSecuredLink(embedUrl);
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
-      playerState.cdnHostname = new URL(stream).hostname;
-      playerState.embedReferer = referer || null;
-      log.info("player.cdn", "estado do player atualizado (IPC)", {
-        cdn: playerState.cdnHostname,
-        referer: log.shortUrl(playerState.embedReferer || "-", 80),
-      });
+      await registerPlayerStream(stream, referer);
     } catch { /**/ }
     t.done({ tipo, legendas: (subtitles || []).length });
     return { stream, tipo, referer: referer || null, subtitles: subtitles || [] };
