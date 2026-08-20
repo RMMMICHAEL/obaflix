@@ -431,9 +431,17 @@ export function CustomPlayer({
     }
   }
 
-  // Player 2: SuperFlix
+  // Player 2: SuperFlix — Electron apenas, nunca Android.
+  //
+  // O provedor bloqueia o aplicativo pelo nome do pacote: a WebView do Android
+  // envia "X-Requested-With: com.obaflix" e o superflixapi.pro responde uma
+  // pagina de acesso negado em vez do embed (Chrome e Firefox recebem o desafio
+  // normal, entao o bloqueio e nominal, nao uma politica geral contra apps).
+  // No Electron nao ha esse header e o player funciona, por isso a fonte
+  // continua disponivel la. Oferecer no Android so entrega uma tela de erro.
   if (
     isDesktop &&
+    !isAndroid &&
     tmdbValido &&
     (conteudoTipo === "filme" ||
       (conteudoTipo === "serie" && temporada && numeroEp))
