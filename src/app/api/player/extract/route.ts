@@ -977,7 +977,30 @@ function findM3u8(text: string): string | null {
 
 const EXTRACT_TIMEOUT_MS = 25000;
 
-async function doExtract(url: string): Promise<{ stream: string; tipo: string; referer?: string; manifest?: string }> {
+/**
+ * Por que a extração nativa desistiu.
+ *
+ * Toda falha aqui termina em `tipo: "iframe"` com HTTP 200 — degradar para o
+ * iframe do provedor é melhor que não mostrar nada. O problema era isso ser
+ * indistinguível de um sucesso: no DevTools e no logcat, "extraiu o stream" e
+ * "desistiu depois de 25s" tinham exatamente a mesma cara. Este campo existe
+ * só para diagnóstico; não muda o comportamento.
+ */
+type MotivoIframe =
+  | "sem_link_vast"          // vast.php sem o parâmetro `link`
+  | "sem_fonte_extraivel"    // nenhum provider conhecido na lista de embeds
+  | "timeout"                // estourou EXTRACT_TIMEOUT_MS
+  | "erro";                  // exceção durante a extração
+
+type ResultadoExtracao = {
+  stream: string;
+  tipo: string;
+  referer?: string;
+  manifest?: string;
+  motivo?: MotivoIframe;
+};
+
+async function doExtract(url: string): Promise<ResultadoExtracao> {
   const parsed = await assertAllowedMediaUrl(url);
   const hostname = parsed.hostname;
   const pathname = parsed.pathname;
@@ -989,7 +1012,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
 
   if (pathname.includes("vast.php")) {
     const linkParam = parsed.searchParams.get("link");
-    if (!linkParam) return { stream: url, tipo: "iframe" };
+    if (!linkParam) return { stream: url, tipo: "iframe", motivo: "sem_link_vast" };
     const innerUrl = Buffer.from(linkParam, "base64").toString("utf-8");
     return doExtract(innerUrl);
   }
@@ -1086,7 +1109,7 @@ async function doExtract(url: string): Promise<{ stream: string; tipo: string; r
     if (!streamUrl) streamUrl = findM3u8(html);
   }
 
-  if (!streamUrl) return { stream: url, tipo: "iframe" };
+  if (!streamUrl) return { stream: url, tipo: "iframe", motivo: "sem_fonte_extraivel" };
 
   const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
   return { stream: streamUrl, tipo, referer, manifest };
@@ -1139,13 +1162,17 @@ export async function GET(req: NextRequest) {
   try {
     const result = await Promise.race([
       doExtract(url),
-      new Promise<{ stream: string; tipo: string; referer?: string; manifest?: string }>((resolve) =>
-        setTimeout(() => resolve({ stream: url, tipo: "iframe" }), EXTRACT_TIMEOUT_MS)
+      new Promise<ResultadoExtracao>((resolve) =>
+        setTimeout(() => resolve({ stream: url, tipo: "iframe", motivo: "timeout" }), EXTRACT_TIMEOUT_MS)
       ),
     ]);
 
     if (result.tipo === "iframe") {
-      return NextResponse.json({ tipo: "iframe", stream: result.stream }, { headers: NO_STORE });
+      const motivo = result.motivo ?? "sem_fonte_extraivel";
+      // Registra a desistência com a mesma visibilidade de um sucesso: antes só
+      // o audit log sabia, e o cliente recebia um 200 idêntico ao de um stream.
+      xlog("iframe_fallback", { motivo, url: url.slice(0, 120) });
+      return NextResponse.json({ tipo: "iframe", stream: result.stream, motivo }, { headers: NO_STORE });
     }
 
     // MP4: stream token is single-use (SET NX) — JW Player makes multiple range requests
@@ -1179,7 +1206,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ tipo: result.tipo, streamToken }, { headers: NO_STORE });
 
   } catch (err: any) {
-    audit("stream_rejected", { userId, ip, ua, detail: `extração falhou: ${String(err?.message).slice(0, 80)}` });
-    return NextResponse.json({ tipo: "iframe", stream: url }, { headers: NO_STORE });
+    const detalhe = String(err?.message).slice(0, 80);
+    audit("stream_rejected", { userId, ip, ua, detail: `extração falhou: ${detalhe}` });
+    xlog("iframe_fallback", { motivo: "erro", detalhe, url: url.slice(0, 120) });
+    return NextResponse.json({ tipo: "iframe", stream: url, motivo: "erro" }, { headers: NO_STORE });
   }
 }

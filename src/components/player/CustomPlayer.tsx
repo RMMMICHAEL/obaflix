@@ -377,6 +377,14 @@ export function CustomPlayer({
 
   const allFontes: Fonte[] = [];
 
+  // Players 1, 2 e 5 montam a URL a partir do tmdbId. Parte do catálogo grava
+  // "0" nesse campo (títulos sem correspondência no TMDB), e "0" é uma string
+  // truthy — passava na checagem e gerava embeds como
+  // `Ajax.php?id=0&type=tv`, que falham sempre. Só um inteiro positivo serve.
+  const tmdbValido = tmdbId && /^[1-9][0-9]*$/.test(String(tmdbId).trim())
+    ? String(tmdbId).trim()
+    : null;
+
   const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
 
   const parsedFontes = [
@@ -405,17 +413,17 @@ export function CustomPlayer({
   );
 
   // Player 1: PlayerFlix
-  if (tmdbId) {
+  if (tmdbValido) {
     if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbId}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "filme") {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbId}&type=movie`,
+        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=movie`,
         tokenized: false,
       });
     }
@@ -424,14 +432,14 @@ export function CustomPlayer({
   // Player 2: SuperFlix
   if (
     isDesktop &&
-    tmdbId &&
+    tmdbValido &&
     (conteudoTipo === "filme" ||
       (conteudoTipo === "serie" && temporada && numeroEp))
   ) {
     const superflixUrl =
       conteudoTipo === "filme"
-        ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbId)}`
-        : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`;
+        ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbValido)}`
+        : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`;
 
     allFontes.push({
       label: "Player 2",
@@ -460,17 +468,17 @@ export function CustomPlayer({
 
   // Player 5: WatchPlay. Os extratores (Kotlin, Electron e rota web) já tratavam
   // /tvshow desde sempre; era só aqui que a fonte não chegava a ser oferecida.
-  if (isDesktop && tmdbId) {
+  if (isDesktop && tmdbValido) {
     if (conteudoTipo === "filme") {
       allFontes.push({
         label: "Player 5",
-        embedUrl: `https://v1.watchplay.shop/movie/${encodeURIComponent(tmdbId)}`,
+        embedUrl: `https://v1.watchplay.shop/movie/${encodeURIComponent(tmdbValido)}`,
         tokenized: false,
       });
     } else if (conteudoTipo === "serie" && temporada && numeroEp) {
       allFontes.push({
         label: "Player 5",
-        embedUrl: `https://v1.watchplay.shop/tvshow/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`,
+        embedUrl: `https://v1.watchplay.shop/tvshow/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`,
         tokenized: false,
       });
     }
@@ -941,8 +949,20 @@ export function CustomPlayer({
 
         tipo = data.tipo ?? "hls";
         if (tipo === "iframe") {
+          // A rota responde 200 mesmo quando desiste da extração, então este
+          // caminho é invisível no DevTools: o pulo para a próxima fonte nasce
+          // do throw abaixo, não de um erro de rede. O motivo vem do servidor
+          // ("timeout", "sem_fonte_extraivel", "erro") e é registrado aqui para
+          // aparecer no console do navegador e no logcat do Android.
+          const motivo = data.motivo ?? "desconhecido";
+          console.warn(
+            `[player] extração desistiu: motivo=${motivo} fonte=${fonte?.label ?? "?"} ` +
+            `— servindo iframe do provedor`,
+          );
           // esses players nunca servem iframe válido — iframe fallback = extração falhou
-          if (embedUrl.includes("playerflix.ink") || embedUrl.includes("webcinevs2.com")) throw new Error("Stream não encontrado");
+          if (embedUrl.includes("playerflix.ink") || embedUrl.includes("webcinevs2.com")) {
+            throw new Error(`Stream não encontrado (${motivo})`);
+          }
           playerUrl = data.stream!;
         } else if (tipo === "mp4_direct") {
           // CDN bloqueia IPs de datacenter — serve URL direta ao browser (IP residencial passa)
