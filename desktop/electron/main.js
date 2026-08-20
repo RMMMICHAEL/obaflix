@@ -526,6 +526,14 @@ function configureSession() {
         delete rh["content-security-policy-report-only"];
       }
       if (isAllowedCdnHost(responseHost)) {
+        // Como injetamos o Origin do embed na requisição, o CDN devolve um
+        // Access-Control-Allow-Origin próprio ecoando esse valor. Acrescentar o
+        // nosso por cima deixava dois valores no header e o Chromium recusa:
+        // "contains multiple values, but only one is allowed". Remove qualquer
+        // grafia existente antes de escrever a nossa.
+        for (const chave of Object.keys(rh)) {
+          if (/^(access-control-allow-origin|vary)$/i.test(chave)) delete rh[chave];
+        }
         rh["Access-Control-Allow-Origin"] = [OBAFLIX_ORIGIN];
         rh["Vary"] = ["Origin"];
       }
