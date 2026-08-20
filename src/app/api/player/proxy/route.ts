@@ -52,11 +52,15 @@ function clientUa(req: NextRequest): string {
  * Playlists, chaves e trilhas alternativas ainda passam pelo proxy autenticado,
  * mas segmentos TS/fMP4 não consomem Fast Origin Transfer da Vercel.
  *
- * Interruptor de emergência: MEDIA_SEGMENT_DELIVERY=proxy restaura o proxy de
- * segmentos para fontes que não ofereçam CORS, sem exigir uma nova alteração.
+ * Android/Electron continuam buscando no CDN pelo IP do aparelho. Navegadores
+ * comuns precisam do proxy same-origin porque os CDNs atuais bloqueiam CORS.
+ * MEDIA_SEGMENT_DELIVERY=direct|proxy permite forçar um dos modos.
  */
-function shouldProxyMediaThroughApp(_ua: string): boolean {
-  return process.env.MEDIA_SEGMENT_DELIVERY?.toLowerCase() === "proxy";
+function shouldProxyMediaThroughApp(ua: string): boolean {
+  const configured = process.env.MEDIA_SEGMENT_DELIVERY?.toLowerCase();
+  if (configured === "proxy") return true;
+  if (configured === "direct") return false;
+  return !/(?:ObaflixApp\/|Electron\/)/i.test(ua);
 }
 
 /** Nega silenciosamente com erro genérico */
