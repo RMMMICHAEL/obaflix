@@ -21,6 +21,8 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 }
 
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
+import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
+
 const JW_CDN = "https://ssl.p.jwpcdn.com/player/v/8.19.1/jwplayer.js";
 // Licença encontrada no app Megaflix desktop (resources/app.asar → player page)
 const JW_KEY = "64HPbvSQorQcd52B8XFuhMtEoitbvY/EXJmMBfKcXZQU2Rnn";
@@ -955,6 +957,10 @@ export function CustomPlayer({
           // ("timeout", "sem_fonte_extraivel", "erro") e é registrado aqui para
           // aparecer no console do navegador e no logcat do Android.
           const motivo = data.motivo ?? "desconhecido";
+          logEtapa(fonte?.label ?? "?", motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", {
+            url: embedUrl,
+            mensagem: motivo,
+          });
           console.warn(
             `[player] extração desistiu: motivo=${motivo} fonte=${fonte?.label ?? "?"} ` +
             `— servindo iframe do provedor`,
@@ -1094,7 +1100,16 @@ export function CustomPlayer({
 
       // firstFrame: sinal definitivo de que um frame válido foi exibido.
       // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
-      player.on("firstFrame", () => { initialLoadRef.current = false; });
+      player.on("firstFrame", () => {
+        initialLoadRef.current = false;
+        // Único ponto que prova reprodução de verdade: o primeiro frame só
+        // aparece depois do init segment e dos primeiros segmentos de mídia.
+        // "extract respondeu 200" não significa nada aqui.
+        logEtapa(fonte?.label ?? "?", "OK_PLAYBACK", {
+          url: directStreamRef.current ?? undefined,
+          ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
+        });
+      });
 
       player.on("play", () => {
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
@@ -1455,6 +1470,11 @@ export function CustomPlayer({
         const domain = diagDomain(srcUrl);
         const statusTag = httpStatus ? ` HTTP ${httpStatus}` : "";
         console.warn(`[diag/error] JW ${e?.code || "?"}${statusTag} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
+        logEtapa(
+          fonte?.label ?? "?",
+          classificarEtapa({ url: srcUrl, http: httpStatus, jwCode: e?.code, mensagem: e?.message }),
+          { url: srcUrl, http: httpStatus, jwCode: e?.code, ms: msSinceLoad },
+        );
 
         if (Date.now() < suppressErrorUntilRef.current) {
           console.log("[recovery] reason=suppressed — eco tardio da mídia anterior pós-load(); ignorando");
