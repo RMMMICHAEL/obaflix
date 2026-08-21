@@ -65,7 +65,26 @@ interface Props {
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
 type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
-interface Fonte { label: string; embedUrl: string; tokenized: boolean; }
+interface Fonte {
+  label: string;
+  embedUrl: string;
+  tokenized: boolean;
+  /** Servidor interno do mesmo player (ex.: "Automático", "WatchPlayer"). */
+  servidor?: string;
+  /** Provedor reconhecido por detectProvider; usado só no diagnóstico. */
+  provider?: string;
+  /** Fonte sem extrator conhecido — só serve como iframe de última linha. */
+  semExtrator?: boolean;
+}
+
+/** Uma fonte do Playerflix, como /api/player/playerflix-sources devolve. */
+interface PlayerflixSource {
+  id: string;
+  name: string;
+  provider: string;
+  url: string;
+  hasExtractor: boolean;
+}
 interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
 interface QualityLevel { label?: string; height?: number; width?: number; bitrate?: number; }
 interface AudioTrack { name?: string; label?: string; language?: string; }
@@ -377,6 +396,13 @@ export function CustomPlayer({
   const isAndroid = desktopBridge?.platform === "android" ||
     (typeof window !== "undefined" && (window as any).__OBAFLIX_ANDROID__ === true);
 
+  // Servidores alternativos que o Playerflix conhece para este conteúdo. A lista é
+  // aditiva: enquanto estiver vazia — carregando, falhou ou o conteúdo não tem
+  // alternativas — o Player 1 se comporta exatamente como antes.
+  const [playerflixSources, setPlayerflixSources] = useState<PlayerflixSource[]>([]);
+  // Servidores que já falharam de forma fatal, por embedUrl, com o motivo.
+  const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
+
   const allFontes: Fonte[] = [];
 
   // Players 1, 2 e 5 montam a URL a partir do tmdbId. Parte do catálogo grava
@@ -414,20 +440,40 @@ export function CustomPlayer({
     isProvider(fonte, "redecanais.capital"),
   );
 
-  // Player 1: PlayerFlix
+  // Player 1: PlayerFlix.
+  //
+  // A entrada primária continua sendo a URL Ajax: o extrator escolhe o servidor
+  // internamente, como sempre fez. As fontes explícitas do Playerflix entram logo
+  // depois, com o mesmo rótulo "Player 1" e um `servidor` próprio — servem para o
+  // failover automático (switchFonte já percorre a lista em ordem) e para a troca
+  // manual. Se a lista vier vazia, sobra só a primária e nada muda.
   if (tmdbValido) {
-    if (conteudoTipo === "serie" && temporada && numeroEp) {
+    const ajaxUrl = conteudoTipo === "serie" && temporada && numeroEp
+      ? `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}`
+      : conteudoTipo === "filme"
+        ? `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=movie`
+        : null;
+
+    if (ajaxUrl) {
       allFontes.push({
         label: "Player 1",
-        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}`,
+        embedUrl: ajaxUrl,
         tokenized: false,
+        servidor: "Automático",
       });
-    } else if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 1",
-        embedUrl: `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=movie`,
-        tokenized: false,
-      });
+
+      for (const fonteExplicita of playerflixSources) {
+        // A fonte sem extrator só faz sentido onde o iframe do provedor funciona.
+        if (!fonteExplicita.hasExtractor && !isDesktop) continue;
+        allFontes.push({
+          label: "Player 1",
+          embedUrl: fonteExplicita.url,
+          tokenized: false,
+          servidor: fonteExplicita.name,
+          provider: fonteExplicita.provider,
+          semExtrator: !fonteExplicita.hasExtractor,
+        });
+      }
     }
   }
 
@@ -551,6 +597,10 @@ export function CustomPlayer({
   const [showSources, setShowSources] = useState(false);
 
   const fonte = allFontes[fonteIdx];
+
+  // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
+  // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
+  const rotuloDiag = fonte?.servidor ? `${fonte.label} · ${fonte.servidor}` : fonte?.label ?? "?";
 
   useEffect(() => {
     let stored: string | null = null;
@@ -965,7 +1015,14 @@ export function CustomPlayer({
           // ("timeout", "sem_fonte_extraivel", "erro") e é registrado aqui para
           // aparecer no console do navegador e no logcat do Android.
           const motivo = data.motivo ?? "desconhecido";
-          logEtapa(fonte?.label ?? "?", motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", {
+          // Falha de extração é fatal para esta fonte: marca para o menu mostrar
+        // "indisponível" e para não insistir nela na troca manual.
+        if (fonte?.embedUrl) {
+          const url = fonte.embedUrl;
+          const razao = motivo === "timeout" ? "sem resposta" : "extração falhou";
+          setServidoresFalhos((atual) => (atual[url] ? atual : { ...atual, [url]: razao }));
+        }
+        logEtapa(rotuloDiag, motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", {
             url: embedUrl,
             mensagem: motivo,
           });
@@ -1020,6 +1077,54 @@ export function CustomPlayer({
     if (!fonte?.embedUrl) return;
     extract(fonte.embedUrl);
   }, [fonte?.embedUrl, extract]);
+
+  // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
+  // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
+  useEffect(() => {
+    if (!fonte) return;
+    const irmas = allFontes.filter((f) => f.label === fonte.label);
+    const posicao = irmas.findIndex((f) => f.embedUrl === fonte.embedUrl) + 1;
+    console.log(
+      `[diag/server] player=${fonte.label} server=${fonte.servidor ?? "-"} ` +
+      `provider=${fonte.provider ?? "auto"} attempt=${posicao}/${irmas.length}`,
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonte?.embedUrl]);
+
+  // Descobre os servidores alternativos do Player 1. É estritamente aditivo: erro,
+  // lista vazia ou resposta lenta deixam o Player 1 como está hoje. Roda em
+  // paralelo à extração da fonte primária, sem atrasá-la.
+  useEffect(() => {
+    setPlayerflixSources([]);
+    setServidoresFalhos({});
+    if (!tmdbValido) return;
+    if (conteudoTipo === "serie" && (!temporada || !numeroEp)) return;
+
+    const ctrl = new AbortController();
+    const params = new URLSearchParams({ tmdbId: String(tmdbValido) });
+    if (conteudoTipo === "serie") {
+      params.set("type", "tv");
+      params.set("season", String(temporada));
+      params.set("episode", String(numeroEp));
+    } else {
+      params.set("type", "movie");
+    }
+
+    fetch(`/api/player/playerflix-sources?${params.toString()}`, { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const lista: PlayerflixSource[] = Array.isArray(data?.sources) ? data.sources : [];
+        if (!lista.length) return;
+        setPlayerflixSources(lista);
+        console.log(
+          `[diag/server] player=Player 1 alternativas=${lista.length} ` +
+          lista.map((s) => `${s.name}(${s.provider})`).join(" "),
+        );
+      })
+      .catch(() => { /* aditivo: sem alternativas, o Player 1 segue como hoje */ });
+
+    return () => ctrl.abort();
+  }, [tmdbValido, conteudoTipo, temporada, numeroEp]);
 
   // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
   // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
@@ -1113,7 +1218,7 @@ export function CustomPlayer({
         // Único ponto que prova reprodução de verdade: o primeiro frame só
         // aparece depois do init segment e dos primeiros segmentos de mídia.
         // "extract respondeu 200" não significa nada aqui.
-        logEtapa(fonte?.label ?? "?", "OK_PLAYBACK", {
+        logEtapa(rotuloDiag, "OK_PLAYBACK", {
           url: directStreamRef.current ?? undefined,
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
@@ -1479,7 +1584,7 @@ export function CustomPlayer({
         const statusTag = httpStatus ? ` HTTP ${httpStatus}` : "";
         console.warn(`[diag/error] JW ${e?.code || "?"}${statusTag} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
         logEtapa(
-          fonte?.label ?? "?",
+          rotuloDiag,
           classificarEtapa({ url: srcUrl, http: httpStatus, jwCode: e?.code, mensagem: e?.message }),
           { url: srcUrl, http: httpStatus, jwCode: e?.code, ms: msSinceLoad },
         );
@@ -2008,19 +2113,28 @@ export function CustomPlayer({
                   </button>
                   {showSources && (
                     <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[140px] shadow-2xl">
-                      {allFontes.map((f, i) => (
-                        <button
-                          key={i}
-                          onClick={() => { switchFonte(i); setShowSources(false); }}
-                          className={`w-full text-left px-4 py-2.5 text-xs transition-all ${
-                            fonteIdx === i
-                              ? "bg-[#E50914] text-white font-semibold"
-                              : "text-white/70 hover:bg-white/10 hover:text-white"
-                          }`}
-                        >
-                          {f.label}
-                        </button>
-                      ))}
+                      {allFontes.map((f, i) => {
+                        const falhou = servidoresFalhos[f.embedUrl];
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => { switchFonte(i); setShowSources(false); }}
+                            className={`w-full text-left px-4 py-2.5 text-xs transition-all ${
+                              fonteIdx === i
+                                ? "bg-[#E50914] text-white font-semibold"
+                                : falhou
+                                  ? "text-white/30 hover:bg-white/10"
+                                  : "text-white/70 hover:bg-white/10 hover:text-white"
+                            }`}
+                          >
+                            {/* Servidores internos do mesmo player não viram Player 6, 7... */}
+                            {f.servidor ? `${f.label} · ${f.servidor}` : f.label}
+                            {falhou && (
+                              <span className="block text-[10px] text-white/30 mt-0.5">indisponível</span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
