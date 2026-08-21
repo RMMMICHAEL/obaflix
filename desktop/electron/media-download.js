@@ -51,6 +51,7 @@ function lerPlaylist(texto, baseUrl) {
   const linhas = String(texto).replace(/\r/g, "").split("\n");
   const variantes = [];
   const segmentos = [];
+  const audiosSeparados = [];
   let mapInit = null;
   let criptografada = false;
   let duracaoTotal = 0;
@@ -59,6 +60,23 @@ function lerPlaylist(texto, baseUrl) {
     const linha = linhas[i].trim();
 
     if (/^#EXT-X-KEY:/i.test(linha) && !/METHOD=NONE/i.test(linha)) criptografada = true;
+
+    // Rendição de áudio com URI própria: o vídeo e o áudio vêm em playlists
+    // separadas e o player junta na hora de tocar. Note o ":" no padrão — sem
+    // ele, "#EXT-X-MEDIA-SEQUENCE" casaria e daria falso positivo.
+    if (/^#EXT-X-MEDIA:/i.test(linha)) {
+      const tipoMedia = linha.match(/TYPE=([A-Z-]+)/i)?.[1]?.toUpperCase();
+      const uriMedia = linha.match(/URI="([^"]+)"/i)?.[1];
+      if (tipoMedia === "AUDIO" && uriMedia) {
+        try {
+          audiosSeparados.push({
+            url: new URL(uriMedia, baseUrl).toString(),
+            nome: linha.match(/NAME="([^"]*)"/i)?.[1] || "áudio",
+          });
+        } catch { /**/ }
+      }
+      continue;
+    }
 
     if (/^#EXT-X-MAP:/i.test(linha)) {
       const uri = linha.match(/URI="([^"]+)"/i)?.[1];
@@ -89,7 +107,7 @@ function lerPlaylist(texto, baseUrl) {
     }
   }
 
-  return { variantes, segmentos, mapInit, criptografada, duracaoTotal, ehMaster: variantes.length > 0 };
+  return { variantes, segmentos, audiosSeparados, mapInit, criptografada, duracaoTotal, ehMaster: variantes.length > 0 };
 }
 
 /** Desce do master para a variante de maior qualidade e devolve a lista de segmentos. */
@@ -100,7 +118,8 @@ async function resolverPlaylistDeMidia(url, referer) {
   const melhor = [...primeira.variantes].sort((a, b) => b.bandwidth - a.bandwidth)[0];
   if (!melhor) throw new Error("master sem variantes utilizáveis");
   const segunda = lerPlaylist(await baixarTexto(melhor.url, referer), melhor.url);
-  return { ...segunda, url: melhor.url };
+  // As rendições ficam declaradas no master, não na variante escolhida.
+  return { ...segunda, audiosSeparados: primeira.audiosSeparados, url: melhor.url };
 }
 
 /**
@@ -202,6 +221,16 @@ async function baixarMidia({
 
   if (playlist.criptografada) {
     throw new Error("mídia protegida por chave (EXT-X-KEY); download não suportado");
+  }
+
+  // Áudio em rendição separada: a variante de vídeo não carrega som nenhum, e
+  // juntar as duas exige remuxagem. Sem esta checagem o download terminava com
+  // sucesso e entregava um arquivo mudo — pior do que falhar.
+  if (playlist.audiosSeparados?.length) {
+    throw new Error(
+      "Esta fonte entrega o áudio numa faixa separada do vídeo, e juntar as duas exige remuxagem. " +
+      "Troque para o servidor WatchPlayer, que entrega vídeo e áudio no mesmo arquivo.",
+    );
   }
   if (!playlist.segmentos.length) throw new Error("playlist sem segmentos");
 
