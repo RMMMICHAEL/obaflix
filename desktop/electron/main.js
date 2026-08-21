@@ -10,6 +10,7 @@ const { setupUpdater } = require("./updater");
 const log = require("./logger");
 const { detectProvider, extractStream: extractStreamNative } = require("./extractors");
 const { extractSuperflixInBrowser } = require("./browser-extractor");
+const { baixarMidia } = require("./media-download");
 
 // Qualquer exceção não tratada precisa aparecer no log — antes elas morriam em
 // silêncio e o app só "não fazia nada".
@@ -766,6 +767,79 @@ ipcMain.handle("toggle-fullscreen", (event) => {
   return true;
 });
 ipcMain.handle("get-version", (event) => isTrustedIpc(event) ? app.getVersion() : null);
+
+// ── Download de mídia ─────────────────────────────────────────────────────────
+// Roda no processo principal porque os CDNs exigem Referer/Origin do embed e os
+// segmentos vêm de dezenas de hosts — no renderer cada um esbarraria em CORS.
+let downloadEmAndamento = null;
+
+ipcMain.handle("download-media", async (event, pedido) => {
+  if (!isTrustedIpc(event)) return { error: "Origem IPC não autorizada" };
+  if (downloadEmAndamento) return { error: "Já existe um download em andamento" };
+
+  const { stream, referer, tipo, titulo, modo, inicioSeg, fimSeg } = pedido || {};
+  const t = log.timer("player.download", { modo: modo || "completo", titulo: String(titulo || "").slice(0, 60) });
+
+  try {
+    if (typeof stream !== "string" || stream.length > 4096) throw new Error("URL inválida");
+    // Mesma checagem de SSRF usada na extração: nada de IP privado nem http.
+    await assertPublicHttpsStream(stream);
+    if (modo !== "completo" && modo !== "trecho") throw new Error("modo inválido");
+
+    const controlador = new AbortController();
+    downloadEmAndamento = controlador;
+
+    const resultado = await baixarMidia({
+      stream,
+      referer: typeof referer === "string" ? referer : null,
+      tipo,
+      titulo,
+      modo,
+      inicioSeg: Number(inicioSeg),
+      fimSeg: Number(fimSeg),
+      destinoDir: app.getPath("downloads"),
+      sinal: controlador.signal,
+      onProgresso: (p) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send("download-progress", p);
+      },
+    });
+
+    t.done({ container: resultado.container, mb: Math.round(resultado.bytes / 1048576) });
+    return { ok: true, ...resultado };
+  } catch (erro) {
+    const mensagem = erro?.message || String(erro);
+    if (mensagem === "cancelado") {
+      log.info("player.download", "cancelado pelo usuário");
+      return { error: "cancelado", cancelado: true };
+    }
+    t.fail(erro);
+    return { error: mensagem.slice(0, 200) };
+  } finally {
+    downloadEmAndamento = null;
+  }
+});
+
+ipcMain.handle("cancel-download", (event) => {
+  if (!isTrustedIpc(event)) return false;
+  downloadEmAndamento?.abort();
+  return true;
+});
+
+// Abre a pasta com o arquivo selecionado. Só aceita caminho dentro de Downloads,
+// para o renderer não conseguir apontar o explorador para qualquer lugar do disco.
+ipcMain.handle("reveal-download", (event, caminho) => {
+  if (!isTrustedIpc(event)) return false;
+  try {
+    const destino = path.resolve(String(caminho || ""));
+    const permitido = path.resolve(app.getPath("downloads"));
+    if (destino !== permitido && !destino.startsWith(permitido + path.sep)) return false;
+    shell.showItemInFolder(destino);
+    return true;
+  } catch {
+    return false;
+  }
+});
 ipcMain.handle("install-update", (event) => {
   if (!isTrustedIpc(event)) return false;
   require("electron-updater").autoUpdater.quitAndInstall(false, true);

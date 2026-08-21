@@ -15,6 +15,19 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // Toggle tela cheia nativa
   toggleFullscreen: () => ipcRenderer.invoke("toggle-fullscreen"),
 
+  // Baixa a mídia que o player está reproduzindo, na pasta Downloads.
+  // pedido: { stream, referer, tipo, titulo, modo: "completo"|"trecho", inicioSeg, fimSeg }
+  // Retorna: { ok: true, caminho, bytes, container } | { error: string, cancelado?: true }
+  downloadMedia: (pedido) => ipcRenderer.invoke("download-media", pedido),
+  cancelDownload: () => ipcRenderer.invoke("cancel-download"),
+  revealDownload: (caminho) => ipcRenderer.invoke("reveal-download", caminho),
+
+  // Progresso: { etapa, atual, total, bytes, pct }
+  onDownloadProgress: (cb) => {
+    ipcRenderer.removeAllListeners("download-progress");
+    ipcRenderer.on("download-progress", (_evento, p) => { try { cb(p); } catch { /**/ } });
+  },
+
   // Versão do aplicativo
   getVersion: () => ipcRenderer.invoke("get-version"),
 

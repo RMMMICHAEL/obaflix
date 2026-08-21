@@ -406,6 +406,15 @@ export function CustomPlayer({
   // Servidores que já falharam de forma fatal, por embedUrl, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
+  // ── Download ────────────────────────────────────────────────────────────────
+  const [showDownload, setShowDownload] = useState(false);
+  const [downloadProgresso, setDownloadProgresso] = useState<
+    { pct: number; atual: number; total: number; bytes: number } | null
+  >(null);
+  const [downloadResultado, setDownloadResultado] = useState<
+    { caminho: string; erro?: string } | null
+  >(null);
+
   const allFontes: Fonte[] = [];
 
   // Players 1, 2 e 5 montam a URL a partir do tmdbId. Parte do catálogo grava
@@ -1101,6 +1110,54 @@ export function CustomPlayer({
     if (!fonte?.embedUrl) return;
     extract(fonte.embedUrl);
   }, [fonte?.embedUrl, extract]);
+
+  // ── Download da mídia atual ─────────────────────────────────────────────────
+  // Só no app desktop: o navegador não consegue mandar o Referer que os CDNs
+  // exigem, e os segmentos vêm de dezenas de hosts que barrariam por CORS.
+  const podeBaixar = !!desktopBridge?.downloadMedia &&
+    !!directStreamRef.current &&
+    (streamTipo === "hls" || streamTipo === "mp4");
+
+  useEffect(() => {
+    desktopBridge?.onDownloadProgress?.((p: { pct: number; atual: number; total: number; bytes: number; etapa: string }) => {
+      if (p.etapa === "concluido") return;
+      setDownloadProgresso({ pct: p.pct ?? 0, atual: p.atual ?? 0, total: p.total ?? 0, bytes: p.bytes ?? 0 });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const iniciarDownload = useCallback(async (modo: "completo" | "trecho", duracaoSeg?: number) => {
+    const stream = directStreamRef.current;
+    if (!stream || !desktopBridge?.downloadMedia) return;
+
+    setShowDownload(false);
+    setDownloadResultado(null);
+    setDownloadProgresso({ pct: 0, atual: 0, total: 0, bytes: 0 });
+
+    const nome = [titulo, temporada && numeroEp ? `T${temporada}E${numeroEp}` : null]
+      .filter(Boolean).join(" ");
+    // O trecho começa onde o usuário está assistindo.
+    const inicio = modo === "trecho" ? Math.max(0, progressoRef.current) : undefined;
+
+    try {
+      const r = await desktopBridge.downloadMedia({
+        stream,
+        referer: streamRefererRef.current,
+        tipo: streamTipo === "mp4" ? "mp4" : "hls",
+        titulo: nome,
+        modo,
+        inicioSeg: inicio,
+        fimSeg: modo === "trecho" ? (inicio ?? 0) + (duracaoSeg ?? 300) : undefined,
+      });
+      setDownloadProgresso(null);
+      if (r?.ok) setDownloadResultado({ caminho: r.caminho });
+      else if (!r?.cancelado) setDownloadResultado({ caminho: "", erro: r?.error || "Falha no download" });
+    } catch (e: any) {
+      setDownloadProgresso(null);
+      setDownloadResultado({ caminho: "", erro: e?.message || "Falha no download" });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamTipo, titulo, temporada, numeroEp]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -2159,6 +2216,98 @@ export function CustomPlayer({
                           </button>
                         );
                       })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Download — só no app desktop (ver podeBaixar) */}
+              {podeBaixar && (
+                <div className="relative">
+                  <button
+                    title="Baixar mídia"
+                    className={`h-10 md:h-12 px-3 md:px-4 rounded-full flex items-center gap-1.5 flex-shrink-0 transition-all duration-200 bg-white/10 text-white text-xs md:text-sm font-medium hover:bg-white hover:text-black active:bg-white active:text-black${showDownload ? " !bg-white !text-black" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowPlaybackSettings(false);
+                      setShowSources(false);
+                      if (downloadProgresso) return; // já baixando: o clique abre o painel abaixo
+                      setShowDownload((s) => !s);
+                    }}
+                  >
+                    {downloadProgresso ? `Baixando ${downloadProgresso.pct}%` : "Baixar"}
+                  </button>
+
+                  {showDownload && !downloadProgresso && (
+                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[210px] shadow-2xl">
+                      <button
+                        onClick={() => iniciarDownload("completo")}
+                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
+                      >
+                        Baixar conteúdo completo
+                      </button>
+                      <div className="border-t border-white/10" />
+                      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wide text-white/35">
+                        Baixar trecho a partir daqui
+                      </div>
+                      {[60, 300, 600].map((seg) => (
+                        <button
+                          key={seg}
+                          onClick={() => iniciarDownload("trecho", seg)}
+                          className="w-full text-left px-4 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition-all"
+                        >
+                          próximos {seg / 60} min
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {downloadProgresso && (
+                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl p-3 min-w-[220px] shadow-2xl">
+                      <div className="flex items-center justify-between text-[11px] text-white/70 mb-2">
+                        <span>
+                          {downloadProgresso.total > 0
+                            ? `${downloadProgresso.atual}/${downloadProgresso.total} partes`
+                            : "preparando…"}
+                        </span>
+                        <span>{(downloadProgresso.bytes / 1048576).toFixed(1)} MB</span>
+                      </div>
+                      <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#E50914] transition-all duration-300"
+                          style={{ width: `${downloadProgresso.pct}%` }}
+                        />
+                      </div>
+                      <button
+                        onClick={() => desktopBridge?.cancelDownload?.()}
+                        className="mt-2.5 w-full text-center text-[11px] text-white/50 hover:text-white transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
+
+                  {downloadResultado && !downloadProgresso && (
+                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl p-3 min-w-[220px] shadow-2xl">
+                      {downloadResultado.erro ? (
+                        <p className="text-[11px] text-white/70 leading-snug">{downloadResultado.erro}</p>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-white/70 mb-2">Salvo em Downloads</p>
+                          <button
+                            onClick={() => desktopBridge?.revealDownload?.(downloadResultado.caminho)}
+                            className="w-full text-center text-[11px] text-white bg-white/10 hover:bg-white/20 rounded-lg py-1.5 transition-colors"
+                          >
+                            Abrir pasta
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setDownloadResultado(null)}
+                        className="mt-2 w-full text-center text-[11px] text-white/40 hover:text-white/70 transition-colors"
+                      >
+                        Fechar
+                      </button>
                     </div>
                   )}
                 </div>
