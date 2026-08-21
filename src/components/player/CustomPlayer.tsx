@@ -311,6 +311,19 @@ function recoveryLog(
   else console.log(msg);
 }
 
+/**
+ * Inverso de formatTime, para os campos de recorte. Aceita "90", "1:30" e
+ * "1:02:03". Devolve null quando o texto ainda está sendo digitado, para o campo
+ * não se reescrever no meio da digitação.
+ */
+function parseTime(texto: string): number | null {
+  const limpo = texto.trim();
+  if (!/^\d{1,2}(:\d{1,2}){0,2}$/.test(limpo)) return null;
+  const partes = limpo.split(":").map((p) => Number.parseInt(p, 10));
+  if (partes.some((n) => !Number.isFinite(n))) return null;
+  return partes.reduce((total, n) => total * 60 + n, 0);
+}
+
 function formatTime(s: number): string {
   if (!isFinite(s) || s < 0) return "0:00";
   const t = Math.floor(s);
@@ -414,6 +427,14 @@ export function CustomPlayer({
   const [downloadResultado, setDownloadResultado] = useState<
     { caminho: string; erro?: string } | null
   >(null);
+
+  // ── Recorte ─────────────────────────────────────────────────────────────────
+  const seekBarRef = useRef<HTMLDivElement | null>(null);
+  const [hoverFrac, setHoverFrac] = useState<number | null>(null);
+  const [recorteAtivo, setRecorteAtivo] = useState(false);
+  const [recorteInicio, setRecorteInicio] = useState(0);
+  const [recorteFim, setRecorteFim] = useState(0);
+  const [arrastandoAlca, setArrastandoAlca] = useState<"inicio" | "fim" | null>(null);
 
   const allFontes: Fonte[] = [];
 
@@ -1126,6 +1147,45 @@ export function CustomPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Arrastar a alça pela barra. As duas nunca se cruzam: o mínimo é um segundo.
+  const aplicarArrasteAlca = useCallback((frac: number) => {
+    const t = Math.max(0, Math.min(duration, frac * duration));
+    if (arrastandoAlca === "inicio") setRecorteInicio(Math.min(t, recorteFim - 1));
+    else if (arrastandoAlca === "fim") setRecorteFim(Math.max(t, recorteInicio + 1));
+  }, [arrastandoAlca, duration, recorteInicio, recorteFim]);
+
+  useEffect(() => {
+    if (!arrastandoAlca) return;
+    const soltar = () => setArrastandoAlca(null);
+    window.addEventListener("mouseup", soltar);
+    return () => window.removeEventListener("mouseup", soltar);
+  }, [arrastandoAlca]);
+
+  /** Abre o recorte já centrado em onde o usuário está assistindo. */
+  const abrirRecorte = useCallback(() => {
+    const agora = progressoRef.current;
+    const fim = Math.min(duration || agora + 300, agora + 300);
+    setRecorteInicio(Math.max(0, agora));
+    setRecorteFim(Math.max(fim, agora + 5));
+    setRecorteAtivo(true);
+    setShowDownload(false);
+  }, [duration]);
+
+  /** Pré-visualização: pula para o início do recorte e para no fim. */
+  const previsualizarRecorte = useCallback(() => {
+    const player = jwRef.current;
+    if (player) { player.seek(recorteInicio); player.play(); }
+    else if (videoRef.current) { videoRef.current.currentTime = recorteInicio; videoRef.current.play().catch(() => {}); }
+  }, [recorteInicio]);
+
+  // Durante a pré-visualização, para ao chegar no fim do recorte.
+  useEffect(() => {
+    if (!recorteAtivo) return;
+    if (position < recorteFim || position > recorteFim + 1.5) return;
+    if (jwRef.current) jwRef.current.pause();
+    else videoRef.current?.pause();
+  }, [position, recorteAtivo, recorteFim]);
+
   const iniciarDownload = useCallback(async (modo: "completo" | "trecho", duracaoSeg?: number) => {
     const stream = directStreamRef.current;
     if (!stream || !desktopBridge?.downloadMedia) return;
@@ -1136,8 +1196,6 @@ export function CustomPlayer({
 
     const nome = [titulo, temporada && numeroEp ? `T${temporada}E${numeroEp}` : null]
       .filter(Boolean).join(" ");
-    // O trecho começa onde o usuário está assistindo.
-    const inicio = modo === "trecho" ? Math.max(0, progressoRef.current) : undefined;
 
     try {
       const r = await desktopBridge.downloadMedia({
@@ -1146,8 +1204,9 @@ export function CustomPlayer({
         tipo: streamTipo === "mp4" ? "mp4" : "hls",
         titulo: nome,
         modo,
-        inicioSeg: inicio,
-        fimSeg: modo === "trecho" ? (inicio ?? 0) + (duracaoSeg ?? 300) : undefined,
+        // O intervalo vem das alças/campos de recorte, não da posição atual.
+        inicioSeg: modo === "trecho" ? recorteInicio : undefined,
+        fimSeg: modo === "trecho" ? recorteFim : undefined,
       });
       setDownloadProgresso(null);
       if (r?.ok) setDownloadResultado({ caminho: r.caminho });
@@ -1157,7 +1216,7 @@ export function CustomPlayer({
       setDownloadResultado({ caminho: "", erro: e?.message || "Falha no download" });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamTipo, titulo, temporada, numeroEp]);
+  }, [streamTipo, titulo, temporada, numeroEp, recorteInicio, recorteFim]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -2247,18 +2306,18 @@ export function CustomPlayer({
                         Baixar conteúdo completo
                       </button>
                       <div className="border-t border-white/10" />
-                      <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wide text-white/35">
-                        Baixar trecho a partir daqui
-                      </div>
-                      {[60, 300, 600].map((seg) => (
-                        <button
-                          key={seg}
-                          onClick={() => iniciarDownload("trecho", seg)}
-                          className="w-full text-left px-4 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition-all"
-                        >
-                          próximos {seg / 60} min
-                        </button>
-                      ))}
+                      <button
+                        onClick={abrirRecorte}
+                        disabled={streamTipo === "mp4"}
+                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all disabled:text-white/25 disabled:hover:bg-transparent"
+                      >
+                        Baixar trecho…
+                        {streamTipo === "mp4" && (
+                          <span className="block text-[10px] text-white/25 mt-0.5">
+                            indisponível nesta fonte (MP4)
+                          </span>
+                        )}
+                      </button>
                     </div>
                   )}
 
@@ -2385,14 +2444,75 @@ export function CustomPlayer({
         {showCustomControls ? (
           <div className="pointer-events-auto px-3 pt-4 pb-2 bg-gradient-to-t from-black/80 via-black/30 to-transparent md:px-8 md:pt-10 landscape:pt-2 md:pb-4">
 
+            {/* Painel de recorte — some quando não está recortando */}
+            {recorteAtivo && (
+              <div className="flex flex-wrap items-center gap-2 mb-2 px-1 pointer-events-auto">
+                <span className="text-[10px] uppercase tracking-wide text-white/40">Recorte</span>
+
+                {(["inicio", "fim"] as const).map((qual) => (
+                  <label key={qual} className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-white/50">
+                      {qual === "inicio" ? "Início" : "Fim"}
+                    </span>
+                    <input
+                      type="text"
+                      value={formatTime(qual === "inicio" ? recorteInicio : recorteFim)}
+                      onChange={(e) => {
+                        const seg = parseTime(e.target.value);
+                        if (seg === null) return;
+                        const limitado = Math.max(0, Math.min(duration || seg, seg));
+                        if (qual === "inicio") setRecorteInicio(Math.min(limitado, recorteFim - 1));
+                        else setRecorteFim(Math.max(limitado, recorteInicio + 1));
+                      }}
+                      className="w-[74px] bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
+                      placeholder="00:00"
+                    />
+                  </label>
+                ))}
+
+                <span className="text-[11px] text-white/40 tabular-nums">
+                  duração {formatTime(Math.max(0, recorteFim - recorteInicio))}
+                </span>
+
+                <button
+                  onClick={previsualizarRecorte}
+                  className="px-3 py-1 rounded-full bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
+                >
+                  Pré-visualizar
+                </button>
+                <button
+                  onClick={() => iniciarDownload("trecho")}
+                  className="px-3 py-1 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors"
+                >
+                  Baixar trecho
+                </button>
+                <button
+                  onClick={() => setRecorteAtivo(false)}
+                  className="px-2 py-1 text-[11px] text-white/40 hover:text-white transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
             {/* Barra de progresso */}
             <div className="flex items-center gap-2 mb-2 md:gap-3 md:mb-3">
               <span className="text-white text-[10px] md:text-xs font-medium tabular-nums min-w-[32px] md:min-w-[42px] text-right">
                 {formatTime(position)}
               </span>
               <div
+                ref={seekBarRef}
                 className="relative flex items-center flex-1 h-10 cursor-pointer group/seek md:h-6 touch-none"
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                  setHoverFrac(frac);
+                  if (arrastandoAlca) aplicarArrasteAlca(frac);
+                }}
+                onMouseLeave={() => setHoverFrac(null)}
                 onClick={(e) => {
+                  // Arrastar uma alça termina com um clique; não deve virar seek.
+                  if (arrastandoAlca) return;
                   const rect = e.currentTarget.getBoundingClientRect();
                   const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                   const newPos = frac * duration;
@@ -2405,7 +2525,42 @@ export function CustomPlayer({
                     className="absolute inset-y-0 left-0 rounded-full bg-[#E50914]"
                     style={{ width: `${pct}%` }}
                   />
+                  {/* Faixa selecionada para recorte */}
+                  {recorteAtivo && duration > 0 && (
+                    <div
+                      className="absolute inset-y-0 bg-white/45 ring-1 ring-white/70"
+                      style={{
+                        left: `${(recorteInicio / duration) * 100}%`,
+                        width: `${Math.max(0, ((recorteFim - recorteInicio) / duration) * 100)}%`,
+                      }}
+                    />
+                  )}
                 </div>
+
+                {/* Alças de recorte: arrastar ajusta início e fim pela própria barra */}
+                {recorteAtivo && duration > 0 && (["inicio", "fim"] as const).map((qual) => {
+                  const valor = qual === "inicio" ? recorteInicio : recorteFim;
+                  return (
+                    <div
+                      key={qual}
+                      onMouseDown={(e) => { e.stopPropagation(); setArrastandoAlca(qual); }}
+                      title={`${qual === "inicio" ? "Início" : "Fim"} do recorte: ${formatTime(valor)}`}
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-6 rounded-sm bg-white ring-2 ring-black/40 shadow-lg cursor-ew-resize z-10"
+                      style={{ left: `calc(${(valor / duration) * 100}% - 6px)` }}
+                    />
+                  );
+                })}
+
+                {/* Tempo sob o cursor */}
+                {hoverFrac !== null && duration > 0 && (
+                  <div
+                    className="absolute -top-7 px-1.5 py-0.5 rounded bg-black/85 text-white text-[10px] font-medium tabular-nums pointer-events-none whitespace-nowrap -translate-x-1/2"
+                    style={{ left: `${hoverFrac * 100}%` }}
+                  >
+                    {formatTime(hoverFrac * duration)}
+                  </div>
+                )}
+
                 <div
                   className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#E50914] ring-2 ring-white/30 shadow-lg transition-transform duration-200 scale-0 group-hover/seek:scale-100 pointer-events-none"
                   style={{ left: `calc(${pct}% - 8px)` }}

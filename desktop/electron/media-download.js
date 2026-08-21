@@ -177,6 +177,16 @@ async function baixarMidia({
 
   // MP4 direto: não há playlist, é só transferir o arquivo.
   if (tipo === "mp4" || /\.mp4(?:$|\?)/i.test(stream)) {
+    // Um MP4 progressivo tem um índice único (moov) que mapeia tempo para byte.
+    // Recortar exige reconstruir esse índice; cortar por faixa de bytes produz
+    // arquivo que não abre. Falhar aqui é melhor do que baixar o filme inteiro
+    // quando o usuário pediu 30 segundos — que era o que acontecia antes.
+    if (modo === "trecho") {
+      throw new Error(
+        "Esta fonte entrega MP4 inteiro, sem índice de tempo: só dá para baixar o conteúdo completo. " +
+        "Para recortar, troque para um servidor HLS (WatchPlayer ou VIP Player).",
+      );
+    }
     progresso({ etapa: "baixando", atual: 0, total: 1, bytes: 0, pct: 0 });
     const r = await fetch(stream, { headers: cabecalhos(referer), signal: sinal });
     if (!r.ok) throw new Error(`HTTP ${r.status} ao baixar o MP4`);
