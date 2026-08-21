@@ -366,6 +366,9 @@ export function CustomPlayer({
   // Stable refs to avoid stale closures in JW Player callbacks
   const saveProgressRef = useRef<() => Promise<void>>(async () => {});
   const switchFonteRef = useRef<(idx: number) => void>(() => {});
+  // Identidade da fonte ativa por URL, imune ao crescimento da lista de fontes.
+  const fonteSelecionadaRef = useRef<string | null>(null);
+  const allFontesRef = useRef<Fonte[]>([]);
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -601,6 +604,24 @@ export function CustomPlayer({
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
   const rotuloDiag = fonte?.servidor ? `${fonte.label} · ${fonte.servidor}` : fonte?.label ?? "?";
+
+  allFontesRef.current = allFontes;
+
+  // As alternativas do Player 1 entram no meio da lista alguns segundos depois do
+  // primeiro render, deslocando todos os índices seguintes. Sem realinhar, quem já
+  // tivesse avançado para o Player 2 seria jogado numa fonte do Player 1 no meio da
+  // reprodução. A identidade da fonte é a URL; o índice é só posição.
+  useEffect(() => {
+    const alvo = fonteSelecionadaRef.current;
+    if (!alvo) return;
+    if (allFontes[fonteIdx]?.embedUrl === alvo) return;
+    const novoIdx = allFontes.findIndex((f) => f.embedUrl === alvo);
+    if (novoIdx >= 0 && novoIdx !== fonteIdx) {
+      console.log(`[diag/server] lista cresceu; fonte realinhada idx=${fonteIdx}→${novoIdx}`);
+      setFonteIdx(novoIdx);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allFontes.length]);
 
   useEffect(() => {
     let stored: string | null = null;
@@ -887,6 +908,9 @@ export function CustomPlayer({
     if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
     if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     streamExpiresAtRef.current = null;
+    // Guarda a fonte por URL, não por índice: a lista cresce quando as
+    // alternativas do Player 1 chegam, e aí o índice passa a apontar para outra.
+    fonteSelecionadaRef.current = allFontesRef.current[idx]?.embedUrl ?? null;
     setFonteIdx(idx);
     setStatus("idle");
     setStreamUrl(null);
