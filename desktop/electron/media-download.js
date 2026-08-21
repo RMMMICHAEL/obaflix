@@ -17,6 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { temFfmpeg, rodarFfmpeg } = require("./ffmpeg-bin");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -182,6 +183,92 @@ function nomeSeguro(titulo) {
     .slice(0, 90) || "obaflix";
 }
 
+/** hh:mm:ss.mmm de uma duração em segundos, para o -ss/-to do ffmpeg. */
+function paraTimecode(seg) {
+  const s = Math.max(0, Number(seg) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const resto = (s % 60).toFixed(3).padStart(6, "0");
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${resto}`;
+}
+
+/**
+ * Caminho com ffmpeg: junta faixas separadas, corta no tempo exato e sai em MP4.
+ * Sempre com `-c copy` — nada é recodificado, só remuxado.
+ */
+async function baixarComFfmpeg({
+  stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso, sinal,
+}) {
+  const base = nomeSeguro(titulo);
+  const recorta = modo === "trecho" && Number.isFinite(inicioSeg) && Number.isFinite(fimSeg);
+  const sufixo = recorta ? ` ${Math.round(inicioSeg)}s-${Math.round(fimSeg)}s` : "";
+  const destino = path.join(destinoDir, `${base}${sufixo}.mp4`);
+
+  const cabecalhosExtra = [];
+  if (referer) {
+    cabecalhosExtra.push(`Referer: ${referer}`);
+    try { cabecalhosExtra.push(`Origin: ${new URL(referer).origin}`); } catch { /**/ }
+  }
+
+  const duracaoAlvo = recorta ? Math.max(0, fimSeg - inicioSeg) : 0;
+
+  const args = [
+    "-hide_banner", "-loglevel", "error", "-stats",
+    "-user_agent", UA,
+    // Estes provedores entregam segmentos disfarçados de .js/.css/.woff; sem
+    // liberar as extensões o demuxer HLS do ffmpeg recusa a playlist inteira.
+    "-allowed_extensions", "ALL",
+    "-extension_picky", "0",
+    "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+  ];
+  if (cabecalhosExtra.length) args.push("-headers", cabecalhosExtra.join("\r\n") + "\r\n");
+  // -ss antes do -i faz busca na entrada: baixa só o trecho, em vez do arquivo todo.
+  if (recorta) args.push("-ss", paraTimecode(inicioSeg), "-to", paraTimecode(fimSeg));
+  args.push(
+    "-i", stream,
+    "-map", "0", "-c", "copy",
+    // Necessário para MP4 com trilhas vindas de MPEG-TS.
+    "-bsf:a", "aac_adtstoasc",
+    "-movflags", "+faststart",
+    "-y", destino,
+  );
+
+  onProgresso?.({ etapa: "baixando", atual: 0, total: 0, bytes: 0, pct: 0 });
+
+  // O -stats imprime "time=00:01:07.20", que vira porcentagem quando há recorte.
+  const rePonto = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/;
+  const reTamanho = /size=\s*(\d+)(?:KiB|kB)/i;
+  let ultimoBytes = 0;
+
+  await rodarFfmpeg(args, {
+    sinal,
+    onLinha: (linha) => {
+      const t = linha.match(rePonto);
+      const sz = linha.match(reTamanho);
+      if (sz) ultimoBytes = Number(sz[1]) * 1024;
+      if (!t) return;
+      const decorrido = Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]);
+      const pct = duracaoAlvo > 0
+        ? Math.max(0, Math.min(99, Math.round((decorrido / duracaoAlvo) * 100)))
+        : 0;
+      onProgresso?.({ etapa: "baixando", atual: Math.round(decorrido), total: Math.round(duracaoAlvo), bytes: ultimoBytes, pct });
+    },
+  });
+
+  const bytes = (await fs.promises.stat(destino).catch(() => ({ size: 0 }))).size;
+  if (!bytes) throw new Error("ffmpeg terminou sem gerar arquivo");
+
+  onProgresso?.({ etapa: "concluido", atual: 1, total: 1, bytes, pct: 100 });
+  return {
+    caminho: destino,
+    bytes,
+    container: "mp4",
+    viaFfmpeg: true,
+    inicioReal: recorta ? inicioSeg : 0,
+    fimReal: recorta ? fimSeg : 0,
+  };
+}
+
 /**
  * Baixa a mídia para `destinoDir`. Devolve o caminho final.
  *
@@ -194,6 +281,15 @@ async function baixarMidia({
   const progresso = (dados) => { try { onProgresso?.(dados); } catch { /**/ } };
   const base = nomeSeguro(titulo);
 
+  // Com ffmpeg disponível, ele é sempre melhor: junta faixa de áudio separada,
+  // corta no tempo exato (e não no limite do segmento) e sai em MP4 já remuxado.
+  // Sem ele, cai na concatenação, que só funciona quando a mídia é autossuficiente.
+  if (temFfmpeg()) {
+    return baixarComFfmpeg({
+      stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
+    });
+  }
+
   // MP4 direto: não há playlist, é só transferir o arquivo.
   if (tipo === "mp4" || /\.mp4(?:$|\?)/i.test(stream)) {
     // Um MP4 progressivo tem um índice único (moov) que mapeia tempo para byte.
@@ -202,8 +298,8 @@ async function baixarMidia({
     // quando o usuário pediu 30 segundos — que era o que acontecia antes.
     if (modo === "trecho") {
       throw new Error(
-        "Esta fonte entrega MP4 inteiro, sem índice de tempo: só dá para baixar o conteúdo completo. " +
-        "Para recortar, troque para um servidor HLS (WatchPlayer ou VIP Player).",
+        "Sem ffmpeg instalado não dá para recortar MP4: esta fonte entrega o arquivo inteiro, " +
+        "sem índice de tempo. Baixe o conteúdo completo ou instale o ffmpeg.",
       );
     }
     progresso({ etapa: "baixando", atual: 0, total: 1, bytes: 0, pct: 0 });
@@ -228,8 +324,8 @@ async function baixarMidia({
   // sucesso e entregava um arquivo mudo — pior do que falhar.
   if (playlist.audiosSeparados?.length) {
     throw new Error(
-      "Esta fonte entrega o áudio numa faixa separada do vídeo, e juntar as duas exige remuxagem. " +
-      "Troque para o servidor WatchPlayer, que entrega vídeo e áudio no mesmo arquivo.",
+      "Esta fonte entrega o áudio numa faixa separada e juntar as duas exige ffmpeg, que não foi " +
+      "encontrado. Instale o ffmpeg ou troque para o servidor WatchPlayer, que entrega tudo junto.",
     );
   }
   if (!playlist.segmentos.length) throw new Error("playlist sem segmentos");

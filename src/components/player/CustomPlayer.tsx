@@ -2306,17 +2306,14 @@ export function CustomPlayer({
                         Baixar conteúdo completo
                       </button>
                       <div className="border-t border-white/10" />
+                      {/* Com ffmpeg o recorte vale para qualquer fonte, inclusive
+                          MP4 e as que trazem o áudio em faixa separada. Sem ele, o
+                          próprio download explica o motivo ao falhar. */}
                       <button
                         onClick={abrirRecorte}
-                        disabled={streamTipo === "mp4"}
-                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all disabled:text-white/25 disabled:hover:bg-transparent"
+                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
                       >
                         Baixar trecho…
-                        {streamTipo === "mp4" && (
-                          <span className="block text-[10px] text-white/25 mt-0.5">
-                            indisponível nesta fonte (MP4)
-                          </span>
-                        )}
                       </button>
                     </div>
                   )}
