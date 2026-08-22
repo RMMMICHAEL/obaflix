@@ -73,7 +73,7 @@ function isAllowedCdnHost(host) {
 
 // Le uma playlist e registra todo host absoluto citado nela. O master costuma usar
 // caminhos relativos, entao os hosts dos segmentos so aparecem descendo um nivel.
-async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamento = { restantes: 4 }) {
+async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamento = { restantes: 4 }, coletor = null) {
   let texto;
   try {
     const alvo = new URL(url);
@@ -92,7 +92,12 @@ async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamen
 
   if (!texto.trimStart().startsWith("#EXTM3U")) return;
 
-  for (const m of texto.matchAll(HOST_ABSOLUTO_RE)) allowCdnHost(m[1]);
+  for (const m of texto.matchAll(HOST_ABSOLUTO_RE)) {
+    // Sem coletor, publica direto (uso avulso); com coletor, acumula para o
+    // chamador trocar o conjunto de uma vez só.
+    if (coletor) coletor.add(String(m[1]).toLowerCase().trim());
+    else allowCdnHost(m[1]);
+  }
 
   if (profundidade <= 0) return;
 
@@ -115,7 +120,7 @@ async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamen
     orcamento.restantes -= 1;
     let absoluto;
     try { absoluto = new URL(filho, url).toString(); } catch { continue; }
-    await learnCdnHostsFromPlaylist(absoluto, referer, profundidade - 1, orcamento);
+    await learnCdnHostsFromPlaylist(absoluto, referer, profundidade - 1, orcamento, coletor);
   }
 }
 
@@ -124,12 +129,28 @@ async function registerPlayerStream(stream, referer) {
   let principal = "";
   try { principal = new URL(stream).hostname; } catch { return; }
 
+  // A leitura das playlists leva segundos. Zerar o conjunto antes dela abria uma
+  // janela em que a reprodução em curso perdia Referer/Origin e CORS a cada
+  // segmento de outro host — travamento no meio do episódio, sem erro visível.
+  // Por isso o conjunto novo é montado à parte e só entra no lugar no fim.
+  //
+  // Os hosts antigos são preservados: durante uma renovação de token o player
+  // continua pedindo segmentos do stream anterior por alguns instantes, e
+  // esquecê-los é justamente o que provocava a falha.
+  const anteriores = playerState.cdnHostnames;
+  const novos = new Set([principal.toLowerCase()]);
+
   playerState.cdnHostname = principal;
   playerState.embedReferer = referer || null;
-  playerState.cdnHostnames = new Set([principal.toLowerCase()]);
+  playerState.cdnHostnames = new Set([...anteriores, ...novos]);
 
   if (PLAYLIST_URL_RE.test(stream)) {
-    await learnCdnHostsFromPlaylist(stream, playerState.embedReferer);
+    const aprendidos = new Set(novos);
+    await learnCdnHostsFromPlaylist(stream, playerState.embedReferer, 1, { restantes: 4 }, aprendidos);
+    // Mantém os anteriores, mas com teto: o conjunto não pode crescer sem fim
+    // ao longo de muitas trocas de servidor numa mesma sessão.
+    const unido = [...aprendidos, ...anteriores].slice(0, 300);
+    playerState.cdnHostnames = new Set(unido);
   }
 
   log.info("player.cdn", "estado do player atualizado", {
