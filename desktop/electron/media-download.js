@@ -17,7 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { temFfmpeg, rodarFfmpeg } = require("./ffmpeg-bin");
+const { temFfmpeg, suportaOpcao, rodarFfmpeg } = require("./ffmpeg-bin");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -218,9 +218,12 @@ async function baixarComFfmpeg({
     // Estes provedores entregam segmentos disfarçados de .js/.css/.woff; sem
     // liberar as extensões o demuxer HLS do ffmpeg recusa a playlist inteira.
     "-allowed_extensions", "ALL",
-    "-extension_picky", "0",
     "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
   ];
+  // Builds recentes do ffmpeg apertaram a validação de extensão e passaram a
+  // exigir esta opção além da anterior; builds mais antigos nem a reconhecem e
+  // abortam com "Unrecognized option". Por isso ela é condicional.
+  if (suportaOpcao("-extension_picky")) args.push("-extension_picky", "0");
   if (cabecalhosExtra.length) args.push("-headers", cabecalhosExtra.join("\r\n") + "\r\n");
   // -ss antes do -i faz busca na entrada: baixa só o trecho, em vez do arquivo todo.
   if (recorta) args.push("-ss", paraTimecode(inicioSeg), "-to", paraTimecode(fimSeg));
@@ -229,6 +232,11 @@ async function baixarComFfmpeg({
     "-map", "0", "-c", "copy",
     // Necessário para MP4 com trilhas vindas de MPEG-TS.
     "-bsf:a", "aac_adtstoasc",
+    // Com -c copy o corte cai no keyframe anterior ao pedido. Sem zerar os
+    // timestamps, o inicio do arquivo fica com PTS negativo e alguns players
+    // mostram tela preta (ou so tocam o audio) ate o proximo keyframe.
+    "-avoid_negative_ts", "make_zero",
+    "-fflags", "+genpts",
     "-movflags", "+faststart",
     "-y", destino,
   );
@@ -281,14 +289,14 @@ async function baixarMidia({
   const progresso = (dados) => { try { onProgresso?.(dados); } catch { /**/ } };
   const base = nomeSeguro(titulo);
 
-  // Com ffmpeg disponível, ele é sempre melhor: junta faixa de áudio separada,
-  // corta no tempo exato (e não no limite do segmento) e sai em MP4 já remuxado.
-  // Sem ele, cai na concatenação, que só funciona quando a mídia é autossuficiente.
-  if (temFfmpeg()) {
-    return baixarComFfmpeg({
-      stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
-    });
-  }
+  // Roteamento por necessidade, e não "ffmpeg sempre que existir".
+  //
+  // O binário embarcado é o 6.1.1 e não dá conta do fMP4 HLS do WatchPlay:
+  // gasta 81s e escreve zero byte, enquanto um build recente resolve em 8s. Como
+  // a versão instalada varia de máquina para máquina, a concatenação — que não
+  // depende de versão nenhuma — continua sendo o caminho quando a mídia é
+  // autossuficiente. O ffmpeg entra onde a concatenação não tem como resolver:
+  // faixa de áudio separada e recorte de MP4.
 
   // MP4 direto: não há playlist, é só transferir o arquivo.
   if (tipo === "mp4" || /\.mp4(?:$|\?)/i.test(stream)) {
@@ -297,10 +305,16 @@ async function baixarMidia({
     // arquivo que não abre. Falhar aqui é melhor do que baixar o filme inteiro
     // quando o usuário pediu 30 segundos — que era o que acontecia antes.
     if (modo === "trecho") {
-      throw new Error(
-        "Sem ffmpeg instalado não dá para recortar MP4: esta fonte entrega o arquivo inteiro, " +
-        "sem índice de tempo. Baixe o conteúdo completo ou instale o ffmpeg.",
-      );
+      // Recortar MP4 exige reconstruir o índice de tempo; só o ffmpeg faz isso.
+      if (!temFfmpeg()) {
+        throw new Error(
+          "Sem ffmpeg não dá para recortar MP4: esta fonte entrega o arquivo inteiro, " +
+          "sem índice de tempo. Baixe o conteúdo completo ou instale o ffmpeg.",
+        );
+      }
+      return baixarComFfmpeg({
+        stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
+      });
     }
     progresso({ etapa: "baixando", atual: 0, total: 1, bytes: 0, pct: 0 });
     const r = await fetch(stream, { headers: cabecalhos(referer), signal: sinal });
@@ -320,13 +334,17 @@ async function baixarMidia({
   }
 
   // Áudio em rendição separada: a variante de vídeo não carrega som nenhum, e
-  // juntar as duas exige remuxagem. Sem esta checagem o download terminava com
-  // sucesso e entregava um arquivo mudo — pior do que falhar.
+  // concatenar entregaria um arquivo mudo. Só o ffmpeg junta as duas faixas.
   if (playlist.audiosSeparados?.length) {
-    throw new Error(
-      "Esta fonte entrega o áudio numa faixa separada e juntar as duas exige ffmpeg, que não foi " +
-      "encontrado. Instale o ffmpeg ou troque para o servidor WatchPlayer, que entrega tudo junto.",
-    );
+    if (!temFfmpeg()) {
+      throw new Error(
+        "Esta fonte entrega o áudio numa faixa separada e juntar as duas exige ffmpeg, que não foi " +
+        "encontrado. Instale o ffmpeg ou troque para o servidor WatchPlayer, que entrega tudo junto.",
+      );
+    }
+    return baixarComFfmpeg({
+      stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
+    });
   }
   if (!playlist.segmentos.length) throw new Error("playlist sem segmentos");
 

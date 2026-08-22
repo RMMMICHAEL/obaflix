@@ -104,6 +104,34 @@ function temFfmpeg() {
   return !!localizarFfmpeg();
 }
 
+const cacheOpcoes = new Map();
+
+/**
+ * Diz se o binário aceita uma opção. As versões divergem: `-extension_picky` só
+ * existe em builds recentes, e passá-la a um ffmpeg mais antigo aborta com
+ * "Unrecognized option" antes de tocar na mídia. Como o app pode usar o binário
+ * embarcado ou um já instalado na máquina, a checagem é feita em runtime.
+ */
+function suportaOpcao(nome) {
+  if (cacheOpcoes.has(nome)) return cacheOpcoes.get(nome);
+  const bin = localizarFfmpeg();
+  if (!bin) return false;
+  let suporta = false;
+  try {
+    const { execFileSync } = require("child_process");
+    // Entrada inexistente de propósito: se a opção existir, a reclamação é sobre
+    // a entrada, não sobre a opção.
+    execFileSync(bin, ["-hide_banner", "-loglevel", "error", nome, "0", "-i", "__inexistente__", "-f", "null", "-"],
+      { timeout: 15000, stdio: ["ignore", "ignore", "pipe"] });
+    suporta = true;
+  } catch (erro) {
+    const saida = String(erro?.stderr || "");
+    suporta = !/Unrecognized option|Option not found/i.test(saida);
+  }
+  cacheOpcoes.set(nome, suporta);
+  return suporta;
+}
+
 /** Executa o ffmpeg. `onLinha` recebe cada linha de progresso do stderr. */
 function rodarFfmpeg(args, { sinal, onLinha, timeoutMs = 60 * 60 * 1000 } = {}) {
   const bin = localizarFfmpeg();
@@ -139,4 +167,4 @@ function rodarFfmpeg(args, { sinal, onLinha, timeoutMs = 60 * 60 * 1000 } = {}) 
   });
 }
 
-module.exports = { localizarFfmpeg, localizarFfprobe, temFfmpeg, rodarFfmpeg };
+module.exports = { localizarFfmpeg, localizarFfprobe, temFfmpeg, suportaOpcao, rodarFfmpeg };
