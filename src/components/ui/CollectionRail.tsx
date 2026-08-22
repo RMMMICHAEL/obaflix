@@ -65,15 +65,15 @@ export function CollectionRail({ cards }: { cards: CollectionRailItem[] }) {
           <Link
             key={card.id}
             href={`/colecao/${card.id}`}
-            className="group/card w-[140px] shrink-0 snap-start sm:w-[160px] md:w-[200px]"
+            className="group/card w-[220px] shrink-0 snap-start sm:w-[250px] md:w-[280px]"
           >
-            <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-zinc-900 ring-1 ring-white/[0.06]">
+            <div className="relative aspect-video overflow-hidden rounded-lg bg-zinc-900 ring-1 ring-white/[0.06]">
               <Image
-                src={imgUrl(card.poster ?? card.backdrop, "w342")}
+                src={imgUrl(card.backdrop ?? card.poster, "w780")}
                 alt={card.nome}
                 fill
                 className="object-cover transition-transform duration-200 ease-out group-hover/card:scale-[1.035]"
-                sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 200px"
+                sizes="(max-width: 640px) 220px, (max-width: 768px) 250px, 280px"
                 loading="lazy"
               />
               <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-zinc-950/80 to-transparent" />

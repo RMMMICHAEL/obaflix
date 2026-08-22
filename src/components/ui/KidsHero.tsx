@@ -8,6 +8,7 @@ export interface KidsHeroItem {
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
+  background?: string | null;
 }
 
 export function KidsHero({ items }: { items: KidsHeroItem[] }) {
@@ -52,11 +53,11 @@ export function KidsHero({ items }: { items: KidsHeroItem[] }) {
             <Link
               key={`${item.tipo}-${item.id}`}
               href={item.tipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`}
-              className={`block aspect-[2/3] overflow-hidden rounded-2xl bg-[oklch(0.25_0.05_205)] shadow-xl ring-2 ring-[oklch(0.94_0.025_195/0.55)] transition-transform duration-200 ease-out hover:-translate-y-1 focus-visible:outline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-[oklch(0.20_0.055_205)] ${index === 1 ? "-translate-y-4" : "translate-y-3"}`}
+              className={`block aspect-video overflow-hidden rounded-2xl bg-[oklch(0.25_0.05_205)] shadow-xl ring-2 ring-[oklch(0.94_0.025_195/0.55)] transition-transform duration-200 ease-out hover:-translate-y-1 focus-visible:outline focus-visible:outline-3 focus-visible:outline-offset-4 focus-visible:outline-[oklch(0.20_0.055_205)] ${index === 1 ? "-translate-y-4" : "translate-y-3"}`}
               aria-label={item.titulo}
             >
               <Image
-                src={item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
+                src={item.background ? imgUrl(item.background, "w780") : item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
                 alt={item.titulo}
                 fill
                 className="object-cover"

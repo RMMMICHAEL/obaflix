@@ -368,7 +368,7 @@ video::cue {
   padding: 0 1rem 0.75rem;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(7.2rem, 35vw);
+  grid-auto-columns: minmax(11.5rem, 58vw);
   gap: 0.78rem;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
@@ -543,7 +543,7 @@ video::cue {
 .android-poster-art {
   position: relative;
   overflow: hidden;
-  aspect-ratio: 2 / 3;
+  aspect-ratio: 16 / 9;
   border-radius: 0.75rem;
   background: var(--android-surface);
   box-shadow: 0 0.65rem 1.5rem oklch(0.06 0.01 25 / 0.28);

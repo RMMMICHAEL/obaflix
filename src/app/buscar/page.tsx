@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { ContentCard } from "@/components/ui/ContentCard";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { Search } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -66,9 +66,9 @@ function BuscarConteudo() {
       {filmesVisiveis.length > 0 && (
         <div className="mb-8">
           {aba === "tudo" && <h2 className="text-white font-semibold mb-3">Filmes</h2>}
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {filmesVisiveis.map((f) => (
-              <ContentCard key={f.id} id={f.id} tipo="filme" titulo={f.titulo} poster={f.poster} ano={f.ano} nota={f.nota} urlDub={f.urlDub} urlLeg={f.urlLeg} />
+              <LandscapeCard key={f.id} layout="grid" id={f.id} tipo="filme" titulo={f.titulo} poster={f.poster} background={f.background} ano={f.ano} nota={f.nota} urlDub={f.urlDub} urlLeg={f.urlLeg} />
             ))}
           </div>
         </div>
@@ -77,9 +77,9 @@ function BuscarConteudo() {
       {seriesVisiveis.length > 0 && (
         <div>
           {aba === "tudo" && <h2 className="text-white font-semibold mb-3">Séries</h2>}
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {seriesVisiveis.map((s) => (
-              <ContentCard key={s.id} id={s.id} tipo={s.tipo} titulo={s.titulo} poster={s.poster} ano={s.ano} nota={s.nota} />
+              <LandscapeCard key={s.id} layout="grid" id={s.id} tipo={s.tipo} titulo={s.titulo} poster={s.poster} background={s.background} ano={s.ano} nota={s.nota} />
             ))}
           </div>
         </div>

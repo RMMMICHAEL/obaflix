@@ -62,10 +62,10 @@ function MediaRail({ title, href, items }: { title: string; href: string; items:
             <Link className="android-poster" href={detailHref} key={`${item.tipo}-${item.id}`}>
               <div className="android-poster-art">
                 <Image
-                  src={item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
+                  src={item.background ? imgUrl(item.background, "w780") : item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
                   alt=""
                   fill
-                  sizes="(max-width: 480px) 35vw, 168px"
+                  sizes="(max-width: 480px) 58vw, 260px"
                 />
                 {item.urlDub && <span className="android-audio-badge">DUB</span>}
               </div>

@@ -11,6 +11,7 @@ export interface AwardRowItem {
   tipo: "filme" | "serie";
   titulo: string;
   poster: string | null;
+  background?: string | null;
   ano: number | null;
   count: number;
 }
@@ -83,15 +84,15 @@ export function AwardRow({ title, description, unit, items }: Props) {
             <Link
               key={`${item.tipo}-${item.id}`}
               href={item.tipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`}
-              className="group/card w-[140px] shrink-0 snap-start sm:w-[160px] md:w-[180px]"
+              className="group/card w-[220px] shrink-0 snap-start sm:w-[250px] md:w-[280px]"
             >
-              <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-zinc-900 ring-1 ring-white/[0.07]">
+              <div className="relative aspect-video overflow-hidden rounded-lg bg-zinc-900 ring-1 ring-white/[0.07]">
                 <Image
-                  src={item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
+                  src={item.background ? imgUrl(item.background, "w780") : item.poster ? imgUrl(item.poster, "w342") : "/placeholder.jpg"}
                   alt={item.titulo}
                   fill
                   className="object-cover transition-transform duration-200 ease-out group-hover/card:scale-[1.035]"
-                  sizes="(max-width: 640px) 140px, (max-width: 768px) 160px, 180px"
+                  sizes="(max-width: 640px) 220px, (max-width: 768px) 250px, 280px"
                 />
                 <div className="absolute inset-x-0 top-0 flex items-start justify-between p-2">
                   <span className="grid h-7 min-w-7 place-items-center rounded-md bg-zinc-950/90 px-1.5 text-xs font-bold text-zinc-100 ring-1 ring-white/10">

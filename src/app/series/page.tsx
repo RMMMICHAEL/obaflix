@@ -3,7 +3,7 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
-import { ContentCard } from "@/components/ui/ContentCard";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
@@ -22,7 +22,7 @@ const selBrowse = {
 const selHero = { id: true, titulo: true, sinopse: true, background: true } as const;
 
 const selGrid = {
-  id: true, titulo: true, poster: true, ano: true, nota: true, tipo: true,
+  id: true, titulo: true, poster: true, background: true, ano: true, nota: true, tipo: true,
 } as const;
 
 function toRow(s: any) {
@@ -37,7 +37,8 @@ function toRow(s: any) {
 function toGrid(s: any) {
   return {
     id: s.id, tipo: (s.tipo ?? "serie") as "serie" | "anime" | "desenho",
-    titulo: s.titulo, poster: s.poster ?? null, ano: s.ano ?? null, nota: s.nota ?? null,
+    titulo: s.titulo, poster: s.poster ?? null, background: s.background ?? null,
+    ano: s.ano ?? null, nota: s.nota ?? null,
   };
 }
 
@@ -97,8 +98,8 @@ export default async function SeriesPage({
             <FilterBar generos={generos} anos={anos} total={total} pages={pages} label="séries" />
           </Suspense>
           {series.length > 0 ? (
-            <div className="mt-6 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-              {series.map((s) => <ContentCard key={s.id} {...toGrid(s)} />)}
+            <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {series.map((s) => <LandscapeCard key={s.id} {...toGrid(s)} layout="grid" />)}
             </div>
           ) : (
             <EmptyState />

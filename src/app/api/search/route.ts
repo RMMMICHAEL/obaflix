@@ -29,6 +29,7 @@ interface FilmeRow {
   titulo: string;
   tituloOriginal: string | null;
   poster: string | null;
+  background: string | null;
   ano: number | null;
   nota: number | null;
   urlDub: string | null;
@@ -40,6 +41,7 @@ interface SerieRow {
   titulo: string;
   tituloOriginal: string | null;
   poster: string | null;
+  background: string | null;
   ano: number | null;
   nota: number | null;
   tipo: string;
@@ -48,7 +50,7 @@ interface SerieRow {
 async function localSearchFilmes(pattern: string, limit: number): Promise<FilmeRow[]> {
   return prisma.$queryRaw<FilmeRow[]>(
     Prisma.sql`
-      SELECT id, titulo, "tituloOriginal", poster, ano, nota, "urlDub", "urlLeg"
+      SELECT id, titulo, "tituloOriginal", poster, background, ano, nota, "urlDub", "urlLeg"
       FROM "Filme"
       WHERE ${Prisma.raw(colNorm("titulo"))} LIKE ${pattern}
          OR ${Prisma.raw(colNorm('"tituloOriginal"'))} LIKE ${pattern}
@@ -66,7 +68,7 @@ async function localSearchSeries(
   const tipoSql = tipoFilter ? Prisma.sql`AND tipo = ${tipoFilter}` : Prisma.sql``;
   return prisma.$queryRaw<SerieRow[]>(
     Prisma.sql`
-      SELECT id, titulo, "tituloOriginal", poster, ano, nota, tipo
+      SELECT id, titulo, "tituloOriginal", poster, background, ano, nota, tipo
       FROM "Serie"
       WHERE (
         ${Prisma.raw(colNorm("titulo"))} LIKE ${pattern}
@@ -123,7 +125,7 @@ export async function GET(req: NextRequest) {
       ? prisma
           .$queryRaw<FilmeRow[]>(
             Prisma.sql`
-              SELECT id, titulo, "tituloOriginal", poster, ano, nota, "urlDub", "urlLeg"
+              SELECT id, titulo, "tituloOriginal", poster, background, ano, nota, "urlDub", "urlLeg"
               FROM "Filme"
               WHERE "tmdbId" = ANY(${tmdbFilmeIds})
               LIMIT 15
@@ -135,7 +137,7 @@ export async function GET(req: NextRequest) {
       ? prisma
           .$queryRaw<SerieRow[]>(
             Prisma.sql`
-              SELECT id, titulo, "tituloOriginal", poster, ano, nota, tipo
+              SELECT id, titulo, "tituloOriginal", poster, background, ano, nota, tipo
               FROM "Serie"
               WHERE "tmdbId" = ANY(${tmdbSerieIds})
               ${tipo ? Prisma.sql`AND tipo = ${tipo}` : Prisma.sql``}

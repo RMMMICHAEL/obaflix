@@ -3,7 +3,7 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
-import { ContentCard } from "@/components/ui/ContentCard";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
@@ -20,8 +20,10 @@ const selBrowse = {
 
 const selHero = { id: true, titulo: true, sinopse: true, background: true } as const;
 
+// `background` entra aqui de graca: mesma linha ja lida do Postgres, so mais
+// uma coluna no SELECT. Sem query extra e sem round-trip a mais no Supabase.
 const selGrid = {
-  id: true, titulo: true, poster: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, ano: true, nota: true,
   urlDub: true, urlLeg: true,
 } as const;
 
@@ -38,7 +40,8 @@ function toRow(f: any) {
 function toGrid(f: any) {
   return {
     id: f.id, tipo: "filme" as const, titulo: f.titulo,
-    poster: f.poster ?? null, ano: f.ano ?? null, nota: f.nota ?? null,
+    poster: f.poster ?? null, background: f.background ?? null,
+    ano: f.ano ?? null, nota: f.nota ?? null,
     urlDub: f.urlDub ?? null, urlLeg: f.urlLeg ?? null,
   };
 }
@@ -101,9 +104,9 @@ export default async function FilmesPage({
           </Suspense>
 
           {filmes.length > 0 ? (
-            <div className="mt-6 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
+            <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filmes.map((f) => (
-                <ContentCard key={f.id} {...toGrid(f)} />
+                <LandscapeCard key={f.id} {...toGrid(f)} layout="grid" />
               ))}
             </div>
           ) : (

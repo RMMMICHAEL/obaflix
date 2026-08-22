@@ -21,7 +21,7 @@ const selSerie = {
 } as const;
 
 const awardSelect = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, ano: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, ano: true,
 } as const;
 
 function uniqueGenres(rows: Array<{ genero: { nome: string } }>) {
@@ -102,11 +102,13 @@ export default async function MelhoresPage() {
 
   const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
     id: item.id, tipo: "filme" as const, titulo: item.titulo,
-    poster: item.poster ?? null, ano: item.ano ?? null, count: entry.value ?? 0,
+    poster: item.poster ?? null, background: item.background ?? null,
+    ano: item.ano ?? null, count: entry.value ?? 0,
   }));
   const emmyItems = matchEditorialEntries(EMMY_SERIES, emmyRaw).map(({ item, entry }) => ({
     id: item.id, tipo: "serie" as const, titulo: item.titulo,
-    poster: item.poster ?? null, ano: item.ano ?? null, count: entry.value ?? 0,
+    poster: item.poster ?? null, background: item.background ?? null,
+    ano: item.ano ?? null, count: entry.value ?? 0,
   }));
 
   return (

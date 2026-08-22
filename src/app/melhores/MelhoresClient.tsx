@@ -269,8 +269,8 @@ export function MelhoresClient({ topFilmes, topSeries, popFilmes, popSeries, osc
                 className={`group flex min-h-32 items-center gap-4 border-b border-[oklch(0.28_0.009_25/0.65)] py-4 transition-colors duration-200 hover:bg-[oklch(0.16_0.01_25)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white md:px-3 ${item.disponivel ? "" : "opacity-55"}`}
               >
                 <span className={`w-12 shrink-0 text-right text-3xl font-black tabular-nums tracking-[-0.06em] ${item.rank <= 3 ? "text-[oklch(0.74_0.18_65)]" : "text-[oklch(0.48_0.012_25)]"}`}>{item.rank}</span>
-                <div className="relative h-28 w-20 shrink-0 overflow-hidden rounded-md bg-[oklch(0.2_0.01_25)]">
-                  {item.poster && <img src={item.poster} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-300 ease-out motion-safe:group-hover:scale-105" />}
+                <div className="relative aspect-video w-32 shrink-0 overflow-hidden rounded-md bg-[oklch(0.2_0.01_25)] sm:w-40">
+                  {(item.background || item.poster) && <img src={item.background || item.poster || ""} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-300 ease-out motion-safe:group-hover:scale-105" />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="line-clamp-2 text-base font-semibold leading-snug transition-colors group-hover:text-[oklch(0.75_0.16_28)] md:text-lg">{item.titulo}</h3>

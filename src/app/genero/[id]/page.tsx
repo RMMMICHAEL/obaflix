@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ContentCard } from "@/components/ui/ContentCard";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 
 const ORDENS = [
   { value: "recente", label: "Mais Recente" },
@@ -85,14 +85,16 @@ function GeneroConteudo() {
         <p className="text-zinc-500 text-sm">Nenhum conteúdo encontrado para este gênero.</p>
       )}
 
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {items.map((item) => (
-          <ContentCard
+          <LandscapeCard
             key={`${item.tipo}-${item.id}`}
+            layout="grid"
             id={item.id}
             tipo={item.tipo}
             titulo={item.titulo}
             poster={item.poster}
+            background={item.background}
             ano={item.ano}
             nota={item.nota}
             urlDub={item.urlDub}

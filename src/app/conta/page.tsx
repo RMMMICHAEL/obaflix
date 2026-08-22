@@ -3,9 +3,7 @@
 import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
-import Image from "next/image";
-import Link from "next/link";
-import { imgUrl } from "@/lib/tmdb";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
@@ -39,23 +37,22 @@ export default function ContaPage() {
 
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-white mb-4">Minha Lista ({watchlist.length})</h2>
-        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9 gap-3">
+        <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {watchlist.map((w) => {
             const item = w.filme ?? w.serie;
             if (!item) return null;
-            const href = w.conteudoTipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`;
             return (
-              <Link key={`${w.userId}-${w.conteudoId}`} href={href} className="rounded overflow-hidden group">
-                <div className="aspect-[2/3] relative bg-zinc-800">
-                  <Image
-                    src={item.poster ? imgUrl(item.poster, "w185") : "/placeholder.jpg"}
-                    alt={item.titulo}
-                    fill
-                    className="object-cover group-hover:opacity-75 transition"
-                  />
-                </div>
-                <p className="text-xs text-zinc-400 mt-1 truncate">{item.titulo}</p>
-              </Link>
+              <LandscapeCard
+                key={`${w.userId}-${w.conteudoId}`}
+                layout="grid"
+                id={item.id}
+                tipo={w.conteudoTipo === "filme" ? "filme" : (item.tipo ?? "serie")}
+                titulo={item.titulo}
+                poster={item.poster ?? null}
+                background={item.background ?? null}
+                ano={item.ano ?? null}
+                nota={item.nota ?? null}
+              />
             );
           })}
         </div>

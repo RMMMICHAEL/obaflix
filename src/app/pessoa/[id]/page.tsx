@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { CalendarDays, Clapperboard, MapPin, User } from "lucide-react";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { ContentCard } from "@/components/ui/ContentCard";
+import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { getPersonCatalog, type PersonCatalogItem } from "@/lib/person-catalog";
 import { getPerson, imgUrl } from "@/lib/tmdb";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
@@ -35,14 +35,17 @@ function CatalogSection({ title, items }: { title: string; items: PersonCatalogI
         <h2 id={`catalog-${title.toLowerCase()}`} className="text-xl font-bold text-white md:text-2xl">{title}</h2>
         <span className="text-sm text-zinc-500">{items.length}</span>
       </div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {items.map((item) => (
           <div key={`${item.tipo}-${item.id}`} className="min-w-0">
-            <ContentCard
+            <LandscapeCard
+              layout="grid"
+              hideTitle
               id={item.id}
               tipo={item.tipo}
               titulo={item.titulo}
               poster={item.poster}
+              background={item.background}
               ano={item.ano}
               nota={item.nota}
               urlDub={item.audioDub ? "disponível" : null}

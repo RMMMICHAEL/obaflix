@@ -12,8 +12,8 @@ export default function PessoaLoading() {
         </div>
       </div>
       <div className="mt-12 h-7 w-32 rounded bg-zinc-800" />
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7">
-        {Array.from({ length: 7 }).map((_, index) => <div key={index} className="aspect-[2/3] rounded-lg bg-zinc-800" />)}
+      <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {Array.from({ length: 10 }).map((_, index) => <div key={index} className="aspect-video rounded-lg bg-zinc-800" />)}
       </div>
     </main>
   );

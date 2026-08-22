@@ -30,14 +30,6 @@ interface EpMetadata {
   thumbnail: string | null;
 }
 
-/** Rola um container horizontal e devolve os handlers das setas. */
-function useHorizontalScroll(step: number) {
-  const ref = useRef<HTMLDivElement>(null);
-  const scroll = (dir: "left" | "right") =>
-    ref.current?.scrollBy({ left: dir === "left" ? -step : step, behavior: "smooth" });
-  return { ref, scroll };
-}
-
 export function EpisodeGrid({
   serieId,
   episodios,
@@ -57,30 +49,31 @@ export function EpisodeGrid({
 }) {
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
   const eps = episodios.filter((e) => e.temporada === temp);
+  const seasonsRef = useRef<HTMLDivElement>(null);
 
-  const seasons = useHorizontalScroll(320);
-  const cards = useHorizontalScroll(880);
+  const scrollSeasons = (dir: "left" | "right") =>
+    seasonsRef.current?.scrollBy({ left: dir === "left" ? -320 : 320, behavior: "smooth" });
 
   const isNovo = (d: Date) => Date.now() - new Date(d).getTime() < 7 * 24 * 3600 * 1000;
 
   if (!temporadas.length) return null;
 
   return (
-    <section aria-labelledby="episodes-heading" className="group/eps">
+    <section aria-labelledby="episodes-heading">
       <h2 id="episodes-heading" className="sr-only">
         Episódios
       </h2>
 
-      {/* Seletor de temporadas: pilulas horizontais com setas quando estoura. */}
+      {/* Seletor de temporadas: continua em lista horizontal de pilulas. */}
       <div className="relative mb-5">
         {temporadas.length > 3 && (
           <>
-            <SeasonArrow side="left" onClick={() => seasons.scroll("left")} />
-            <SeasonArrow side="right" onClick={() => seasons.scroll("right")} />
+            <SeasonArrow side="left" onClick={() => scrollSeasons("left")} />
+            <SeasonArrow side="right" onClick={() => scrollSeasons("right")} />
           </>
         )}
         <div
-          ref={seasons.ref}
+          ref={seasonsRef}
           className="scrollbar-hide flex gap-2.5 overflow-x-auto scroll-smooth px-1 py-1"
         >
           {temporadas.map((season) => {
@@ -104,38 +97,36 @@ export function EpisodeGrid({
         </div>
       </div>
 
-      {/* Carrossel de episodios em banner 16:9. */}
-      <div className="relative -mx-4 md:-mx-14">
-        <CardArrow side="left" onClick={() => cards.scroll("left")} />
-        <CardArrow side="right" onClick={() => cards.scroll("right")} />
+      {/*
+        Episodios empilhados numa coluna so. O banner 16:9 fica a esquerda com
+        largura fixa em vez de ocupar a linha inteira: num item de lista, uma
+        imagem de largura total empurraria titulo e sinopse para fora da tela a
+        cada episodio e a leitura vertical se perderia.
+      */}
+      <ol className="flex flex-col divide-y divide-white/[0.06]">
+        {eps.map((ep) => {
+          const p = progresso[ep.id];
+          const isWatched = p?.concluido === true;
+          const isWatching = !isWatched && !!p && p.progressoSeg > 30;
+          const watchPct =
+            isWatching && p.duracaoSeg ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100) : 0;
+          const metadata = metadataMap[`${ep.temporada}_${ep.numeroEp}`];
+          const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
+          const thumbnail = ep.thumbnail ?? metadata?.thumbnail;
 
-        <div
-          ref={cards.ref}
-          className="scrollbar-hide flex gap-3 overflow-x-auto scroll-smooth px-4 pb-2 md:gap-4 md:px-14"
-        >
-          {eps.map((ep) => {
-            const p = progresso[ep.id];
-            const isWatched = p?.concluido === true;
-            const isWatching = !isWatched && !!p && p.progressoSeg > 30;
-            const watchPct =
-              isWatching && p.duracaoSeg ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100) : 0;
-            const metadata = metadataMap[`${ep.temporada}_${ep.numeroEp}`];
-            const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
-            const thumbnail = ep.thumbnail ?? metadata?.thumbnail;
-
-            return (
+          return (
+            <li key={ep.id}>
               <Link
-                key={ep.id}
                 href={`/assistir/serie/${serieId}/t${ep.temporada}/ep${ep.numeroEp}`}
-                className="group/card w-[15rem] shrink-0 focus-visible:outline-none sm:w-[17rem] md:w-[19rem]"
+                className="group/card flex items-start gap-3 rounded-xl py-3 transition-colors duration-200 hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70 sm:gap-4 sm:px-2"
               >
-                <div className="relative aspect-video overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-white/[0.07] transition-all duration-200 group-hover/card:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white">
+                <div className="relative aspect-video w-[9.5rem] shrink-0 overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-white/[0.07] transition-all duration-200 group-hover/card:ring-white/25 sm:w-[13rem] md:w-[15rem]">
                   {thumbnail ? (
                     <Image
                       src={imgUrl(thumbnail, "w500")}
                       alt={ep.titulo ?? `Episódio ${ep.numeroEp}`}
                       fill
-                      sizes="(max-width: 640px) 60vw, 19rem"
+                      sizes="(max-width: 640px) 152px, (max-width: 768px) 208px, 240px"
                       className="object-cover transition-transform duration-300 group-hover/card:scale-[1.04]"
                     />
                   ) : (
@@ -146,8 +137,8 @@ export function EpisodeGrid({
 
                   {/* Play no hover */}
                   <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/45 opacity-0 transition-opacity duration-200 group-hover/card:opacity-100 group-focus-visible/card:opacity-100">
-                    <span className="grid h-12 w-12 place-items-center rounded-full bg-white/95 shadow-lg">
-                      <Play size={20} className="translate-x-[1px] text-black" fill="black" strokeWidth={0} />
+                    <span className="grid h-11 w-11 place-items-center rounded-full bg-white/95 shadow-lg">
+                      <Play size={18} className="translate-x-[1px] text-black" fill="black" strokeWidth={0} />
                     </span>
                   </div>
 
@@ -178,9 +169,9 @@ export function EpisodeGrid({
                   )}
                 </div>
 
-                <div className="mt-2.5">
+                <div className="min-w-0 flex-1 py-0.5">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="line-clamp-1 text-sm font-semibold text-zinc-100 transition-colors group-hover/card:text-white">
+                    <p className="line-clamp-2 text-sm font-semibold leading-snug text-zinc-100 transition-colors group-hover/card:text-white sm:text-base">
                       {ep.numeroEp}. {ep.titulo ?? `Episódio ${ep.numeroEp}`}
                     </p>
                     {epRating && (
@@ -190,16 +181,16 @@ export function EpisodeGrid({
                     )}
                   </div>
                   {metadata?.overview && (
-                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-zinc-500">
+                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-500 sm:line-clamp-3 sm:text-sm">
                       {metadata.overview}
                     </p>
                   )}
                 </div>
               </Link>
-            );
-          })}
-        </div>
-      </div>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -224,24 +215,6 @@ function SeasonArrow({ side, onClick }: { side: "left" | "right"; onClick: () =>
       }`}
     >
       <Icon size={18} />
-    </button>
-  );
-}
-
-function CardArrow({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
-  const Icon = side === "left" ? ChevronLeft : ChevronRight;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={side === "left" ? "Episódios anteriores" : "Próximos episódios"}
-      className={`invisible absolute top-0 bottom-8 z-20 hidden w-14 place-items-center opacity-0 transition-opacity duration-200 group-hover/eps:visible group-hover/eps:opacity-100 md:grid ${
-        side === "left"
-          ? "left-0 bg-gradient-to-r from-zinc-950 to-transparent"
-          : "right-0 bg-gradient-to-l from-zinc-950 to-transparent"
-      }`}
-    >
-      <Icon className="h-7 w-7" />
     </button>
   );
 }

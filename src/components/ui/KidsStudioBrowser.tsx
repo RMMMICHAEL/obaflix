@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ContentCard } from "./ContentCard";
+import { LandscapeCard } from "./LandscapeCard";
 
 type Studio = {
   id: string;
@@ -14,6 +14,7 @@ type StudioItem = {
   tipo: "filme" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
+  background: string | null;
   ano: number | null;
   nota: number | null;
 };
@@ -28,10 +29,8 @@ type Props = {
 // impede tanto o card gigante do celular (antes eram 2 colunas de ~165px) quanto
 // o card minúsculo em telas largas.
 //   ~390px  -> 3 colunas   ~768px -> 4 colunas   >=1280px -> 5-6 colunas
-// Como o ContentCard é fluido (fill + aspect-[2/3]), tudo escala junto: imagem,
-// badges e barra de progresso.
 const STUDIO_GRID =
-  "grid gap-2.5 sm:gap-3 grid-cols-[repeat(auto-fill,minmax(clamp(6.25rem,26vw,10rem),1fr))]";
+  "grid gap-x-2.5 gap-y-4 sm:gap-x-3 grid-cols-[repeat(auto-fill,minmax(clamp(10rem,42vw,15rem),1fr))]";
 
 export function KidsStudioBrowser({ studios, initialStudioId }: Props) {
   const sectionRef = useRef<HTMLElement>(null);
@@ -132,12 +131,12 @@ export function KidsStudioBrowser({ studios, initialStudioId }: Props) {
           {!shouldLoad || items === null ? (
             <div className={`mt-4 sm:mt-5 ${STUDIO_GRID}`} aria-hidden="true">
               {Array.from({ length: 12 }).map((_, index) => (
-                <div key={index} className="aspect-[2/3] animate-pulse rounded-lg bg-[oklch(0.21_0.045_205)]" />
+                <div key={index} className="aspect-video animate-pulse rounded-lg bg-[oklch(0.21_0.045_205)]" />
               ))}
             </div>
           ) : items.length > 0 ? (
             <div className={`mt-4 sm:mt-5 ${STUDIO_GRID}`}>
-              {items.map((item) => <ContentCard key={`${item.tipo}-${item.id}`} {...item} />)}
+              {items.map((item) => <LandscapeCard key={`${item.tipo}-${item.id}`} {...item} layout="grid" />)}
             </div>
           ) : (
             <p className="mt-6 rounded-xl bg-[oklch(0.21_0.045_205)] p-5 text-sm text-[oklch(0.76_0.035_205)] sm:mt-8 sm:p-6">
