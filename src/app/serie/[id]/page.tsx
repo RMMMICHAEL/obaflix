@@ -1,15 +1,23 @@
-import Image from "next/image";
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, Trophy } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { imgUrl, getSerie, getTVVideos, getTVCredits, getTVRecommendations, getTVSeasonDetails, pickTrailer } from "@/lib/tmdb";
+import {
+  imgUrl,
+  getSerie,
+  getTVVideos,
+  getTVCredits,
+  getTVRecommendations,
+  getTVSeasonDetails,
+  getTVImages,
+  getTVCertification,
+  pickTrailer,
+  pickLogo,
+  pickHeroBackdrop,
+} from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
-import { TrailerButton } from "@/components/ui/TrailerButton";
-import { LikeButtons } from "@/components/ui/LikeButtons";
+import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
@@ -46,29 +54,32 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   if (!serie) notFound();
 
-  const [episodios, videos, credits, tmdbDetails, tmdbRecs, episodeProgressList, continueEp] = await Promise.all([
-    prisma.episodio.findMany({
-      where: { serieId: serie.id },
-      orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
-    }),
-    serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
-    serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
-    serie.tmdbId ? getSerie(serie.tmdbId) : null,
-    serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
-    userId
-      ? prisma.watchHistory.findMany({
-          where: { userId, serieId: serie.id, episodioId: { not: null } },
-          select: { episodioId: true, progressoSeg: true, duracaoSeg: true, concluido: true },
-        })
-      : Promise.resolve([]),
-    userId
-      ? prisma.watchHistory.findFirst({
-          where: { userId, serieId: serie.id, concluido: false, progressoSeg: { gt: 30 } },
-          orderBy: { updatedAt: "desc" },
-          select: { temporada: true, numeroEp: true },
-        })
-      : Promise.resolve(null),
-  ]);
+  const [episodios, videos, credits, tmdbDetails, tmdbRecs, images, certificacao, episodeProgressList, continueEp] =
+    await Promise.all([
+      prisma.episodio.findMany({
+        where: { serieId: serie.id },
+        orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
+      }),
+      serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
+      serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
+      serie.tmdbId ? getSerie(serie.tmdbId) : null,
+      serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
+      serie.tmdbId ? getTVImages(serie.tmdbId) : null,
+      serie.tmdbId ? getTVCertification(serie.tmdbId) : null,
+      userId
+        ? prisma.watchHistory.findMany({
+            where: { userId, serieId: serie.id, episodioId: { not: null } },
+            select: { episodioId: true, progressoSeg: true, duracaoSeg: true, concluido: true },
+          })
+        : Promise.resolve([]),
+      userId
+        ? prisma.watchHistory.findFirst({
+            where: { userId, serieId: serie.id, concluido: false, progressoSeg: { gt: 30 } },
+            orderBy: { updatedAt: "desc" },
+            select: { temporada: true, numeroEp: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
   const progressoMap: Record<string, { progressoSeg: number; duracaoSeg: number | null; concluido: boolean }> =
     Object.fromEntries(
@@ -119,6 +130,20 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     });
   }
 
+  // Logo transparente e backdrop sem texto queimado para o hero.
+  const heroLogo = serie.logo ?? pickLogo(images);
+  const heroBackdrop = serie.background ?? pickHeroBackdrop(images);
+
+  // Botão principal: retoma de onde parou, senão abre o primeiro episódio.
+  const primeiroEp = episodios[0];
+  const alvo = continueEp ?? (primeiroEp ? { temporada: primeiroEp.temporada, numeroEp: primeiroEp.numeroEp } : null);
+  const watchHref = alvo ? `/assistir/serie/${serie.id}/t${alvo.temporada}/ep${alvo.numeroEp}` : null;
+  const watchLabel = alvo
+    ? continueEp
+      ? `Continuar T${alvo.temporada} E${alvo.numeroEp}`
+      : `Assistir T${alvo.temporada} E${alvo.numeroEp}`
+    : "Assistir";
+
   // TMDB recommendations → match with DB
   let recCards: any[] = [];
   if (tmdbRecs?.results?.length) {
@@ -155,6 +180,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     numberOfSeasons: serie.temporadas || temporadas.length || undefined,
     numberOfEpisodes: episodios.length || undefined,
     genre: genres,
+    contentRating: certificacao || undefined,
     actor: cast.map((person: any) => ({ "@type": "Person", name: person.name })),
     aggregateRating: serie.nota && serie.voteCount && serie.voteCount > 0 ? {
       "@type": "AggregateRating",
@@ -180,106 +206,31 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
   return (
     <div className="min-h-screen">
       <JsonLd data={[seriesSchema, breadcrumbSchema]} />
-      {/* Backdrop */}
-      <div className="relative h-[65vh] min-h-[400px]">
-        <Image
-          src={serie.background ? imgUrl(serie.background, "original") : "/placeholder-bg.jpg"}
-          alt={serie.titulo}
-          fill
-          className="object-cover"
-          priority
-        />
-        <div className="absolute inset-0 bg-gradient-to-r from-zinc-950/95 via-zinc-950/60 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
-      </div>
 
-      <div className="relative -mt-56 px-4 md:px-16 pb-16">
-        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: sectionLabel, href: sectionHref }, { label: serie.titulo }]} />
-        <div className="flex flex-col md:flex-row gap-8">
-          {/* Poster */}
-          <div className="shrink-0">
-            <div className="w-40 md:w-56 rounded-xl overflow-hidden shadow-2xl ring-1 ring-white/10">
-              <Image
-                src={serie.poster ? imgUrl(serie.poster, "w342") : "/placeholder.jpg"}
-                alt={serie.titulo}
-                width={224}
-                height={336}
-                className="w-full object-cover"
-              />
-            </div>
-          </div>
+      <MediaHero
+        conteudoId={serie.id}
+        tipo={serie.tipo as any}
+        titulo={serie.titulo}
+        tituloOriginal={serie.tituloOriginal}
+        backdrop={heroBackdrop}
+        logo={heroLogo}
+        sinopse={serie.sinopse}
+        ano={serie.ano}
+        certificacao={certificacao}
+        nota={serie.nota}
+        imdbId={serie.imdbId}
+        temporadas={temporadas.length || serie.temporadas}
+        top250={serie.top250}
+        generos={serie.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }))}
+        watchHref={watchHref}
+        watchLabel={watchLabel}
+        trailerKey={trailer?.key}
+        shareUrl={absoluteUrl(`/serie/${serie.id}`)}
+      />
 
-          {/* Info */}
-          <div className="flex-1 pt-0 md:pt-12">
-            <h1 className="text-3xl md:text-5xl font-black text-white mb-1 leading-tight">{serie.titulo}</h1>
-
-            <div className="flex flex-wrap items-center gap-4 mb-4 text-sm text-zinc-400">
-              {serie.ano && <span className="font-medium">{serie.ano}</span>}
-              {serie.temporadas && (
-                <span>{serie.temporadas} {serie.temporadas === 1 ? "temporada" : "temporadas"}</span>
-              )}
-              {serie.nota && (
-                <span className="flex items-center gap-1.5 text-yellow-400 font-semibold">
-                  <Star size={14} fill="currentColor" /> {serie.nota.toFixed(1)}
-                </span>
-              )}
-              {serie.top250 && (
-                <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
-                  <Trophy size={14} fill="currentColor" /> Top {serie.top250}
-                </span>
-              )}
-              <span className="bg-zinc-800 text-zinc-300 text-xs px-2.5 py-1 rounded-full capitalize border border-zinc-700">
-                {serie.tipo}
-              </span>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-5">
-              {serie.generos.map((g: any) => (
-                <Link key={g.generoId} href={`/genero/${g.generoId}`} className="text-xs bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-zinc-700 hover:bg-zinc-700 hover:text-white transition">
-                  {g.genero.nome}
-                </Link>
-              ))}
-            </div>
-
-            {serie.sinopse && (
-              <p className="text-zinc-300 text-sm md:text-base leading-relaxed mb-6 max-w-2xl">{serie.sinopse}</p>
-            )}
-
-            <div className="flex flex-wrap gap-3 mb-4">
-              {continueEp ? (
-                <Link
-                  href={`/assistir/serie/${serie.id}/t${continueEp.temporada}/ep${continueEp.numeroEp}`}
-                  className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
-                >
-                  <Play size={18} fill="black" /> Continuar assistindo
-                </Link>
-              ) : episodios[0] ? (
-                <Link
-                  href={`/assistir/serie/${serie.id}/t${episodios[0].temporada}/ep${episodios[0].numeroEp}`}
-                  className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
-                >
-                  <Play size={18} fill="black" /> Assistir
-                </Link>
-              ) : null}
-              {trailer && (
-                <TrailerButton videoKey={trailer.key} titulo={serie.titulo} />
-              )}
-            </div>
-            <LikeButtons conteudoId={serie.id} tipo={serie.tipo as any} />
-          </div>
-        </div>
-
-        <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
-        <PeopleRow
-          title="Elenco principal"
-          people={cast.map((person) => ({
-            ...person,
-            role: person.character ?? person.roles?.[0]?.character,
-          }))}
-        />
-
-        {/* Episódios */}
-        <div className="mt-10">
+      {/* Temporadas e episódios logo abaixo do hero */}
+      {temporadas.length > 0 && (
+        <div className="px-4 pt-2 md:px-14 md:pt-4">
           <EpisodeGrid
             serieId={serie.id}
             episodios={episodios}
@@ -290,14 +241,27 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
             initialSeason={continueEp?.temporada ?? temporadas[0]}
           />
         </div>
+      )}
 
-        {/* Recomendações */}
-        {recCards.length > 0 && (
-          <div className="mt-10">
-            <LandscapeRow titulo="Você Também Pode Gostar" items={recCards} />
-          </div>
-        )}
+      <div className="px-4 pb-4 pt-8 md:px-14">
+        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: sectionLabel, href: sectionHref }, { label: serie.titulo }]} />
+
+        <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
+        <PeopleRow
+          title="Elenco principal"
+          people={cast.map((person) => ({
+            ...person,
+            role: person.character ?? person.roles?.[0]?.character,
+          }))}
+        />
       </div>
+
+      {/* Recomendações */}
+      {recCards.length > 0 && (
+        <div className="pb-16 pt-4">
+          <LandscapeRow titulo="Você Também Pode Gostar" items={recCards} />
+        </div>
+      )}
     </div>
   );
 }

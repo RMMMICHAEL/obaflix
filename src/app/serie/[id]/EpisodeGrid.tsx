@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Check, ChevronDown, Clock3, Play, Star } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
 interface Ep {
@@ -30,6 +30,14 @@ interface EpMetadata {
   thumbnail: string | null;
 }
 
+/** Rola um container horizontal e devolve os handlers das setas. */
+function useHorizontalScroll(step: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const scroll = (dir: "left" | "right") =>
+    ref.current?.scrollBy({ left: dir === "left" ? -step : step, behavior: "smooth" });
+  return { ref, scroll };
+}
+
 export function EpisodeGrid({
   serieId,
   episodios,
@@ -49,128 +57,191 @@ export function EpisodeGrid({
 }) {
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
   const eps = episodios.filter((e) => e.temporada === temp);
-  const seasonCounts = new Map(temporadas.map((season) => [season, episodios.filter((ep) => ep.temporada === season).length]));
+
+  const seasons = useHorizontalScroll(320);
+  const cards = useHorizontalScroll(880);
 
   const isNovo = (d: Date) => Date.now() - new Date(d).getTime() < 7 * 24 * 3600 * 1000;
 
+  if (!temporadas.length) return null;
+
   return (
-    <section aria-labelledby="episodes-heading">
-      <header className="mb-3 flex flex-wrap items-end justify-between gap-4 border-b border-zinc-700 pb-4">
-        <div>
-          <h2 id="episodes-heading" className="text-xl font-bold text-zinc-100 md:text-2xl">Episódios</h2>
-          <p className="mt-1 text-xs text-zinc-500">{eps.length} {eps.length === 1 ? "episódio" : "episódios"} nesta temporada</p>
+    <section aria-labelledby="episodes-heading" className="group/eps">
+      <h2 id="episodes-heading" className="sr-only">
+        Episódios
+      </h2>
+
+      {/* Seletor de temporadas: pilulas horizontais com setas quando estoura. */}
+      <div className="relative mb-5">
+        {temporadas.length > 3 && (
+          <>
+            <SeasonArrow side="left" onClick={() => seasons.scroll("left")} />
+            <SeasonArrow side="right" onClick={() => seasons.scroll("right")} />
+          </>
+        )}
+        <div
+          ref={seasons.ref}
+          className="scrollbar-hide flex gap-2.5 overflow-x-auto scroll-smooth px-1 py-1"
+        >
+          {temporadas.map((season) => {
+            const ativa = season === temp;
+            return (
+              <button
+                key={season}
+                type="button"
+                onClick={() => setTemp(season)}
+                aria-pressed={ativa}
+                className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-semibold transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70 ${
+                  ativa
+                    ? "bg-zinc-800 text-white ring-1 ring-white/15"
+                    : "bg-white/[0.04] text-zinc-400 ring-1 ring-white/[0.07] hover:bg-white/10 hover:text-zinc-100"
+                }`}
+              >
+                Temporada {season}
+              </button>
+            );
+          })}
         </div>
-        <label className="relative">
-          <span className="sr-only">Selecionar temporada</span>
-          <select
-            value={temp}
-            onChange={(event) => setTemp(Number(event.target.value))}
-            className="min-h-11 appearance-none rounded-md border border-zinc-600 bg-zinc-900 py-2 pl-4 pr-10 text-sm font-semibold text-zinc-100 outline-none transition-colors hover:border-zinc-400 focus:border-zinc-300 focus:ring-2 focus:ring-red-500/60"
-          >
-            {temporadas.map((season) => (
-              <option key={season} value={season}>Temporada {season} ({seasonCounts.get(season) ?? 0})</option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400" size={17} aria-hidden="true" />
-        </label>
-      </header>
+      </div>
 
-      <div className="divide-y divide-zinc-800">
-        {eps.map((ep) => {
-          const p = progresso[ep.id];
-          const isWatched = p?.concluido === true;
-          const isWatching = !isWatched && !!p && p.progressoSeg > 30;
-          const watchPct =
-            isWatching && p.duracaoSeg
-              ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100)
-              : 0;
-          const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
-          const metadata = metadataMap[`${ep.temporada}_${ep.numeroEp}`];
-          const thumbnail = ep.thumbnail ?? metadata?.thumbnail;
+      {/* Carrossel de episodios em banner 16:9. */}
+      <div className="relative -mx-4 md:-mx-14">
+        <CardArrow side="left" onClick={() => cards.scroll("left")} />
+        <CardArrow side="right" onClick={() => cards.scroll("right")} />
 
-          return (
-            <Link
-              key={ep.id}
-              href={`/assistir/serie/${serieId}/t${ep.temporada}/ep${ep.numeroEp}`}
-              className="group grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 py-4 transition-colors duration-200 hover:bg-zinc-900/70 focus-visible:bg-zinc-900/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 sm:grid-cols-[2.5rem_11rem_minmax(0,1fr)] sm:px-3"
-            >
-              <span className="hidden text-center text-lg tabular-nums text-zinc-500 sm:block">{ep.numeroEp}</span>
+        <div
+          ref={cards.ref}
+          className="scrollbar-hide flex gap-3 overflow-x-auto scroll-smooth px-4 pb-2 md:gap-4 md:px-14"
+        >
+          {eps.map((ep) => {
+            const p = progresso[ep.id];
+            const isWatched = p?.concluido === true;
+            const isWatching = !isWatched && !!p && p.progressoSeg > 30;
+            const watchPct =
+              isWatching && p.duracaoSeg ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100) : 0;
+            const metadata = metadataMap[`${ep.temporada}_${ep.numeroEp}`];
+            const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
+            const thumbnail = ep.thumbnail ?? metadata?.thumbnail;
 
-              <div className="relative aspect-video overflow-hidden rounded-md bg-zinc-800">
-                {thumbnail ? (
-                  <Image src={imgUrl(thumbnail, "w300")} alt={ep.titulo ?? `Episódio ${ep.numeroEp}`} fill className="object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <Play size={20} className="text-zinc-600" />
-                  </div>
-                )}
-
-                <span className="absolute left-1.5 top-1.5 rounded bg-zinc-950/85 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-zinc-200 sm:hidden">
-                  {ep.numeroEp}
-                </span>
-
-                {/* Overlay assistido */}
-                {isWatched && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/60">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600">
-                      <Check size={16} className="text-white" strokeWidth={3} />
+            return (
+              <Link
+                key={ep.id}
+                href={`/assistir/serie/${serieId}/t${ep.temporada}/ep${ep.numeroEp}`}
+                className="group/card w-[15rem] shrink-0 focus-visible:outline-none sm:w-[17rem] md:w-[19rem]"
+              >
+                <div className="relative aspect-video overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-white/[0.07] transition-all duration-200 group-hover/card:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white">
+                  {thumbnail ? (
+                    <Image
+                      src={imgUrl(thumbnail, "w500")}
+                      alt={ep.titulo ?? `Episódio ${ep.numeroEp}`}
+                      fill
+                      sizes="(max-width: 640px) 60vw, 19rem"
+                      className="object-cover transition-transform duration-300 group-hover/card:scale-[1.04]"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <Play size={22} className="text-zinc-700" />
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Overlay hover */}
-                <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/50 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100">
-                  <Play size={24} className="text-white" fill="white" />
-                </div>
-
-                {/* Barra de progresso no thumbnail */}
-                {isWatching && (
-                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-950/50">
-                    <div className="h-full bg-red-600" style={{ width: `${watchPct}%` }} />
-                  </div>
-                )}
-              </div>
-
-              <div className="min-w-0 py-1">
-                <div className="flex items-start justify-between gap-3">
-                  <p className="line-clamp-2 text-sm font-semibold leading-snug text-zinc-100 sm:text-base">
-                    {ep.titulo ?? `Episódio ${ep.numeroEp}`}
-                  </p>
-                  {metadata?.runtime && (
-                    <span className="hidden shrink-0 items-center gap-1 text-xs text-zinc-500 md:flex">
-                      <Clock3 size={12} aria-hidden="true" /> {metadata.runtime}min
+                  {/* Play no hover */}
+                  <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/45 opacity-0 transition-opacity duration-200 group-hover/card:opacity-100 group-focus-visible/card:opacity-100">
+                    <span className="grid h-12 w-12 place-items-center rounded-full bg-white/95 shadow-lg">
+                      <Play size={20} className="translate-x-[1px] text-black" fill="black" strokeWidth={0} />
                     </span>
-                  )}
-                </div>
+                  </div>
 
-                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  {epRating && (
-                    <span className="flex items-center gap-0.5 text-[10px] font-semibold text-amber-400">
-                      <Star size={9} fill="currentColor" /> {epRating.toFixed(1)}
-                    </span>
-                  )}
-                  {isNovo(ep.createdAt) && !isWatched && (
-                    <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">NOVO</span>
-                  )}
                   {isWatched && (
-                    <span className="rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold text-white">ASSISTIDO</span>
+                    <span className="absolute left-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-emerald-600 shadow">
+                      <Check size={13} className="text-white" strokeWidth={3} />
+                    </span>
                   )}
+
+                  <div className="absolute bottom-2 left-2 flex flex-wrap items-center gap-1.5">
+                    {isNovo(ep.createdAt) && !isWatched && (
+                      <Badge className="bg-red-600 text-white">NOVO</Badge>
+                    )}
+                    {ep.urlDub && <Badge className="bg-zinc-950/80 text-zinc-100">DUB</Badge>}
+                    {ep.urlLeg && <Badge className="bg-zinc-950/80 text-zinc-100">LEG</Badge>}
+                  </div>
+
+                  {metadata?.runtime && (
+                    <span className="absolute bottom-2 right-2 rounded bg-zinc-950/80 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-zinc-100 backdrop-blur-sm">
+                      {metadata.runtime}min
+                    </span>
+                  )}
+
                   {isWatching && (
-                    <span className="rounded bg-amber-600 px-1.5 py-0.5 text-[10px] font-bold text-white">CONTINUAR</span>
+                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-zinc-950/60">
+                      <div className="h-full bg-red-600" style={{ width: `${watchPct}%` }} />
+                    </div>
                   )}
-                  {ep.urlDub && <span className="rounded bg-blue-700 px-1.5 py-0.5 text-[10px] font-bold text-white">DUB</span>}
-                  {ep.urlLeg && <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] font-bold text-white">LEG</span>}
-                  {metadata?.runtime && <span className="text-[10px] text-zinc-500 md:hidden">{metadata.runtime}min</span>}
                 </div>
 
-                {metadata?.overview && (
-                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-zinc-500 sm:text-sm">{metadata.overview}</p>
-                )}
-              </div>
-            </Link>
-          );
-        })}
+                <div className="mt-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="line-clamp-1 text-sm font-semibold text-zinc-100 transition-colors group-hover/card:text-white">
+                      {ep.numeroEp}. {ep.titulo ?? `Episódio ${ep.numeroEp}`}
+                    </p>
+                    {epRating && (
+                      <span className="flex shrink-0 items-center gap-0.5 pt-0.5 text-[11px] font-semibold text-amber-400">
+                        <Star size={10} fill="currentColor" strokeWidth={0} /> {epRating.toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+                  {metadata?.overview && (
+                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-zinc-500">
+                      {metadata.overview}
+                    </p>
+                  )}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       </div>
     </section>
+  );
+}
+
+function Badge({ children, className }: { children: React.ReactNode; className: string }) {
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold backdrop-blur-sm ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+function SeasonArrow({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
+  const Icon = side === "left" ? ChevronLeft : ChevronRight;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={side === "left" ? "Temporadas anteriores" : "Próximas temporadas"}
+      className={`absolute top-1/2 z-20 hidden h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-zinc-800/90 text-white shadow-lg ring-1 ring-white/10 backdrop-blur-sm transition-colors hover:bg-zinc-700 md:grid ${
+        side === "left" ? "-left-2" : "-right-2"
+      }`}
+    >
+      <Icon size={18} />
+    </button>
+  );
+}
+
+function CardArrow({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
+  const Icon = side === "left" ? ChevronLeft : ChevronRight;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={side === "left" ? "Episódios anteriores" : "Próximos episódios"}
+      className={`invisible absolute top-0 bottom-8 z-20 hidden w-14 place-items-center opacity-0 transition-opacity duration-200 group-hover/eps:visible group-hover/eps:opacity-100 md:grid ${
+        side === "left"
+          ? "left-0 bg-gradient-to-r from-zinc-950 to-transparent"
+          : "right-0 bg-gradient-to-l from-zinc-950 to-transparent"
+      }`}
+    >
+      <Icon className="h-7 w-7" />
+    </button>
   );
 }

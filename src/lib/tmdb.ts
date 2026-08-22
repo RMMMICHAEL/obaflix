@@ -171,23 +171,99 @@ export function pickBackdrop(images: TmdbImages | null | undefined): string | nu
   );
 }
 
-/** Escolhe o melhor logo: pt > en > qualquer */
-export function pickLogo(images: TmdbImages | null | undefined): string | null {
-  const logos = images?.logos;
-  if (!logos?.length) return null;
+/**
+ * Backdrop para o hero da pagina de detalhe: aqui o titulo ja vem do logo PNG,
+ * entao queremos a arte SEM texto queimado (iso_639_1 null) antes de qualquer
+ * versao localizada — o contrario duplicaria o nome na tela.
+ */
+export function pickHeroBackdrop(images: TmdbImages | null | undefined): string | null {
+  const backdrops = images?.backdrops;
+  if (!backdrops?.length) return null;
+
   const byLang = (lang: string | null) =>
-    logos.filter((l) => l.iso_639_1 === lang).sort((a, b) => b.vote_average - a.vote_average)[0];
+    [...backdrops]
+      .filter((b) => (b.iso_639_1 ?? null) === lang)
+      .sort((a, b) => b.vote_average - a.vote_average || (b.width ?? 0) - (a.width ?? 0))[0];
+
   return (
+    byLang(null)?.file_path ??
     byLang("pt")?.file_path ??
     byLang("en")?.file_path ??
-    logos[0].file_path
+    backdrops[0].file_path
   );
 }
 
-export function logoUrl(path: string | null | undefined): string | null {
+/**
+ * Ordem de preferencia do logo, exatamente como pedido no hero:
+ * pt-BR > pt > en > sem idioma > qualquer coisa que exista.
+ * A API de imagens do TMDB so expoe iso_639_1 (sem regiao), entao na pratica
+ * "pt-BR" e "pt" caem no mesmo balde — a entrada fica aqui para o dia em que
+ * o TMDB passar a diferenciar, sem quebrar a cadeia de fallback.
+ */
+const LOGO_LANG_PRIORITY: (string | null)[] = ["pt-BR", "pt", "en", null];
+
+/** PNG antes de SVG: o SVG do TMDB as vezes vem sem viewBox e estoura o layout. */
+const isRaster = (entry: TmdbImageEntry) => (entry.file_path?.toLowerCase().endsWith(".svg") ? 0 : 1);
+
+function bestLogo(list: TmdbImageEntry[]): TmdbImageEntry | undefined {
+  return [...list].sort(
+    (a, b) =>
+      isRaster(b) - isRaster(a) ||
+      b.vote_average - a.vote_average ||
+      (b.width ?? 0) - (a.width ?? 0)
+  )[0];
+}
+
+export function pickLogo(images: TmdbImages | null | undefined): string | null {
+  const logos = images?.logos;
+  if (!logos?.length) return null;
+
+  for (const lang of LOGO_LANG_PRIORITY) {
+    const group = logos.filter((l) => (l.iso_639_1 ?? null) === lang);
+    const chosen = bestLogo(group);
+    if (chosen) return chosen.file_path;
+  }
+  return bestLogo(logos)?.file_path ?? null;
+}
+
+export function logoUrl(path: string | null | undefined, size = "w300"): string | null {
   if (!path) return null;
   if (path.startsWith("http")) return path;
-  return `${IMG}/w300${path}`;
+  return `${IMG}/${size}${path}`;
+}
+
+// -- Classificacao indicativa (ClassInd / BR) -------------------------------
+
+interface TmdbReleaseDates {
+  results?: { iso_3166_1: string; release_dates?: { certification?: string; type?: number }[] }[];
+}
+
+interface TmdbContentRatings {
+  results?: { iso_3166_1: string; rating?: string }[];
+}
+
+const normalizeCert = (value: string | null | undefined) => {
+  const cert = value?.trim().toUpperCase();
+  if (!cert) return null;
+  // "L" / "LIVRE" viram sempre "L"; "10 ANOS" vira "10".
+  if (cert.startsWith("L")) return "L";
+  const age = cert.match(/\d{1,2}/)?.[0];
+  return age ?? cert;
+};
+
+/** Classificacao indicativa brasileira do filme (ex.: "L", "12", "16"). */
+export async function getMovieCertification(tmdbId: string | number): Promise<string | null> {
+  const data = await tmdbFetch<TmdbReleaseDates>(`/movie/${tmdbId}/release_dates`);
+  const br = data?.results?.find((r) => r.iso_3166_1 === "BR");
+  const cert = br?.release_dates?.map((r) => r.certification).find((c) => c && c.trim());
+  return normalizeCert(cert);
+}
+
+/** Classificacao indicativa brasileira da serie/anime/desenho. */
+export async function getTVCertification(tmdbId: string | number): Promise<string | null> {
+  const data = await tmdbFetch<TmdbContentRatings>(`/tv/${tmdbId}/content_ratings`);
+  const br = data?.results?.find((r) => r.iso_3166_1 === "BR");
+  return normalizeCert(br?.rating);
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────

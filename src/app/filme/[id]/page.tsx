@@ -1,14 +1,20 @@
-import Image from "next/image";
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Play, Star, Clock, Trophy } from "lucide-react";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { imgUrl, getMovieVideos, getMovieCredits, getMovieRecommendations, pickTrailer } from "@/lib/tmdb";
+import {
+  imgUrl,
+  getMovieVideos,
+  getMovieCredits,
+  getMovieRecommendations,
+  getMovieImages,
+  getMovieCertification,
+  pickTrailer,
+  pickLogo,
+  pickHeroBackdrop,
+} from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
-import { TrailerButton } from "@/components/ui/TrailerButton";
-import { LikeButtons } from "@/components/ui/LikeButtons";
+import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
@@ -48,10 +54,12 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   const generoIds = filme.generos.map((g: any) => g.generoId);
 
   // Fetch TMDB data + DB similares in parallel
-  const [videos, credits, tmdbRecs, dbSimilares, continueFilme] = await Promise.all([
+  const [videos, credits, tmdbRecs, images, certificacao, dbSimilares, continueFilme] = await Promise.all([
     filme.tmdbId ? getMovieVideos(filme.tmdbId) : null,
     filme.tmdbId ? getMovieCredits(filme.tmdbId) : null,
     filme.tmdbId ? getMovieRecommendations(filme.tmdbId) : null,
+    filme.tmdbId ? getMovieImages(filme.tmdbId) : null,
+    filme.tmdbId ? getMovieCertification(filme.tmdbId) : null,
     prisma.filme.findMany({
       where: { id: { not: filme.id }, generos: { some: { generoId: { in: generoIds } } } },
       take: 20,
@@ -71,6 +79,10 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   const directors = (credits?.crew ?? [])
     .filter((person) => person.job === "Director")
     .filter((person, index, all) => all.findIndex((item) => item.id === person.id) === index);
+
+  // Logo transparente e backdrop sem texto queimado para o hero.
+  const heroLogo = filme.logo ?? pickLogo(images);
+  const heroBackdrop = filme.background ?? pickHeroBackdrop(images);
 
   // If TMDB has recommendations, try to match with our DB
   let recCards: any[] = [];
@@ -99,6 +111,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     dateCreated: filme.ano ? String(filme.ano) : undefined,
     duration: filme.duracao ? `PT${Math.floor(filme.duracao / 60)}H${filme.duracao % 60}M` : undefined,
     genre: genres,
+    contentRating: certificacao || undefined,
     actor: cast.map((person: any) => ({ "@type": "Person", name: person.name })),
     aggregateRating: filme.nota && filme.voteCount && filme.voteCount > 0 ? {
       "@type": "AggregateRating",
@@ -124,95 +137,32 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   return (
     <div className="min-h-screen">
       <JsonLd data={[movieSchema, breadcrumbSchema]} />
-      {/* Backdrop */}
-      <div className="relative h-[65vh] min-h-[400px]">
-        <Image
-          src={filme.background ? imgUrl(filme.background, "original") : "/placeholder-bg.jpg"}
-          alt={filme.titulo}
-          fill
-          className="object-cover"
-          priority
-        />
-        <div className="absolute inset-0 bg-gradient-to-r from-zinc-950/95 via-zinc-950/60 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-transparent to-transparent" />
-      </div>
 
-      {/* Content */}
-      <div className="relative -mt-56 px-4 md:px-16 pb-16">
+      <MediaHero
+        conteudoId={filme.id}
+        tipo="filme"
+        titulo={filme.titulo}
+        tituloOriginal={filme.tituloOriginal}
+        backdrop={heroBackdrop}
+        logo={heroLogo}
+        sinopse={filme.sinopse}
+        ano={filme.ano}
+        certificacao={certificacao}
+        nota={filme.nota}
+        imdbId={filme.imdbId}
+        duracaoMin={filme.duracao}
+        top250={filme.top250}
+        generos={filme.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }))}
+        watchHref={`/assistir/filme/${filme.id}`}
+        watchLabel={continueFilme ? "Continuar assistindo" : "Assistir"}
+        trailerKey={trailer?.key}
+        dub={!!filme.urlDub}
+        leg={!!filme.urlLeg}
+        shareUrl={absoluteUrl(`/filme/${filme.id}`)}
+      />
+
+      <div className="px-4 pb-4 md:px-14">
         <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: "Filmes", href: "/filmes" }, { label: filme.titulo }]} />
-        <div className="flex flex-col md:flex-row gap-8">
-          {/* Poster */}
-          <div className="shrink-0">
-            <div className="w-40 md:w-56 rounded-xl overflow-hidden shadow-2xl ring-1 ring-white/10">
-              <Image
-                src={filme.poster ? imgUrl(filme.poster, "w342") : "/placeholder.jpg"}
-                alt={filme.titulo}
-                width={224}
-                height={336}
-                className="w-full object-cover"
-              />
-            </div>
-          </div>
-
-          {/* Info */}
-          <div className="flex-1 pt-0 md:pt-12">
-            <h1 className="text-3xl md:text-5xl font-black text-white mb-1 leading-tight">{filme.titulo}</h1>
-            {filme.tituloOriginal && filme.tituloOriginal !== filme.titulo && (
-              <p className="text-zinc-500 text-sm mb-3 italic">{filme.tituloOriginal}</p>
-            )}
-
-            <div className="flex flex-wrap items-center gap-4 mb-4 text-sm text-zinc-400">
-              {filme.ano && <span className="font-medium">{filme.ano}</span>}
-              {filme.duracao && (
-                <span className="flex items-center gap-1.5">
-                  <Clock size={14} />
-                  {Math.floor(filme.duracao / 60)}h {filme.duracao % 60}min
-                </span>
-              )}
-              {filme.nota && (
-                <span className="flex items-center gap-1.5 text-yellow-400 font-semibold">
-                  <Star size={14} fill="currentColor" /> {filme.nota.toFixed(1)}
-                </span>
-              )}
-              {filme.top250 && (
-                <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
-                  <Trophy size={14} fill="currentColor" /> Top {filme.top250}
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-5">
-              {filme.generos.map((g: any) => (
-                <Link key={g.generoId} href={`/genero/${g.generoId}`} className="text-xs bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-zinc-700 hover:bg-zinc-700 hover:text-white transition">
-                  {g.genero.nome}
-                </Link>
-              ))}
-            </div>
-
-            {filme.sinopse && (
-              <p className="text-zinc-300 text-sm md:text-base leading-relaxed mb-6 max-w-2xl">{filme.sinopse}</p>
-            )}
-
-            <div className="flex flex-wrap gap-3 items-center mb-4">
-              <Link
-                href={`/assistir/filme/${filme.id}`}
-                className="flex items-center gap-2 bg-white text-black font-bold px-7 py-3 rounded-lg hover:bg-zinc-200 transition text-sm"
-              >
-                <Play size={18} fill="black" /> {continueFilme ? "Continuar assistindo" : "Assistir"}
-              </Link>
-              {trailer && (
-                <TrailerButton videoKey={trailer.key} titulo={filme.titulo} />
-              )}
-              {filme.urlDub && (
-                <span className="bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg">DUB</span>
-              )}
-              {filme.urlLeg && (
-                <span className="bg-zinc-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg">LEG</span>
-              )}
-            </div>
-            <LikeButtons conteudoId={filme.id} tipo="filme" />
-          </div>
-        </div>
 
         <PeopleRow
           title="Direção"
@@ -222,14 +172,14 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
           title="Elenco principal"
           people={cast.map((person) => ({ ...person, role: person.character }))}
         />
-
-        {/* Recommendations */}
-        {similares.length > 0 && (
-          <div className="mt-10">
-            <LandscapeRow titulo="Você Também Pode Gostar" items={similares} />
-          </div>
-        )}
       </div>
+
+      {/* Recommendations */}
+      {similares.length > 0 && (
+        <div className="pb-16 pt-4">
+          <LandscapeRow titulo="Você Também Pode Gostar" items={similares} />
+        </div>
+      )}
     </div>
   );
 }
