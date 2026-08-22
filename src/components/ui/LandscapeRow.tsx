@@ -34,21 +34,24 @@ export function LandscapeRow({ titulo, items, verTodosHref }: Props) {
 
   if (!items.length) return null;
 
+  // Padding e tipografia iguais ao RankRow: o cabecalho estava em px-12 com
+  // titulo text-xl/bold, competindo com a arte dos cards. Titulo discreto e
+  // alinhamento unico deixam a imagem conduzir a leitura.
   return (
-    <section className="relative px-6 md:px-12 py-3 group/row">
-      <h2 className="text-lg md:text-xl font-bold mb-3 flex items-center gap-3">
+    <section className="relative px-4 md:px-14 py-3 group/row">
+      <h2 className="text-white font-semibold text-sm md:text-[15px] tracking-wide mb-2 flex items-center gap-3">
         {titulo}
         {verTodosHref && (
           <Link
             href={verTodosHref}
-            className="text-sm font-normal text-zinc-500 hover:text-zinc-300 transition-colors"
+            className="text-xs font-normal text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             Ver todos →
           </Link>
         )}
       </h2>
 
-      <div className="relative -mx-6 md:-mx-12">
+      <div className="relative -mx-4 md:-mx-14">
         {/* Right fade + arrow */}
         <button
           onClick={() => scroll("right")}
@@ -60,7 +63,7 @@ export function LandscapeRow({ titulo, items, verTodosHref }: Props) {
 
         <div
           ref={ref}
-          className="flex gap-3 overflow-x-auto scrollbar-hide px-6 md:px-12 scroll-smooth"
+          className="flex gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 scroll-smooth"
         >
           {items.map((item) => (
             <LandscapeCard key={item.id} {...item} />

@@ -2,6 +2,7 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { RankRow } from "@/components/ui/RankRow";
+import { Top10Band } from "@/components/ui/Top10Band";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
@@ -9,13 +10,10 @@ import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
   getTrending,
-  discoverMovies, discoverTV,
-  getMovieVideos, getTVVideos,
-  imgUrl, pickTrailer, TmdbItem,
+  imgUrl, TmdbItem,
 } from "@/lib/tmdb";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const revalidate = 300;
 
 // Série/filme adicionado nos últimos 3 dias → "Recém Adicionado"
 const NEW_SERIE_MS = 3 * 24 * 60 * 60 * 1000;
@@ -80,23 +78,16 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
 }
 
 // createdAt + logo incluídos nas queries
-const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, createdAt: true } as const;
+const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, ano: true, nota: true, createdAt: true } as const;
 const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
 const selSerie  = { ...selDB, tipo: true } as const;
 
 export default async function HomePage() {
   const [
     tmdbTrending,
-    tmdbAnime,
-    tmdbComedia,
-    tmdbTerror,
-    tmdbFiccao,
-    tmdbRomance,
-    tmdbCrime,
     dbRecFilmes,
     dbRecSeries,
     dbAnimes,
-    dbDesenhos,
     // Populares (Top 10 + linhas "Populares") — direto do catálogo local
     // ordenado por popularidade real do TMDB, sem depender de cruzar com
     // listas ao vivo do TMDB (que descartavam a maioria dos itens por falta
@@ -105,25 +96,39 @@ export default async function HomePage() {
     dbPopSeries,
     dbBestFilmes,
     dbBestSeries,
+    dbTopRatedFilmes,
+    dbTopRatedSeries,
     dbEpsRecentes,
-    ...dbGeneroFilmes
   ] = await Promise.all([
     getTrending("week"),
-    discoverTV({ with_original_language: "ja", with_genres: "16", sort_by: "vote_average.desc", "vote_count.gte": 200 }),
-    discoverMovies({ with_genres: "35", sort_by: "popularity.desc" }),
-    discoverMovies({ with_genres: "27", sort_by: "popularity.desc" }),
-    discoverMovies({ with_genres: "878", sort_by: "popularity.desc" }),
-    discoverMovies({ with_genres: "10749", sort_by: "popularity.desc" }),
-    discoverMovies({ with_genres: "80", sort_by: "popularity.desc" }),
     // Novos do banco (últimos adicionados)
     prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
-    prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
-    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { nota: "desc" }, take: 24, select: selSerie }),
+    prisma.serie.findMany({
+      where: { tipo: "anime", titulo: { notIn: [...ANIME_HOME_EXCLUSIONS] } },
+      orderBy: { popularidade: { sort: "desc", nulls: "last" } },
+      take: 24,
+      select: selSerie,
+    }),
     prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selSerie }),
     prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie", top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selSerie }),
+    // Mais bem avaliados — nota do TMDB, distinto de popularidade (quem mais
+    // assistiu) e do top250 (curadoria fixa). Sem um mínimo de votos a lista
+    // encheria de títulos obscuros com nota 10 e um punhado de votos.
+    prisma.filme.findMany({
+      where: { nota: { gte: 7 } },
+      orderBy: { nota: { sort: "desc", nulls: "last" } },
+      take: 24,
+      select: selFilme,
+    }),
+    prisma.serie.findMany({
+      where: { tipo: "serie", nota: { gte: 7 } },
+      orderBy: { nota: { sort: "desc", nulls: "last" } },
+      take: 24,
+      select: selSerie,
+    }),
     // Episódios recentes — últimos 24 adicionados com info da série
     prisma.episodio.findMany({
       orderBy: { createdAt: "desc" },
@@ -131,57 +136,21 @@ export default async function HomePage() {
       select: {
         id: true, serieId: true, titulo: true, thumbnail: true,
         temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
-        serie: { select: { titulo: true, poster: true, tipo: true } },
+        serie: { select: { titulo: true, poster: true, tipo: true, createdAt: true } },
       },
     }),
     // Gêneros por banco
-    ...["28","35","27","10749","878","18","16","80","53","12","99","9648"].map((gId) =>
-      prisma.filme.findMany({
-        where: { generos: { some: { generoId: Number(gId) } } },
-        orderBy: { nota: "desc" },
-        take: 24,
-        select: selFilme,
-      })
-    ),
   ]);
-
-  const GENEROS = [
-    { id: 28,    nome: "Ação" },
-    { id: 35,    nome: "Comédia" },
-    { id: 27,    nome: "Terror" },
-    { id: 10749, nome: "Romance" },
-    { id: 878,   nome: "Ficção Científica" },
-    { id: 18,    nome: "Drama" },
-    { id: 16,    nome: "Animação" },
-    { id: 80,    nome: "Crime" },
-    { id: 53,    nome: "Thriller" },
-    { id: 12,    nome: "Aventura" },
-    { id: 99,    nome: "Documentários" },
-    { id: 9648,  nome: "Mistério" },
-  ];
 
   const heroRaw = (tmdbTrending?.results ?? []).slice(0, 8);
 
   const allTmdbIds = [
     ...(tmdbTrending?.results ?? []),
-    ...(tmdbAnime?.results ?? []),
-    ...(tmdbComedia?.results ?? []),
-    ...(tmdbTerror?.results ?? []),
-    ...(tmdbFiccao?.results ?? []),
-    ...(tmdbRomance?.results ?? []),
-    ...(tmdbCrime?.results ?? []),
   ].map((i) => String(i.id));
 
-  const [[dbFilmesMap_raw, dbSeriesMap_raw], heroTrailerResults] = await Promise.all([
-    Promise.all([
-      prisma.filme.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selFilme }),
-      prisma.serie.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selSerie }),
-    ]),
-    Promise.all(
-      heroRaw.slice(0, 5).map((item: any) =>
-        item.media_type === "tv" ? getTVVideos(item.id) : getMovieVideos(item.id)
-      )
-    ),
+  const [dbFilmesMap_raw, dbSeriesMap_raw] = await Promise.all([
+    prisma.filme.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selFilme }),
+    prisma.serie.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selSerie }),
   ]);
 
   const filmeMap = new Map(dbFilmesMap_raw.map((f) => [f.tmdbId!, f]));
@@ -196,14 +165,6 @@ export default async function HomePage() {
   }
 
   const trending    = tmdbList(tmdbTrending?.results ?? [], "filme").slice(0, 20);
-  const animeList   = tmdbList(tmdbAnime?.results ?? [], "anime")
-    .filter((item) => !ANIME_HOME_EXCLUSIONS.some((title) => title === item.titulo))
-    .slice(0, 24);
-  const comediaList = tmdbList(tmdbComedia?.results ?? [], "filme").slice(0, 24);
-  const terrorList  = tmdbList(tmdbTerror?.results ?? [], "filme").slice(0, 24);
-  const ficcaoList  = tmdbList(tmdbFiccao?.results ?? [], "filme").slice(0, 24);
-  const romanceList = tmdbList(tmdbRomance?.results ?? [], "filme").slice(0, 24);
-  const crimeList   = tmdbList(tmdbCrime?.results ?? [], "filme").slice(0, 24);
 
   // Populares e Top 10 vêm direto do catálogo local ordenado por popularidade
   // real do TMDB — mesma lógica para filmes e séries, sem itens descartados
@@ -212,22 +173,52 @@ export default async function HomePage() {
   const popTV     = dbPopSeries.map((s) => dbToCard(s, "serie"));
   const top10FilmesCards = (dbBestFilmes.length ? dbBestFilmes : dbPopFilmes.slice(0, 10)).map((item) => dbToCard(item, "filme"));
   const top10SeriesCards = (dbBestSeries.length ? dbBestSeries : dbPopSeries.slice(0, 10)).map((item) => dbToCard(item, "serie"));
+  const animeCards = dbAnimes.map((anime) => dbToCard(anime, "anime"));
 
-  const heroItems = heroRaw.map((item: any, i: number) => {
+  const tmdbHeroItems = heroRaw.map((item: any) => {
     const db = mergeMap(item).get(String(item.id));
-    const trailerVideos = i < 5 ? (heroTrailerResults[i] as any) : null;
-    const trailer = pickTrailer(trailerVideos?.results);
+    if (!db) return null;
     return {
-      id: db?.id ?? `tmdb-${item.id}`,
+      id: db.id,
       tipo: item.media_type === "tv" ? "serie" : "filme",
-      titulo: db?.titulo ?? item.title ?? item.name ?? "",
-      sinopse: item.overview ?? null,
-      background: item.backdrop_path ? imgUrl(item.backdrop_path, "original") : db?.poster ?? null,
-      trailerKey: trailer?.key ?? null,
+      titulo: db.titulo ?? item.title ?? item.name ?? "",
+      sinopse: item.overview ?? db.sinopse ?? null,
+      background: db.background ?? (item.backdrop_path ? imgUrl(item.backdrop_path, "original") : db.poster ?? null),
+      trailerKey: null,
     };
-  });
+  }).filter(Boolean);
 
-  const epsRecentesItems = (dbEpsRecentes as any[]).map((e) => ({
+  // A vitrine continua funcional mesmo quando o TMDB estiver lento ou fora do ar.
+  const fallbackHeroItems = [
+    ...dbPopFilmes.slice(0, 4).map((item) => ({ ...item, tipo: "filme" as const })),
+    ...dbPopSeries.slice(0, 4).map((item) => ({ ...item, tipo: "serie" as const })),
+  ]
+    .filter((item) => item.background || item.poster)
+    .slice(0, 8)
+    .map((item) => ({
+      id: item.id,
+      tipo: item.tipo,
+      titulo: item.titulo,
+      sinopse: item.sinopse ?? null,
+      background: item.background ?? item.poster ?? null,
+      trailerKey: null,
+    }));
+
+  const heroItems = tmdbHeroItems.length ? tmdbHeroItems : fallbackHeroItems;
+
+  // Para uma série recém-importada, mostra apenas seu episódio mais avançado;
+  // atualizações de séries antigas continuam aparecendo individualmente.
+  const episodiosParaVitrine = (dbEpsRecentes as any[]).filter((ep, index, all) => {
+    const serieNova = isRecent(ep.serie.createdAt) || String(ep.serieId).startsWith("sf_");
+    if (!serieNova) return true;
+    return !all.some((other) =>
+      other.serieId === ep.serieId &&
+      (other.temporada > ep.temporada ||
+        (other.temporada === ep.temporada && other.numeroEp > ep.numeroEp)),
+    );
+  }).slice(0, 24);
+
+  const epsRecentesItems = episodiosParaVitrine.map((e) => ({
     episodioId: e.id,
     serieId: e.serieId,
     titulo: e.titulo ?? null,
@@ -240,11 +231,6 @@ export default async function HomePage() {
     isNovoEpisodio: isEpRecent(e.createdAt),
     urlDub: e.urlDub ?? null,
     urlLeg: e.urlLeg ?? null,
-  }));
-
-  const generoRows = GENEROS.map((g, i) => ({
-    ...g,
-    filmes: (dbGeneroFilmes[i] ?? []).map((f) => dbToCard(f, "filme")),
   }));
 
   if (!dbRecFilmes.length && !trending.length) {
@@ -262,78 +248,81 @@ export default async function HomePage() {
     <div className="pb-16">
       <HeroSlider items={heroItems as any} />
 
+      {/* Ordem por intencao decrescente: retomar o que ja comecou, depois o que
+          esta em alta, depois descobrir por popularidade e nota. "Continuar
+          Assistindo" estava na oitava posicao, atras de seis prateleiras — a
+          acao de maior intencao exigia rolagem para ser encontrada. */}
       <div className="mt-3">
-        {/* Em Alta */}
+        <ContinuarAssistindo />
+
         {trending.length > 0 && (
           <LandscapeRow titulo="Em Alta" items={trending} />
         )}
 
-        {/* Novos Filmes */}
+        {/* Filmes */}
+        {dbPopFilmes.length > 0 && (
+          <LazyRow>
+            <LandscapeRow titulo="Filmes Populares" items={dbPopFilmes.map((f) => dbToCard(f, "filme"))} verTodosHref="/filmes" />
+          </LazyRow>
+        )}
+
+        {top10FilmesCards.length > 0 && (
+          <Top10Band>
+            <RankRow titulo="Top 10 Filmes de Hoje" items={top10FilmesCards} verTodosHref="/melhores" />
+          </Top10Band>
+        )}
+
+        {dbTopRatedFilmes.length > 0 && (
+          <LazyRow>
+            <LandscapeRow titulo="Filmes Mais Bem Avaliados" items={dbTopRatedFilmes.map((f) => dbToCard(f, "filme"))} verTodosHref="/melhores" />
+          </LazyRow>
+        )}
+
+        {/* Séries */}
+        {dbPopSeries.length > 0 && (
+          <LazyRow>
+            <LandscapeRow titulo="Séries Populares" items={dbPopSeries.map((s2) => dbToCard(s2, "serie"))} verTodosHref="/series" />
+          </LazyRow>
+        )}
+
+        {top10SeriesCards.length > 0 && (
+          <LazyRow>
+            <Top10Band>
+              <RankRow titulo="Top 10 Séries de Hoje" items={top10SeriesCards} verTodosHref="/melhores" />
+            </Top10Band>
+          </LazyRow>
+        )}
+
+        {dbTopRatedSeries.length > 0 && (
+          <LazyRow>
+            <LandscapeRow titulo="Séries Mais Bem Avaliadas" items={dbTopRatedSeries.map((s2) => dbToCard(s2, "serie"))} verTodosHref="/melhores" />
+          </LazyRow>
+        )}
+
+        {/* Novidades e categorias */}
+        <LazyRow>
+          <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
+        </LazyRow>
+
         {dbRecFilmes.length > 0 && (
           <LazyRow>
             <LandscapeRow titulo="Novos Filmes" items={dbRecFilmes.map((f) => dbToCard(f, "filme"))} verTodosHref="/filmes" />
           </LazyRow>
         )}
 
-        {/* Episódios Recentes */}
-        <LazyRow>
-          <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
-        </LazyRow>
-
-        {/* Novas Séries */}
         {dbRecSeries.length > 0 && (
           <LazyRow>
-            <LandscapeRow titulo="Novas Séries" items={dbRecSeries.map((s) => dbToCard(s, "serie"))} verTodosHref="/series" />
+            <LandscapeRow titulo="Novas Séries" items={dbRecSeries.map((s2) => dbToCard(s2, "serie"))} verTodosHref="/series" />
           </LazyRow>
         )}
 
-        {/* Melhores conteúdos de todos os tempos */}
-        {top10FilmesCards.length > 0 && (
-          <RankRow titulo="Top 10 Filmes" items={top10FilmesCards} verTodosHref="/melhores" />
-        )}
-        {top10SeriesCards.length > 0 && (
+        {animeCards.length > 0 && (
           <LazyRow>
-            <RankRow titulo="Top 10 Séries" items={top10SeriesCards} verTodosHref="/melhores" />
+            <LandscapeRow titulo="Animes" items={animeCards} verTodosHref="/animes" />
           </LazyRow>
         )}
 
-        <ContinuarAssistindo />
         <PersonalizedRows />
-
-        {/* Filmes Populares */}
-        {popMovies.length > 0 && (
-          <LazyRow>
-            <LandscapeRow titulo="Filmes Populares" items={popMovies} verTodosHref="/filmes" />
-          </LazyRow>
-        )}
-
-        {/* Séries Populares */}
-        {popTV.length > 0 && (
-          <LazyRow>
-            <LandscapeRow titulo="Séries Populares" items={popTV} verTodosHref="/series" />
-          </LazyRow>
-        )}
-
-        {/* Animes */}
-        {animeList.length > 0 && (
-          <LazyRow>
-            <LandscapeRow titulo="Animes" items={animeList} verTodosHref="/animes" />
-          </LazyRow>
-        )}
-
-        {/* Desenhos */}
-        {dbDesenhos.length > 0 && (
-          <LazyRow>
-            <LandscapeRow titulo="Desenhos Animados" items={dbDesenhos.map((s) => dbToCard(s, "desenho"))} verTodosHref="/desenhos" />
-          </LazyRow>
-        )}
-
-        {/* Gêneros */}
-        {comediaList.length > 0 && <LazyRow><LandscapeRow titulo="Comédia" items={comediaList} verTodosHref="/genero/35" /></LazyRow>}
-        {terrorList.length > 0   && <LazyRow><LandscapeRow titulo="Terror"  items={terrorList}  verTodosHref="/genero/27" /></LazyRow>}
-        {ficcaoList.length > 0   && <LazyRow><LandscapeRow titulo="Ficção Científica" items={ficcaoList} verTodosHref="/genero/878" /></LazyRow>}
-        {romanceList.length > 0  && <LazyRow><LandscapeRow titulo="Romance" items={romanceList} verTodosHref="/genero/10749" /></LazyRow>}
-        {crimeList.length > 0    && <LazyRow><LandscapeRow titulo="Crime"   items={crimeList}   verTodosHref="/genero/80" /></LazyRow>}
       </div>
     </div>
   );
