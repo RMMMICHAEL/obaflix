@@ -34,11 +34,11 @@ export function LandscapeRow({ titulo, items, verTodosHref }: Props) {
 
   if (!items.length) return null;
 
-  // Respiro generoso entre secoes: com banner 16:9 as fileiras ficam altas, e
-  // py-3 colava uma na outra. O titulo cresceu de volta porque, sem texto sob
-  // os cards, ele passou a ser a unica ancora de leitura da fileira.
+  // O card agora carrega o nome embaixo, entao a propria fileira ficou mais
+  // alta e o respiro anterior (pt-10/pb-6) virou vazio entre as secoes. Menos
+  // padding aqui equilibra sem colar uma fileira na outra.
   return (
-    <section className="relative px-4 md:px-14 pt-6 pb-4 md:pt-10 md:pb-6 group/row">
+    <section className="relative px-4 md:px-14 pt-5 pb-2 md:pt-7 md:pb-3 group/row">
       <h2 className="text-white font-semibold text-base md:text-lg tracking-tight mb-3 flex items-center gap-3">
         {titulo}
         {verTodosHref && (

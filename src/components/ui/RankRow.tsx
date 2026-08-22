@@ -29,7 +29,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
   if (!items.length) return null;
 
   return (
-    <section className="mb-2 md:mb-6">
+    <section className="mb-1 md:mb-3">
       <div className="flex items-center gap-3 mb-2 px-4 md:px-14">
         <h2 className="text-white font-semibold text-base md:text-lg tracking-tight">{titulo}</h2>
         {verTodosHref && (
@@ -49,7 +49,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
 
         <div
           ref={ref}
-          className="flex gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 pb-4 pt-1 scroll-smooth"
+          className="flex items-end gap-1 md:gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 pb-4 pt-1 scroll-smooth"
         >
           {items.slice(0, 10).map((item, i) => (
             <RankCard key={item.id} rank={i + 1} isNew={item.isNew} {...item} />

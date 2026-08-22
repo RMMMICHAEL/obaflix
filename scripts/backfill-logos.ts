@@ -10,6 +10,12 @@
  *
  * Roda local, com o banco direto: são ~36 mil títulos, muito acima do limite
  * de execução de uma função serverless, e assim não depende do token de admin.
+ * Custo na Vercel: zero — nada disso passa por lá. No Supabase, apenas as
+ * escritas dos registros que realmente mudam.
+ *
+ * O `background` gravado vem de pickBackdrop, que prioriza backdrop SEM título
+ * queimado. Antes da correção ele preferia arte com texto em português, e por
+ * isso o catálogo ficou com nome duplicado nos cards.
  *
  * Uso:
  *   npx tsx scripts/backfill-logos.ts              — tudo que falta

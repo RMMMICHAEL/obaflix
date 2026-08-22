@@ -23,6 +23,15 @@ interface Props {
   progresso?: { progressoSeg: number; duracaoSeg: number | null } | null;
   episodeLabel?: string | null;
   isNew?: boolean;
+  /**
+   * "row"  = prateleira horizontal (largura fixa, nao encolhe).
+   * "grid" = grade (ocupa a celula inteira).
+   * Um componente so para os dois casos: duplicar o card era o caminho mais
+   * curto para as duas versoes divergirem no primeiro ajuste de estilo.
+   */
+  layout?: "row" | "grid";
+  /** Quando o chamador ja desenha o proprio rotulo abaixo do card. */
+  hideTitle?: boolean;
 }
 
 /**
@@ -42,7 +51,9 @@ interface Props {
 // card fechado: a arte e o nome bastam, e o resto vai para a interacao.
 export function LandscapeCard({
   id, tipo, titulo, poster, background, progresso, episodeLabel, isNew,
+  layout = "row", hideTitle = false,
 }: Props) {
+  const isGrid = layout === "grid";
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
 
   // O backdrop e a imagem certa para 16:9. O poster so entra como ultimo
@@ -58,7 +69,15 @@ export function LandscapeCard({
     : 0;
 
   return (
-    <div className="relative group/card shrink-0 w-[200px] sm:w-[210px] md:w-[220px] 2xl:w-[260px]">
+    // Largura fluida em vez de degraus fixos: o card cresce junto com a tela e
+    // nao salta de tamanho no breakpoint. 230px de piso mantem o banner legivel
+    // no celular; 320px de teto evita que em monitor grande sobrem tres cards
+    // gigantes por fileira.
+    <div
+      className={`relative group/card ${
+        isGrid ? "w-full min-w-0" : "shrink-0 w-[clamp(230px,21vw,320px)]"
+      }`}
+    >
       <Link href={href} title={titulo}>
         <div className="relative aspect-video rounded-lg overflow-hidden bg-zinc-900 cursor-pointer transition-transform duration-200 ease-out group-hover/card:scale-[1.03]">
 
@@ -67,23 +86,22 @@ export function LandscapeCard({
             alt={titulo}
             fill
             className="w-full h-full object-cover"
-            sizes="(max-width: 640px) 200px, (max-width: 768px) 210px, (max-width: 1536px) 220px, 260px"
+            // O teto de 320px em tela 2x pede 640px de imagem: w780 e o degrau
+            // imediatamente acima no TMDB. Subir para w1280 dobraria o peso sem
+            // ganho visivel.
+            sizes={
+              isGrid
+                ? "(max-width: 640px) 46vw, (max-width: 1024px) 31vw, (max-width: 1536px) 23vw, 320px"
+                : "(max-width: 768px) 230px, (max-width: 1536px) 21vw, 320px"
+            }
             loading="lazy"
             onError={imgFallback}
           />
 
-          {/* Identidade: banner mais o nome em texto, sempre igual.
-              O logo oficial do TMDB foi tentado e descartado — cada arte tem
-              proporcao propria, entao um logotipo largo bate no limite de
-              largura e fica baixo enquanto um quadrado bate no de altura e fica
-              alto. Lado a lado na mesma fileira o peso visual variava demais.
-              Texto rende leitura uniforme em 100% do catalogo. */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-transparent" />
-          <div className="absolute inset-x-0 bottom-0 p-3">
-            <p className="text-[13px] md:text-sm font-semibold tracking-tight text-white line-clamp-2 drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]">
-              {titulo}
-            </p>
-          </div>
+          {/* Sem gradiente e sem texto sobre a arte: com pickBackdrop escolhendo
+              backdrop sem titulo queimado, o banner fica limpo e o nome vive
+              abaixo do card. Escurecer a imagem so serviria para dar contraste a
+              um texto que nao esta mais aqui. */}
 
           <div className="absolute inset-0 hidden md:flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
             <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center">
@@ -109,6 +127,15 @@ export function LandscapeCard({
             </div>
           )}
         </div>
+
+        {/* Nome abaixo do banner. Uma linha so: com duas, fileiras vizinhas
+            ficam com alturas diferentes conforme o tamanho do titulo e o ritmo
+            da pagina quebra. */}
+        {!hideTitle && (
+          <p className="mt-2 px-0.5 text-[13px] md:text-sm text-zinc-300 truncate group-hover/card:text-white transition-colors">
+            {titulo}
+          </p>
+        )}
       </Link>
     </div>
   );
