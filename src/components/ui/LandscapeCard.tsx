@@ -37,9 +37,11 @@ interface Props {
  * metadados so aparecem na interacao. Poster vertical fica exclusivo do Top 10,
  * onde ele compoe com o numero.
  */
+// `logo`, `ano`, `nota`, `urlDub` e `urlLeg` seguem na interface porque os
+// chamadores repassam o item inteiro por spread, mas nao sao mais desenhados no
+// card fechado: a arte e o nome bastam, e o resto vai para a interacao.
 export function LandscapeCard({
-  id, tipo, titulo, poster, background, logo, ano, nota,
-  urlDub, urlLeg, progresso, episodeLabel, isNew,
+  id, tipo, titulo, poster, background, progresso, episodeLabel, isNew,
 }: Props) {
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
 
@@ -47,7 +49,6 @@ export function LandscapeCard({
   // recurso: recortado no meio, ele perde justamente o enquadramento que
   // identifica o titulo.
   const bgSrc = background ? imgUrl(background, "w780") : poster ? imgUrl(poster, "w342") : "/placeholder.jpg";
-  const logoSrc = logo ? imgUrl(logo, "w300") : null;
 
   // Larguras calibradas para 5 a 7 cards visiveis no desktop: ~5 em 1280px e
   // ~6,6 em 1920px. Cards mais largos que isso derrubam a contagem para 4 e a
@@ -71,29 +72,18 @@ export function LandscapeCard({
             onError={imgFallback}
           />
 
-          {/* O logo oficial identifica melhor que texto do app, e boa parte do
-              acervo tem versao pt-BR. Sem logo, o titulo entra no hover. */}
-          {logoSrc && (
-            <>
-              <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/10 to-transparent" />
-              <div className="absolute inset-x-0 bottom-0 flex items-end justify-start p-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={logoSrc}
-                  alt={titulo}
-                  className="max-w-[62%] max-h-[42%] object-contain object-left drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]"
-                />
-              </div>
-            </>
-          )}
-
-          {/* Titulo so na interacao. No toque nao ha hover, entao ele fica
-              visivel no mobile — sem isso o card ficaria anonimo ali. */}
-          {!logoSrc && (
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-2.5 pt-8 md:opacity-0 md:group-hover/card:opacity-100 transition-opacity duration-200">
-              <p className="text-[13px] font-medium text-white truncate">{titulo}</p>
-            </div>
-          )}
+          {/* Identidade: banner mais o nome em texto, sempre igual.
+              O logo oficial do TMDB foi tentado e descartado — cada arte tem
+              proporcao propria, entao um logotipo largo bate no limite de
+              largura e fica baixo enquanto um quadrado bate no de altura e fica
+              alto. Lado a lado na mesma fileira o peso visual variava demais.
+              Texto rende leitura uniforme em 100% do catalogo. */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 p-3">
+            <p className="text-[13px] md:text-sm font-semibold tracking-tight text-white line-clamp-2 drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]">
+              {titulo}
+            </p>
+          </div>
 
           <div className="absolute inset-0 hidden md:flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
             <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center">
