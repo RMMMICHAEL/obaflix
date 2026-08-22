@@ -34,12 +34,12 @@ export function LandscapeRow({ titulo, items, verTodosHref }: Props) {
 
   if (!items.length) return null;
 
-  // Padding e tipografia iguais ao RankRow: o cabecalho estava em px-12 com
-  // titulo text-xl/bold, competindo com a arte dos cards. Titulo discreto e
-  // alinhamento unico deixam a imagem conduzir a leitura.
+  // Respiro generoso entre secoes: com banner 16:9 as fileiras ficam altas, e
+  // py-3 colava uma na outra. O titulo cresceu de volta porque, sem texto sob
+  // os cards, ele passou a ser a unica ancora de leitura da fileira.
   return (
-    <section className="relative px-4 md:px-14 py-3 group/row">
-      <h2 className="text-white font-semibold text-sm md:text-[15px] tracking-wide mb-2 flex items-center gap-3">
+    <section className="relative px-4 md:px-14 pt-6 pb-4 md:pt-10 md:pb-6 group/row">
+      <h2 className="text-white font-semibold text-base md:text-lg tracking-tight mb-3 flex items-center gap-3">
         {titulo}
         {verTodosHref && (
           <Link
@@ -63,7 +63,7 @@ export function LandscapeRow({ titulo, items, verTodosHref }: Props) {
 
         <div
           ref={ref}
-          className="flex gap-2 overflow-x-auto scrollbar-hide px-4 md:px-14 scroll-smooth"
+          className="flex gap-2 md:gap-3 overflow-x-auto scrollbar-hide px-4 md:px-14 scroll-smooth"
         >
           {items.map((item) => (
             <LandscapeCard key={item.id} {...item} />

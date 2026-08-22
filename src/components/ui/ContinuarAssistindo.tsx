@@ -111,7 +111,7 @@ export function ContinuarAssistindo() {
                 {/* Card thumbnail */}
                 <Link
                   href={watchUrl(item)}
-                  className="block relative aspect-video rounded-xl overflow-hidden bg-zinc-900 cursor-pointer"
+                  className="block relative aspect-video rounded-lg overflow-hidden bg-zinc-900 cursor-pointer"
                 >
                   <Image
                     src={imgSrc}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ContentRow } from "@/components/ui/ContentRow";
+import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import type { RecommendationRow } from "@/lib/recommendations";
 
 export function PersonalizedRows() {
@@ -20,11 +20,11 @@ export function PersonalizedRows() {
 
   if (rows === null) {
     return (
-      <div className="mb-5 px-4 md:px-8" aria-label="Carregando recomendações">
+      <div className="px-4 pt-6 pb-4 md:px-14 md:pt-10 md:pb-6" aria-label="Carregando recomendações">
         <div className="h-5 w-48 animate-pulse rounded bg-zinc-800" />
         <div className="mt-3 flex gap-3 overflow-hidden">
           {Array.from({ length: 7 }).map((_, index) => (
-            <div key={index} className="aspect-[2/3] w-32 flex-none animate-pulse rounded-lg bg-zinc-900 md:w-40" />
+            <div key={index} className="aspect-video w-[200px] flex-none animate-pulse rounded-lg bg-zinc-900 md:w-[280px]" />
           ))}
         </div>
       </div>
@@ -35,7 +35,7 @@ export function PersonalizedRows() {
 
   return (
     <div aria-label="Recomendações personalizadas">
-      {rows.map((row) => <ContentRow key={row.id} titulo={row.titulo} items={row.items} />)}
+      {rows.map((row) => <LandscapeRow key={row.id} titulo={row.titulo} items={row.items} />)}
     </div>
   );
 }

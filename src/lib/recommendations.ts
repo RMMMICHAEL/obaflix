@@ -9,6 +9,9 @@ export interface RecommendationCard {
   tipo: RecommendationKind;
   titulo: string;
   poster: string | null;
+  // As prateleiras da home renderizam banner 16:9; sem o backdrop o card cai
+  // no poster vertical recortado, que perde o enquadramento do titulo.
+  background: string | null;
   logo: string | null;
   ano: number | null;
   nota: number | null;
@@ -31,6 +34,7 @@ const filmSelect = {
   id: true,
   titulo: true,
   poster: true,
+  background: true,
   logo: true,
   ano: true,
   nota: true,
@@ -45,6 +49,7 @@ const seriesSelect = {
   id: true,
   titulo: true,
   poster: true,
+  background: true,
   logo: true,
   ano: true,
   nota: true,
@@ -83,6 +88,7 @@ function toFilmCard(row: FilmRow): RecommendationCard {
     tipo: "filme",
     titulo: row.titulo,
     poster: row.poster,
+    background: row.background,
     logo: row.logo,
     ano: row.ano,
     nota: row.nota,
@@ -98,6 +104,7 @@ function toSeriesCard(row: SeriesRow): RecommendationCard {
     tipo: normalizeSeriesType(row.tipo),
     titulo: row.titulo,
     poster: row.poster,
+    background: row.background,
     logo: row.logo,
     ano: row.ano,
     nota: row.nota,

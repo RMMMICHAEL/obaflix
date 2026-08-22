@@ -31,7 +31,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
   return (
     <section className="mb-2 md:mb-6">
       <div className="flex items-center gap-3 mb-2 px-4 md:px-14">
-        <h2 className="text-white font-semibold text-sm md:text-[15px] tracking-wide">{titulo}</h2>
+        <h2 className="text-white font-semibold text-base md:text-lg tracking-tight">{titulo}</h2>
         {verTodosHref && (
           <Link href={verTodosHref} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors flex-none">
             Ver todos →
