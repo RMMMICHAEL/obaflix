@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { RankCard } from "./RankCard";
 
@@ -23,6 +23,41 @@ interface Props {
 
 export function RankRow({ titulo, items, verTodosHref }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // Posicao horizontal legitima da fileira: so as setas a alteram.
+  const travaRef = useRef(0);
+
+  // Trava de gesto no desktop. `overflow-x-hidden` ja impede o navegador de
+  // rolar a fileira com roda/trackpad, mas dispositivos de precisao e alguns
+  // navegadores ainda entregam deltaX ao elemento; este listener e a garantia
+  // de que nenhum gesto horizontal desloca a fileira — so as setas mexem nela.
+  // Precisa ser addEventListener com { passive: false }: o React registra
+  // onWheel como passivo e preventDefault ali seria ignorado.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const desktop = window.matchMedia("(min-width: 768px)");
+
+    const onWheel = (e: WheelEvent) => {
+      if (!desktop.matches) return;
+      // So o eixo horizontal e bloqueado: o gesto vertical tem de continuar
+      // rolando a pagina normalmente por cima da fileira.
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) e.preventDefault();
+      if (el.scrollLeft !== travaRef.current) el.scrollLeft = travaRef.current;
+    };
+
+    // Navegar por teclado pode revelar um card fora de vista; essa e uma
+    // movimentacao legitima, entao ela vira a nova posicao autorizada em vez
+    // de ser desfeita pelo proximo gesto.
+    const onFocusIn = () => requestAnimationFrame(() => { travaRef.current = el.scrollLeft; });
+
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("focusin", onFocusIn);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("focusin", onFocusIn);
+    };
+  }, []);
 
   // Avanca quase uma "tela" da fileira em vez de um valor fixo: com os cards
   // grandes, 600px deixava meio poster cortado em telas largas.
@@ -30,7 +65,11 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
     const el = ref.current;
     if (!el) return;
     const passo = Math.max(240, el.clientWidth * 0.85);
-    el.scrollBy({ left: dir === "left" ? -passo : passo, behavior: "smooth" });
+    const limite = el.scrollWidth - el.clientWidth;
+    const destino = Math.min(limite, Math.max(0, el.scrollLeft + (dir === "left" ? -passo : passo)));
+    // A posicao autorizada pelas setas e a unica que a trava aceita.
+    travaRef.current = destino;
+    el.scrollTo({ left: destino, behavior: "smooth" });
   };
 
   if (!items.length) return null;

@@ -52,7 +52,7 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
       className="group/card relative z-0 flex-none hover:z-20 focus-visible:z-20"
       style={
         {
-          "--pw": "clamp(132px, 13.5vw, 200px)",
+          "--pw": "clamp(146px, 14.5vw, 220px)",
           width: `calc(var(--pw) * (1 + ${faixaNumero}))`,
         } as React.CSSProperties
       }
@@ -64,11 +64,15 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
 
         <span
           aria-hidden="true"
-          className="absolute bottom-0 left-0 select-none font-black leading-none text-transparent transition-opacity duration-300 ease-out opacity-80 group-hover/card:opacity-100"
+          className="absolute bottom-0 left-0 select-none font-black leading-none"
           style={{
             fontFamily: "var(--font-bebas), 'Bebas Neue', Impact, 'Arial Black', sans-serif",
             fontSize: "calc(var(--pw) * 1.5 / 0.73)",
-            WebkitTextStroke: "clamp(1px, 0.11vw, 1.75px) rgba(168,168,176,0.6)",
+            // Preenchimento na cor do fundo do site, nao transparente: o
+            // algarismo tapa o que passa atras dele e vira um recorte solido,
+            // como na referencia. So o contorno fino o desenha.
+            color: "#18181B",
+            WebkitTextStroke: "clamp(0.75px, 0.075vw, 1.1px) rgba(150,150,158,0.75)",
             lineHeight: 0.73,
             letterSpacing: rank >= 10 ? "-0.06em" : "normal",
           }}
@@ -85,9 +89,9 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
             alt={titulo}
             fill
             className="object-cover"
-            // Teto de 200px em tela 2x pede ~400px: w500 e o degrau do TMDB
+            // Teto de 220px em tela 2x pede ~440px: w500 e o degrau do TMDB
             // acima disso, sem estourar a banda.
-            sizes="(max-width: 768px) 140px, 200px"
+            sizes="(max-width: 768px) 150px, 220px"
             loading="lazy"
             onError={imgFallback}
           />

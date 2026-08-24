@@ -94,8 +94,8 @@ export default async function HomePage() {
     // de correspondência no banco).
     dbPopFilmes,
     dbPopSeries,
-    dbBestFilmes,
-    dbBestSeries,
+    dbRankFilmes,
+    dbRankSeries,
     dbTopRatedFilmes,
     dbTopRatedSeries,
     dbEpsRecentes,
@@ -112,8 +112,11 @@ export default async function HomePage() {
     }),
     prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selSerie }),
-    prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie", top250: { not: null } }, orderBy: { top250: "asc" }, take: 10, select: selSerie }),
+    // Top 10 — mesma fonte de "Filmes/Séries Populares" de /melhores:
+    // o popularRank que os scripts de sync gravam no catálogo. Antes vinha do
+    // top250 (curadoria fixa do IMDb), que é outra lista e outra intenção.
+    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selFilme }),
+    prisma.serie.findMany({ where: { tipo: "serie", popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selSerie }),
     // Mais bem avaliados — nota do TMDB, distinto de popularidade (quem mais
     // assistiu) e do top250 (curadoria fixa). Sem um mínimo de votos a lista
     // encheria de títulos obscuros com nota 10 e um punhado de votos.
@@ -171,8 +174,8 @@ export default async function HomePage() {
   // por falta de correspondência com listas ao vivo do TMDB.
   const popMovies = dbPopFilmes.map((f) => dbToCard(f, "filme"));
   const popTV     = dbPopSeries.map((s) => dbToCard(s, "serie"));
-  const top10FilmesCards = (dbBestFilmes.length ? dbBestFilmes : dbPopFilmes.slice(0, 10)).map((item) => dbToCard(item, "filme"));
-  const top10SeriesCards = (dbBestSeries.length ? dbBestSeries : dbPopSeries.slice(0, 10)).map((item) => dbToCard(item, "serie"));
+  const top10FilmesCards = (dbRankFilmes.length ? dbRankFilmes : dbPopFilmes.slice(0, 10)).map((item) => dbToCard(item, "filme"));
+  const top10SeriesCards = (dbRankSeries.length ? dbRankSeries : dbPopSeries.slice(0, 10)).map((item) => dbToCard(item, "serie"));
   const animeCards = dbAnimes.map((anime) => dbToCard(anime, "anime"));
 
   const tmdbHeroItems = heroRaw.map((item: any) => {
