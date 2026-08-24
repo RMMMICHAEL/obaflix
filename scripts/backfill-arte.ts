@@ -24,6 +24,10 @@
  * pool do Supabase é de 15 conexões em session mode, e um build ou dev server
  * concorrente já o esgota.
  *
+ * Interromper no meio é seguro: quem não recebeu `artCheckedAt` simplesmente
+ * volta na próxima execução. É por isso que a trava de segurança abaixo pode
+ * parar sem cerimônia em vez de insistir contra um banco saturado.
+ *
  * Uso:
  *   npx tsx scripts/backfill-arte.ts --limite 100     — lote pequeno
  *   npx tsx scripts/backfill-arte.ts                  — tudo que falta
@@ -51,6 +55,14 @@ const TIPO = opcao("tipo") ?? "all";
 const CONCORRENCIA = 4;
 const LOTE_LEITURA = 50;
 
+/**
+ * Trava de segurança: acima desta fração de erros num lote, para em vez de
+ * insistir. Um pico de erro aqui costuma ser rede ou TMDB rejeitando, e
+ * continuar martelando só transformaria um problema passageiro em milhares de
+ * títulos marcados como verificados sem terem sido.
+ */
+const LIMIAR_ERRO = 0.25;
+
 /** Uma linha pendente de gravação. `null` num campo significa "não mexer". */
 interface Pendente {
   id: string;
@@ -76,12 +88,25 @@ const zerar = (): Metricas => ({
 
 let emVoo = 0;
 
+/** Estado global de progresso, para o log de lote e a estimativa restante. */
+const inicio = Date.now();
+let totalPrevisto = 0;
+let processadosGlobal = 0;
+let abortado: string | null = null;
+
+const hms = (seg: number) => {
+  const s = Math.max(0, Math.round(seg));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${m}m${String(s % 60).padStart(2, "0")}s`;
+};
+
 /**
  * Grava um lote inteiro numa única query.
  *
- * A versão anterior fazia um `update` por título — inclusive para os ~65% que
- * não precisavam de troca nenhuma e só recebiam o carimbo de `artCheckedAt`.
- * No catálogo completo isso seriam ~37 mil escritas.
+ * A versão anterior fazia um `update` por título — inclusive para os que não
+ * precisavam de troca nenhuma e só recebiam o carimbo de `artCheckedAt`. No
+ * catálogo completo isso seriam ~37 mil escritas.
  *
  * `updateMany` sozinho não resolve o caso todo: ele aplica o mesmo valor a
  * todas as linhas, e `background`/`logo` são diferentes em cada uma. Então as
@@ -127,17 +152,20 @@ async function processar(
   imagens: (tmdbId: string) => Promise<any>,
 ) {
   let restante = LIMITE;
+  let lote = 0;
 
-  while (restante > 0) {
+  while (restante > 0 && !abortado) {
     const pagina = await buscar(Math.min(LOTE_LEITURA, restante));
     if (!pagina.length) break;
 
     const pendentes: Pendente[] = [];
+    const errosAntes = m.erros;
+    lote++;
 
     for (let i = 0; i < pagina.length; i += CONCORRENCIA) {
-      const lote = pagina.slice(i, i + CONCORRENCIA);
+      const fatia = pagina.slice(i, i + CONCORRENCIA);
       await Promise.all(
-        lote.map(async (row) => {
+        fatia.map(async (row) => {
           emVoo++;
           if (emVoo > m.picoConcorrencia) m.picoConcorrencia = emVoo;
           try {
@@ -171,30 +199,59 @@ async function processar(
           }
         }),
       );
-      process.stdout.write(
-        `\r${rotulo}: ${m.consultados} consultados · ${m.backgroundMudou} trocados · ` +
-        `${m.jaCorreto} já corretos · ${m.semBackdrop} sem backdrop · ${m.erros} erros`,
-      );
     }
 
     // Descarrega antes da próxima leitura: enquanto o artCheckedAt não estiver
     // no banco, o findMany seguinte devolveria estes mesmos títulos.
-    await gravarLote(tabela, pendentes, m);
+    try {
+      await gravarLote(tabela, pendentes, m);
+    } catch (e) {
+      // Falha de escrita é o sintoma direto de pool esgotado. Para aqui: o que
+      // não foi marcado volta na próxima execução, nada se perde.
+      abortado = `falha ao gravar o lote ${lote} de ${rotulo}: ${(e as Error).message.split("\n")[0]}`;
+      break;
+    }
+
+    processadosGlobal += pagina.length;
+    const decorrido = (Date.now() - inicio) / 1000;
+    const ritmo = processadosGlobal / decorrido;
+    const faltam = Math.max(0, totalPrevisto - processadosGlobal);
+
+    console.log(
+      `[${rotulo} lote ${String(lote).padStart(3)}] ` +
+      `processados ${processadosGlobal}/${totalPrevisto} · ` +
+      `alterados ${m.backgroundMudou} · corretos ${m.jaCorreto} · ` +
+      `sem backdrop ${m.semBackdrop} · erros ${m.erros} · ` +
+      `escritas ${m.queriesEscrita} · ` +
+      `decorrido ${hms(decorrido)} · restam ~${hms(faltam / (ritmo || 1))}`,
+    );
+
+    const errosNoLote = m.erros - errosAntes;
+    if (errosNoLote / pagina.length > LIMIAR_ERRO) {
+      abortado = `${errosNoLote} erros em ${pagina.length} itens no lote ${lote} de ${rotulo} (acima de ${LIMIAR_ERRO * 100}%)`;
+      break;
+    }
 
     restante -= pagina.length;
     if (pagina.length < LOTE_LEITURA) break;
   }
-  process.stdout.write("\n");
 }
 
 async function main() {
-  const t0 = Date.now();
   const mf = zerar();
   const ms = zerar();
 
   const selecao = { id: true, tmdbId: true, background: true, logo: true } as const;
   const filtro = { tmdbId: { not: null }, artCheckedAt: null } as const;
   const ordem = { popularidade: { sort: "desc", nulls: "last" } } as const;
+
+  const faltamFilmes = TIPO === "series" ? 0 : await prisma.filme.count({ where: filtro });
+  const faltamSeries = TIPO === "filmes" ? 0 : await prisma.serie.count({ where: filtro });
+  totalPrevisto = Math.min(
+    faltamFilmes + faltamSeries,
+    LIMITE === Infinity ? Infinity : LIMITE * (TIPO === "all" ? 2 : 1),
+  );
+  console.log(`a verificar: ${faltamFilmes} filmes · ${faltamSeries} séries · alvo desta execução: ${totalPrevisto}\n`);
 
   if (TIPO === "all" || TIPO === "filmes") {
     await processar(
@@ -206,7 +263,7 @@ async function main() {
     );
   }
 
-  if (TIPO === "all" || TIPO === "series") {
+  if ((TIPO === "all" || TIPO === "series") && !abortado) {
     await processar(
       "séries", ms,
       Prisma.raw('"Serie"'),
@@ -215,21 +272,21 @@ async function main() {
     );
   }
 
-  const seg = (Date.now() - t0) / 1000;
+  const seg = (Date.now() - inicio) / 1000;
   const soma = (k: keyof Metricas) => (mf[k] as number) + (ms[k] as number);
-  const queries = soma("queriesEscrita");
-  const itens = soma("itensGravados");
 
   console.log("\n─── resultado ───────────────────────────────");
-  console.log(`consultados ao TMDB : ${soma("consultados")}`);
+  console.log(`filmes processados  : ${mf.consultados}`);
+  console.log(`séries processadas  : ${ms.consultados}`);
   console.log(`backgrounds trocados: ${soma("backgroundMudou")}`);
   console.log(`já estavam corretos : ${soma("jaCorreto")}`);
   console.log(`sem backdrop no TMDB: ${soma("semBackdrop")}`);
-  console.log(`itens gravados      : ${itens}`);
-  console.log(`queries de escrita  : ${queries}   (antes seria ${itens}, uma por item)`);
+  console.log(`itens gravados      : ${soma("itensGravados")}`);
+  console.log(`queries de escrita  : ${soma("queriesEscrita")}`);
   console.log(`erros               : ${soma("erros")}`);
-  console.log(`tempo total         : ${seg.toFixed(1)}s`);
+  console.log(`tempo total         : ${hms(seg)}`);
   console.log(`pico de concorrência: ${Math.max(mf.picoConcorrencia, ms.picoConcorrencia)}`);
+  if (abortado) console.log(`\nPAUSADO: ${abortado}\nRodar de novo retoma de onde parou.`);
 
   await prisma.$disconnect();
 }
