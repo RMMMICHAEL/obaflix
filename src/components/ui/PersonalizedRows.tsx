@@ -1,22 +1,36 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import type { RecommendationRow } from "@/lib/recommendations";
 
 export function PersonalizedRows() {
   const [rows, setRows] = useState<RecommendationRow[] | null>(null);
+  // A Navbar já monta `useSession` no layout, então o estado vem do contexto do
+  // SessionProvider: ler daqui não dispara requisição nova. Antes o componente
+  // chamava /api/recommendations em toda visita, inclusive deslogada, só para
+  // receber 401 — uma invocação de função na Vercel por visitante anônimo.
+  const { status } = useSession();
 
   useEffect(() => {
+    if (status === "unauthenticated") {
+      setRows([]);
+      return;
+    }
+    if (status !== "authenticated") return;
+
     const controller = new AbortController();
-    fetch("/api/recommendations", { signal: controller.signal, cache: "no-store" })
+    // Sem `cache: "no-store"`: é ele que faria o navegador ignorar o
+    // `private, max-age=60` da rota e refazer a chamada a cada remontagem.
+    fetch("/api/recommendations", { signal: controller.signal })
       .then(async (response) => response.ok ? response.json() : null)
       .then((data) => setRows(data?.rows ?? []))
       .catch((error) => {
         if (error?.name !== "AbortError") setRows([]);
       });
     return () => controller.abort();
-  }, []);
+  }, [status]);
 
   if (rows === null) {
     return (

@@ -12,8 +12,8 @@ interface Item {
   poster: string | null;
   background?: string | null;
   logo?: string | null;
-  ano: number | null;
-  nota: number | null;
+  ano?: number | null;
+  nota?: number | null;
   urlDub?: string | null;
   urlLeg?: string | null;
   progresso?: { progressoSeg: number; duracaoSeg: number | null } | null;

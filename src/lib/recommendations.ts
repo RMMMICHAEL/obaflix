@@ -1,22 +1,22 @@
+import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
-import type { Prisma } from "@prisma/client";
 
 export type RecommendationKind = "filme" | "serie" | "anime" | "desenho";
 
+/**
+ * O card fechado das prateleiras desenha só arte e nome. `logo`, `ano`, `nota`,
+ * `urlDub` e `urlLeg` viajavam na resposta sem nunca serem renderizados — 88
+ * cards por visita carregando cinco campos mortos. O que a pontuação e os
+ * filtros precisam (nota, popularidade, gêneros, áudio) fica no lado do
+ * servidor, em `PoolItem`, e não atravessa a rede.
+ */
 export interface RecommendationCard {
   id: string;
   tipo: RecommendationKind;
   titulo: string;
   poster: string | null;
-  // As prateleiras da home renderizam banner 16:9; sem o backdrop o card cai
-  // no poster vertical recortado, que perde o enquadramento do titulo.
   background: string | null;
-  logo: string | null;
-  ano: number | null;
-  nota: number | null;
-  urlDub: string | null;
-  urlLeg: string | null;
 }
 
 export interface RecommendationRow {
@@ -30,42 +30,135 @@ type Signal = {
   source: "like" | "dislike" | "watchlist" | "history";
 };
 
-const filmSelect = {
-  id: true,
-  titulo: true,
-  poster: true,
-  background: true,
-  logo: true,
-  ano: true,
-  nota: true,
-  popularidade: true,
-  createdAt: true,
-  urlDub: true,
-  urlLeg: true,
-  generos: { select: { generoId: true } },
-} satisfies Prisma.FilmeSelect;
+// ── Pool compartilhado ──────────────────────────────────────────────────────
 
-const seriesSelect = {
-  id: true,
-  titulo: true,
-  poster: true,
-  background: true,
-  logo: true,
-  ano: true,
-  nota: true,
-  popularidade: true,
-  createdAt: true,
-  tipo: true,
-  generos: { select: { generoId: true } },
-  episodios: {
-    where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-    select: { urlDub: true, urlLeg: true },
-    take: 20,
-  },
-} satisfies Prisma.SerieSelect;
+/**
+ * O pool de candidatos é o mesmo para todos os usuários: os títulos mais
+ * populares que têm stream. Antes ele era relido a cada visita porque o `notIn`
+ * dos itens já vistos entrava na própria query — o que tornava "pessoal" uma
+ * consulta cujo resultado só diferia por meia dúzia de linhas.
+ *
+ * Agora a query roda sem o `notIn` e a exclusão acontece em memória, o que
+ * permite guardar um único resultado compartilhado.
+ *
+ * O `take` é maior que os 180 originais só para dar folga à exclusão — medido no
+ * usuário com mais sinais do banco, 6 filmes e 67 séries. Depois de excluir, a
+ * lista é cortada de volta em 180 por tipo (`CANDIDATOS_POR_TIPO`), que é
+ * exatamente o que o `take` fazia depois do `notIn`. Sem esse corte o resultado
+ * mudaria: com mais candidatos disputando as vagas, as prateleiras do fim do
+ * ranking — "Dublados para maratonar" sai da posição ~85 — trocavam metade dos
+ * títulos. Barato não é motivo para entregar coisa diferente.
+ *
+ * Nada aqui depende de usuário, então não há o que isolar — é catálogo público,
+ * ordenado por popularidade, que muda em escala de horas.
+ */
+const POOL_TAKE = 260;
+const CANDIDATOS_POR_TIPO = 180;
+const POOL_REVALIDATE = 900; // 15 min
 
-type FilmRow = Prisma.FilmeGetPayload<{ select: typeof filmSelect }>;
-type SeriesRow = Prisma.SerieGetPayload<{ select: typeof seriesSelect }>;
+interface PoolItem {
+  id: string;
+  tipo: RecommendationKind;
+  titulo: string;
+  poster: string | null;
+  background: string | null;
+  ano: number | null;
+  nota: number | null;
+  popularidade: number | null;
+  generoIds: number[];
+  temDub: boolean;
+  temLeg: boolean;
+}
+
+const ordemPopular = [
+  { popularidade: { sort: "desc", nulls: "last" } },
+  { nota: "desc" },
+] as const;
+
+async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] }> {
+  const [filmes, series] = await Promise.all([
+    prisma.filme.findMany({
+      where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+      orderBy: [...ordemPopular],
+      take: POOL_TAKE,
+      select: {
+        id: true, titulo: true, poster: true, background: true,
+        ano: true, nota: true, popularidade: true,
+        urlDub: true, urlLeg: true,
+        generos: { select: { generoId: true } },
+      },
+    }),
+    prisma.serie.findMany({
+      where: { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
+      orderBy: [...ordemPopular],
+      take: POOL_TAKE,
+      select: {
+        id: true, titulo: true, poster: true, background: true,
+        ano: true, nota: true, popularidade: true, tipo: true,
+        generos: { select: { generoId: true } },
+        // Só para derivar dois booleanos. O array não entra no cache — vira
+        // `temDub`/`temLeg` logo abaixo. Trocar isso por colunas em Serie é a
+        // fase seguinte, tratada em separado.
+        episodios: {
+          where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+          select: { urlDub: true, urlLeg: true },
+          take: 20,
+        },
+      },
+    }),
+  ]);
+
+  // Separados por tipo: o corte em 180 é por modelo, como era o `take`.
+  return {
+    filmes: filmes.map((f): PoolItem => ({
+      id: f.id, tipo: "filme", titulo: f.titulo, poster: f.poster, background: f.background,
+      ano: f.ano, nota: f.nota, popularidade: f.popularidade,
+      generoIds: f.generos.map((g) => g.generoId),
+      temDub: Boolean(f.urlDub), temLeg: Boolean(f.urlLeg),
+    })),
+    series: series.map((s): PoolItem => ({
+      id: s.id, tipo: normalizeSeriesType(s.tipo), titulo: s.titulo, poster: s.poster, background: s.background,
+      ano: s.ano, nota: s.nota, popularidade: s.popularidade,
+      generoIds: s.generos.map((g) => g.generoId),
+      temDub: s.episodios.some((ep) => Boolean(ep.urlDub)),
+      temLeg: s.episodios.some((ep) => Boolean(ep.urlLeg)),
+    })),
+  };
+}
+
+const getPoolCompartilhado = unstable_cache(
+  carregarPool,
+  ["recommendations-pool-v1"],
+  { revalidate: POOL_REVALIDATE, tags: ["recommendations-pool"] },
+);
+
+// ── Sinais do usuário ───────────────────────────────────────────────────────
+
+/**
+ * Dos itens sinalizados só interessam os gêneros (para os pesos), o título (para
+ * a prateleira "Porque você gostou de…") e os campos do card (para "Minha
+ * lista"). A relação `episodios` saiu daqui junto com `urlDub`/`urlLeg` do
+ * payload: era uma query inteira para produzir dois booleanos que ninguém mais
+ * lê.
+ */
+const selecaoSinalFilme = {
+  id: true, titulo: true, poster: true, background: true,
+  generos: { select: { generoId: true } },
+} as const;
+
+const selecaoSinalSerie = {
+  id: true, titulo: true, poster: true, background: true, tipo: true,
+  generos: { select: { generoId: true } },
+} as const;
+
+interface MidiaSinal {
+  id: string;
+  titulo: string;
+  poster: string | null;
+  background: string | null;
+  tipo: RecommendationKind;
+  generoIds: number[];
+}
 
 function keyFor(conteudoId: string, conteudoTipo: string) {
   return `${conteudoTipo === "filme" ? "filme" : "serie"}:${conteudoId}`;
@@ -75,40 +168,13 @@ function normalizeSeriesType(tipo: string): RecommendationKind {
   return tipo === "anime" || tipo === "desenho" ? tipo : "serie";
 }
 
-function seriesAudio(episodios: Array<{ urlDub: string | null; urlLeg: string | null }>) {
+function toCard(item: { id: string; tipo: RecommendationKind; titulo: string; poster: string | null; background: string | null }): RecommendationCard {
   return {
-    urlDub: episodios.some((ep) => Boolean(ep.urlDub)) ? "disponível" : null,
-    urlLeg: episodios.some((ep) => Boolean(ep.urlLeg)) ? "disponível" : null,
-  };
-}
-
-function toFilmCard(row: FilmRow): RecommendationCard {
-  return {
-    id: row.id,
-    tipo: "filme",
-    titulo: row.titulo,
-    poster: row.poster,
-    background: row.background,
-    logo: row.logo,
-    ano: row.ano,
-    nota: row.nota,
-    urlDub: row.urlDub ? "disponivel" : null,
-    urlLeg: row.urlLeg ? "disponivel" : null,
-  };
-}
-
-function toSeriesCard(row: SeriesRow): RecommendationCard {
-  const audio = seriesAudio(row.episodios ?? []);
-  return {
-    id: row.id,
-    tipo: normalizeSeriesType(row.tipo),
-    titulo: row.titulo,
-    poster: row.poster,
-    background: row.background,
-    logo: row.logo,
-    ano: row.ano,
-    nota: row.nota,
-    ...audio,
+    id: item.id,
+    tipo: item.tipo,
+    titulo: item.titulo,
+    poster: item.poster,
+    background: item.background,
   };
 }
 
@@ -156,18 +222,29 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   const signalFilmIds = [...signals.keys()].filter((key) => key.startsWith("filme:")).map((key) => key.slice(6));
   const signalSeriesIds = [...signals.keys()].filter((key) => key.startsWith("serie:")).map((key) => key.slice(6));
 
-  const [signalFilms, signalSeries] = await Promise.all([
+  const [signalFilms, signalSeries, pool] = await Promise.all([
     signalFilmIds.length
-      ? prisma.filme.findMany({ where: { id: { in: signalFilmIds } }, select: filmSelect })
+      ? prisma.filme.findMany({ where: { id: { in: signalFilmIds } }, select: selecaoSinalFilme })
       : Promise.resolve([]),
     signalSeriesIds.length
-      ? prisma.serie.findMany({ where: { id: { in: signalSeriesIds } }, select: seriesSelect })
+      ? prisma.serie.findMany({ where: { id: { in: signalSeriesIds } }, select: selecaoSinalSerie })
       : Promise.resolve([]),
+    getPoolCompartilhado(),
   ]);
 
-  const signalMedia = new Map<string, FilmRow | SeriesRow>();
-  for (const row of signalFilms) signalMedia.set(`filme:${row.id}`, row);
-  for (const row of signalSeries) signalMedia.set(`serie:${row.id}`, row);
+  const signalMedia = new Map<string, MidiaSinal>();
+  for (const row of signalFilms) {
+    signalMedia.set(`filme:${row.id}`, {
+      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
+      tipo: "filme", generoIds: row.generos.map((g) => g.generoId),
+    });
+  }
+  for (const row of signalSeries) {
+    signalMedia.set(`serie:${row.id}`, {
+      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
+      tipo: normalizeSeriesType(row.tipo), generoIds: row.generos.map((g) => g.generoId),
+    });
+  }
 
   const genreWeights = new Map<number, number>();
   let filmAffinity = 0;
@@ -176,8 +253,8 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
     const media = signalMedia.get(key);
     if (!media) continue;
     const genreDelta = signal.source === "dislike" ? -1.5 : Math.min(5, signal.weight);
-    for (const genre of media.generos ?? []) {
-      genreWeights.set(genre.generoId, (genreWeights.get(genre.generoId) ?? 0) + genreDelta);
+    for (const generoId of media.generoIds) {
+      genreWeights.set(generoId, (genreWeights.get(generoId) ?? 0) + genreDelta);
     }
     if (signal.weight > 0) {
       if (key.startsWith("filme:")) filmAffinity += signal.weight;
@@ -185,45 +262,34 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
     }
   }
 
-  const excludedFilmIds = signalFilmIds;
-  const excludedSeriesIds = signalSeriesIds;
-  const [candidateFilms, candidateSeries] = await Promise.all([
-    prisma.filme.findMany({
-      where: {
-        id: excludedFilmIds.length ? { notIn: excludedFilmIds } : undefined,
-        OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
-      },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 180,
-      select: filmSelect,
-    }),
-    prisma.serie.findMany({
-      where: {
-        id: excludedSeriesIds.length ? { notIn: excludedSeriesIds } : undefined,
-        episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } },
-      },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 180,
-      select: seriesSelect,
-    }),
-  ]);
+  // A exclusão que antes era `notIn` no SQL. Mesmo resultado, feita sobre o
+  // pool compartilhado — é o que permite reaproveitá-lo entre usuários.
+  // O corte em 180 por tipo reproduz o `take` que vinha depois do `notIn`: o
+  // conjunto de candidatos fica idêntico ao da versão que consultava o banco a
+  // cada visita, e as prateleiras entregam os mesmos títulos.
+  const idsFilme = new Set(signalFilmIds);
+  const idsSerie = new Set(signalSeriesIds);
+  const candidatos = [
+    ...pool.filmes.filter((item) => !idsFilme.has(item.id)).slice(0, CANDIDATOS_POR_TIPO),
+    ...pool.series.filter((item) => !idsSerie.has(item.id)).slice(0, CANDIDATOS_POR_TIPO),
+  ];
 
-  const score = (row: FilmRow | SeriesRow, kind: "filme" | "serie") => {
-    const genreScore = (row.generos ?? []).reduce((total: number, genre: { generoId: number }) => total + (genreWeights.get(genre.generoId) ?? 0), 0);
-    const quality = (row.nota ?? 0) * 0.3;
-    const popularity = Math.log10(Math.max(1, row.popularidade ?? 1)) * 0.8;
-    const affinityTotal = filmAffinity + seriesAffinity;
+  const anoAtual = new Date().getFullYear();
+  const affinityTotal = filmAffinity + seriesAffinity;
+  const score = (item: PoolItem) => {
+    const genreScore = item.generoIds.reduce((total, generoId) => total + (genreWeights.get(generoId) ?? 0), 0);
+    const quality = (item.nota ?? 0) * 0.3;
+    const popularity = Math.log10(Math.max(1, item.popularidade ?? 1)) * 0.8;
     const affinity = affinityTotal > 0
-      ? (kind === "filme" ? filmAffinity : seriesAffinity) / affinityTotal
+      ? (item.tipo === "filme" ? filmAffinity : seriesAffinity) / affinityTotal
       : 0.5;
-    const freshness = row.ano && row.ano >= new Date().getFullYear() - 2 ? 0.8 : 0;
+    const freshness = item.ano && item.ano >= anoAtual - 2 ? 0.8 : 0;
     return genreScore + quality + popularity + affinity * 2 + freshness;
   };
 
-  const ranked = [
-    ...candidateFilms.map((row) => ({ row, kind: "filme" as const, score: score(row, "filme"), card: toFilmCard(row) })),
-    ...candidateSeries.map((row) => ({ row, kind: "serie" as const, score: score(row, "serie"), card: toSeriesCard(row) })),
-  ].sort((a, b) => b.score - a.score);
+  const ranked = candidatos
+    .map((item) => ({ item, score: score(item), card: toCard(item) }))
+    .sort((a, b) => b.score - a.score);
 
   const rows: RecommendationRow[] = [];
   const usedAcrossRows = new Set<string>();
@@ -242,7 +308,7 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   };
   const reserve = (cards: RecommendationCard[]) => cards.forEach((card) => usedAcrossRows.add(cardKey(card)));
 
-  const personalized = takeUnseen(ranked.map((item) => item.card), 24);
+  const personalized = takeUnseen(ranked.map((entry) => entry.card), 24);
   if (personalized.length >= 6) {
     reserve(personalized);
     rows.push({
@@ -257,10 +323,10 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
     ?? [...signals.entries()].find(([, signal]) => signal.source === "history" && signal.weight > 0);
   if (seedEntry) {
     const seed = signalMedia.get(seedEntry[0]);
-    const seedGenres = new Set<number>((seed?.generos ?? []).map((genre: { generoId: number }) => genre.generoId));
+    const seedGenres = new Set<number>(seed?.generoIds ?? []);
     const similar = takeUnseen(ranked
-      .filter((item) => item.row.generos?.some((genre: { generoId: number }) => seedGenres.has(genre.generoId)))
-      .map((item) => item.card), 20);
+      .filter((entry) => entry.item.generoIds.some((generoId) => seedGenres.has(generoId)))
+      .map((entry) => entry.card), 20);
     if (seed?.titulo && similar.length >= 6) {
       reserve(similar);
       rows.push({ id: "because-seed", titulo: `Porque você gostou de ${seed.titulo}`, items: similar });
@@ -269,10 +335,8 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
 
   const watchlistCards = watchlist
     .map((item) => {
-      const key = keyFor(item.conteudoId, item.conteudoTipo);
-      const media = signalMedia.get(key);
-      if (!media) return null;
-      return "episodios" in media ? toSeriesCard(media) : toFilmCard(media);
+      const media = signalMedia.get(keyFor(item.conteudoId, item.conteudoTipo));
+      return media ? toCard(media) : null;
     })
     .filter(Boolean) as RecommendationCard[];
   const uniqueWatchlistCards = takeUnseen(watchlistCards, 24);
@@ -283,14 +347,14 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
 
   const excludedAnimeTitles = new Set<string>(ANIME_HOME_EXCLUSIONS);
   const anime = takeUnseen(ranked
-    .filter((item) => item.card.tipo === "anime" && !excludedAnimeTitles.has(item.card.titulo))
-    .map((item) => item.card), 20);
+    .filter((entry) => entry.card.tipo === "anime" && !excludedAnimeTitles.has(entry.card.titulo))
+    .map((entry) => entry.card), 20);
   if (anime.length >= 6) {
     reserve(anime);
     rows.push({ id: "anime-radar", titulo: "Animes para entrar no seu radar", items: anime });
   }
 
-  const dubbed = takeUnseen(ranked.filter((item) => Boolean(item.card.urlDub)).map((item) => item.card), 20);
+  const dubbed = takeUnseen(ranked.filter((entry) => entry.item.temDub).map((entry) => entry.card), 20);
   if (dubbed.length >= 6) {
     reserve(dubbed);
     rows.push({ id: "dubbed", titulo: "Dublados para maratonar", items: dubbed });
