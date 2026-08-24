@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Check, ChevronLeft, ChevronRight, Play, Star } from "lucide-react";
+import { Check, ChevronDown, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 
 interface Ep {
@@ -49,10 +49,17 @@ export function EpisodeGrid({
 }) {
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
   const eps = episodios.filter((e) => e.temporada === temp);
-  const seasonsRef = useRef<HTMLDivElement>(null);
 
-  const scrollSeasons = (dir: "left" | "right") =>
-    seasonsRef.current?.scrollBy({ left: dir === "left" ? -320 : 320, behavior: "smooth" });
+  // Quantos episodios cada temporada tem, para rotular as opcoes do select.
+  const contagem = new Map<number, number>();
+  for (const ep of episodios) {
+    contagem.set(ep.temporada, (contagem.get(ep.temporada) ?? 0) + 1);
+  }
+
+  const rotulo = (season: number) => {
+    const total = contagem.get(season) ?? 0;
+    return `Temporada ${season} — ${total} ${total === 1 ? "episódio" : "episódios"}`;
+  };
 
   const isNovo = (d: Date) => Date.now() - new Date(d).getTime() < 7 * 24 * 3600 * 1000;
 
@@ -64,36 +71,37 @@ export function EpisodeGrid({
         Episódios
       </h2>
 
-      {/* Seletor de temporadas: continua em lista horizontal de pilulas. */}
-      <div className="relative mb-5">
-        {temporadas.length > 3 && (
-          <>
-            <SeasonArrow side="left" onClick={() => scrollSeasons("left")} />
-            <SeasonArrow side="right" onClick={() => scrollSeasons("right")} />
-          </>
-        )}
-        <div
-          ref={seasonsRef}
-          className="scrollbar-hide flex gap-2.5 overflow-x-auto scroll-smooth px-1 py-1"
+      {/*
+        Um select no lugar da fileira de pilulas: com muitas temporadas a fileira
+        tomava a largura toda e ainda exigia rolagem horizontal. O visual segue o
+        mesmo das pilulas (chip escuro, ring branco, mesma tipografia).
+      */}
+      <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <label
+          htmlFor="seletor-temporada"
+          className="text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-500"
         >
-          {temporadas.map((season) => {
-            const ativa = season === temp;
-            return (
-              <button
-                key={season}
-                type="button"
-                onClick={() => setTemp(season)}
-                aria-pressed={ativa}
-                className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-semibold transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70 ${
-                  ativa
-                    ? "bg-zinc-800 text-white ring-1 ring-white/15"
-                    : "bg-white/[0.04] text-zinc-400 ring-1 ring-white/[0.07] hover:bg-white/10 hover:text-zinc-100"
-                }`}
-              >
-                Temporada {season}
-              </button>
-            );
-          })}
+          Selecione a temporada:
+        </label>
+
+        <div className="relative">
+          <select
+            id="seletor-temporada"
+            value={temp}
+            onChange={(event) => setTemp(Number(event.target.value))}
+            className="min-h-11 appearance-none rounded-full bg-zinc-800 py-2.5 pl-5 pr-11 text-sm font-semibold text-white outline-none ring-1 ring-white/15 transition-colors duration-200 hover:bg-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70"
+          >
+            {temporadas.map((season) => (
+              <option key={season} value={season} className="bg-zinc-900 text-white">
+                {rotulo(season)}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            size={16}
+            aria-hidden="true"
+            className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-zinc-400"
+          />
         </div>
       </div>
 
@@ -200,21 +208,5 @@ function Badge({ children, className }: { children: React.ReactNode; className: 
     <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold backdrop-blur-sm ${className}`}>
       {children}
     </span>
-  );
-}
-
-function SeasonArrow({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
-  const Icon = side === "left" ? ChevronLeft : ChevronRight;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={side === "left" ? "Temporadas anteriores" : "Próximas temporadas"}
-      className={`absolute top-1/2 z-20 hidden h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-zinc-800/90 text-white shadow-lg ring-1 ring-white/10 backdrop-blur-sm transition-colors hover:bg-zinc-700 md:grid ${
-        side === "left" ? "-left-2" : "-right-2"
-      }`}
-    >
-      <Icon size={18} />
-    </button>
   );
 }
