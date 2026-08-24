@@ -31,7 +31,12 @@ interface Props {
  * da um numero que ocupa a composicao inteira, e nao um selo ao lado da capa.
  *
  * O poster fica na frente e cobre a metade direita do algarismo. So contorno no
- * numero, sem preenchimento: solido, ele competiria com a arte da capa.
+ * numero, sem preenchimento: solido, ele competiria com a arte da capa. O
+ * contorno e fino e dessaturado de proposito — ele marca a posicao, nao disputa
+ * atencao com a capa.
+ *
+ * O hover move a composicao inteira (numero + poster), nao so a capa: sao uma
+ * peca so, e animar apenas metade quebraria a sobreposicao.
  */
 export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew }: Props) {
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
@@ -44,23 +49,26 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
       href={href}
       title={titulo}
       aria-label={`${rank}. ${titulo}`}
-      className="group/card flex-none"
+      className="group/card relative z-0 flex-none hover:z-20 focus-visible:z-20"
       style={
         {
-          "--pw": "clamp(104px, 11vw, 156px)",
+          "--pw": "clamp(132px, 13.5vw, 200px)",
           width: `calc(var(--pw) * (1 + ${faixaNumero}))`,
         } as React.CSSProperties
       }
     >
-      <div className="relative" style={{ height: "calc(var(--pw) * 1.5)" }}>
+      <div
+        className="relative origin-bottom transition-transform duration-300 ease-out will-change-transform group-hover/card:-translate-y-1.5 group-hover/card:scale-[1.06] group-focus-visible/card:-translate-y-1.5 group-focus-visible/card:scale-[1.06]"
+        style={{ height: "calc(var(--pw) * 1.5)" }}
+      >
 
         <span
           aria-hidden="true"
-          className="absolute bottom-0 left-0 select-none font-black leading-none text-transparent"
+          className="absolute bottom-0 left-0 select-none font-black leading-none text-transparent transition-opacity duration-300 ease-out opacity-80 group-hover/card:opacity-100"
           style={{
             fontFamily: "var(--font-bebas), 'Bebas Neue', Impact, 'Arial Black', sans-serif",
             fontSize: "calc(var(--pw) * 1.5 / 0.73)",
-            WebkitTextStroke: "clamp(2px, 0.35vw, 4px) rgba(190,190,195,0.85)",
+            WebkitTextStroke: "clamp(1px, 0.11vw, 1.75px) rgba(168,168,176,0.6)",
             lineHeight: 0.73,
             letterSpacing: rank >= 10 ? "-0.06em" : "normal",
           }}
@@ -69,17 +77,17 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
         </span>
 
         <div
-          className="absolute bottom-0 right-0 overflow-hidden rounded-lg bg-zinc-800 shadow-[0_6px_24px_rgba(0,0,0,0.65)] transition-transform duration-200 ease-out group-hover/card:scale-[1.04]"
+          className="absolute bottom-0 right-0 overflow-hidden rounded-lg bg-zinc-800 shadow-[0_6px_20px_rgba(0,0,0,0.55)] transition-shadow duration-300 ease-out group-hover/card:shadow-[0_18px_44px_rgba(0,0,0,0.8)]"
           style={{ width: "var(--pw)", height: "calc(var(--pw) * 1.5)" }}
         >
           <Image
-            src={poster ? imgUrl(poster, "w342") : "/placeholder.jpg"}
+            src={poster ? imgUrl(poster, "w500") : "/placeholder.jpg"}
             alt={titulo}
             fill
             className="object-cover"
-            // Teto de 156px em tela 2x pede ~312px: w342 e o degrau exato do
-            // TMDB, sem desperdicio de banda.
-            sizes="(max-width: 768px) 104px, 156px"
+            // Teto de 200px em tela 2x pede ~400px: w500 e o degrau do TMDB
+            // acima disso, sem estourar a banda.
+            sizes="(max-width: 768px) 140px, 200px"
             loading="lazy"
             onError={imgFallback}
           />
