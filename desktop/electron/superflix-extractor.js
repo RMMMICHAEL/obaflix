@@ -8,6 +8,10 @@ const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
 
+// O provedor migrou de superflixapi.pro para superflixapi.sbs; o antigo ainda
+// responde 301 e aparece em URLs gravadas, entao os dois seguem aceitos.
+const EH_SUPERFLIX = /(^|.)superflixapi.(pro|sbs)$/i;
+
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_PAGE_HOPS = 7;
 
@@ -102,8 +106,8 @@ function secureTransportUrl(raw) {
 function isChainHost(hostname) {
   const host = String(hostname || "").toLowerCase();
   return (
-    host === "superflixapi.pro" || host.endsWith(".superflixapi.pro") ||
-    host.includes("vizero") || host.includes("warezcdn")
+    EH_SUPERFLIX.test(host) ||
+    host.includes("vizer") || host.includes("warezcdn")
   );
 }
 
@@ -126,7 +130,7 @@ function collectChainUrls(html, baseUrl) {
       // da cadeia SuperFlix/Vizero/WarezCDN.
       if (parsed.pathname.toLowerCase().startsWith("/cdn-cgi/")) return;
       const isSuperflix =
-        parsed.hostname === "superflixapi.pro" || parsed.hostname.endsWith(".superflixapi.pro");
+        EH_SUPERFLIX.test(parsed.hostname);
       if (isSuperflix && !parsed.searchParams.has("cfv") && !parsed.pathname.startsWith("/player/")) return;
       if (!isChainHost(parsed.hostname)) return;
       seen.add(absolute);
@@ -148,7 +152,7 @@ function collectChainUrls(html, baseUrl) {
         const parsed = new URL(url);
         if (parsed.hostname.includes("warezcdn")) value += 100;
         if (parsed.searchParams.has("cfv")) value += 100;
-        if (parsed.hostname.includes("vizero")) value += 50;
+        if (parsed.hostname.includes("vizer")) value += 50;
         if (parsed.pathname.includes("/player/")) value -= 30;
       } catch { /**/ }
       return value;
@@ -869,7 +873,7 @@ async function extractSuperflix(embedUrl, options = {}) {
   const jar = createCookieJar();
 
   const input = new URL(embedUrl);
-  if (!input.hostname.endsWith("superflixapi.pro")) {
+  if (!EH_SUPERFLIX.test(input.hostname)) {
     throw new Error("URL SuperFlix inválida");
   }
 

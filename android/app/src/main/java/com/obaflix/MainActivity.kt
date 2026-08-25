@@ -60,6 +60,8 @@ class MainActivity : AppCompatActivity() {
             ObaflixApp.webViewUserAgent = userAgentString
         }
 
+        removerRequestedWithHeader(webView.settings, "principal")
+
         // Reassinada tambem apos rebuildWebViewAposCrash, que chama este metodo.
         ObaflixApp.hostWebView = java.lang.ref.WeakReference(webView)
 

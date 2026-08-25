@@ -279,7 +279,7 @@ object SuperflixExtractor {
     private fun isChainHost(hostname: String): Boolean {
         val host = hostname.lowercase()
         return ehHostSuperflix(host) ||
-            host.contains("vizero") || host.contains("warezcdn")
+            host.contains("vizer") || host.contains("warezcdn")
     }
 
     /**
@@ -348,7 +348,7 @@ object SuperflixExtractor {
             var value = 0
             if (parsed.host.contains("warezcdn")) value += 100
             if (parsed.query?.contains("cfv=") == true) value += 100
-            if (parsed.host.contains("vizero")) value += 50
+            if (parsed.host.contains("vizer")) value += 50
             if (parsed.path.contains("/player/")) value -= 30
             return value
         }

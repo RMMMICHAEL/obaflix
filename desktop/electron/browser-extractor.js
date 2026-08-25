@@ -260,10 +260,7 @@ async function extractSuperflixInBrowser(
   const input = new URL(embedUrl);
 
   if (
-    !/(^|\.)superflixapi\.(pro|sbs)$/i.test(input.hostname) &&
-    !input.hostname.endsWith(
-      ".superflixapi.pro",
-    )
+    !/(^|\.)superflixapi\.(pro|sbs)$/i.test(input.hostname)
   ) {
     throw new Error(
       "URL SuperFlix inválida.",

@@ -140,7 +140,7 @@ class PlayerWebViewClient(
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url
         val providerHost = uri.host.orEmpty().lowercase()
-        if ((providerHost.contains("superflixapi.") || providerHost.contains("vizero") ||
+        if ((providerHost.contains("superflixapi.") || providerHost.contains("vizer") ||
                 providerHost.contains("warezcdn")) && !uri.path.orEmpty().startsWith("/cdn-cgi/")
         ) {
             // Sem query para não registrar tokens; host+path identifica a rota que
@@ -189,7 +189,7 @@ class PlayerWebViewClient(
 
         val isSuperflixSignedRoute = host.contains("superflixapi.") &&
             (request.url.getQueryParameter("cfv") != null || path.startsWith("/player/redirect"))
-        if (isSuperflixSignedRoute || host.contains("vizero") || host.contains("warezcdn")) {
+        if (isSuperflixSignedRoute || host.contains("vizer") || host.contains("warezcdn")) {
             ObaflixApp.playerState.observeSuperflixUrl(request.url.toString())
             Log.d(TAG, "[provider/observed] host=$host path=$path")
         }

@@ -136,7 +136,7 @@ const CONSOLE_FN = { trace: "debug", debug: "debug", info: "log", warn: "warn", 
 function emit(level, scope, message, fields) {
   if (LEVELS[level] < minLevel) return;
   const line = `${new Date().toISOString()}  ${level.toUpperCase().padEnd(5)} [${scope}] ${scrub(message)}${formatFields(fields)}`;
-  // eslint-disable-next-line no-console
+   
   console[CONSOLE_FN[level]](line);
   if (ready) writeFileLine(line);
   else if (pending.length < 2000) pending.push(line);

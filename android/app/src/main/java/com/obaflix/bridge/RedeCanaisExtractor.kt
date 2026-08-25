@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.obaflix.ObaflixApp
+import com.obaflix.removerRequestedWithHeader
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -100,6 +101,8 @@ object RedeCanaisExtractor {
                                     "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
                             ).replace(" ObaflixApp/1.0", "")
                     }
+
+                    removerRequestedWithHeader(settings, "redecanais")
 
                     CookieManager.getInstance().apply {
                         setAcceptCookie(true)

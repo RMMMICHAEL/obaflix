@@ -12,6 +12,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import com.obaflix.player.PlayerWebViewClient
+import com.obaflix.removerRequestedWithHeader
 
 private const val OVERLAY_TAG = "Obaflix/Superflix"
 
@@ -89,6 +90,8 @@ object SuperflixChallengeOverlay {
                 loadWithOverviewMode = true
                 userAgentString = uaLimpo(wv)
             }
+
+            removerRequestedWithHeader(wv.settings, "overlay-desafio")
 
             // O Turnstile grava cf_clearance como cookie de terceiros dentro do iframe.
             CookieManager.getInstance().apply {
