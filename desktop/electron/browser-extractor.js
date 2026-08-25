@@ -260,7 +260,7 @@ async function extractSuperflixInBrowser(
   const input = new URL(embedUrl);
 
   if (
-    input.hostname !== "superflixapi.pro" &&
+    !/(^|\.)superflixapi\.(pro|sbs)$/i.test(input.hostname) &&
     !input.hostname.endsWith(
       ".superflixapi.pro",
     )
@@ -706,8 +706,7 @@ async function extractSuperflixInBrowser(
           // challenges.cloudflare.com, e a troca para o host do servidor
           // escolhido, que muda de domínio.
           const ehSuperflix =
-            destino.hostname === "superflixapi.pro" ||
-            destino.hostname.endsWith(".superflixapi.pro");
+            /(^|\.)superflixapi\.(pro|sbs)$/i.test(destino.hostname);
 
           const parteDoPlayer =
             destino.pathname.startsWith("/player/") ||

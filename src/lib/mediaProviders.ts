@@ -28,6 +28,7 @@ const PROVIDER_HOSTS = [
   "upbolt.to",
   "bigshare.link",
   "superflixapi.pro",
+  "superflixapi.sbs",
   "v1.watchplay.shop",
   "megafrixapi.com",
   "vods.faz-o-eli.online",

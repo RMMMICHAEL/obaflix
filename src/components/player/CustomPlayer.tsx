@@ -201,7 +201,7 @@ function supportsNativeDesktopExtraction(url: string) {
     if (hostname.includes("bolt")) return true;
     if (hostname.includes("bigshare") || hostname.includes("big")) return true;
     if (hostname.includes("watchplay")) return true;
-    if (hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro")) return true;
+    if (/(^|\.)superflixapi\.(pro|sbs)$/i.test(hostname)) return true;
     if (hostname === "redecanais.capital" || hostname.endsWith(".redecanais.capital")) return true;
     return false;
   } catch {
@@ -212,7 +212,7 @@ function supportsNativeDesktopExtraction(url: string) {
 function isSuperflixUrl(url: string) {
   try {
     const hostname = new URL(url).hostname.toLowerCase();
-    return hostname === "superflixapi.pro" || hostname.endsWith(".superflixapi.pro");
+    return /(^|\.)superflixapi\.(pro|sbs)$/i.test(hostname);
   } catch {
     return false;
   }
@@ -527,8 +527,8 @@ export function CustomPlayer({
   ) {
     const superflixUrl =
       conteudoTipo === "filme"
-        ? `https://superflixapi.pro/filme/${encodeURIComponent(tmdbValido)}`
-        : `https://superflixapi.pro/serie/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`;
+        ? `https://superflixapi.sbs/filme/${encodeURIComponent(tmdbValido)}`
+        : `https://superflixapi.sbs/serie/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`;
 
     allFontes.push({
       label: "Player 2",

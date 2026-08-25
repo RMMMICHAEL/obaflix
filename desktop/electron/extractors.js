@@ -368,7 +368,7 @@ function detectProvider(embedUrl) {
   if (hostIs("boltcdn.xyz", "upbolt.to")) return "bolt";
   if (hostIs("bigshare.link")) return "big";
   if (hostIs("v1.watchplay.shop")) return "watchplayer";
-  if (hostIs("superflixapi.pro")) return "superflix";
+  if (hostIs("superflixapi.pro", "superflixapi.sbs")) return "superflix";
   return null;
 }
 

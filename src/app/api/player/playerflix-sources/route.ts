@@ -45,7 +45,7 @@ function providerOf(hostname: string): { provider: string; hasExtractor: boolean
   if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) {
     return { provider: "embedplayer", hasExtractor: true };
   }
-  if (hostIs("superflixapi.pro")) return { provider: "superflix", hasExtractor: true };
+  if (hostIs("superflixapi.pro", "superflixapi.sbs")) return { provider: "superflix", hasExtractor: true };
   if (hostIs("playhide.shop", "hidehide.shop", "vidhidehub.com")) {
     return { provider: "hide", hasExtractor: true };
   }

@@ -35,7 +35,7 @@ const EMBED_HOSTNAMES = [
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
   "v1.watchplay.shop",
   "vods.faz-o-eli.online",
-  "superflixapi.pro", "vizero.buzz", "warezcdn.lat",
+  "superflixapi.pro", "superflixapi.sbs", "vizero.buzz", "warezcdn.lat",
 ];
 
 

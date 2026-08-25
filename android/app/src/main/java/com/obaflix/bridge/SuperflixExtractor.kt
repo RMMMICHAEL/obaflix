@@ -18,6 +18,13 @@ import java.net.URLDecoder
 import java.util.Base64
 
 private const val SUPERFLIX_TAG = "Obaflix/Superflix"
+
+/**
+ * O provedor migrou de superflixapi.pro para superflixapi.sbs em agosto/2026. O
+ * domínio antigo responde 301 para o novo e continua gravado em URLs no banco e
+ * nas respostas do Playerflix, então os dois seguem reconhecidos.
+ */
+private val SUPERFLIX_HOSTS = listOf("superflixapi.sbs", "superflixapi.pro")
 private const val SUPERFLIX_TIMEOUT_HOPS = 7
 
 /**
@@ -261,9 +268,17 @@ object SuperflixExtractor {
         }
     }
 
+    /**
+     * O provedor migrou de superflixapi.pro para superflixapi.sbs. O domínio
+     * antigo ainda responde com 301 e continua gravado em URLs no banco, então
+     * os dois seguem aceitos.
+     */
+    private fun ehHostSuperflix(host: String): Boolean =
+        SUPERFLIX_HOSTS.any { host == it || host.endsWith(".$it") }
+
     private fun isChainHost(hostname: String): Boolean {
         val host = hostname.lowercase()
-        return host == "superflixapi.pro" || host.endsWith(".superflixapi.pro") ||
+        return ehHostSuperflix(host) ||
             host.contains("vizero") || host.contains("warezcdn")
     }
 
@@ -312,8 +327,7 @@ object SuperflixExtractor {
             // Scripts do desafio Cloudflare pertencem ao mesmo host, mas não são
             // páginas da cadeia SuperFlix/Vizero/WarezCDN.
             if (parsed.path.startsWith("/cdn-cgi/", ignoreCase = true)) return
-            val isSuperflix = parsed.host.equals("superflixapi.pro", ignoreCase = true) ||
-                parsed.host.endsWith(".superflixapi.pro", ignoreCase = true)
+            val isSuperflix = ehHostSuperflix(parsed.host.lowercase())
             if (isSuperflix &&
                 parsed.query?.contains("cfv=", ignoreCase = true) != true &&
                 !parsed.path.startsWith("/player/", ignoreCase = true)
