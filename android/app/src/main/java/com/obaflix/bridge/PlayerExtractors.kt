@@ -351,14 +351,16 @@ object PlayerExtractors {
     /**
      * Espelhos do Hide, na ordem de preferência.
      *
-     * playhide.shop continua primeiro por ser o host canônico, mas o HTTPS dele
-     * passou a responder alerta TLS "internal_error" em qualquer versão do
-     * protocolo — com e sem SNI —, enquanto a porta 80 segue no ar. Como o app
-     * exige HTTPS (ver StreamExtractor), o provedor ficava inteiramente
-     * indisponível. Os espelhos abaixo negociam TLS 1.2 e 1.3 normalmente, então
-     * atendem tanto Android antigo quanto atual.
+     * playhide.shop era o host canônico e hoje está morto: o HTTPS não completa
+     * em versão nenhuma do protocolo, com ou sem SNI. Tentá-lo primeiro custava
+     * um timeout inteiro antes de cada reprodução, então foi para o fim da lista
+     * — segue ali caso volte. Os espelhos negociam TLS 1.2 e 1.3 normalmente,
+     * atendendo Android antigo e atual.
+     *
+     * Medido em 24/08/2026: playhide.shop sem resposta; hidehide.shop e
+     * vidhidehub.com respondem 200 tanto em /v/{id} quanto em /embed/{id}.
      */
-    private val HIDE_HOSTS = listOf("playhide.shop", "hidehide.shop", "vidhidehub.com")
+    private val HIDE_HOSTS = listOf("hidehide.shop", "vidhidehub.com", "playhide.shop")
 
     suspend fun extractHide(embedUrl: String, id: String): String {
         val falhas = mutableListOf<String>()

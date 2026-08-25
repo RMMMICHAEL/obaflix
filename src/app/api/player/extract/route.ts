@@ -1034,9 +1034,28 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
     const t = Date.now();
     xlog("hide/start", { id, hostname });
     try {
-      const html = await fetchHtmlDiag("hide", `https://playhide.shop/v/${id}`, "https://megaflix.lat/");
+      // playhide.shop era o host canônico e está morto — não completa o TLS.
+      // Como era o único tentado aqui, o provedor inteiro ficava indisponível.
+      // O host da URL recebida vem primeiro, seguido dos espelhos vivos.
+      const espelhos = ["hidehide.shop", "vidhidehub.com", "playhide.shop"];
+      const ordem = espelhos.includes(hostname)
+        ? [hostname, ...espelhos.filter((h) => h !== hostname)]
+        : espelhos;
+
+      let html: string | null = null;
+      const falhas: string[] = [];
+      for (const host of ordem) {
+        try {
+          html = await fetchHtmlDiag("hide", `https://${host}/v/${id}`, "https://megaflix.lat/");
+          referer = `https://${host}/v/${id}`;
+          if (host !== ordem[0]) xlog("hide/espelho", { host });
+          break;
+        } catch (e: any) {
+          falhas.push(`${host}: ${String(e?.message ?? "").slice(0, 40)}`);
+        }
+      }
+      if (!html) throw new Error(`PlayHide indisponível — ${falhas.join(" | ")}`);
       streamUrl = await extractHide(html, url);
-      referer = `https://playhide.shop/v/${id}`;
     } finally {
       xlog("hide/total", { ms: Date.now() - t, found: !!streamUrl });
     }

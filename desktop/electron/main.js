@@ -30,7 +30,7 @@ const UA =
 const EMBED_HOSTNAMES = [
   "embedplayer2.xyz", "embedplayer1.xyz",
   "xn--kcksk7a2bl5le7b6doc1h3f.com", "llanfairpwllgwyngy.com",
-  "playhide.shop", "streamwish.com", "hlswish.com",
+  "playhide.shop", "hidehide.shop", "vidhidehub.com", "streamwish.com", "hlswish.com",
   "playerwish.com", "jvrkt.online", "beamy.online",
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
   "v1.watchplay.shop",

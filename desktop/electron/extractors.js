@@ -195,8 +195,39 @@ function parseDecodedHide(decoded, embedUrl) {
 
 // ── Extratores por provider ──────────────────────────────────────────────────
 
+/**
+ * Espelhos do Hide, em ordem de preferência.
+ *
+ * playhide.shop era o host canônico e está morto: não completa o TLS, então
+ * qualquer requisição morre sem resposta. Como era o único host tentado aqui, o
+ * provedor inteiro ficava indisponível. Fica por último, para o caso de voltar.
+ */
+const HIDE_HOSTS = ["hidehide.shop", "vidhidehub.com", "playhide.shop"];
+
 async function extractHide(embedUrl, id) {
-  const html = await fetchHtml(`https://playhide.shop/v/${id}`, REFERER_DEFAULT);
+  // O host da URL recebida vem primeiro: é o que o provedor está anunciando
+  // agora, e ignorá-lo foi o que deixou o extrator preso no domínio antigo.
+  let hosts = HIDE_HOSTS;
+  try {
+    const recebido = new URL(embedUrl).hostname.toLowerCase();
+    if (HIDE_HOSTS.includes(recebido)) {
+      hosts = [recebido, ...HIDE_HOSTS.filter((h) => h !== recebido)];
+    }
+  } catch { /* URL malformada: segue a ordem padrão */ }
+
+  let html = null;
+  const falhas = [];
+  for (const host of hosts) {
+    try {
+      html = await fetchHtml(`https://${host}/v/${id}`, REFERER_DEFAULT);
+      if (host !== hosts[0]) elog("warn", "extract.provider", "espelho do Hide usado", { host });
+      break;
+    } catch (erro) {
+      falhas.push(`${host}: ${String(erro?.message || erro).slice(0, 40)}`);
+    }
+  }
+  if (!html) throw new Error(`PlayHide indisponível — ${falhas.join(" | ")}`);
+
   const evalScript = extractEvalScript(html);
   if (!evalScript) throw new Error("packer não encontrado (PlayHide)");
 
