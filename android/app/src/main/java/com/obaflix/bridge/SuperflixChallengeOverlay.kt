@@ -2,7 +2,6 @@ package com.obaflix.bridge
 
 import android.annotation.SuppressLint
 import android.graphics.Color
-import android.util.Log
 import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -14,7 +13,6 @@ import android.widget.TextView
 import com.obaflix.player.PlayerWebViewClient
 import com.obaflix.removerRequestedWithHeader
 
-private const val OVERLAY_TAG = "Obaflix/Superflix"
 
 /**
  * Mostra a pagina do SuperFlix ao usuario quando o provedor exige o Turnstile.
@@ -63,7 +61,7 @@ object SuperflixChallengeOverlay {
         host.post {
             if (estaAberto) return@post
             val container = host.parent as? ViewGroup ?: run {
-                Log.w(OVERLAY_TAG, "[overlay] sem container para anexar; desafio nao pode ser exibido")
+                ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_sem_container")
                 return@post
             }
 
@@ -105,7 +103,7 @@ object SuperflixChallengeOverlay {
             wv.webViewClient = PlayerWebViewClient(
                 onPageReady = null,
                 onRenderGone = { _, _ ->
-                    Log.w(OVERLAY_TAG, "[overlay] renderer morreu durante o desafio; fechando")
+                    ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")
                     fechar()
                 },
             )
@@ -134,7 +132,7 @@ object SuperflixChallengeOverlay {
                     Gravity.TOP or Gravity.END,
                 ).apply { setMargins(0, 24, 24, 0) }
                 setOnClickListener {
-                    Log.d(OVERLAY_TAG, "[overlay] fechado pelo usuario")
+                    ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "usuario")
                     fechar()
                 }
             }
@@ -148,7 +146,7 @@ object SuperflixChallengeOverlay {
             webView = wv
             estaAberto = true
 
-            Log.d(OVERLAY_TAG, "[overlay] aberto para o desafio interativo")
+            ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_aberto")
             wv.loadUrl(embedUrl)
         }
     }
@@ -156,7 +154,7 @@ object SuperflixChallengeOverlay {
     /** Persiste cf_clearance no disco para o desafio nao se repetir a cada episodio. */
     fun persistirCookies() {
         runCatching { CookieManager.getInstance().flush() }
-            .onSuccess { Log.d(OVERLAY_TAG, "[overlay] cookies persistidos (flush)") }
+            .onSuccess { ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_cookies_persistidos") }
     }
 
     fun fechar() {
@@ -177,7 +175,7 @@ object SuperflixChallengeOverlay {
             raiz = null
             webView = null
             estaAberto = false
-            Log.d(OVERLAY_TAG, "[overlay] encerrado")
+            ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_encerrado")
         }
     }
 }

@@ -3,7 +3,6 @@ package com.obaflix.bridge
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.Uri
-import android.util.Log
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -20,7 +19,6 @@ import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.URL
 
-private const val REDECANAIS_TAG = "Obaflix/RedeCanais"
 private const val REDECANAIS_HOST = "redecanais.capital"
 private const val REDECANAIS_TIMEOUT_MS = 60_000L
 
@@ -136,7 +134,7 @@ object RedeCanaisExtractor {
                             if (request.method.equals("GET", ignoreCase = true)) {
                                 signedMediaUrl(request.url.toString())?.let { stream ->
                                     if (captured.complete(stream)) {
-                                        Log.d(REDECANAIS_TAG, "URL MP4 assinada observada")
+                                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "rc_mp4_assinado")
                                     }
                                 }
                             }
@@ -145,7 +143,7 @@ object RedeCanaisExtractor {
 
                         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
-                            Log.d(REDECANAIS_TAG, "página=${runCatching { URL(url).path }.getOrDefault("/")}")
+                            ObaLog.evento(ObaLog.Fase.PROVEDOR, "rc_pagina", "caminho" to runCatching { URL(url).path }.getOrDefault("/"))
                         }
 
                         override fun onPageFinished(view: WebView, url: String) {

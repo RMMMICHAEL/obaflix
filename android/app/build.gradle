@@ -14,6 +14,12 @@ android {
         versionCode 9
         versionName "1.0.9"
         buildConfigField "String", "OBAFLIX_URL", '"https://obaflix.vercel.app"'
+
+        // Diagnostico: liga a inspecao via chrome://inspect tambem no APK de
+        // release. O logcat estruturado ([oba]) sai sempre; isto e so para quando
+        // ver o DOM/rede do player e necessario num aparelho onde o bug aparece.
+        //   ./gradlew assembleRelease -PdiagLogs
+        buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
     }
 
     buildFeatures {

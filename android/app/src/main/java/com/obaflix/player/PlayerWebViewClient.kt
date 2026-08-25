@@ -1,6 +1,5 @@
 package com.obaflix.player
 
-import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -10,6 +9,7 @@ import android.webkit.WebViewClient
 import android.net.Uri
 import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
+import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
 import kotlinx.coroutines.runBlocking
@@ -17,8 +17,6 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.net.URL
-
-private const val TAG = "Obaflix"
 
 /**
  * Substitui os handlers Electron em um único WebViewClient:
@@ -42,6 +40,12 @@ private const val TAG = "Obaflix"
  * cross-origin que o hls.js faça direto ao CDN.
  */
 class PlayerWebViewClient(
+    /**
+     * Token que a sonda de diagnostico usa para falar com a bridge. Vazio quando
+     * este cliente serve uma pagina de terceiro (o overlay do desafio): la o
+     * documento nunca e nosso, entao a sonda nao chega a ser injetada.
+     */
+    private val bridgeCapability: String = "",
     private val onPageReady: ((WebView) -> Unit)? = null,
     private val onRenderGone: ((WebView, Boolean) -> Unit)? = null,
 ) : WebViewClient() {
@@ -61,7 +65,12 @@ class PlayerWebViewClient(
     override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
         val crashed = detail?.didCrash() ?: false
         val motivo = if (crashed) "crash do renderer" else "renderer encerrado pelo sistema (memoria)"
-        Log.e(TAG, "[render] processo da WebView morreu: $motivo — app mantido vivo")
+        ObaLog.falha(
+            ObaLog.Fase.RENDER, "processo_morreu", null,
+            "crash" to crashed,
+            "motivo" to motivo,
+            "prioridade" to (detail?.rendererPriorityAtExit() ?: -1),
+        )
         if (view == null) return true
         onRenderGone?.invoke(view, crashed)
         return true
@@ -114,7 +123,7 @@ class PlayerWebViewClient(
         val path = uri.path.orEmpty().lowercase()
         if (!Regex("""\.(?:vtt|srt)$""").containsMatchIn(path)) return
         ObaflixApp.playerState.observeSuperflixSubtitle(uri.toString(), header(request, "Referer"))
-        Log.d(TAG, "[provider/subtitle] host=$host path=$path")
+        ObaLog.evento(ObaLog.Fase.PROVEDOR, "legenda_observada", "url" to ObaLog.url(uri.toString()))
     }
 
     /**
@@ -145,21 +154,25 @@ class PlayerWebViewClient(
         ) {
             // Sem query para não registrar tokens; host+path identifica a rota que
             // terminou em 404 caso o provedor mude novamente.
-            Log.d(
-                TAG,
-                "[provider/navigation] main=${request.isForMainFrame} url=${uri.scheme}://$providerHost${uri.path}",
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "navegacao",
+                "principal" to request.isForMainFrame,
+                "url" to ObaLog.url(uri.toString()),
             )
         }
         if (!request.isForMainFrame) {
             if (isProviderEscapeNavigation(uri)) {
-                Log.d(TAG, "[provider/navigation] bloqueada: $providerHost${uri.path}")
+                ObaLog.evento(ObaLog.Fase.PROVEDOR, "navegacao_bloqueada", "host" to providerHost)
                 return true
             }
             return false
         }
         if (uri.scheme == "https" && uri.host == allowedAppHost) return false
         if (uri.scheme == "http" || uri.scheme == "https") {
-            Log.w(TAG, "[navigation] bloqueada navegação externa no frame principal: ${uri.host}")
+            ObaLog.alerta(
+                ObaLog.Fase.PROVEDOR, "navegacao_externa_bloqueada",
+                "host" to uri.host,
+            )
         }
         return true
     }
@@ -183,7 +196,11 @@ class PlayerWebViewClient(
         superflixMediaKind(request)?.let { kind ->
             val referer = header(request, "Referer")
             ObaflixApp.playerState.observeSuperflixMedia(request.url.toString(), referer, kind)
-            Log.d(TAG, "[provider/media] kind=$kind host=$host path=$path")
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "midia_observada",
+                "tipo" to kind,
+                "url" to ObaLog.url(request.url.toString()),
+            )
         }
         observeSuperflixSubtitle(request)
 
@@ -191,7 +208,7 @@ class PlayerWebViewClient(
             (request.url.getQueryParameter("cfv") != null || path.startsWith("/player/redirect"))
         if (isSuperflixSignedRoute || host.contains("vizer") || host.contains("warezcdn")) {
             ObaflixApp.playerState.observeSuperflixUrl(request.url.toString())
-            Log.d(TAG, "[provider/observed] host=$host path=$path")
+            ObaLog.evento(ObaLog.Fase.PROVEDOR, "rota_observada", "url" to ObaLog.url(request.url.toString()))
         }
 
         // 1. Extração nativa (rola3/rola4/hide/lulu/rola2/wish/bolt/big) → StreamExtractor
@@ -199,11 +216,20 @@ class PlayerWebViewClient(
         if (path == "/api/player/extract") {
             val embedUrl = request.url.getQueryParameter("url") ?: return null
             if (PlayerExtractors.detectProvider(embedUrl) != null) {
-                Log.d(TAG, "[intercept/extract] → nativo")
+                ObaLog.evento(
+                    ObaLog.Fase.EXTRACAO, "intercept_nativo",
+                    "provedor" to PlayerExtractors.detectProvider(embedUrl),
+                )
+                val comecoExtracao = System.currentTimeMillis()
                 return try {
                     val result = runBlocking { StreamExtractor.extract(embedUrl) }
                     val tipo = if (result.stream.contains(".mp4")) "mp4" else "hls"
-                    Log.d(TAG, "[intercept/extract] sucesso: tipo=$tipo")
+                    ObaLog.evento(
+                        ObaLog.Fase.EXTRACAO, "intercept_ok",
+                        "tipo" to tipo,
+                        "ms" to (System.currentTimeMillis() - comecoExtracao),
+                        "stream" to ObaLog.url(result.stream),
+                    )
                     val json = JSONObject().apply {
                         put("stream", result.stream)
                         put("tipo", tipo)
@@ -218,7 +244,10 @@ class PlayerWebViewClient(
                         ByteArrayInputStream(json.toByteArray()),
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "[intercept/extract] falhou: ${e.message}")
+                    ObaLog.falha(
+                        ObaLog.Fase.EXTRACAO, "intercept_falhou", e,
+                        "ms" to (System.currentTimeMillis() - comecoExtracao),
+                    )
                     val json = JSONObject().put("error", e.message ?: "Erro").toString()
                     WebResourceResponse(
                         "application/json", "UTF-8", 422, "Unprocessable Entity",
@@ -236,7 +265,10 @@ class PlayerWebViewClient(
             val hasSig = request.url.getQueryParameter("sig") != null
             val isNative = request.url.getQueryParameter("native") == "1"
             if (!hasSig && isNative) {
-                Log.d(TAG, "[intercept/proxy] manifest → CDN direto")
+                ObaLog.evento(
+                    ObaLog.Fase.CDN, "proxy_desviado",
+                    "url" to ObaLog.url(cdnUrl),
+                )
                 return fetchCdnDirect(cdnUrl, request)
             }
             // sig= ou sem native=1: deixa seguir para o proxy Vercel normal (não é rola3/4 nativo)
@@ -252,7 +284,12 @@ class PlayerWebViewClient(
         if (request.method.equals("GET", ignoreCase = true) &&
             ObaflixApp.playerState.isAllowedCdnHost(host)
         ) {
-            Log.d(TAG, "[intercept/cdn] request direto ao CDN")
+            ObaLog.evento(
+                ObaLog.Fase.CDN, "pedido",
+                "arquivo" to ObaLog.arquivo(request.url.toString()),
+                "host" to host,
+                "range" to (header(request, "Range") != null),
+            )
             return fetchCdnDirect(request.url.toString(), request)
         }
 
@@ -269,7 +306,7 @@ class PlayerWebViewClient(
         if (request.isForMainFrame && request.method.equals("GET", ignoreCase = true) &&
             host == allowedAppHost
         ) {
-            Log.d(TAG, "[intercept/csp] documento principal, removendo CSP: $host$path")
+            ObaLog.evento(ObaLog.Fase.DOCUMENTO, "csp_removido", "caminho" to path)
             return fetchDocumentWithoutCsp(request)
         }
 
@@ -279,6 +316,7 @@ class PlayerWebViewClient(
     private fun fetchCdnDirect(cdnUrl: String, original: WebResourceRequest): WebResourceResponse? {
         return try {
             val state = ObaflixApp.playerState
+            val cdnHost = try { URL(cdnUrl).host } catch (_: Exception) { "" }
             val reqBuilder = Request.Builder().url(cdnUrl).get()
                 .addHeader("User-Agent", ObaflixApp.webViewUserAgent ?: UA)
                 // Headers necessários para CDNs com bot-detection — sem eles, alguns CDNs
@@ -293,8 +331,6 @@ class PlayerWebViewClient(
                 ?.takeIf { it.isNotBlank() }
                 ?.let { reqBuilder.addHeader("Cookie", it) }
 
-            // Injeta Referer e Origin do embed se o CDN hostname corresponder
-            val cdnHost = try { URL(cdnUrl).host } catch (_: Exception) { "" }
             val isCdnHost = state.isAllowedCdnHost(cdnHost)
             if (isCdnHost && state.embedReferer != null) {
                 reqBuilder.addHeader("Referer", state.embedReferer!!)
@@ -303,15 +339,34 @@ class PlayerWebViewClient(
                     reqBuilder.addHeader("Origin", embedOrigin)
                 } catch (_: Exception) { }
             } else {
-                Log.w(TAG, "[intercept/cdn] sem Referer/Origin injetado (isCdnHost=$isCdnHost, embedReferer=${state.embedReferer != null}) para $cdnHost")
+                ObaLog.alerta(
+                    ObaLog.Fase.CDN, "sem_referer",
+                    "host" to cdnHost,
+                    "hostLiberado" to isCdnHost,
+                    "temReferer" to (state.embedReferer != null),
+                )
             }
 
-            original.requestHeaders["Range"]?.let { reqBuilder.addHeader("Range", it) }
+            // header() e case-insensitive de proposito: a WebView normaliza os nomes
+            // por versao, e a leitura direta do mapa ("Range") ja perdeu o header em
+            // aparelhos que entregam "range". Sem Range repassado, o CDN devolve o
+            // arquivo inteiro a partir do byte zero e a busca na barra de progresso
+            // volta para o comeco do episodio.
+            header(original, "Range")?.let { reqBuilder.addHeader("Range", it) }
 
-            val response = ObaflixApp.httpClient.newCall(reqBuilder.build()).execute()
+            val comeco = System.currentTimeMillis()
+            // mediaClient (sem read timeout): o WebView consome este corpo devagar,
+            // no ritmo do buffer do player. Ver ObaflixApp.mediaClient.
+            val response = ObaflixApp.mediaClient.newCall(reqBuilder.build()).execute()
 
             if (!response.isSuccessful) {
-                Log.w(TAG, "[intercept/cdn] status não-2xx: ${response.code} ${response.message}")
+                ObaLog.alerta(
+                    ObaLog.Fase.CDN, "status_nao_2xx",
+                    "status" to response.code,
+                    "arquivo" to ObaLog.arquivo(cdnUrl),
+                    "host" to cdnHost,
+                    "ms" to (System.currentTimeMillis() - comeco),
+                )
             }
 
             val upstreamContentType = response.header("Content-Type", "application/octet-stream")!!
@@ -333,7 +388,15 @@ class PlayerWebViewClient(
             } else {
                 contentType
             }
-            Log.d(TAG, "[intercept/cdn] resposta ${response.code} de $cdnHost ($tipoNoLog)")
+            ObaLog.evento(
+                ObaLog.Fase.CDN, "resposta",
+                "status" to response.code,
+                "host" to cdnHost,
+                "arquivo" to ObaLog.arquivo(cdnUrl),
+                "ct" to tipoNoLog,
+                "bytes" to (response.header("Content-Length") ?: "stream"),
+                "ms" to (System.currentTimeMillis() - comeco),
+            )
 
             val headers = mutableMapOf(
                 "Cache-Control" to "public, max-age=3600",
@@ -366,7 +429,12 @@ class PlayerWebViewClient(
                 isExtensionlessEmbedPlayerPlaylist
 
             if (isM3u8) {
-                val bodyText = response.body?.string() ?: return null
+                val bodyText = response.body?.string() ?: run {
+                    // Sem close() a conexao ficaria presa no pool ate o GC.
+                    response.close()
+                    ObaLog.alerta(ObaLog.Fase.MANIFESTO, "corpo_vazio", "host" to cdnHost)
+                    return null
+                }
                 val normalized = bodyText.replace("\r\n", "\n").replace("\r", "\n")
                 val cdnBase = cdnUrl.substring(0, cdnUrl.lastIndexOf("/") + 1)
                 val cdnOrigin = try {
@@ -425,21 +493,40 @@ class PlayerWebViewClient(
                         else -> resolvePlaylistUri(trimmed)
                     }
                 }
-                Log.d(TAG, "[intercept/cdn] m3u8 reescrito (${normalized.lines().size} linhas): base=$cdnBase")
+                ObaLog.evento(
+                    ObaLog.Fase.MANIFESTO, "reescrito",
+                    "linhas" to normalized.lines().size,
+                    "master" to normalized.contains("#EXT-X-STREAM-INF"),
+                    "segmentos" to Regex("#EXTINF").findAll(normalized).count(),
+                    "host" to cdnHost,
+                )
                 headers.remove("Content-Length") // tamanho mudou após reescrita
                 WebResourceResponse(
                     "application/vnd.apple.mpegurl", "UTF-8", response.code, reason,
                     headers, rewritten.toByteArray(Charsets.UTF_8).inputStream(),
                 )
             } else {
-                val body = response.body?.byteStream() ?: return null
+                val body = response.body?.byteStream() ?: run {
+                    response.close()
+                    ObaLog.alerta(ObaLog.Fase.CDN, "corpo_vazio", "host" to cdnHost)
+                    return null
+                }
                 WebResourceResponse(
                     contentType.substringBefore(";").trim(), "UTF-8", response.code, reason,
                     headers, body,
                 )
             }
         } catch (e: Exception) {
-            Log.e(TAG, "[intercept/cdn] erro ao buscar mídia: ${e.javaClass.simpleName}")
+            // Devolver null faz a WebView refazer a requisicao sozinha — e ela nao
+            // tem como mandar Referer/Origin, entao o CDN responde 403. Registrar a
+            // fase real da falha aqui e a unica forma de distinguir esse 403
+            // derivado de um 403 legitimo do provedor.
+            ObaLog.falha(
+                ObaLog.Fase.CDN, "erro_rede", e,
+                "host" to ObaLog.host(cdnUrl),
+                "arquivo" to ObaLog.arquivo(cdnUrl),
+                "diagnostico" to com.obaflix.bridge.NetworkDiagnostics.describe(e, cdnUrl),
+            )
             null
         }
     }
@@ -480,11 +567,16 @@ class PlayerWebViewClient(
             if (!cookies.isNullOrEmpty()) {
                 reqBuilder.removeHeader("Cookie").addHeader("Cookie", cookies)
             } else {
-                Log.d(TAG, "[intercept/csp] sem cookies para $urlStr (usuário ainda não autenticado)")
+                ObaLog.evento(ObaLog.Fase.DOCUMENTO, "sem_cookies", "url" to ObaLog.url(urlStr))
             }
 
             val response = ObaflixApp.httpClient.newCall(reqBuilder.build()).execute()
-            Log.d(TAG, "[intercept/csp] resposta ${response.code}, cookies=${!cookies.isNullOrEmpty()}")
+            ObaLog.evento(
+                ObaLog.Fase.DOCUMENTO, "resposta",
+                "status" to response.code,
+                "url" to ObaLog.url(urlStr),
+                "autenticado" to !cookies.isNullOrEmpty(),
+            )
 
             // Sincroniza Set-Cookie de volta no CookieManager — a resposta veio via OkHttp,
             // fora do fluxo nativo do WebView, então nada faria isso automaticamente.
@@ -495,7 +587,7 @@ class PlayerWebViewClient(
                 setCookies.forEach { cookieManager.setCookie(urlStr, it) }
                 if (finalUrl != urlStr) setCookies.forEach { cookieManager.setCookie(finalUrl, it) }
                 cookieManager.flush()
-                Log.d(TAG, "[intercept/csp] ${setCookies.size} cookie(s) sincronizado(s)")
+                ObaLog.evento(ObaLog.Fase.DOCUMENTO, "cookies_sincronizados", "qtd" to setCookies.size)
             }
 
             val contentType = response.header("Content-Type", "text/html")!!
@@ -504,47 +596,179 @@ class PlayerWebViewClient(
             // Lemos como String para injetar o script de diagnóstico de erros JS.
             val bodyStr = response.body?.string() ?: return null
 
-            // Script de diagnóstico: captura erros JS e envia via Toast/logcat.
-            // SEM overlay — o overlay bloqueava o player quando window.onerror era acionado
-            // com um Event object (não uma string) por falhas de carregamento de recursos no
-            // Android WebView, resultando em 'ERR:[object Object]' sobre o vídeo.
-            val debugScript = """<script>(function(){""" +
-                """var _o=console.error;""" +
-                // sa(): serializa qualquer valor, com suporte a refs circulares via replacer.
-                // Evita "[object Object]" mesmo para objetos do hls.js/JW Player com ciclos.
-                """function sa(x){""" +
-                """  if(x==null)return String(x);""" +
-                """  if(typeof x==='string'||typeof x==='number'||typeof x==='boolean')return String(x);""" +
-                """  if(x&&x.stack)return x.stack;""" +
-                """  try{""" +
-                """    var seen=[];""" +
-                """    return JSON.stringify(x,function(k,v){""" +
-                """      if(typeof v==='object'&&v!==null){""" +
-                """        if(seen.indexOf(v)>=0)return'[circ]';""" +
-                """        seen.push(v);""" +
-                """      }""" +
-                """      return v;""" +
-                """    });""" +
-                """  }catch(_){return'['+typeof x+']';}""" +
-                """}""" +
-                """function toast(msg){""" +
-                """  try{console.debug('[native-debug] '+msg.slice(0,300));}catch(_){}""" +
-                """}""" +
-                // console.error: Toast + logcat original. Sem overlay, sem recursão.
-                """var _b=false;""" +
-                """console.error=function(){""" +
-                """  _o.apply(console,arguments);""" +
-                """  if(_b)return;_b=true;""" +
-                """  try{var m=Array.from(arguments).map(sa).join(' | ');""" +
-                """  if(m&&m.length>2)toast('[JS:err] '+m);}catch(_){}finally{_b=false;}""" +
-                """};""" +
-                // window.onerror: ignora resource errors (m não é string = ErrorEvent do WebView).
-                // Só envia Toast para erros JS reais com source + Error object.
-                """window.onerror=function(m,s,l,c,e){""" +
-                """  if(typeof m!=='string')return false;""" +
-                """  try{toast('[ERR] '+m+(s?' @'+s+':'+l:'')+(e&&e.stack?'\n'+e.stack.slice(0,150):''));}catch(_){}""" +
-                """  return false;};""" +
-                """})();</script>"""
+            // Sonda de diagnostico injetada no <head> do documento principal.
+            //
+            // O que ela resolve: as falhas de reproducao que importam acontecem no
+            // JS (hls.js desiste, o <video> emite MediaError, uma Promise rejeita
+            // sem handler) e nada disso chega ao logcat por conta propria. O
+            // onConsoleMessage do WebChromeClient so ve o que alguem imprimiu.
+            //
+            // Sem overlay de propósito: a versao anterior desenhava o erro por cima
+            // do player, e window.onerror disparado por falha de carregamento de
+            // recurso (que no WebView entrega um Event, nao uma string) cobria o
+            // video com "ERR:[object Object]".
+            //
+            // Tudo sai por _obaflixBridge.logDiag, que exige a mesma capability das
+            // demais chamadas — uma pagina de terceiro dentro de um iframe nao
+            // consegue injetar linha nenhuma no log.
+            val debugScript = """<script>(function(){
+var CAP='$bridgeCapability';
+function envia(fase,ev,dados){
+  try{
+    var b=window._obaflixBridge;
+    if(b&&b.logDiag)b.logDiag(CAP,fase,ev,JSON.stringify(dados||{}).slice(0,900));
+  }catch(_){}
+}
+function sa(x){
+  if(x==null)return String(x);
+  var t=typeof x;
+  if(t==='string'||t==='number'||t==='boolean')return String(x);
+  if(x&&x.stack)return String(x.stack).slice(0,400);
+  try{
+    var visto=[];
+    return JSON.stringify(x,function(k,v){
+      if(typeof v==='object'&&v!==null){
+        if(visto.indexOf(v)>=0)return'[circ]';
+        visto.push(v);
+      }
+      return v;
+    });
+  }catch(_){return'['+t+']';}
+}
+// Só o host e o nome do arquivo: a query carrega token e assinatura do CDN.
+function limpa(u){
+  try{var p=new URL(u,location.href);
+    var f=p.pathname.split('/').pop()||'/';
+    return p.hostname+'/'+f;}catch(_){return'-';}
+}
+
+var reentrante=false;
+var _erroOriginal=console.error;
+console.error=function(){
+  _erroOriginal.apply(console,arguments);
+  if(reentrante)return;
+  reentrante=true;
+  try{
+    var m=Array.prototype.slice.call(arguments).map(sa).join(' | ');
+    if(m&&m.length>2)envia('player','console_error',{msg:m.slice(0,500)});
+  }catch(_){}finally{reentrante=false;}
+};
+
+window.addEventListener('error',function(e){
+  // Falha de recurso (img/script/link): o alvo é o elemento, não window.
+  var alvo=e&&e.target;
+  if(alvo&&alvo!==window&&alvo.tagName){
+    envia('player','recurso_falhou',{
+      tag:alvo.tagName,
+      url:limpa(alvo.src||alvo.href||'')
+    });
+    return;
+  }
+  if(typeof e.message!=='string')return;
+  envia('player','erro_js',{
+    msg:e.message.slice(0,300),
+    origem:limpa(e.filename||''),
+    linha:e.lineno,
+    pilha:e.error&&e.error.stack?String(e.error.stack).slice(0,300):''
+  });
+},true);
+
+window.addEventListener('unhandledrejection',function(e){
+  envia('player','promise_rejeitada',{motivo:sa(e&&e.reason).slice(0,400)});
+});
+
+// MediaError.code: 1 abortado, 2 rede, 3 decodificacao, 4 formato/fonte
+// nao suportada. O 3 e o que aparece quando o CDN devolve fMP4 com o
+// Content-Type errado; o 4, quando o manifesto veio vazio ou como HTML.
+var NOME_ERRO_MIDIA={1:'ABORTADO',2:'REDE',3:'DECODIFICACAO',4:'FONTE_NAO_SUPORTADA'};
+
+function estado(v){
+  return {
+    rede:v.networkState,
+    pronto:v.readyState,
+    tempo:Math.round((v.currentTime||0)*10)/10,
+    duracao:isFinite(v.duration)?Math.round(v.duration):0,
+    buffer:v.buffered&&v.buffered.length?Math.round(v.buffered.end(v.buffered.length-1)):0,
+    fonte:limpa(v.currentSrc||'')
+  };
+}
+
+var observados=new WeakSet();
+function observar(v){
+  if(!v||observados.has(v))return;
+  observados.add(v);
+  envia('player','video_anexado',{fonte:limpa(v.currentSrc||'')});
+
+  v.addEventListener('error',function(){
+    var e=v.error||{};
+    var d=estado(v);
+    d.codigo=e.code;
+    d.tipo=NOME_ERRO_MIDIA[e.code]||'DESCONHECIDO';
+    d.detalhe=(e.message||'').slice(0,200);
+    envia('player','video_erro',d);
+  });
+  v.addEventListener('loadedmetadata',function(){envia('player','metadados',estado(v));});
+  v.addEventListener('playing',function(){envia('player','reproduzindo',estado(v));});
+  v.addEventListener('ended',function(){envia('player','fim',estado(v));});
+
+  // Travamento: 'waiting' sozinho e normal (buffer enchendo). So vira sinal
+  // quando o player fica esperando e o tempo nao anda por varios segundos.
+  var esperandoDesde=0,ultimoTempo=-1,avisado=false;
+  v.addEventListener('waiting',function(){
+    if(!esperandoDesde){esperandoDesde=Date.now();ultimoTempo=v.currentTime;}
+  });
+  v.addEventListener('timeupdate',function(){
+    if(v.currentTime!==ultimoTempo){esperandoDesde=0;avisado=false;ultimoTempo=v.currentTime;}
+  });
+  setInterval(function(){
+    if(!esperandoDesde||avisado)return;
+    if(Date.now()-esperandoDesde<8000)return;
+    avisado=true;
+    var d=estado(v);
+    d.travadoMs=Date.now()-esperandoDesde;
+    envia('player','travado',d);
+  },2000);
+}
+
+function varrer(){
+  var vs=document.getElementsByTagName('video');
+  for(var i=0;i<vs.length;i++)observar(vs[i]);
+}
+varrer();
+new MutationObserver(varrer).observe(document.documentElement,{childList:true,subtree:true});
+
+// hls.js so existe depois que o bundle do player carrega, e a instancia nao e
+// global. O gancho vai no prototipo: cobre qualquer instancia criada depois.
+var tentativas=0;
+var procura=setInterval(function(){
+  if(++tentativas>60){clearInterval(procura);return;}
+  var H=window.Hls;
+  if(!H||!H.prototype||H.prototype.__obaGanchoInstalado)return;
+  clearInterval(procura);
+  H.prototype.__obaGanchoInstalado=true;
+  var attachOriginal=H.prototype.attachMedia;
+  H.prototype.attachMedia=function(midia){
+    try{
+      var hls=this;
+      hls.on(H.Events.ERROR,function(_,dados){
+        envia('player','hls_erro',{
+          fatal:!!dados.fatal,
+          tipo:dados.type,
+          detalhe:dados.details,
+          status:dados.response&&dados.response.code,
+          url:limpa(dados.url||dados.frag&&dados.frag.url||'')
+        });
+      });
+      hls.on(H.Events.MANIFEST_PARSED,function(_,dados){
+        envia('player','hls_manifesto',{niveis:(dados.levels||[]).length});
+      });
+    }catch(_){}
+    return attachOriginal.apply(this,arguments);
+  };
+},500);
+
+envia('documento','sonda_ativa',{url:limpa(location.href)});
+})();</script>"""
 
             // Kotlin Regex.replaceFirst só aceita String, não lambda — usa replace com flag.
             var headReplaced = false
@@ -573,7 +797,7 @@ class PlayerWebViewClient(
                 headers, body,
             )
         } catch (e: Exception) {
-            Log.e(TAG, "[intercept/csp] erro ao buscar documento sem CSP: ${e.message}")
+            ObaLog.falha(ObaLog.Fase.DOCUMENTO, "erro_rede", e, "url" to ObaLog.url(urlStr))
             null
         }
     }

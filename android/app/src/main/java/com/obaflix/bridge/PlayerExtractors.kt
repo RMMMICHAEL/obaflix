@@ -1,6 +1,5 @@
 package com.obaflix.bridge
 
-import android.util.Log
 import com.obaflix.BuildConfig
 import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +24,6 @@ private const val UA_NATIVE =
     "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
 private const val MOON_URL = "https://app.megafrixapi.com/moon.php"
 private const val REFERER_DEFAULT = "https://megaflix.lat/"
-private const val TAG = "Obaflix"
 
 object PlayerExtractors {
 
@@ -43,9 +41,22 @@ object PlayerExtractors {
                 .addHeader("Sec-Fetch-Mode", "navigate")
                 .addHeader("Sec-Fetch-Site", "cross-site")
                 .build()
+            val comeco = System.currentTimeMillis()
             val response = ObaflixApp.httpClient.newCall(request).execute()
-            if (!response.isSuccessful) throw Exception("HTTP ${response.code} em $url")
-            response.body?.string() ?: throw Exception("resposta vazia de $url")
+            val ms = System.currentTimeMillis() - comeco
+            if (!response.isSuccessful) {
+                ObaLog.alerta(
+                    ObaLog.Fase.PROVEDOR, "html_nao_2xx",
+                    "status" to response.code, "url" to ObaLog.url(url), "ms" to ms,
+                )
+                throw Exception("HTTP ${response.code} em $url")
+            }
+            val corpo = response.body?.string() ?: throw Exception("resposta vazia de $url")
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "html_recebido",
+                "url" to ObaLog.url(url), "bytes" to corpo.length, "ms" to ms,
+            )
+            corpo
         }
 
     private suspend fun moon(obfuscatedScript: String): String = withContext(Dispatchers.IO) {
@@ -358,13 +369,13 @@ object PlayerExtractors {
             try {
                 html = fetchHtml(alvo, REFERER_DEFAULT)
                 if (host != HIDE_HOSTS.first()) {
-                    Log.d(TAG, "[hide] espelho $host respondeu apos falha do host anterior")
+                    ObaLog.alerta(ObaLog.Fase.PROVEDOR, "hide_espelho_usado", "host" to host)
                 }
                 break
             } catch (e: Exception) {
                 val motivo = NetworkDiagnostics.describe(e, alvo)
                 falhas.add("$host: $motivo")
-                Log.w(TAG, "[hide] espelho indisponivel — $motivo")
+                ObaLog.alerta(ObaLog.Fase.PROVEDOR, "hide_espelho_fora", "host" to host, "motivo" to motivo)
             }
         }
 

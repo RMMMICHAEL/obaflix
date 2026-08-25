@@ -1,6 +1,5 @@
 package com.obaflix.bridge
 
-import android.util.Log
 import android.webkit.CookieManager
 import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +16,6 @@ import java.net.URL
 import java.net.URLDecoder
 import java.util.Base64
 
-private const val SUPERFLIX_TAG = "Obaflix/Superflix"
 
 /**
  * O provedor migrou de superflixapi.pro para superflixapi.sbs em agosto/2026. O
@@ -232,8 +230,15 @@ object SuperflixExtractor {
         }
     }
 
+    /**
+     * As etapas do SuperFlix entram na mesma trilha das fases nativas.
+     *
+     * Antes saiam sob a tag propria "Obaflix/Superflix", em paralelo ao resto:
+     * para saber se o desafio da Cloudflare tinha atrasado a extracao era preciso
+     * cruzar dois fluxos de log a mao, comparando horarios.
+     */
     private fun log(step: String, detail: String = "") {
-        Log.d(SUPERFLIX_TAG, "[$step] $detail")
+        ObaLog.evento(ObaLog.Fase.PROVEDOR, "sf_$step", "detalhe" to detail)
     }
 
     private fun safeUrl(raw: String): String = try {

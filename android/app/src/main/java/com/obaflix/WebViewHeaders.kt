@@ -1,11 +1,9 @@
 package com.obaflix
 
-import android.util.Log
 import android.webkit.WebSettings
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
-
-private const val TAG = "Obaflix"
+import com.obaflix.bridge.ObaLog
 
 /**
  * Garante que o header `X-Requested-With: com.obaflix` nao seja enviado.
@@ -25,14 +23,14 @@ private const val TAG = "Obaflix"
  */
 fun removerRequestedWithHeader(settings: WebSettings, origem: String) {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
-        Log.w(TAG, "[header] WebView sem REQUESTED_WITH_HEADER_ALLOW_LIST — X-Requested-With pode ser enviado ($origem)")
+        ObaLog.alerta(ObaLog.Fase.SESSAO, "requested_with_nao_suportado", "origem" to origem)
         return
     }
     runCatching {
         WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
     }.onSuccess {
-        Log.d(TAG, "[header] X-Requested-With desativado ($origem)")
+        ObaLog.evento(ObaLog.Fase.SESSAO, "requested_with_desativado", "origem" to origem)
     }.onFailure { e ->
-        Log.w(TAG, "[header] falha ao desativar X-Requested-With ($origem): ${e.javaClass.simpleName}")
+        ObaLog.alerta(ObaLog.Fase.SESSAO, "requested_with_falhou", "origem" to origem, "excecao" to e.javaClass.simpleName)
     }
 }

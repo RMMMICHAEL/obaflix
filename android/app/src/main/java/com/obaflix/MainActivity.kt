@@ -13,6 +13,7 @@ import android.webkit.WebView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.ObaflixBridge
 import com.obaflix.bridge.SuperflixChallengeOverlay
 import com.obaflix.player.PlayerWebViewClient
@@ -29,8 +30,15 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros)
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros).
+        // DIAG_LOGS permite o mesmo num APK de release, para investigar um bug que
+        // só aparece no aparelho de alguém — ver -PdiagLogs em app/build.gradle.
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG || BuildConfig.DIAG_LOGS)
+        ObaLog.evento(
+            ObaLog.Fase.SESSAO, "app_iniciado",
+            "versao" to BuildConfig.VERSION_NAME,
+            "diag" to BuildConfig.DIAG_LOGS,
+        )
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
@@ -80,22 +88,44 @@ class MainActivity : AppCompatActivity() {
         )
 
         webView.webViewClient = PlayerWebViewClient(
+            bridgeCapability = bridgeCapability,
             onPageReady = { view -> injectBridgeShim(view) },
             onRenderGone = { dead, crashed -> rebuildWebViewAposCrash(dead, crashed) },
         )
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
-                val level = when (msg.messageLevel()) {
-                    ConsoleMessage.MessageLevel.ERROR -> Log.ERROR
-                    ConsoleMessage.MessageLevel.WARNING -> Log.WARN
-                    else -> Log.DEBUG
+                val texto = msg.message()
+
+                // As linhas "[diag/etapa]" vem de src/lib/playerDiag.ts e ja dizem
+                // em qual estagio do funil HLS o player parou. Entram na trilha
+                // como evento proprio, ao lado das fases nativas.
+                if (texto.startsWith("[diag/etapa]")) {
+                    val campos = texto.removePrefix("[diag/etapa]").trim().split(" ")
+                        .mapNotNull { parte ->
+                            val chave = parte.substringBefore('=', "")
+                            if (chave.isEmpty()) null else chave to parte.substringAfter('=')
+                        }
+                    ObaLog.alerta(ObaLog.Fase.PLAYER, "diag_etapa", *campos.toTypedArray())
+                    return false
                 }
-                Log.println(level, TAG, "[JS] ${msg.message()} — ${msg.sourceId()}:${msg.lineNumber()}")
+
+                when (msg.messageLevel()) {
+                    ConsoleMessage.MessageLevel.ERROR -> ObaLog.alerta(
+                        ObaLog.Fase.PLAYER, "console_erro",
+                        "msg" to texto.take(240),
+                        "origem" to ObaLog.arquivo(msg.sourceId()),
+                        "linha" to msg.lineNumber(),
+                    )
+                    // WARN e abaixo sao ruido em pagina de terceiro (o provedor
+                    // enche o console). Vao para o logcat cru, fora da trilha.
+                    else -> Log.d(TAG, "[JS] $texto — ${msg.sourceId()}:${msg.lineNumber()}")
+                }
                 return false
             }
 
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                ObaLog.evento(ObaLog.Fase.PLAYER, "tela_cheia", "ativo" to true)
                 fullscreenView = view
                 val container = findViewById<ViewGroup>(R.id.container)
                 container.addView(view)
@@ -104,6 +134,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() {
+                ObaLog.evento(ObaLog.Fase.PLAYER, "tela_cheia", "ativo" to false)
                 fullscreenView?.let {
                     val container = findViewById<ViewGroup>(R.id.container)
                     container.removeView(it)
@@ -156,8 +187,11 @@ class MainActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         configureWebView()
 
-        val causa = if (crashed) "crash" else "encerramento por memoria"
-        Log.w(TAG, "[render] WebView recriada apos $causa; recarregando")
+        ObaLog.alerta(
+            ObaLog.Fase.RENDER, "webview_recriada",
+            "causa" to if (crashed) "crash" else "memoria",
+            "destino" to ObaLog.url(destino),
+        )
         Toast.makeText(
             this,
             "A reproducao falhou e o player foi reiniciado. Tente outro servidor.",
@@ -243,6 +277,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // destroy() com a WebView ainda anexada deixa o Chromium tentando desenhar
+        // numa view ja destruida quando a Activity e recriada (rotacao, troca de
+        // tema). Soltar antes e o que a documentacao pede.
+        (webView.parent as? ViewGroup)?.removeView(webView)
         webView.destroy()
         super.onDestroy()
     }
