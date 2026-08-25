@@ -11,6 +11,20 @@
 // PROVIDER_HOSTS do mediaProviders.ts e na lista do cloudflare-worker.
 const path = require("path");
 const { detectProvider } = require(path.join(__dirname, "..", "desktop/electron/extractors.js"));
+const { _test: superflix } = require(path.join(__dirname, "..", "desktop/electron/superflix-extractor.js"));
+
+/**
+ * Um host pode ser reconhecido de duas formas: por detectProvider, quando tem
+ * extrator próprio, ou como host de cadeia (Vizero/WarezCDN), que só aparece no
+ * meio do caminho até a mídia. Sem checar as duas, host de cadeia vira falso
+ * positivo e o relatório perde utilidade.
+ */
+function ehReconhecido(host) {
+  if (detectProvider("https://" + host + "/x")) return "extrator";
+  const html = '<a href="https://' + host + '/player/redirect?t=x"></a>';
+  const aceitos = superflix.collectChainUrls(html, "https://superflixapi.sbs/serie/1/1/1");
+  return aceitos.length ? "host de cadeia" : null;
+}
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -64,9 +78,9 @@ async function checar(host) {
     if (r.erro) obs = "ERRO " + r.erro;
     else if (r.redirecionaPara) {
       obs = ">>> REDIRECIONA PARA " + r.redirecionaPara;
-      const provDestino = detectProvider("https://" + r.redirecionaPara + "/x");
-      if (!provDestino) obs += "  (destino NAO reconhecido!)";
-      migrados.push({ host, destino: r.redirecionaPara, reconhecido: !!provDestino });
+      const como = ehReconhecido(r.redirecionaPara);
+      if (!como) obs += "  (destino NAO reconhecido!)";
+      migrados.push({ host, destino: r.redirecionaPara, reconhecido: como });
     } else if (r.status >= 400) obs = "sem resposta util";
     console.log(host.slice(0, 34).padEnd(36) + String(r.status).padEnd(7) + prov.padEnd(16) + obs);
   }
@@ -74,6 +88,6 @@ async function checar(host) {
   console.log("\n=== resumo ===");
   if (!migrados.length) console.log("nenhum outro provedor migrou de dominio");
   for (const m of migrados) {
-    console.log(`${m.host} -> ${m.destino}   ${m.reconhecido ? "ja reconhecido" : "PRECISA DE AJUSTE"}`);
+    console.log(`${m.host} -> ${m.destino}   ${m.reconhecido ? "ja reconhecido (" + m.reconhecido + ")" : "PRECISA DE AJUSTE"}`);
   }
 })();
