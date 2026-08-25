@@ -193,6 +193,12 @@ function supportsNativeDesktopExtraction(url: string) {
   if (isTokenizedUrl(url)) return true;
   try {
     const { hostname, pathname } = new URL(url);
+    // Player 1. Sem este caminho, o Electron caía no fluxo web e TODO segmento
+    // passava pelo proxy da Vercel — ~477 MB de Transfer Out por episódio, contra
+    // ~0 no Android, que já extraía nativamente. O extrator nativo também é quem
+    // informa o CDN ao registerPlayerStream, sem o qual o main.js não injeta o
+    // Referer do embed e o CDN do WatchPlay devolve 403.
+    if (isPlayerflixAjaxUrl(url)) return true;
     if (pathname.includes("voltz.php")) return true;
     if (hostname.includes("lulu")) return true;
     if (hostname.includes("hide")) return true;
@@ -1027,7 +1033,7 @@ export function CustomPlayer({
         setStreamUrl(embedUrl);
         setStatus("playing");
         return;
-      } else if (desktop && (supportsNativeDesktopExtraction(embedUrl) || (isAndroid && isPlayerflixAjaxUrl(embedUrl)))) {
+      } else if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
           await desktop.extractStream(embedUrl);

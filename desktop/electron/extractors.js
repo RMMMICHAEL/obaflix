@@ -367,6 +367,109 @@ async function extractBig(embedUrl) {
 // Filme: /movie/{tmdbId} → data-id já vem pronto no HTML → POST getPlayer direto.
 // Série: /tvshow/{tmdbId}/{season}/{episode} → precisa achar o data-contentid do
 // episódio certo, resolver as opções via POST getOptions, e só então POST getPlayer.
+/**
+ * Decodifica uma opção do PlayerFlix: a API entrega a URL do embed em texto puro
+ * ou em base64, conforme a versão. Mesmo comportamento de src/lib/playerflix.ts
+ * (Website) e de decodePlayerflixEmbed (Android).
+ */
+function decodePlayerflixEmbed(valor) {
+  if (typeof valor !== "string") return null;
+  const bruto = valor.trim();
+  if (!bruto) return null;
+  const comoUrl = (texto) => {
+    try {
+      const u = new URL(texto);
+      return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
+    } catch { return null; }
+  };
+  return comoUrl(bruto) || comoUrl(Buffer.from(bruto, "base64").toString("utf8").trim());
+}
+
+function parsePlayerflixEmbeds(body) {
+  const embeds = [];
+  const add = (valor) => {
+    const url = decodePlayerflixEmbed(valor);
+    if (url && !embeds.includes(url)) embeds.push(url);
+  };
+  try {
+    const payload = JSON.parse(body);
+    const opcoes = Array.isArray(payload?.data?.options) ? payload.data.options : [];
+    for (const opcao of opcoes) if (opcao && typeof opcao === "object") add(opcao.embed);
+  } catch { /* resposta antiga em HTML */ }
+  for (const m of body.matchAll(/data-embed=["']([^"']+)["']/gi)) add(m[1]);
+  return embeds;
+}
+
+/**
+ * Player 1 (PlayerFlix) extraído no processo principal, com o IP do usuário.
+ *
+ * Existe para que a mídia vá do CDN direto ao aparelho. Enquanto este caminho
+ * não existia no Electron, o Player 1 caía no fluxo web e TODO segmento passava
+ * pelo proxy da Vercel: ~477 MB de Transfer Out por episódio, contra ~0 no
+ * Android, que já extraía nativamente. Ver CLAUDE.md.
+ *
+ * A ordem das opções importa e é a mesma dos outros dois ambientes: o CDN do
+ * WatchPlay (*.hclod.qzz.io) valida o Referer e devolve 403 se receber o do
+ * EmbedPlayer. Por isso o WatchPlay vem primeiro, e o `referer` devolvido é
+ * sempre a página do embed que de fato produziu a mídia — é ele que o
+ * registerPlayerStream do main.js injeta em cada segmento.
+ */
+async function extractPlayerflix(ajaxUrl) {
+  const entrada = new URL(ajaxUrl);
+  const tipo = entrada.searchParams.get("type") === "movie" ? "movie" : "tv";
+  const id = entrada.searchParams.get("id") ?? "";
+  const season = entrada.searchParams.get("season") ?? "1";
+  const episode = entrada.searchParams.get("episode") ?? "1";
+  if (!id) throw new Error("ID PlayerFlix não encontrado");
+
+  const paginaReferer = tipo === "tv"
+    ? `https://playerflix.ink/serie/${encodeURIComponent(id)}/${encodeURIComponent(season)}/${encodeURIComponent(episode)}`
+    : `https://playerflix.ink/filme/${encodeURIComponent(id)}`;
+
+  const res = await fetch(ajaxUrl, {
+    headers: {
+      "User-Agent": UA,
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "pt-BR,pt;q=0.5",
+      "Referer": paginaReferer,
+      "X-Requested-With": "XMLHttpRequest",
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-origin",
+    },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`PlayerFlix HTTP ${res.status}`);
+
+  const embeds = parsePlayerflixEmbeds(await res.text());
+  const hostDe = (url) => { try { return new URL(url).hostname; } catch { return ""; } };
+  const falhas = [];
+
+  const watchPlayer = embeds.find((e) => hostDe(e) === "v1.watchplay.shop");
+  if (watchPlayer) {
+    try {
+      return { stream: await extractWatchplayer(watchPlayer), referer: watchPlayer };
+    } catch (erro) {
+      falhas.push(`WatchPlayer: ${String(erro?.message || erro).slice(0, 60)}`);
+    }
+  }
+
+  const embedPlayer = embeds.find((e) => hostDe(e).endsWith("embedplayer2.xyz"))
+    ?? embeds.find((e) => hostDe(e).includes("embedplayer"))
+    ?? embeds.find((e) => detectProvider(e) === "embedplayer");
+  if (embedPlayer) {
+    try {
+      return { stream: await extractEmbedPlayer(embedPlayer, ""), referer: embedPlayer };
+    } catch (erro) {
+      falhas.push(`EmbedPlayer: ${String(erro?.message || erro).slice(0, 60)}`);
+    }
+  }
+
+  throw new Error(falhas.length
+    ? `PlayerFlix falhou: ${falhas.join(" | ").slice(0, 300)}`
+    : "servidor compatível não encontrado no PlayerFlix");
+}
+
 async function extractWatchplayer(embedUrl) {
   const parsed = new URL(embedUrl);
   const parts = parsed.pathname.split("/").filter(Boolean);
@@ -428,6 +531,7 @@ function detectProvider(embedUrl) {
   if (new URL(embedUrl).protocol !== "https:") return null;
   const hostIs = (...allowed) => allowed.some((host) => hostname === host || hostname.endsWith("." + host));
 
+  if (hostIs("playerflix.ink") && pathname.includes("/inc/Ajax.php")) return "playerflix";
   if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best")) {
     return "embedplayer"; // rola3 (Embv) / rola4 (Xnn)
   }
@@ -453,6 +557,29 @@ async function extractStream(embedUrl) {
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
   const started = Date.now();
   elog("info", "extract.provider", "iniciando extrator", { provider, host: parsed.hostname });
+
+  // PlayerFlix devolve stream + o embed que o produziu: o Referer precisa ser
+  // esse embed, nunca a URL do Ajax, ou o CDN do WatchPlay responde 403.
+  if (provider === "playerflix") {
+    const pf = await extractPlayerflix(embedUrl);
+    elog("info", "extract.provider", "extrator concluído", {
+      provider,
+      dur: `${Date.now() - started}ms`,
+      cdn: (() => { try { return new URL(pf.stream).hostname; } catch { return "?"; } })(),
+      embed: (() => { try { return new URL(pf.referer).hostname; } catch { return "?"; } })(),
+    });
+    return {
+      stream: pf.stream,
+      tipo: pf.stream.includes(".mp4") ? "mp4" : "hls",
+      provider,
+      referer: pf.referer,
+      subtitles: [],
+      isMaster: false,
+      qualities: [],
+      audioTracks: [],
+      expiresAt: null,
+    };
+  }
 
   let stream;
   let referer = embedUrl;
