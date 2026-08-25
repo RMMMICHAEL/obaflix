@@ -13,7 +13,14 @@
     "db:studio": "prisma studio",
     "import": "tsx scripts/import.ts",
     "sync": "tsx scripts/sync-megaflix.ts",
-    "sync-app": "tsx scripts/sync-app.ts"
+    "sync-app": "tsx scripts/sync-app.ts",
+    "sync-superflix": "tsx scripts/sync-superflix.ts",
+    "sync-superflix:backfill": "tsx scripts/sync-superflix.ts --backfill",
+    "sync:local": "tsx scripts/run-local-syncs.ts",
+    "sync:local:check": "tsx scripts/run-local-syncs.ts --check",
+    "test:cinevs": "tsx scripts/test-cinevs.ts",
+    "test:web": "node --test --import tsx \"src/lib/__tests__/*.test.ts\"",
+    "test": "npm run test:extractors && npm run test:web"
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",

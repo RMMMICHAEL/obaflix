@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
+import { ehHostHide, ordemEspelhosHide, validarMasterHide } from "@/lib/hideMaster";
 import { headerMatchesHost } from "@/lib/requestSecurity";
 import { parsePlayerflixEmbeds } from "@/lib/playerflix";
 import {
@@ -282,7 +283,13 @@ function unpackPacker(script: string): { decoded: string | null; ms: number; err
   }
 }
 
-function parseDecodedHide(decoded: string, embedUrl: string): string | null {
+/**
+ * `paginaHide` é a página do espelho que **realmente respondeu**, não a URL
+ * recebida: quando o fallback sai de playhide.shop (morto) para hidehide.shop,
+ * resolver um caminho relativo contra a URL original monta a mídia sobre um
+ * domínio que não existe mais.
+ */
+function parseDecodedHide(decoded: string, paginaHide: string): string | null {
   // Primary: string-split approach (same as MegaFlix extractor — more robust than regex)
   const linksSplit = decoded.split("var links=")[1];
   if (linksSplit) {
@@ -290,7 +297,7 @@ function parseDecodedHide(decoded: string, embedUrl: string): string | null {
       const linksJson = linksSplit.split(";")[0].trim();
       const links = JSON.parse(linksJson);
       const src = links.hls3 || links.hls2 || links.hls4 || null;
-      if (src) return src.startsWith("http") ? src : new URL(embedUrl).origin + src;
+      if (src) return src.startsWith("http") ? src : new URL(paginaHide).origin + src;
     } catch { /**/ }
   }
   // Fallback: regex (catches space variants like "var links = {")
@@ -299,13 +306,13 @@ function parseDecodedHide(decoded: string, embedUrl: string): string | null {
     try {
       const links = JSON.parse(linksMatch[1]);
       const src = links.hls3 || links.hls2 || links.hls4 || null;
-      if (src) return src.startsWith("http") ? src : new URL(embedUrl).origin + src;
+      if (src) return src.startsWith("http") ? src : new URL(paginaHide).origin + src;
     } catch { /**/ }
   }
   return findM3u8(decoded);
 }
 
-async function extractHide(html: string, embedUrl: string): Promise<string | null> {
+async function extractHide(html: string, paginaHide: string): Promise<string | null> {
   const evalScript = extractEvalScript(html);
   if (!evalScript) {
     xlog("hide/packer", { found: false, htmlLen: html.length, hint: detectHtmlHint(html) });
@@ -316,7 +323,7 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
   // Decode local (directDecodePacker → vm.runInContext): zero rede, <2ms.
   // Se encontrar o stream, retorna imediatamente sem chamar moon.php (~7s de RTT economizados).
   const { decoded: vmDecoded, ms: vmMs, error: vmError, method: vmMethod } = unpackPacker(evalScript);
-  const vmStream = vmDecoded ? parseDecodedHide(vmDecoded, embedUrl) : null;
+  const vmStream = vmDecoded ? parseDecodedHide(vmDecoded, paginaHide) : null;
   xlog("hide/vm", { ms: vmMs, method: vmMethod, decoded: !!vmDecoded, resultLen: vmDecoded?.length ?? 0, streamFound: !!vmStream, error: vmError });
 
   if (vmStream) return vmStream;
@@ -330,7 +337,7 @@ async function extractHide(html: string, embedUrl: string): Promise<string | nul
     return null;
   }
 
-  const moonStream = parseDecodedHide(decoded, embedUrl);
+  const moonStream = parseDecodedHide(decoded, paginaHide);
   // Se moon.php funcionou mas o decode local falhou, loga para diagnóstico futuro
   if (moonStream) xlog("hide/moon_only", { vmMethod, note: "local_decode_missed" });
   return moonStream;
@@ -1030,24 +1037,26 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
       xlog("lulu/total", { ms: Date.now() - t, found: !!streamUrl });
     }
 
-  } else if (hostname.includes("hide") || hostname.includes("playhide")) {
+  } else if (ehHostHide(hostname)) {
     const t = Date.now();
     xlog("hide/start", { id, hostname });
     try {
       // playhide.shop era o host canônico e está morto — não completa o TLS.
       // Como era o único tentado aqui, o provedor inteiro ficava indisponível.
       // O host da URL recebida vem primeiro, seguido dos espelhos vivos.
-      const espelhos = ["hidehide.shop", "vidhidehub.com", "playhide.shop"];
-      const ordem = espelhos.includes(hostname)
-        ? [hostname, ...espelhos.filter((h) => h !== hostname)]
-        : espelhos;
+      const ordem = ordemEspelhosHide(hostname);
 
       let html: string | null = null;
+      // A página do espelho que respondeu: serve de Referer para o CDN e de base
+      // para caminhos relativos. A URL recebida pode apontar para um host morto.
+      let paginaUsada = url;
       const falhas: string[] = [];
       for (const host of ordem) {
+        const pagina = `https://${host}/v/${id}`;
         try {
-          html = await fetchHtmlDiag("hide", `https://${host}/v/${id}`, "https://megaflix.lat/");
-          referer = `https://${host}/v/${id}`;
+          html = await fetchHtmlDiag("hide", pagina, "https://megaflix.lat/");
+          paginaUsada = pagina;
+          referer = pagina;
           if (host !== ordem[0]) xlog("hide/espelho", { host });
           break;
         } catch (e: any) {
@@ -1055,7 +1064,21 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
         }
       }
       if (!html) throw new Error(`PlayHide indisponível — ${falhas.join(" | ")}`);
-      streamUrl = await extractHide(html, url);
+      streamUrl = await extractHide(html, paginaUsada);
+
+      if (streamUrl) {
+        const veredito = await validarMasterHide(streamUrl, paginaUsada);
+        xlog("hide/master", {
+          motivo: veredito.motivo,
+          status: veredito.status ?? null,
+          inline: veredito.manifest?.length ?? 0,
+        });
+        if (veredito.removido) {
+          streamUrl = null;
+          throw new Error("PlayHide não tem mais este arquivo — escolha outro servidor");
+        }
+        if (veredito.manifest) manifest = veredito.manifest;
+      }
     } finally {
       xlog("hide/total", { ms: Date.now() - t, found: !!streamUrl });
     }

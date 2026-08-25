@@ -353,7 +353,24 @@ export async function GET(req: NextRequest) {
         ...(cnvsAgeS !== null ? { cnvs_token_age_s: cnvsAgeS } : {}),
         url: sanitizeUrl(url, 100),
       });
-      return new NextResponse("Erro ao carregar conteúdo", { status: res.status });
+      // 404/410 na master (mode "token") é a assinatura de arquivo removido pelo
+      // provedor — a mesma classificação que o Electron e o Android aplicam. Só
+      // esses dois códigos contam: 403 é token/autorização e pode ser renovado,
+      // e timeout ou erro de rede nem chegam aqui. Em segmento não classificamos:
+      // um 404 no meio da reprodução não prova que a fonte inteira morreu.
+      const fonteMorta = mode === "token" && (res.status === 404 || res.status === 410);
+      if (fonteMorta) {
+        plog(id, "FONTE_MORTA", { status: res.status, host: parsed.hostname });
+      }
+      return new NextResponse(
+        fonteMorta
+          ? "O provedor não tem mais este arquivo — escolha outro servidor"
+          : "Erro ao carregar conteúdo",
+        {
+          status: res.status,
+          headers: fonteMorta ? { "X-Obaflix-Falha": "fonte-morta" } : undefined,
+        },
+      );
     }
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";

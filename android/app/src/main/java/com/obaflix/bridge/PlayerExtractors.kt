@@ -397,12 +397,22 @@ object PlayerExtractors {
         // extração cai para hidehide.shop, mandar o domínio morto é falso.
         var paginaUsada = embedUrl
 
-        for (host in HIDE_HOSTS) {
+        // O host da URL recebida vem primeiro: é o que o provedor está anunciando
+        // agora. Website e Electron ja faziam isso; so o Android seguia a ordem
+        // fixa e seria o ultimo a acompanhar a proxima migracao de dominio.
+        val recebido = try { URL(embedUrl).host.lowercase() } catch (_: Exception) { "" }
+        val ordem = if (HIDE_HOSTS.contains(recebido)) {
+            listOf(recebido) + HIDE_HOSTS.filter { it != recebido }
+        } else {
+            HIDE_HOSTS
+        }
+
+        for (host in ordem) {
             val alvo = "https://$host/v/$id"
             try {
                 html = fetchHtml(alvo, REFERER_DEFAULT)
                 paginaUsada = alvo
-                if (host != HIDE_HOSTS.first()) {
+                if (host != ordem.first()) {
                     ObaLog.alerta(ObaLog.Fase.PROVEDOR, "hide_espelho_usado", "host" to host)
                 }
                 break
