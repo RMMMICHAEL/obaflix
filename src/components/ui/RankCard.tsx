@@ -23,17 +23,22 @@ interface Props {
  * Posicao do Top 10: numero e poster como uma composicao unica.
  *
  * Tudo deriva de uma variavel — a largura do poster. O numero e dimensionado
- * como multiplo dela, e a area visivel a esquerda tambem, entao a sobreposicao
- * fica identica em qualquer tela e nao ha um so valor fixo a manter.
+ * como multiplo dela, e a faixa visivel a esquerda tambem, entao a sobreposicao
+ * fica identica em qualquer tela e nao ha um so valor fixo a manter. A faixa e
+ * 0,74 da largura do poster porque e a proporcao medida na referencia
+ * (poster de 167px numa composicao de 291px).
  *
- * A altura do algarismo e calculada para bater com a altura do poster: Bebas
- * Neue tem cap-height de ~0,73 do font-size, entao `altura do poster / 0,73`
- * da um numero que ocupa a composicao inteira, e nao um selo ao lado da capa.
+ * O algarismo nao e vazado nem contornado: ele e solido e some da esquerda para
+ * a direita num gradiente branco -> transparente, recortado no proprio glifo com
+ * background-clip:text. E o que a referencia faz (la, com um <path> SVG por
+ * digito); o gradiente em texto chega ao mesmo resultado sem precisar desenhar
+ * dez vetores. Como a metade direita ja chega transparente, o encontro com a
+ * capa acontece sem borda dura.
  *
- * O poster fica na frente e cobre a metade direita do algarismo. So contorno no
- * numero, sem preenchimento: solido, ele competiria com a arte da capa. O
- * contorno e fino e dessaturado de proposito — ele marca a posicao, nao disputa
- * atencao com a capa.
+ * A altura do algarismo e calculada para bater com a altura do poster: a
+ * cap-height da familia pesada usada aqui e ~0,72 do font-size, entao
+ * `altura do poster / 0,72` da um numero que ocupa a composicao inteira, e nao
+ * um selo ao lado da capa.
  *
  * O hover move a composicao inteira (numero + poster), nao so a capa: sao uma
  * peca so, e animar apenas metade quebraria a sobreposicao.
@@ -42,7 +47,7 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
 
   // Dois digitos precisam de mais espaco a esquerda para nao ficarem cortados.
-  const faixaNumero = rank >= 10 ? "1.02" : "0.54";
+  const faixaNumero = rank >= 10 ? "1.05" : "0.74";
 
   return (
     <Link
@@ -64,17 +69,20 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
 
         <span
           aria-hidden="true"
-          className="absolute bottom-0 left-0 select-none font-black leading-none"
+          className="absolute bottom-0 left-0 select-none leading-none"
           style={{
-            fontFamily: "var(--font-bebas), 'Bebas Neue', Impact, 'Arial Black', sans-serif",
-            fontSize: "calc(var(--pw) * 1.5 / 0.73)",
-            // Preenchimento na cor do fundo do site, nao transparente: o
-            // algarismo tapa o que passa atras dele e vira um recorte solido,
-            // como na referencia. So o contorno fino o desenha.
-            color: "#18181B",
-            WebkitTextStroke: "clamp(0.75px, 0.075vw, 1.1px) rgba(150,150,158,0.75)",
-            lineHeight: 0.73,
-            letterSpacing: rank >= 10 ? "-0.06em" : "normal",
+            fontFamily: "'Arial Black', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+            fontWeight: 900,
+            fontSize: "calc(var(--pw) * 1.5 / 0.72)",
+            lineHeight: 0.72,
+            letterSpacing: rank >= 10 ? "-0.05em" : "-0.02em",
+            // O glifo e a mascara do gradiente: solido na ponta esquerda e ja
+            // transparente onde a capa comeca a cobri-lo.
+            backgroundImage: "linear-gradient(to right, rgba(255,255,255,0.95), rgba(255,255,255,0))",
+            WebkitBackgroundClip: "text",
+            backgroundClip: "text",
+            color: "transparent",
+            WebkitTextFillColor: "transparent",
           }}
         >
           {rank}
@@ -96,8 +104,11 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
             onError={imgFallback}
           />
 
+          {/* Selo de novidade centrado e encostado na base, como na referencia:
+              e a unica marcacao que fala do catalogo (e nao do audio), entao
+              nao divide o canto com DUB/LEG. */}
           {isNew && (
-            <span className="absolute bottom-1.5 left-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-semibold leading-none text-white">
+            <span className="absolute bottom-0 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-t bg-[#e50914] px-2 py-1 text-[10px] font-bold leading-none text-white">
               Novo
             </span>
           )}

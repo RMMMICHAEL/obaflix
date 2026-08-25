@@ -101,7 +101,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
           // `auto` para preservar o swipe horizontal.
           // O respiro vertical existe porque overflow-x tambem recorta no eixo Y:
           // sem ele, o hover (elevacao + escala + sombra) seria cortado.
-          className="flex items-end gap-2 md:gap-4 overflow-x-auto md:overflow-x-hidden scrollbar-hide px-4 md:px-14 pt-8 pb-10 scroll-smooth overscroll-x-contain"
+          className="flex items-end gap-3 md:gap-6 overflow-x-auto md:overflow-x-hidden scrollbar-hide px-4 md:px-14 pt-8 pb-10 scroll-smooth overscroll-x-contain"
         >
           {items.slice(0, 10).map((item, i) => (
             <RankCard key={item.id} rank={i + 1} isNew={item.isNew} {...item} />
