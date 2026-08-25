@@ -10,7 +10,18 @@ const DEFAULT_UA =
 
 // O provedor migrou de superflixapi.pro para superflixapi.sbs; o antigo ainda
 // responde 301 e aparece em URLs gravadas, entao os dois seguem aceitos.
-const EH_SUPERFLIX = /(^|.)superflixapi.(pro|sbs)$/i;
+// O provedor migrou de superflixapi.pro para superflixapi.sbs; o antigo ainda
+// responde 301 e aparece em URLs gravadas, então os dois seguem aceitos.
+//
+// Os pontos precisam de escape: sem eles "." casa qualquer caractere e um
+// domínio parecido (notsuperflixapiXpro) passaria na checagem.
+const EH_SUPERFLIX = /(^|\.)superflixapi\.(pro|sbs)$/i;
+
+// O host punycode do EmbedPlayer troca de domínio periodicamente. Manter os
+// conhecidos aqui evita caçar cada checagem por substring espalhada no arquivo.
+//   xn--kcksk7a2bl5le7b6doc1h3f.com      シャオリンマタドールデポルコ.com
+//   xn--tckasiu6cvova0eb5fua2449g98vg.best  ココ・レストラン予約センター.best
+const PUNYCODE_EMBEDPLAYER = /xn--kcksk7a2bl5le7b6doc1h3f|xn--tckasiu6cvova0eb5fua2449g98vg/i;
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_PAGE_HOPS = 7;
@@ -704,7 +715,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
 
   if (
     parsed.hostname.includes("embedplayer") ||
-    parsed.hostname.includes("xn--kcksk7a2bl5le7b6doc1h3f") ||
+    PUNYCODE_EMBEDPLAYER.test(parsed.hostname) ||
     /\/video\/[a-f0-9]{16,}/i.test(parsed.pathname)
   ) {
     if (typeof extractEmbedPlayer !== "function") throw new Error("extrator embedplayer indisponível");

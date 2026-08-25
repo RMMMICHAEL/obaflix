@@ -905,7 +905,7 @@ object SuperflixExtractor {
             throw Exception("media-source HTTP ${mediaResponse.status}")
         }
 
-        if (parsed.host.contains("embedplayer") || parsed.host.contains("xn--kcksk7a2bl5le7b6doc1h3f") ||
+        if (parsed.host.contains("embedplayer") || parsed.host.contains("xn--kcksk7a2bl5le7b6doc1h3f") || parsed.host.contains("xn--tckasiu6cvova0eb5fua2449g98vg") ||
             Regex("""/video/[a-f0-9]{16,}""", RegexOption.IGNORE_CASE).containsMatchIn(parsed.path)
         ) {
             val warez = URL(warezPageUrl)

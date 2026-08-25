@@ -29,7 +29,7 @@ const UA =
 // Hostnames dos embed players (sem wildcards — usados no handler unificado)
 const EMBED_HOSTNAMES = [
   "embedplayer2.xyz", "embedplayer1.xyz",
-  "xn--kcksk7a2bl5le7b6doc1h3f.com", "llanfairpwllgwyngy.com",
+  "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best", "llanfairpwllgwyngy.com",
   "playhide.shop", "hidehide.shop", "vidhidehub.com", "streamwish.com", "hlswish.com",
   "playerwish.com", "jvrkt.online", "beamy.online",
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",

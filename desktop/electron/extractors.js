@@ -388,7 +388,7 @@ function detectProvider(embedUrl) {
   if (new URL(embedUrl).protocol !== "https:") return null;
   const hostIs = (...allowed) => allowed.some((host) => hostname === host || hostname.endsWith("." + host));
 
-  if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) {
+  if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best")) {
     return "embedplayer"; // rola3 (Embv) / rola4 (Xnn)
   }
   if (hostIs("megafrixapi.com", "vods.faz-o-eli.online") && pathname.includes("voltz.php")) return "voltz";

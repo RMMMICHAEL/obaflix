@@ -23,6 +23,7 @@ const PROVIDER_HOSTS = [
   "embedplayer1.xyz",
   "embedplayer2.xyz",
   "xn--kcksk7a2bl5le7b6doc1h3f.com",
+  "xn--tckasiu6cvova0eb5fua2449g98vg.best",
   "llanfairpwllgwyngy.com",
   "boltcdn.xyz",
   "upbolt.to",

@@ -557,7 +557,7 @@ object PlayerExtractors {
         fun hostIs(vararg allowed: String): Boolean = allowed.any { host == it || host.endsWith(".$it") }
 
         if (hostIs("playerflix.ink") && path.contains("/inc/Ajax.php")) return "playerflix"
-        if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) return "embedplayer"
+        if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best")) return "embedplayer"
         if (hostIs("megafrixapi.com", "vods.faz-o-eli.online") && path.contains("voltz.php")) return "voltz"
         if (hostIs("luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com")) return "lulu"
         if (hostIs("playhide.shop", "hidehide.shop", "vidhidehub.com")) return "hide"

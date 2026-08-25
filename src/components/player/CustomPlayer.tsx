@@ -179,7 +179,7 @@ function captionTextShadow(edgeStyle: CaptionEdgeStyle) {
 // Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
 // essas fontes só aparecem quando isDesktop=true (não funcionam com IP de datacenter).
 function isTokenizedUrl(url: string) {
-  return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f/.test(url);
+  return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f|xn--tckasiu6cvova0eb5fua2449g98vg/.test(url);
 }
 
 // Providers com extrator nativo no Electron/Android (desktop/electron/extractors.js e

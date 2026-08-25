@@ -10,6 +10,7 @@
 // detectProvider (Kotlin, Electron e rota web), EMBED_HOSTNAMES do main.js,
 // PROVIDER_HOSTS do mediaProviders.ts e na lista do cloudflare-worker.
 const path = require("path");
+const dns = require("dns").promises;
 const { detectProvider } = require(path.join(__dirname, "..", "desktop/electron/extractors.js"));
 const { _test: superflix } = require(path.join(__dirname, "..", "desktop/electron/superflix-extractor.js"));
 
@@ -63,7 +64,17 @@ async function checar(host) {
     if (loc) { try { destinoHost = new URL(loc, url).hostname; } catch { /**/ } }
     return { status: r.status, redirecionaPara: destinoHost && destinoHost !== host ? destinoHost : null };
   } catch (e) {
-    return { status: 0, erro: String(e.message || e).slice(0, 44) };
+    // Distingue provedor caído de problema de rede local. Se o DNS resolve mas a
+    // conexão não fecha, o host morreu — foi assim que playhide.shop passou
+    // despercebido como "fetch failed", tratado como ruído da minha máquina
+    // quando na verdade derrubava o provedor inteiro.
+    let dnsOk = false;
+    try { await dns.lookup(host); dnsOk = true; } catch { /**/ }
+    return {
+      status: 0,
+      erro: String(e.message || e).slice(0, 40),
+      provavelmenteMorto: dnsOk,
+    };
   }
 }
 
@@ -71,11 +82,17 @@ async function checar(host) {
   console.log("host".padEnd(36) + "HTTP".padEnd(7) + "detectProvider".padEnd(16) + "observacao");
   console.log("-".repeat(100));
   const migrados = [];
+  const caidos = [];
   for (const host of HOSTS) {
     const r = await checar(host);
     const prov = detectProvider("https://" + host + "/x") || "-";
     let obs = "";
-    if (r.erro) obs = "ERRO " + r.erro;
+    if (r.erro) {
+      obs = r.provavelmenteMorto
+        ? ">>> HOST CAIDO (DNS resolve, conexao nao fecha): " + r.erro
+        : "sem conexao daqui: " + r.erro;
+      if (r.provavelmenteMorto) caidos.push(host);
+    }
     else if (r.redirecionaPara) {
       obs = ">>> REDIRECIONA PARA " + r.redirecionaPara;
       const como = ehReconhecido(r.redirecionaPara);

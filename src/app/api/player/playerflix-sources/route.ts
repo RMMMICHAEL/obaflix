@@ -42,7 +42,7 @@ function providerOf(hostname: string): { provider: string; hasExtractor: boolean
     allowed.some((a) => host === a || host.endsWith(`.${a}`));
 
   if (hostIs("v1.watchplay.shop")) return { provider: "watchplayer", hasExtractor: true };
-  if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com")) {
+  if (hostIs("embedplayer1.xyz", "embedplayer2.xyz", "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best")) {
     return { provider: "embedplayer", hasExtractor: true };
   }
   if (hostIs("superflixapi.pro", "superflixapi.sbs")) return { provider: "superflix", hasExtractor: true };

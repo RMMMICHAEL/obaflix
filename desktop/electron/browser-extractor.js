@@ -113,7 +113,7 @@ function isInteresting(url) {
   return (
     /superflixapi\.pro/i.test(url) ||
     /warezcdn/i.test(url) ||
-    /xn--kcksk7a2bl5le7b6doc1h3f/i
+    /xn--kcksk7a2bl5le7b6doc1h3f|xn--tckasiu6cvova0eb5fua2449g98vg/i
       .test(url) ||
     /\/player\/source/i.test(url) ||
     /\/player\/redirect/i.test(url) ||
