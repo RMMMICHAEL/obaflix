@@ -362,14 +362,46 @@ object PlayerExtractors {
      */
     private val HIDE_HOSTS = listOf("hidehide.shop", "vidhidehub.com", "playhide.shop")
 
-    suspend fun extractHide(embedUrl: String, id: String): String {
+    /**
+     * Confere se o master anunciado pela página existe mesmo no CDN.
+     *
+     * O Hide continua servindo a página e assinando um token válido para
+     * arquivos que já saíram do storage: o CDN responde 404 (com token inválido
+     * responderia 403). Sem esta checagem a extração "dá certo" e quem descobre
+     * o problema é o player, que trava sem dizer por quê. Falha de rede aqui não
+     * invalida o stream.
+     */
+    private suspend fun hideMasterSumiu(streamUrl: String, referer: String): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url(streamUrl)
+                    .addHeader("User-Agent", UA_NATIVE)
+                    .addHeader("Accept", "*/*")
+                    .addHeader("Referer", referer)
+                    .addHeader("Origin", "https://" + URL(referer).host)
+                    .build()
+                ObaflixApp.httpClient.newCall(request).execute().use { resposta ->
+                    resposta.code == 404 || resposta.code == 410
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+    suspend fun extractHide(embedUrl: String, id: String): NativeExtractResult {
         val falhas = mutableListOf<String>()
         var html: String? = null
+        // O referer precisa ser a página do espelho que realmente respondeu:
+        // quando a URL recebida aponta para um domínio morto (playhide.shop) e a
+        // extração cai para hidehide.shop, mandar o domínio morto é falso.
+        var paginaUsada = embedUrl
 
         for (host in HIDE_HOSTS) {
             val alvo = "https://$host/v/$id"
             try {
                 html = fetchHtml(alvo, REFERER_DEFAULT)
+                paginaUsada = alvo
                 if (host != HIDE_HOSTS.first()) {
                     ObaLog.alerta(ObaLog.Fase.PROVEDOR, "hide_espelho_usado", "host" to host)
                 }
@@ -388,11 +420,16 @@ object PlayerExtractors {
         val evalScript = extractEvalScript(html) ?: throw Exception("packer não encontrado (PlayHide)")
 
         val direct = directDecodePacker(evalScript)
-        val directStream = direct?.let { parseDecodedHide(it, embedUrl) }
-        if (directStream != null) return directStream
+        val stream = direct?.let { parseDecodedHide(it, paginaUsada) }
+            ?: parseDecodedHide(moon(evalScript), paginaUsada)
+            ?: throw Exception("stream não encontrado (PlayHide)")
 
-        val decoded = moon(evalScript)
-        return parseDecodedHide(decoded, embedUrl) ?: throw Exception("stream não encontrado (PlayHide)")
+        if (hideMasterSumiu(stream, paginaUsada)) {
+            ObaLog.alerta(ObaLog.Fase.PROVEDOR, "hide_arquivo_removido", "cdn" to ObaLog.url(stream))
+            throw Exception("PlayHide não tem mais este arquivo — escolha outro servidor")
+        }
+
+        return NativeExtractResult(stream = stream, referer = paginaUsada)
     }
 
     suspend fun extractLulu(embedUrl: String): String {
@@ -580,10 +617,11 @@ object PlayerExtractors {
         if (provider == "superflix") return SuperflixExtractor.extract(embedUrl)
         if (provider == "playerflix") return extractPlayerflix(embedUrl)
 
+        if (provider == "hide") return extractHide(embedUrl, id)
+
         val stream = when (provider) {
             "voltz" -> extractVoltz(embedUrl)
             "embedplayer" -> extractEmbedPlayer(embedUrl)
-            "hide" -> extractHide(embedUrl, id)
             "lulu" -> extractLulu(embedUrl)
             "rola2" -> extractRola2(id)
             "wish" -> extractWish(embedUrl, id)

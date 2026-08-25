@@ -204,6 +204,32 @@ function parseDecodedHide(decoded, embedUrl) {
  */
 const HIDE_HOSTS = ["hidehide.shop", "vidhidehub.com", "playhide.shop"];
 
+/**
+ * Confere se o master que a página anunciou existe mesmo no CDN.
+ *
+ * O Hide continua entregando a página e assinando um token válido para arquivos
+ * que já saíram do storage: o CDN responde 404 (com token inválido responderia
+ * 403). Sem esta checagem a extração "dá certo" e quem descobre o problema é o
+ * player, que trava sem dizer por quê. Erro de rede aqui não invalida o stream.
+ */
+async function hideMasterSumiu(streamUrl, referer) {
+  try {
+    const res = await fetch(streamUrl, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Referer": referer,
+        "Origin": new URL(referer).origin,
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(6000),
+    });
+    return res.status === 404 || res.status === 410;
+  } catch {
+    return false;
+  }
+}
+
 async function extractHide(embedUrl, id) {
   // O host da URL recebida vem primeiro: é o que o provedor está anunciando
   // agora, e ignorá-lo foi o que deixou o extrator preso no domínio antigo.
@@ -216,10 +242,13 @@ async function extractHide(embedUrl, id) {
   } catch { /* URL malformada: segue a ordem padrão */ }
 
   let html = null;
+  let paginaUsada = embedUrl;
   const falhas = [];
   for (const host of hosts) {
+    const pagina = `https://${host}/v/${id}`;
     try {
-      html = await fetchHtml(`https://${host}/v/${id}`, REFERER_DEFAULT);
+      html = await fetchHtml(pagina, REFERER_DEFAULT);
+      paginaUsada = pagina;
       if (host !== hosts[0]) elog("warn", "extract.provider", "espelho do Hide usado", { host });
       break;
     } catch (erro) {
@@ -231,14 +260,25 @@ async function extractHide(embedUrl, id) {
   const evalScript = extractEvalScript(html);
   if (!evalScript) throw new Error("packer não encontrado (PlayHide)");
 
+  // O referer precisa ser a página do espelho que realmente respondeu. Quando a
+  // URL recebida aponta para um domínio morto (playhide.shop) e a extração cai
+  // para hidehide.shop, mandar o domínio morto no Referer é simplesmente falso.
   const vmDecoded = unpackPacker(evalScript);
-  const vmStream = vmDecoded ? parseDecodedHide(vmDecoded, embedUrl) : null;
-  if (vmStream) return vmStream;
+  let stream = vmDecoded ? parseDecodedHide(vmDecoded, paginaUsada) : null;
+  if (!stream) {
+    const decoded = await moon(evalScript);
+    stream = parseDecodedHide(decoded, paginaUsada);
+  }
+  if (!stream) throw new Error("stream não encontrado (PlayHide)");
 
-  const decoded = await moon(evalScript);
-  const moonStream = parseDecodedHide(decoded, embedUrl);
-  if (!moonStream) throw new Error("stream não encontrado (PlayHide)");
-  return moonStream;
+  if (await hideMasterSumiu(stream, paginaUsada)) {
+    elog("warn", "extract.provider", "Hide anunciou arquivo que o CDN não tem", {
+      cdn: (() => { try { return new URL(stream).hostname; } catch { return "?"; } })(),
+    });
+    throw new Error("PlayHide não tem mais este arquivo — escolha outro servidor");
+  }
+
+  return { stream, referer: paginaUsada };
 }
 
 async function extractLulu(embedUrl) {
@@ -421,7 +461,12 @@ async function extractStream(embedUrl) {
   let mediaInfo = null;
   switch (provider) {
     case "embedplayer": stream = await extractEmbedPlayer(embedUrl); break;
-    case "hide": stream = await extractHide(embedUrl, id); break;
+    case "hide": {
+      const hide = await extractHide(embedUrl, id);
+      stream = hide.stream;
+      referer = hide.referer;
+      break;
+    }
     case "lulu": stream = await extractLulu(embedUrl); break;
     case "rola2": stream = await extractRola2(id); break;
     case "wish": stream = await extractWish(embedUrl, id); break;
