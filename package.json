@@ -20,7 +20,8 @@
     "sync:local:check": "tsx scripts/run-local-syncs.ts --check",
     "test:cinevs": "tsx scripts/test-cinevs.ts",
     "test:web": "node --test --import tsx \"src/lib/__tests__/*.test.ts\"",
-    "test": "npm run test:extractors && npm run test:web"
+    "test": "npm run test:extractors && npm run test:web",
+    "test:webcine": "tsx scripts/testar-webcine-sessoes.ts"
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",

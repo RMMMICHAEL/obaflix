@@ -9,6 +9,9 @@
  * Uso:  npx tsx scripts/medir-transfer-electron.ts [--amostra N] <url> [url...]
  */
 
+// Arquivo isolado: sem isto os scripts compartilham escopo global no tsc.
+export {};
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { extractStream } = require("../desktop/electron/extractors.js");
 
