@@ -1818,6 +1818,44 @@ export function CustomPlayer({
         if (acao === "retry") {
           // Recarrega a MESMA midia. Reextrair nao conserta 5xx de CDN e ainda
           // gastaria um slot de stream na Vercel.
+          //
+          // Excecao: no fluxo web de HLS a URL e /api/player/proxy?t=<token>, e
+          // esse token e single-use (markUsed no Redis). Recarregar devolveria
+          // "token ja consumido" e gastaria um ciclo a toa, entao o retry no
+          // lugar nao existe nesse caso — o hls.js ja retenta segmento sozinho,
+          // e o que sobra e escalar.
+          const urlAtual = directStreamRef.current ?? "";
+          if (/[?&]t=/.test(urlAtual) && urlAtual.startsWith("/api/player/proxy")) {
+            retriesRef.current = LIMITES.RETRIES_POR_FONTE;
+            const escalado = decidirAcao(veredito, {
+              retries: LIMITES.RETRIES_POR_FONTE,
+              extracoesNaJanela: extracoesRef.current.length,
+              failoversAposFirstFrame: failoverAposRef.current,
+              failoversAntesFirstFrame: failoverAntesRef.current,
+              houveFirstFrame: !initialLoadRef.current,
+              temProximaFonte: sinal.fi < sinal.len - 1,
+              escolhaManual: escolhaManualRef.current,
+              podeReextrair,
+            });
+            console.warn(`[diag/failover] token single-use, sem retry no lugar - ${escalado.detalhe}`);
+            if (escalado.acao === "failover") {
+              if (!initialLoadRef.current) failoverAposRef.current += 1;
+              else failoverAntesRef.current += 1;
+              switchFonteRef.current(sinal.fi + 1);
+              return false;
+            }
+            if (escalado.acao === "erro") {
+              setError(friendlyPlayerError(new Error(`${motivo} - ${escalado.detalhe}`), fonte?.label ?? "Player"));
+              setStatus("error");
+              return false;
+            }
+            if (escalado.acao === "reextrair") {
+              extracoesRef.current.push(agoraMs);
+              return true;
+            }
+            return false;
+          }
+
           const espera = backoffMs(retriesRef.current);
           retriesRef.current += 1;
           if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
