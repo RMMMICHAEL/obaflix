@@ -4,10 +4,13 @@
 // Reproduz APENAS o fluxo comprovado no bytecode do app `tv16.apk`
 // (package com.cnvs.apptv, base `/api/v1/`):
 //
-//     autenticação autorizada (refresh) → /videos → /video/{videoId} → video_url
+//     refresh → /videos → /video/{videoId} → resolve-url → URL final
 //
-// Diferenças deliberadas em relação ao extractWebcine (base `/api/`):
-//   • NÃO usa `resolve-url` (esse passo não existe no pipeline /api/v1/).
+// Atualizado em 26/08/2026 a partir dos HARs do site (fluxo web real):
+//   • o passo `resolve-url` EXISTE e é obrigatório — `video_url` é payload
+//     cifrado, não URL. Exige payload E session_id.
+//   • base migrou de `webcinevs2.com/api` para `utxptx-api.b-cdn.net/api/v1`.
+//   • a API exige Origin/Referer do site; a MÍDIA não exige nada (medido).
 //   • NÃO envia/forja X-App-Sig, X-App-Integrity nem X-Ad-Proof.
 //   • video_url vem direto de /video/{videoId} (o cliente nativo não a transforma).
 //
@@ -48,11 +51,26 @@ class CineVsConfigError extends Error {}
  * Lê a configuração do ambiente. Lança erro claro (sem vazar valores) se faltar algo.
  * `requireCreds` = true exige host + refresh_token (usado pelo modo diagnóstico/execução).
  */
+/**
+ * Base confirmada em 26/08/2026 pelos HARs do webcinevs2.com. A base antiga
+ * (`webcinevs2.com/api`) nao responde mais; o emissor dos tokens e um terceiro
+ * host, `urobotsy.com`, que so aparece dentro do JWT.
+ */
+const BASE_PADRAO = "https://utxptx-api.b-cdn.net/api/v1";
+
+/** Aceita as duas familias de variaveis: o repo ja usava WEBCINE_* antes. */
+const env = (...nomes: string[]): string => {
+  for (const n of nomes) {
+    const v = process.env[n];
+    if (v) return v;
+  }
+  return "";
+};
+
 export function cineVsConfig(requireCreds = true): CineVsConfig {
-  const base = (process.env.CINEVS_API_BASE ?? "").replace(/\/+$/, "");
-  const refreshToken = process.env.CINEVS_REFRESH_TOKEN ?? "";
+  const base = (env("CINEVS_API_BASE", "WEBCINE_API_BASE") || BASE_PADRAO).replace(/\/+$/, "");
+  const refreshToken = env("CINEVS_REFRESH_TOKEN", "WEBCINE_REFRESH_TOKEN");
   const missing: string[] = [];
-  if (requireCreds && !base) missing.push("CINEVS_API_BASE");
   if (requireCreds && !refreshToken) missing.push("CINEVS_REFRESH_TOKEN");
   if (missing.length) {
     throw new CineVsConfigError(
@@ -62,13 +80,13 @@ export function cineVsConfig(requireCreds = true): CineVsConfig {
   return {
     base,
     refreshToken,
-    deviceId: process.env.CINEVS_DEVICE_ID ?? "",
-    profileId: process.env.CINEVS_PROFILE_ID ?? "",
+    deviceId: env("CINEVS_DEVICE_ID", "WEBCINE_DEVICE_ID"),
+    profileId: env("CINEVS_PROFILE_ID", "WEBCINE_PROFILE_ID"),
     authPath: (process.env.CINEVS_AUTH_PATH ?? "auth/refresh").replace(/^\/+/, ""),
     platform: process.env.CINEVS_PLATFORM ?? "web",
     deviceType: process.env.CINEVS_DEVICE_TYPE ?? "web",
     clientPlatform: process.env.CINEVS_CLIENT_PLATFORM ?? "",
-    enabled: process.env.CINEVS_ENABLED === "1" || process.env.CINEVS_ENABLED === "true",
+    enabled: ["1", "true"].includes(env("CINEVS_ENABLED", "WEBCINE_ENABLED").toLowerCase()),
   };
 }
 
@@ -144,6 +162,8 @@ async function getToken(cfg: CineVsConfig, timeoutMs: number): Promise<string> {
       "Accept": "application/json",
       "x-device-id": cfg.deviceId,
       "User-Agent": UA,
+      "Origin": SITE,
+      "Referer": SITE + "/",
     },
     body: JSON.stringify({ refresh_token: cfg.refreshToken }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -170,12 +190,18 @@ async function getToken(cfg: CineVsConfig, timeoutMs: number): Promise<string> {
 }
 
 // Headers autenticados MÍNIMOS e legítimos. Nada de X-App-Sig/Integrity/Ad-Proof.
+const SITE = process.env.CINEVS_SITE ?? process.env.WEBCINE_SITE ?? "https://webcinevs2.com";
+
 function authHeaders(cfg: CineVsConfig, token: string): Record<string, string> {
   const h: Record<string, string> = {
     "Authorization": `Bearer ${token}`,
     "x-device-id": cfg.deviceId,
     "Accept": "application/json",
     "User-Agent": UA,
+    // A API roda em outro host e valida a origem do site; sem estes dois o
+    // gateway recusa antes de olhar o token.
+    "Origin": SITE,
+    "Referer": SITE + "/",
   };
   if (cfg.clientPlatform) h["X-Client-Platform"] = cfg.clientPlatform;
   return h;
@@ -189,7 +215,8 @@ export interface CineVsSubtitle {
 }
 export interface CineVsResult {
   streamUrl: string;
-  referer: string;
+  /** null quando o CDN nao exige Referer — medido para o webcine. */
+  referer: string | null;
   format: ReturnType<typeof detectFormat>;
   mediaHost: string;
   hasExpiry: boolean;
@@ -314,17 +341,22 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
     // 3. Para cada servidor: /video/{videoId} → video_url (SEM resolve-url).  [BYTECODE]
     for (const video of eligible) {
       const detailUrl = isMovie
-        ? `${cfg.base}/streaming/movies/${internalId}/video/${video.id}?device_id=${encodeURIComponent(cfg.deviceId)}&profile_id=${encodeURIComponent(cfg.profileId)}&device_type=${cfg.deviceType}&platform=${cfg.platform}`
-        : `${cfg.base}/streaming/episodes/${episodeId}/video/${video.id}?device_id=${encodeURIComponent(cfg.deviceId)}&profile_id=${encodeURIComponent(cfg.profileId)}&device_type=${cfg.deviceType}&platform=${cfg.platform}`;
+        ? `${cfg.base}/streaming/movies/${internalId}/video/${video.id}?device_id=${encodeURIComponent(cfg.deviceId)}&profile_id=${encodeURIComponent(cfg.profileId)}&device_name=Obaflix&device_type=${cfg.deviceType}&platform=${cfg.platform}`
+        : `${cfg.base}/streaming/episodes/${episodeId}/video/${video.id}?device_id=${encodeURIComponent(cfg.deviceId)}&profile_id=${encodeURIComponent(cfg.profileId)}&device_name=Obaflix&device_type=${cfg.deviceType}&platform=${cfg.platform}`;
 
-      let videoUrl: string;
+      // O campo `video_url` NÃO é uma URL: é um payload cifrado que só a própria
+      // API sabe abrir. A doc antiga dizia que o resolve-url não era usado —
+      // isso valia para o fluxo do APK; o fluxo web exige, e é este que roda aqui.
+      let payload: string;
+      let sessionId: number | string | null = null;
       try {
         const r = await fetch(detailUrl, { headers: H, signal: AbortSignal.timeout(TIMEOUT) });
         log("video", { path: sanitizePath(detailUrl), status: r.status, videoId: video.id, audio: video.audio_type });
-        if (!r.ok) continue; // 401/403 aqui ⇒ possivelmente atestado/ad-proof exigido [RUNTIME]
+        if (!r.ok) continue;
         const d = await r.json();
-        videoUrl = d.video_url;
-        if (!videoUrl) {
+        payload = d.video_url;
+        sessionId = d.session_id ?? null;
+        if (!payload) {
           log("video_no_url", { videoId: video.id });
           continue;
         }
@@ -332,33 +364,26 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
         continue;
       }
 
-      const format = detectFormat(videoUrl);
-      const host = mediaHost(videoUrl);
-      const expiry = hasExpiryParams(videoUrl);
-
-      // 4. Diagnóstico do redirect/expiração via HEAD (não baixa mídia).  [RUNTIME]
-      // HEAD não transfere corpo; serve só para observar status/redirect e validar o host.
-      let finalUrl = videoUrl;
+      // resolve-url exige payload E session_id. Sem o segundo devolve 422
+      // ("The session id field is required.").
+      let finalUrl: string;
       try {
-        const head = await fetch(videoUrl, {
-          method: "HEAD",
-          headers: { "User-Agent": UA },
-          redirect: "manual",
+        const r = await fetch(`${cfg.base}/streaming/resolve-url`, {
+          method: "POST",
+          headers: { ...H, "Content-Type": "application/json" },
+          body: JSON.stringify({ payload, session_id: sessionId }),
           signal: AbortSignal.timeout(TIMEOUT),
         });
-        const loc = head.headers.get("location");
-        log("head", {
-          status: head.status,
-          redirect: loc ? "yes" : "no",
-          mediaHost: host,
-          format,
-          hasExpiry: expiry,
-        });
-        if (loc && (head.status === 301 || head.status === 302 || head.status === 307 || head.status === 308)) {
-          finalUrl = loc;
+        log("resolve", { status: r.status, videoId: video.id });
+        if (!r.ok) continue;
+        const d = await r.json();
+        finalUrl = d.url;
+        if (!finalUrl) {
+          log("resolve_no_url", { videoId: video.id });
+          continue;
         }
       } catch {
-        log("head_err", { mediaHost: host, format, hasExpiry: expiry, note: "HEAD falhou; usando URL original" });
+        continue;
       }
 
       log("ok", {
@@ -373,7 +398,10 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
 
       return {
         streamUrl: finalUrl,
-        referer: `${new URL(cfg.base).origin}/`,
+        // Medido: o CDN devolve 200 sem Referer e com Origin de qualquer site.
+        // Não mandar Referer é o que permite a mídia ir direto ao dispositivo
+        // nos três ambientes, sem passar pelo proxy da Vercel.
+        referer: null,
         format: detectFormat(finalUrl),
         mediaHost: mediaHost(finalUrl),
         hasExpiry: hasExpiryParams(finalUrl),

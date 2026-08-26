@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
 import { ehHostHide, ordemEspelhosHide, validarMasterHide } from "@/lib/hideMaster";
+import { extractCineVs } from "@/lib/cinevs";
 import { headerMatchesHost } from "@/lib/requestSecurity";
 import { parsePlayerflixEmbeds } from "@/lib/playerflix";
 import {
@@ -1133,11 +1134,39 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
 
   } else if (hostname.includes("webcinevs2.com")) {
     const t = Date.now();
-    xlog("webcine/start", { id: parsed.searchParams.get("id") ?? "", type: parsed.searchParams.get("type") ?? "tv", season: parsed.searchParams.get("season") ?? "", episode: parsed.searchParams.get("episode") ?? "" });
-    const wcResult = await extractWebcine(parsed);
-    streamUrl = wcResult?.streamUrl ?? null;
-    if (wcResult?.referer) referer = wcResult.referer;
-    xlog("webcine/total", { ms: Date.now() - t, found: !!streamUrl });
+    const tmdbId = parsed.searchParams.get("id") ?? "";
+    const tipoBusca = parsed.searchParams.get("type") ?? "tv";
+    xlog("webcine/start", { id: tmdbId, type: tipoBusca, season: parsed.searchParams.get("season") ?? "", episode: parsed.searchParams.get("episode") ?? "" });
+
+    // cinevs fala com a base atual (utxptx-api/api/v1) e faz o resolve-url que o
+    // fluxo web exige. extractWebcine aponta para webcinevs2.com/api, que nao
+    // responde mais — fica como fallback caso a base volte.
+    let usouCineVs = false;
+    try {
+      const cv = await extractCineVs({
+        tmdbId,
+        type: tipoBusca === "movie" ? "movie" : "tv",
+        season: Number(parsed.searchParams.get("season") ?? 1),
+        episode: Number(parsed.searchParams.get("episode") ?? 1),
+        titleHint: parsed.searchParams.get("q") ?? "",
+      });
+      if (cv?.streamUrl) {
+        streamUrl = cv.streamUrl;
+        // null de proposito: o CDN nao exige Referer, e mandar um so atrapalha.
+        referer = cv.referer ?? undefined;
+        usouCineVs = true;
+        xlog("webcine/cinevs", { ms: Date.now() - t, host: cv.mediaHost, formato: cv.format, subs: cv.subtitles.length });
+      }
+    } catch (e: any) {
+      xlog("webcine/cinevs_err", { err: String(e?.message ?? "").slice(0, 80) });
+    }
+
+    if (!usouCineVs) {
+      const wcResult = await extractWebcine(parsed);
+      streamUrl = wcResult?.streamUrl ?? null;
+      if (wcResult?.referer) referer = wcResult.referer;
+    }
+    xlog("webcine/total", { ms: Date.now() - t, found: !!streamUrl, via: usouCineVs ? "cinevs" : "legado" });
 
   } else {
     const html = await fetchHtml(url, "https://megaflix.lat/");

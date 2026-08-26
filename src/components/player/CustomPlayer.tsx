@@ -511,6 +511,34 @@ export function CustomPlayer({
     isProvider(fonte, "redecanais.capital"),
   );
 
+  // Webcine — primeiro da lista para facilitar o teste.
+  //
+  // Vale a posicao por consumo: a midia sai de um CDN que nao valida Referer nem
+  // Origin (medido em 26/08/2026), entao ela vai direto ao dispositivo nos tres
+  // ambientes e nao gera Transfer Out na Vercel. O WatchPlay, em comparacao,
+  // custa ~468 MB por episodio no site porque precisa do proxy.
+  //
+  // A extracao roda na rota da Vercel: as credenciais do webcine ficam em
+  // variavel de ambiente e nunca chegam ao exe nem ao APK.
+  if (tmdbValido) {
+    const q = titulo ? `&q=${encodeURIComponent(titulo)}` : "";
+    const webcineUrl = conteudoTipo === "serie" && temporada && numeroEp
+      ? `https://webcinevs2.com/?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}${q}`
+      : conteudoTipo === "filme"
+        ? `https://webcinevs2.com/?id=${tmdbValido}&type=movie${q}`
+        : null;
+
+    if (webcineUrl) {
+      allFontes.push({
+        label: "Player 1",
+        embedUrl: webcineUrl,
+        tokenized: false,
+        servidor: "Webcine",
+        provider: "webcine",
+      });
+    }
+  }
+
   // Player 1: PlayerFlix.
   //
   // A entrada primária continua sendo a URL Ajax: o extrator escolhe o servidor
