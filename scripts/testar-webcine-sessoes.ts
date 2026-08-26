@@ -21,6 +21,13 @@
 // Arquivo isolado: sem isto os scripts compartilham escopo global no tsc.
 export {};
 
+// tsx nao carrega .env.local sozinho — quem faz isso e o Next. loadEnvConfig le
+// os mesmos arquivos, na mesma ordem, sem dependencia nova (@next/env ja vem
+// com o Next). Precisa rodar ANTES de qualquer process.env abaixo.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { loadEnvConfig } = require("@next/env");
+loadEnvConfig(process.cwd(), true, { info: () => {}, error: console.error });
+
 const BASE = process.env.WEBCINE_API_BASE ?? "https://utxptx-api.b-cdn.net/api/v1";
 const SITE = process.env.WEBCINE_SITE ?? "https://webcinevs2.com";
 const DEVICE_ID = process.env.WEBCINE_DEVICE_ID ?? "";
