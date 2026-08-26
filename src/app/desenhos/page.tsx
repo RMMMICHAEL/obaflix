@@ -20,7 +20,7 @@ const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 const NEW_EP_MS = 48 * 60 * 60 * 1000;
 
 const selBrowse = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, backgroundTituloPt: true, logo: true,
   ano: true, nota: true, createdAt: true,
 } as const;
 
@@ -30,13 +30,14 @@ const selBrowseWithGenres = {
 } as const;
 
 const selGrid = {
-  id: true, titulo: true, poster: true, background: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true,
 } satisfies Prisma.SerieSelect;
 
 function toRow(s: any) {
   return {
     id: s.id, tipo: "desenho" as const, titulo: s.titulo,
-    poster: s.poster ?? null, background: s.background ?? null, logo: s.logo ?? null,
+    poster: s.poster ?? null, background: s.background ?? null,
+    backgroundTituloPt: s.backgroundTituloPt ?? null, logo: s.logo ?? null,
     ano: s.ano ?? null, nota: s.nota ?? null,
     isNew: s.createdAt ? Date.now() - new Date(s.createdAt).getTime() < NEW_MS : false,
   };
@@ -46,6 +47,7 @@ function toGrid(s: any) {
   return {
     id: s.id, tipo: "desenho" as const,
     titulo: s.titulo, poster: s.poster ?? null, background: s.background ?? null,
+    backgroundTituloPt: s.backgroundTituloPt ?? null,
     ano: s.ano ?? null, nota: s.nota ?? null,
   };
 }

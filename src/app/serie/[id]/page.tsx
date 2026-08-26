@@ -150,7 +150,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
     const dbRecs = await prisma.serie.findMany({
       where: { tmdbId: { in: tmdbIds } },
-      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, tipo: true },
+      select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true, tipo: true },
     });
     recCards = dbRecs.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
@@ -161,7 +161,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     const fallback = await prisma.serie.findMany({
       where: { id: { not: serie.id }, generos: { some: { generoId: { in: generoIds } } } },
       take: 20,
-      select: { id: true, titulo: true, poster: true, background: true, ano: true, nota: true, tipo: true },
+      select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true, tipo: true },
     });
     recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
   }

@@ -22,7 +22,7 @@ export default async function ColecaoPage({ params }: { params: { id: string } }
         where: { tmdbId: { in: tmdbIds } },
         select: {
           id: true, tmdbId: true, titulo: true, poster: true,
-          background: true, logo: true, ano: true, nota: true,
+          background: true, backgroundTituloPt: true, logo: true, ano: true, nota: true,
           urlDub: true, urlLeg: true,
         },
       })

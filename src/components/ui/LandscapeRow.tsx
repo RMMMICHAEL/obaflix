@@ -11,6 +11,8 @@ interface Item {
   titulo: string;
   poster: string | null;
   background?: string | null;
+  /** Arte ja traz o titulo desenhado em portugues: o rotulo abaixo some. */
+  backgroundTituloPt?: boolean | null;
   logo?: string | null;
   ano?: number | null;
   nota?: number | null;

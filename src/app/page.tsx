@@ -35,6 +35,7 @@ type CardItem = {
   titulo: string;
   poster: string | null;
   background?: string | null;
+  backgroundTituloPt?: boolean | null;
   logo?: string | null;
   ano: number | null;
   nota: number | null;
@@ -48,6 +49,7 @@ function dbToCard(r: any, tipo: CardItem["tipo"]): CardItem {
     id: r.id, tipo,
     titulo: r.titulo, poster: r.poster,
     background: r.background ?? null,
+    backgroundTituloPt: r.backgroundTituloPt ?? null,
     logo: r.logo ?? null,
     ano: r.ano, nota: r.nota,
     urlDub: r.urlDub ?? null, urlLeg: r.urlLeg ?? null,
@@ -78,7 +80,7 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
 }
 
 // createdAt + logo incluídos nas queries
-const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, ano: true, nota: true, createdAt: true } as const;
+const selDB = { id: true, tmdbId: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, logo: true, sinopse: true, ano: true, nota: true, createdAt: true } as const;
 const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
 const selSerie  = { ...selDB, tipo: true } as const;
 

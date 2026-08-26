@@ -15,6 +15,8 @@ interface Props {
   titulo: string;
   poster: string | null;
   background?: string | null;
+  /** Arte ja traz o titulo desenhado em portugues: o rotulo abaixo some. */
+  backgroundTituloPt?: boolean | null;
   logo?: string | null;
   ano?: number | null;
   nota?: number | null;
@@ -50,7 +52,7 @@ interface Props {
 // chamadores repassam o item inteiro por spread, mas nao sao mais desenhados no
 // card fechado: a arte e o nome bastam, e o resto vai para a interacao.
 export function LandscapeCard({
-  id, tipo, titulo, poster, background, progresso, episodeLabel, isNew,
+  id, tipo, titulo, poster, background, backgroundTituloPt, progresso, episodeLabel, isNew,
   layout = "row", hideTitle = false,
 }: Props) {
   const isGrid = layout === "grid";
@@ -98,10 +100,9 @@ export function LandscapeCard({
             onError={imgFallback}
           />
 
-          {/* Sem gradiente e sem texto sobre a arte: com pickBackdrop escolhendo
-              backdrop sem titulo queimado, o banner fica limpo e o nome vive
-              abaixo do card. Escurecer a imagem so serviria para dar contraste a
-              um texto que nao esta mais aqui. */}
+          {/* Sem gradiente e sem texto por cima da arte: o nome vive abaixo do
+              card, ou ja vem desenhado no proprio banner. Escurecer a imagem so
+              serviria para dar contraste a um texto que nao esta aqui. */}
 
           <div className="absolute inset-0 hidden md:flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
             <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center">
@@ -130,9 +131,21 @@ export function LandscapeCard({
 
         {/* Nome abaixo do banner. Uma linha so: com duas, fileiras vizinhas
             ficam com alturas diferentes conforme o tamanho do titulo e o ritmo
-            da pagina quebra. */}
+            da pagina quebra.
+
+            Quando a arte ja traz o titulo desenhado em portugues, a linha
+            continua ocupando o mesmo espaco mas fica invisivel. Remove-la de
+            vez faria os cards da mesma fileira terem alturas diferentes, e a
+            prateleira fica desalinhada justamente porque so parte do catalogo
+            tem arte legendada. O nome segue acessivel pelo alt da imagem e pelo
+            title do link. */}
         {!hideTitle && (
-          <p className="mt-2 px-0.5 text-[13px] md:text-sm text-zinc-300 truncate group-hover/card:text-white transition-colors">
+          <p
+            aria-hidden={backgroundTituloPt ? "true" : undefined}
+            className={`mt-2 px-0.5 text-[13px] md:text-sm text-zinc-300 truncate transition-colors ${
+              backgroundTituloPt ? "invisible" : "group-hover/card:text-white"
+            }`}
+          >
             {titulo}
           </p>
         )}

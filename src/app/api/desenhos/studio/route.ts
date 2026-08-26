@@ -9,7 +9,7 @@ const filmSelect = {
   titulo: true,
   tituloOriginal: true,
   poster: true,
-  background: true,
+  background: true, backgroundTituloPt: true,
   ano: true,
   nota: true,
 } as const;
@@ -19,7 +19,7 @@ const seriesSelect = {
   titulo: true,
   tituloOriginal: true,
   poster: true,
-  background: true,
+  background: true, backgroundTituloPt: true,
   ano: true,
   nota: true,
   tipo: true,
@@ -73,6 +73,7 @@ export async function GET(request: NextRequest) {
     titulo: item.titulo,
     poster: item.poster ?? null,
     background: item.background ?? null,
+    backgroundTituloPt: item.backgroundTituloPt ?? null,
     ano: item.ano ?? null,
     nota: item.nota ?? null,
   }));

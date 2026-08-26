@@ -17,6 +17,8 @@ export interface RecommendationCard {
   titulo: string;
   poster: string | null;
   background: string | null;
+  /** Arte ja traz o titulo em portugues: o card omite o rotulo. */
+  backgroundTituloPt: boolean | null;
 }
 
 export interface RecommendationRow {
@@ -62,6 +64,7 @@ interface PoolItem {
   titulo: string;
   poster: string | null;
   background: string | null;
+  backgroundTituloPt: boolean | null;
   ano: number | null;
   nota: number | null;
   popularidade: number | null;
@@ -82,7 +85,7 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
       orderBy: [...ordemPopular],
       take: POOL_TAKE,
       select: {
-        id: true, titulo: true, poster: true, background: true,
+        id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
         ano: true, nota: true, popularidade: true,
         urlDub: true, urlLeg: true,
         generos: { select: { generoId: true } },
@@ -93,7 +96,7 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
       orderBy: [...ordemPopular],
       take: POOL_TAKE,
       select: {
-        id: true, titulo: true, poster: true, background: true,
+        id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
         ano: true, nota: true, popularidade: true, tipo: true,
         generos: { select: { generoId: true } },
         // Só para derivar dois booleanos. O array não entra no cache — vira
@@ -112,12 +115,14 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
   return {
     filmes: filmes.map((f): PoolItem => ({
       id: f.id, tipo: "filme", titulo: f.titulo, poster: f.poster, background: f.background,
+      backgroundTituloPt: f.backgroundTituloPt,
       ano: f.ano, nota: f.nota, popularidade: f.popularidade,
       generoIds: f.generos.map((g) => g.generoId),
       temDub: Boolean(f.urlDub), temLeg: Boolean(f.urlLeg),
     })),
     series: series.map((s): PoolItem => ({
       id: s.id, tipo: normalizeSeriesType(s.tipo), titulo: s.titulo, poster: s.poster, background: s.background,
+      backgroundTituloPt: s.backgroundTituloPt,
       ano: s.ano, nota: s.nota, popularidade: s.popularidade,
       generoIds: s.generos.map((g) => g.generoId),
       temDub: s.episodios.some((ep) => Boolean(ep.urlDub)),
@@ -142,12 +147,12 @@ const getPoolCompartilhado = unstable_cache(
  * lê.
  */
 const selecaoSinalFilme = {
-  id: true, titulo: true, poster: true, background: true,
+  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
   generos: { select: { generoId: true } },
 } as const;
 
 const selecaoSinalSerie = {
-  id: true, titulo: true, poster: true, background: true, tipo: true,
+  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, tipo: true,
   generos: { select: { generoId: true } },
 } as const;
 
@@ -156,6 +161,7 @@ interface MidiaSinal {
   titulo: string;
   poster: string | null;
   background: string | null;
+  backgroundTituloPt: boolean | null;
   tipo: RecommendationKind;
   generoIds: number[];
 }
@@ -168,13 +174,14 @@ function normalizeSeriesType(tipo: string): RecommendationKind {
   return tipo === "anime" || tipo === "desenho" ? tipo : "serie";
 }
 
-function toCard(item: { id: string; tipo: RecommendationKind; titulo: string; poster: string | null; background: string | null }): RecommendationCard {
+function toCard(item: { id: string; tipo: RecommendationKind; titulo: string; poster: string | null; background: string | null; backgroundTituloPt: boolean | null }): RecommendationCard {
   return {
     id: item.id,
     tipo: item.tipo,
     titulo: item.titulo,
     poster: item.poster,
     background: item.background,
+    backgroundTituloPt: item.backgroundTituloPt,
   };
 }
 
@@ -236,12 +243,14 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   for (const row of signalFilms) {
     signalMedia.set(`filme:${row.id}`, {
       id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
+      backgroundTituloPt: row.backgroundTituloPt,
       tipo: "filme", generoIds: row.generos.map((g) => g.generoId),
     });
   }
   for (const row of signalSeries) {
     signalMedia.set(`serie:${row.id}`, {
       id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
+      backgroundTituloPt: row.backgroundTituloPt,
       tipo: normalizeSeriesType(row.tipo), generoIds: row.generos.map((g) => g.generoId),
     });
   }
