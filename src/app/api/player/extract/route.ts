@@ -5,7 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
 import { ehHostHide, ordemEspelhosHide, validarMasterHide } from "@/lib/hideMaster";
-import { extractCineVs } from "@/lib/cinevs";
+import { extractCineVs, type CineVsFonte, type CineVsSubtitle } from "@/lib/cinevs";
 import { headerMatchesHost } from "@/lib/requestSecurity";
 import { parsePlayerflixEmbeds } from "@/lib/playerflix";
 import {
@@ -1006,6 +1006,14 @@ type ResultadoExtracao = {
   referer?: string;
   manifest?: string;
   motivo?: MotivoIframe;
+  /** Legendas separadas da faixa de vídeo, quando o provedor oferece. */
+  subtitles?: CineVsSubtitle[];
+  /** Servidores do mesmo conteúdo, para o menu de troca manual. */
+  fontes?: CineVsFonte[];
+  /** Fonte usada nesta extração. */
+  videoId?: number;
+  /** Medido: o CDN aceita origem arbitrária, então a mídia pode ir direto. */
+  corsLiberado?: boolean;
 };
 
 async function doExtract(url: string): Promise<ResultadoExtracao> {
@@ -1015,6 +1023,10 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
   const id = pathname.split("/").filter(Boolean).pop() ?? "";
 
   let streamUrl: string | null = null;
+  let subtitles: CineVsSubtitle[] | undefined;
+  let fontes: CineVsFonte[] | undefined;
+  let videoId: number | undefined;
+  let corsLiberado = false;
   let referer: string | undefined;
   let manifest: string | undefined;
 
@@ -1143,19 +1155,31 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
     // responde mais — fica como fallback caso a base volte.
     let usouCineVs = false;
     try {
+      // `video` identifica a fonte escolhida no menu. Sem ele, o extrator pega
+      // a primeira disponível na ordem do provedor.
+      const videoEscolhido = Number(parsed.searchParams.get("video") ?? 0) || undefined;
       const cv = await extractCineVs({
         tmdbId,
         type: tipoBusca === "movie" ? "movie" : "tv",
         season: Number(parsed.searchParams.get("season") ?? 1),
         episode: Number(parsed.searchParams.get("episode") ?? 1),
         titleHint: parsed.searchParams.get("q") ?? "",
+        videoId: videoEscolhido,
       });
       if (cv?.streamUrl) {
         streamUrl = cv.streamUrl;
         // null de proposito: o CDN nao exige Referer, e mandar um so atrapalha.
         referer = cv.referer ?? undefined;
+        subtitles = cv.subtitles.length ? cv.subtitles : undefined;
+        fontes = cv.fontes;
+        videoId = cv.videoId;
+        corsLiberado = cv.corsLiberado;
         usouCineVs = true;
-        xlog("webcine/cinevs", { ms: Date.now() - t, host: cv.mediaHost, formato: cv.format, subs: cv.subtitles.length });
+        xlog("webcine/cinevs", {
+          ms: Date.now() - t, host: cv.mediaHost, formato: cv.format,
+          subs: cv.subtitles.length, fontes: cv.fontes.length,
+          videoId: cv.videoId, cors: cv.corsLiberado ? "liberado" : "restrito",
+        });
       }
     } catch (e: any) {
       xlog("webcine/cinevs_err", { err: String(e?.message ?? "").slice(0, 80) });
@@ -1183,7 +1207,7 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
   if (!streamUrl) return { stream: url, tipo: "iframe", motivo: "sem_fonte_extraivel" };
 
   const tipo = streamUrl.includes(".mp4") ? "mp4" : "hls";
-  return { stream: streamUrl, tipo, referer, manifest };
+  return { stream: streamUrl, tipo, referer, manifest, subtitles, fontes, videoId, corsLiberado };
 }
 
 export async function GET(req: NextRequest) {
@@ -1253,12 +1277,25 @@ export async function GET(req: NextRequest) {
       // CDNs com token tempo-limitado (não IP-bound): entrega URL direta ao browser
       // vod01e001.fun (Voltz) bloqueia IPs de datacenter; webcinevs2 usa cnvs_token tempo-limitado
       if (url.includes("voltz.php") || url.includes("webcinevs2.com")) {
-        return NextResponse.json({ tipo: "mp4_direct", stream: result.stream }, { headers: NO_STORE });
+        return NextResponse.json(
+          { tipo: "mp4_direct", stream: result.stream, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+          { headers: NO_STORE },
+        );
       }
       const sig = signSegmentUrl(result.stream, userId);
       const ref = result.referer ? `&ref=${encodeURIComponent(result.referer)}` : "";
       const proxyUrl = `/api/player/proxy?url=${encodeURIComponent(result.stream)}&sig=${sig}${ref}`;
       return NextResponse.json({ tipo: "mp4", streamToken: proxyUrl }, { headers: NO_STORE });
+    }
+
+    // HLS direto: só para o webcine, e só com CORS comprovado na extração.
+    // Uma variante HLS de anime custa ~188 MB de Transfer Out pelo proxy; indo
+    // direto custa zero. Qualquer dúvida sobre o CORS cai no proxy (fechado).
+    if (result.tipo === "hls" && result.corsLiberado && url.includes("webcinevs2.com")) {
+      return NextResponse.json(
+        { tipo: "hls_direct", stream: result.stream, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+        { headers: NO_STORE },
+      );
     }
 
     const { token: streamToken, accepted } = await createStreamToken(
@@ -1274,7 +1311,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Limite de reproduções simultâneas atingido" }, { status: 429, headers: NO_STORE });
     }
 
-    return NextResponse.json({ tipo: result.tipo, streamToken }, { headers: NO_STORE });
+    return NextResponse.json(
+      { tipo: result.tipo, streamToken, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+      { headers: NO_STORE },
+    );
 
   } catch (err: any) {
     const detalhe = String(err?.message).slice(0, 80);

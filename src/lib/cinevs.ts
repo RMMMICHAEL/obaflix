@@ -146,6 +146,94 @@ function hasExpiryParams(u: string): boolean {
   }
 }
 
+// ── Rotulagem das fontes ─────────────────────────────────────────────────────
+
+const NOME_AUDIO: Record<string, string> = {
+  dubbed: "Dublado",
+  dublado: "Dublado",
+  subtitled: "Legendado",
+  legendado: "Legendado",
+  original: "Original",
+  dual: "Dual Áudio",
+};
+
+function nomeAudio(tipo: string): string {
+  const chave = String(tipo || "").toLowerCase();
+  return NOME_AUDIO[chave] ?? (chave ? chave[0].toUpperCase() + chave.slice(1) : "Áudio");
+}
+
+type VideoBruto = {
+  id: number;
+  audio_type: string;
+  is_premium?: boolean;
+  is_code?: boolean;
+  locked?: boolean;
+  sort_order?: number;
+};
+
+/**
+ * Converte a lista crua de `/videos` em fontes rotuladas.
+ *
+ * Numera dentro de cada combinacao audio+premium, entao duas fontes "dubbed"
+ * viram "Dublado" e "Dublado 2", e uma premium vira "Dublado Premium".
+ * A ordem segue `sort_order`, como o site faz.
+ */
+export function rotularFontes(
+  videos: VideoBruto[],
+  acesso: { temAssinatura: boolean; temVip: boolean },
+): CineVsFonte[] {
+  const ordenados = [...videos].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const contador = new Map<string, number>();
+
+  return ordenados.map((v) => {
+    const premium = Boolean(v.is_premium);
+    const base = nomeAudio(v.audio_type) + (premium ? " Premium" : "");
+    const n = (contador.get(base) ?? 0) + 1;
+    contador.set(base, n);
+
+    let motivo: string | undefined;
+    if (v.locked) motivo = "bloqueado pelo provedor";
+    else if (premium && !acesso.temVip) motivo = "requer VIP";
+    else if (v.is_code) motivo = "requer código de desbloqueio";
+    else if (!acesso.temAssinatura) motivo = "requer assinatura";
+
+    return {
+      videoId: v.id,
+      audioType: v.audio_type,
+      isPremium: premium,
+      isCode: Boolean(v.is_code),
+      sortOrder: v.sort_order ?? 0,
+      locked: Boolean(v.locked),
+      label: n > 1 ? `${base} ${n}` : base,
+      disponivel: !motivo,
+      ...(motivo ? { motivoIndisponivel: motivo } : {}),
+    };
+  });
+}
+
+/**
+ * Confere se a midia pode ir direto ao dispositivo.
+ *
+ * Só devolve true com prova: uma requisicao real com Origin arbitraria que
+ * volte 2xx e com Access-Control-Allow-Origin compativel. Qualquer duvida —
+ * erro, ausencia do header, origem diferente — devolve false e a midia volta
+ * para o proxy. Fallback fechado de proposito.
+ */
+async function corsPermiteDireto(url: string, timeoutMs: number): Promise<boolean> {
+  const ORIGEM_TESTE = "https://obaflix.vercel.app";
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "*/*", Origin: ORIGEM_TESTE },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) return false;
+    const acao = r.headers.get("access-control-allow-origin");
+    return acao === "*" || acao === ORIGEM_TESTE;
+  } catch {
+    return false;
+  }
+}
+
 // ── Autenticação (renovação de token) ────────────────────────────────────────
 // [BYTECODE] endpoints auth/refresh + auth/token presentes; JWT guardado em "jwt_token".
 // [RUNTIME]  o formato exato de corpo/resposta da SUA conta pode variar — ajustável por env.
@@ -222,11 +310,42 @@ export interface CineVsResult {
   hasExpiry: boolean;
   audioType: string;
   subtitles: CineVsSubtitle[];
+  /** Todas as opcoes do conteudo, para o menu de servidor. */
+  fontes: CineVsFonte[];
+  /** videoId efetivamente usado. */
+  videoId: number;
+  /**
+   * true so quando foi MEDIDO que o CDN aceita origem arbitraria. Sem prova,
+   * fica false e a midia volta para o proxy — fallback fechado.
+   */
+  corsLiberado: boolean;
+}
+
+/**
+ * Uma das opcoes que `/videos` devolve para o mesmo conteudo. O identificador
+ * estavel e o `videoId`: `audioType` se repete (medido — os quatro titulos
+ * testados tinham duas fontes "dubbed"), entao rotular por audio colide.
+ */
+export interface CineVsFonte {
+  videoId: number;
+  audioType: string;
+  isPremium: boolean;
+  isCode: boolean;
+  sortOrder: number;
+  locked: boolean;
+  /** Rotulo para o usuario: "Dublado", "Dublado 2", "Dublado Premium". */
+  label: string;
+  /** false quando exige acesso que a conta nao tem. Nunca contornamos. */
+  disponivel: boolean;
+  /** Preenchido quando indisponivel, para a UI explicar. */
+  motivoIndisponivel?: string;
 }
 
 export interface CineVsQuery {
   tmdbId: string;
   type: "movie" | "tv";
+  /** Fonte escolhida pelo usuario. Ausente = a primeira disponivel. */
+  videoId?: number;
   season?: number;
   episode?: number;
   titleHint?: string;
@@ -264,17 +383,35 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
 
     let internalId: number | null = null;
     let episodeId: number | null = null;
+    let tipoCasado = "";
+
+    // O endpoint do detalhe vem do `type` da propria busca. Assumir
+    // "tudo que nao e movie e series" quebrava anime em silencio: os IDs sao
+    // namespaces separados — animes/3827 e "Hunter x Hunter" (tmdb 46298) e
+    // series/3827 e "Beijar ou Morrer" (tmdb 296263). O tmdb_id nao batia e o
+    // candidato era descartado como "nao encontrado".
+    const endpointDe = (tipo: string): string | null => {
+      switch (String(tipo).toLowerCase()) {
+        case "movie": return "movies";
+        case "series": return "series";
+        case "anime": return "animes";
+        default: return null;
+      }
+    };
 
     for (const c of candidates.slice(0, 8)) {
-      if (isMovie !== (c.type === "movie")) continue;
-      const endpoint = isMovie ? "movies" : "series";
+      const endpoint = endpointDe(c.type);
+      if (!endpoint) continue;
+      // Filme so casa com filme; serie e anime sao ambos episodicos.
+      if (isMovie !== (endpoint === "movies")) continue;
       const dUrl = `${cfg.base}/${endpoint}/${c.id}?profile_id=${encodeURIComponent(cfg.profileId)}`;
       const dRes = await fetch(dUrl, { headers: H, signal: AbortSignal.timeout(TIMEOUT) });
-      log("detail", { path: sanitizePath(dUrl), status: dRes.status });
+      log("detail", { path: sanitizePath(dUrl), status: dRes.status, tipo: c.type });
       if (!dRes.ok) continue;
       const detail = await dRes.json();
       if (String(detail.tmdb_id) !== String(q.tmdbId)) continue;
       internalId = c.id;
+      tipoCasado = c.type;
       if (!isMovie) {
         // [RUNTIME] shape de temporadas/episódios do /api/v1/ ainda não validado.
         const seasons = (detail.seasons ?? []) as Array<{
@@ -293,7 +430,7 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
       log("not_found", { ms: Date.now() - t0, tmdb: q.tmdbId, type: q.type });
       return null;
     }
-    log("found", { ms: Date.now() - t0, internalId, episodeId: episodeId ?? "-" });
+    log("found", { ms: Date.now() - t0, internalId, episodeId: episodeId ?? "-", tipo: tipoCasado });
 
     // 2. Lista de servidores.  [BYTECODE] streaming/movies/{id}/videos | episodes/{id}/videos
     const videosUrl = isMovie
@@ -322,6 +459,7 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
       id: number;
       audio_type: string;
       is_premium: boolean;
+      is_code?: boolean;
       locked: boolean;
       sort_order?: number;
     }>;
@@ -330,15 +468,45 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
       return null;
     }
 
-    // Prioriza servidores desbloqueados (dublado → outros). Premium/locked = último recurso,
-    // sem forjar prova de anúncio: se exigir X-Ad-Proof, o servidor recusará e seguimos.
-    const eligible = [
-      ...videos.filter((v) => !v.is_premium && !v.locked && v.audio_type === "dubbed"),
-      ...videos.filter((v) => !v.is_premium && !v.locked && v.audio_type !== "dubbed"),
-      ...videos.filter((v) => v.is_premium || v.locked),
-    ];
+    // TODAS as opcoes viram fontes rotuladas — e nao so a primeira que resolve.
+    // Listar nao custa chamada nenhuma: `/videos` ja foi buscado acima.
+    const fontes = rotularFontes(videos, {
+      temAssinatura: vData.has_subscription !== false,
+      temVip: vData.has_vip_access !== false,
+    });
+    log("fontes", {
+      total: fontes.length,
+      rotulos: fontes.map((f) => `${f.label}${f.disponivel ? "" : "!"}`).join("|"),
+    });
 
-    // 3. Para cada servidor: /video/{videoId} → video_url (SEM resolve-url).  [BYTECODE]
+    // Fonte pedida pelo usuario tem prioridade absoluta; sem pedido, tenta as
+    // disponiveis na ordem do provedor. Indisponivel nunca entra na tentativa
+    // automatica — nao ha contorno de restricao aqui.
+    const porId = (id: number) => videos.find((v) => v.id === id);
+    const pedida = q.videoId ? porId(q.videoId) : null;
+    if (q.videoId && !pedida) {
+      log("video_inexistente", { videoId: q.videoId });
+      return null;
+    }
+    if (pedida) {
+      const meta = fontes.find((f) => f.videoId === pedida.id);
+      if (meta && !meta.disponivel) {
+        log("fonte_indisponivel", { videoId: pedida.id, motivo: meta.motivoIndisponivel ?? "?" });
+        return null;
+      }
+    }
+
+    const disponiveis = new Set(fontes.filter((f) => f.disponivel).map((f) => f.videoId));
+    const eligible = pedida
+      ? [pedida]
+      : videos.filter((v) => disponiveis.has(v.id)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+    if (eligible.length === 0) {
+      log("nenhuma_disponivel", { ms: Date.now() - t0, total: fontes.length });
+      return null;
+    }
+
+    // 3. Para a fonte escolhida: /video/{videoId} → payload → resolve-url.
     for (const video of eligible) {
       const detailUrl = isMovie
         ? `${cfg.base}/streaming/movies/${internalId}/video/${video.id}?device_id=${encodeURIComponent(cfg.deviceId)}&profile_id=${encodeURIComponent(cfg.profileId)}&device_name=Obaflix&device_type=${cfg.deviceType}&platform=${cfg.platform}`
@@ -356,6 +524,13 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
         const d = await r.json();
         payload = d.video_url;
         sessionId = d.session_id ?? null;
+        // `extracted_subtitles` so existe no detalhe da fonte e estava sendo
+        // descartado. Soma-se as legendas do nivel do episodio, sem repetir url.
+        for (const es of (d.extracted_subtitles ?? []) as Array<{ language?: string; label?: string; url?: string }>) {
+          if (es.url && !subtitles.some((x) => x.url === es.url)) {
+            subtitles.push({ language: es.language ?? "", label: es.label ?? "", url: es.url });
+          }
+        }
         if (!payload) {
           log("video_no_url", { videoId: video.id });
           continue;
@@ -386,14 +561,22 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
         continue;
       }
 
+      // Só HLS precisa de CORS: o MP4 toca em <video src> sem ele. A prova custa
+      // uma requisicao e evita ~188 MB de Transfer Out por episodio (medido).
+      const formatoFinal = detectFormat(finalUrl);
+      const corsLiberado = formatoFinal === "HLS"
+        ? await corsPermiteDireto(finalUrl, TIMEOUT)
+        : false;
+
       log("ok", {
         ms: Date.now() - t0,
         videoId: video.id,
         audio: video.audio_type,
         mediaHost: mediaHost(finalUrl),
-        format: detectFormat(finalUrl),
+        format: formatoFinal,
         hasExpiry: hasExpiryParams(finalUrl),
         subs: subtitles.length,
+        cors: corsLiberado ? "liberado" : "restrito",
       });
 
       return {
@@ -407,6 +590,9 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
         hasExpiry: hasExpiryParams(finalUrl),
         audioType: video.audio_type,
         subtitles,
+        fontes,
+        videoId: video.id,
+        corsLiberado,
       };
     }
 

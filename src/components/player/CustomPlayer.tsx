@@ -80,6 +80,19 @@ interface Fonte {
   semExtrator?: boolean;
 }
 
+/** Um servidor do webcine, como a rota de extract devolve em `fontes`. */
+interface WebcineFonte {
+  videoId: number;
+  audioType: string;
+  isPremium: boolean;
+  isCode: boolean;
+  sortOrder: number;
+  locked: boolean;
+  label: string;
+  disponivel: boolean;
+  motivoIndisponivel?: string;
+}
+
 /** Uma fonte do Playerflix, como /api/player/playerflix-sources devolve. */
 interface PlayerflixSource {
   id: string;
@@ -454,6 +467,11 @@ export function CustomPlayer({
   // aditiva: enquanto estiver vazia — carregando, falhou ou o conteúdo não tem
   // alternativas — o Player 1 se comporta exatamente como antes.
   const [playerflixSources, setPlayerflixSources] = useState<PlayerflixSource[]>([]);
+  /**
+   * Servidores do webcine para o episodio atual. Chegam na resposta do extract
+   * — `/videos` ja e buscado la — entao listar nao custa chamada nenhuma.
+   */
+  const [webcineFontes, setWebcineFontes] = useState<WebcineFonte[]>([]);
   // Servidores que já falharam de forma fatal, por embedUrl, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
@@ -529,6 +547,7 @@ export function CustomPlayer({
         : null;
 
     if (webcineUrl) {
+      // Entrada primaria: o extrator escolhe a primeira fonte disponivel.
       allFontes.push({
         label: "Player 1",
         embedUrl: webcineUrl,
@@ -536,6 +555,21 @@ export function CustomPlayer({
         servidor: "Webcine",
         provider: "webcine",
       });
+
+      // Uma entrada por servidor do webcine, identificada pelo video id — que e
+      // o unico identificador estavel: audio_type se repete (nos quatro titulos
+      // medidos havia duas fontes "dubbed"). Bloqueada aparece como
+      // indisponivel; nunca ha tentativa de contornar a restricao.
+      for (const f of webcineFontes) {
+        allFontes.push({
+          label: "Player 1",
+          embedUrl: `${webcineUrl}&video=${f.videoId}`,
+          tokenized: false,
+          servidor: `Webcine · ${f.label}`,
+          provider: "webcine",
+          ...(f.disponivel ? {} : { semExtrator: true }),
+        });
+      }
     }
   }
 
@@ -1181,6 +1215,12 @@ export function CustomPlayer({
           if (!data.stream) throw new Error("Stream não encontrado");
           playerUrl = data.stream;
           tipo = "mp4";
+        } else if (tipo === "hls_direct") {
+          // Só o webcine chega aqui, e só quando a rota MEDIU que o CDN aceita
+          // origem arbitraria. Evita ~188 MB de Transfer Out por episodio.
+          if (!data.stream) throw new Error("Stream não encontrado");
+          playerUrl = data.stream;
+          tipo = "hls";
         } else {
           if (!data.streamToken) throw new Error("Stream não encontrado");
           // MP4: streamToken já é a URL proxy HMAC-assinada (permite range requests repetidos ao buscar posição)
@@ -1190,6 +1230,19 @@ export function CustomPlayer({
             : `/api/player/proxy?t=${encodeURIComponent(data.streamToken)}`;
         }
         directStreamRef.current = playerUrl;
+
+        // Legendas separadas da faixa de video. Ate agora a rota web nao tinha
+        // esse campo e elas eram buscadas e descartadas.
+        if (Array.isArray(data.subtitles) && data.subtitles.length) {
+          setSubtitleTracks(
+            data.subtitles.map((t: { url: string; label?: string; language?: string }) => ({
+              file: t.url,
+              label: t.label || t.language || "Legenda",
+              kind: "captions" as const,
+            })),
+          );
+        }
+        if (Array.isArray(data.fontes)) setWebcineFontes(data.fontes as WebcineFonte[]);
       }
 
       setStreamTipo(tipo as StreamTipo);
