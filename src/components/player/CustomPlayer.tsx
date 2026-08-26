@@ -22,6 +22,9 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
+import {
+  classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, LIMITES,
+} from "@/lib/playerFailover";
 
 const JW_CDN = "https://ssl.p.jwpcdn.com/player/v/8.19.1/jwplayer.js";
 // Licença encontrada no app Megaflix desktop (resources/app.asar → player page)
@@ -388,6 +391,27 @@ export function CustomPlayer({
   // Identidade da fonte ativa por URL, imune ao crescimento da lista de fontes.
   const fonteSelecionadaRef = useRef<string | null>(null);
   const allFontesRef = useRef<Fonte[]>([]);
+  // ── Failover ──────────────────────────────────────────────────────────────
+  // Epoch monotônica da fonte ativa. Toda requisição carrega a epoch em que
+  // começou; erro com epoch diferente é eco da fonte anterior e não diz nada
+  // sobre a atual. Substitui a janela de 2s do suppressErrorUntilRef, que
+  // adivinhava por tempo.
+  const sourceEpochRef = useRef(0);
+  const sourceIdRef = useRef("00000000");
+  const retriesRef = useRef(0);
+  // Timestamps das extrações automáticas — o orçamento é por janela, porque
+  // cada extração reserva um slot de stream no Redis (MAX_CONCURRENT = 5).
+  const extracoesRef = useRef<number[]>([]);
+  const failoverAntesRef = useRef(0);
+  const failoverAposRef = useRef(0);
+  const escolhaManualRef = useRef(false);
+  // Posição real no momento da troca. initialProgressoSeg é prop fixada na
+  // montagem: retomar por ela depois que a reprodução avançou rebaixaria
+  // dezenas de minutos de vídeo — ~468 MB por episódio.
+  const retomarEmRef = useRef(0);
+  const stallUltimoRef = useRef(0);
+  const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -938,7 +962,20 @@ export function CustomPlayer({
   }, [streamTipo, toggleFullscreen, togglePiP]);
 
   // ── switchFonte ──────────────────────────────────────────────────────────────
-  const switchFonte = useCallback((idx: number) => {
+  const switchFonte = useCallback((idx: number, manual = false) => {
+    // REQUISITO: a nova fonte retoma da posição REAL, nunca de initialProgressoSeg,
+    // que é prop fixada na montagem. Trocar aos 40 min e voltar ao começo
+    // rebaixaria ~360 MB — mais do que toda a economia da extração nativa.
+    retomarEmRef.current = Math.max(progressoRef.current, initialProgressoSeg);
+    sourceEpochRef.current += 1;
+    sourceIdRef.current = sourceIdDe(allFontesRef.current[idx]?.embedUrl ?? String(idx));
+    // Uma troca automatica nao herda a escolha do usuario: depois que o sistema
+    // moveu a fonte, o servidor ativo nao foi mais decisao dele.
+    escolhaManualRef.current = manual;
+    retriesRef.current = 0;
+    stallUltimoRef.current = 0;
+    if (firstFrameTimerRef.current) { clearTimeout(firstFrameTimerRef.current); firstFrameTimerRef.current = null; }
+    if (stallTimerRef.current) { clearInterval(stallTimerRef.current); stallTimerRef.current = null; }
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
     if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
@@ -980,7 +1017,7 @@ export function CustomPlayer({
     serverSwitchCountRef.current += 1;
     isChangingAudioTrackRef.current = false;
     initialLoadRef.current = true; // nova fonte = novo ciclo de carga inicial
-  }, []);
+  }, [initialProgressoSeg]);
 
   switchFonteRef.current = switchFonte;
 
@@ -1335,10 +1372,14 @@ export function CustomPlayer({
       });
 
       jwRef.current = player;
+      // Congelada aqui: o handler de erro compara contra sourceEpochRef atual.
+      const epochNoSetup = sourceEpochRef.current;
 
-      // Seek to resume position on initial load
-      if (initialProgressoSeg > 5) {
-        player.once("firstFrame", () => { player.seek(initialProgressoSeg); });
+      // Retomada: posição real preservada pelo switchFonte (failover ou troca
+      // manual), caindo para o progresso salvo apenas na primeira carga.
+      const retomarEm = Math.max(retomarEmRef.current, initialProgressoSeg);
+      if (retomarEm > 5) {
+        player.once("firstFrame", () => { player.seek(retomarEm); });
       }
 
       // Retry automático: 8s sem play → 1 re-extração silenciosa; se ainda travar → mostra botão
@@ -1368,6 +1409,12 @@ export function CustomPlayer({
           url: directStreamRef.current ?? undefined,
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
+        // Sucesso confirmado: o orçamento desta fonte volta ao início.
+        retriesRef.current = 0;
+        if (firstFrameTimerRef.current) {
+          clearTimeout(firstFrameTimerRef.current);
+          firstFrameTimerRef.current = null;
+        }
       });
 
       player.on("play", () => {
@@ -1711,6 +1758,156 @@ export function CustomPlayer({
       // [DIAG] Captura warnings do JW Player (333500/334001/330000) com URL do recurso que falhou
       // Ajuda a confirmar se .woff 500 são de fontes do manifesto HLS ou do skin do JW Player
       // Remover após confirmar causa raiz dos erros de renovação
+      /**
+       * Caminho unico de tratamento de falha: classifica, decide e age.
+       * Devolve true apenas quando a acao e "reextrair" - ai o chamador segue
+       * para a logica de renovacao ja existente. Todo o resto e resolvido aqui.
+       */
+      const avaliarFalha = (sinal: {
+        http?: number;
+        jwCode?: number | string;
+        mensagem?: string;
+        url?: string;
+        epochErro: number;
+        fi: number;
+        len: number;
+        embedUrl: string;
+      }): boolean => {
+        const { veredito, motivo } = classificarFalha({
+          http: sinal.http,
+          jwCode: sinal.jwCode,
+          mensagem: sinal.mensagem,
+          url: sinal.url,
+          epochErro: sinal.epochErro,
+          epochAtual: sourceEpochRef.current,
+        });
+
+        const agoraMs = Date.now();
+        extracoesRef.current = extracoesRef.current
+          .filter((t) => agoraMs - t < LIMITES.JANELA_EXTRACAO_MS);
+
+        const inElectronAgora = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
+        const podeReextrair = (inElectronAgora && supportsNativeDesktopExtraction(sinal.embedUrl))
+          || (streamTipo === "mp4" && !inElectronAgora);
+
+        const { acao, detalhe } = decidirAcao(veredito, {
+          retries: retriesRef.current,
+          extracoesNaJanela: extracoesRef.current.length,
+          failoversAposFirstFrame: failoverAposRef.current,
+          failoversAntesFirstFrame: failoverAntesRef.current,
+          houveFirstFrame: !initialLoadRef.current,
+          temProximaFonte: sinal.fi < sinal.len - 1,
+          escolhaManual: escolhaManualRef.current,
+          podeReextrair,
+        });
+
+        const proxima = sinal.fi < sinal.len - 1 ? allFontes[sinal.fi + 1] : null;
+        logFailover({
+          servidor: fonte?.servidor ?? fonte?.label ?? "?",
+          provider: fonte?.provider ?? "?",
+          sourceId: sourceIdRef.current,
+          tentativa: retriesRef.current + 1,
+          motivo: `${veredito}:${motivo}`,
+          retries: retriesRef.current,
+          acao,
+          escolhido: acao === "failover" ? (proxima?.servidor ?? proxima?.label ?? null) : null,
+        });
+
+        if (acao === "ignorar") return false;
+
+        if (acao === "retry") {
+          // Recarrega a MESMA midia. Reextrair nao conserta 5xx de CDN e ainda
+          // gastaria um slot de stream na Vercel.
+          const espera = backoffMs(retriesRef.current);
+          retriesRef.current += 1;
+          if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            if (unmountedRef.current) return;
+            if (sourceEpochRef.current !== sinal.epochErro) return;
+            const alvo = directStreamRef.current;
+            const playerAtual = jwRef.current;
+            if (!alvo || !playerAtual) return;
+            const retomar = Math.max(progressoRef.current, retomarEmRef.current);
+            try {
+              playerAtual.load([{ file: alvo, type: streamTipo === "mp4" ? "mp4" : "hls" }]);
+              suppressErrorUntilRef.current = Date.now() + 2000;
+              if (retomar > 5) playerAtual.once("firstFrame", () => { playerAtual.seek(retomar); });
+              playerAtual.play();
+            } catch { /* o proximo erro reentra aqui */ }
+          }, espera);
+          console.warn(`[diag/failover] retry em ${espera}ms - ${detalhe}`);
+          return false;
+        }
+
+        if (acao === "failover") {
+          if (!initialLoadRef.current) failoverAposRef.current += 1;
+          else failoverAntesRef.current += 1;
+          // switchFonte preserva progressoRef.current.
+          switchFonteRef.current(sinal.fi + 1);
+          return false;
+        }
+
+        if (acao === "erro") {
+          setError(friendlyPlayerError(new Error(`${motivo} - ${detalhe}`), fonte?.label ?? "Player"));
+          setStatus("error");
+          return false;
+        }
+
+        extracoesRef.current.push(agoraMs);
+        return true;
+      };
+
+      // Vigia do primeiro frame: sem frame nesse tempo, a fonte nao esta
+      // entregando. Falhar aqui e barato - nenhum segmento foi baixado ainda.
+      if (firstFrameTimerRef.current) clearTimeout(firstFrameTimerRef.current);
+      firstFrameTimerRef.current = setTimeout(() => {
+        firstFrameTimerRef.current = null;
+        if (unmountedRef.current || !initialLoadRef.current) return;
+        if (sourceEpochRef.current !== epochNoSetup) return;
+        avaliarFalha({
+          mensagem: `sem primeiro frame em ${LIMITES.T_FIRST_FRAME_MS}ms`,
+          epochErro: epochNoSetup,
+          fi: fonteIdx,
+          len: allFontes.length,
+          embedUrl: fonte?.embedUrl ?? "",
+        });
+      }, LIMITES.T_FIRST_FRAME_MS);
+
+      // Vigia de stall: posicao parada com o player em buffering. Pausa e seek
+      // nao contam - so travamento real.
+      if (stallTimerRef.current) clearInterval(stallTimerRef.current);
+      let posAnterior = -1;
+      let paradoDesde = 0;
+      stallTimerRef.current = setInterval(() => {
+        if (unmountedRef.current || initialLoadRef.current) return;
+        if (sourceEpochRef.current !== epochNoSetup) return;
+        const p = jwRef.current;
+        if (!p) return;
+        let estadoJw = "";
+        try { estadoJw = p.getState(); } catch { return; }
+        if (estadoJw !== "buffering") { posAnterior = -1; paradoDesde = 0; return; }
+        const atual = Math.floor(progressoRef.current);
+        if (atual !== posAnterior) { posAnterior = atual; paradoDesde = Date.now(); return; }
+        if (!paradoDesde) { paradoDesde = Date.now(); return; }
+        if (Date.now() - paradoDesde < LIMITES.T_STALL_MS) return;
+        paradoDesde = Date.now();
+        const agora = Date.now();
+        const segundoStall = stallUltimoRef.current > 0
+          && agora - stallUltimoRef.current < LIMITES.STALL_JANELA_MS;
+        stallUltimoRef.current = agora;
+        // Um stall isolado e rede; dois na mesma janela e a fonte. O segundo
+        // esgota o orcamento de uma vez para escalar ate o failover.
+        if (segundoStall) retriesRef.current = LIMITES.RETRIES_POR_FONTE;
+        avaliarFalha({
+          mensagem: segundoStall ? "segundo stall na janela" : "stall",
+          epochErro: epochNoSetup,
+          fi: fonteIdx,
+          len: allFontes.length,
+          embedUrl: fonte?.embedUrl ?? "",
+        });
+      }, 2000);
+
       player.on("warning", (e: any) => {
         if (unmountedRef.current) return;
         const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
@@ -1721,6 +1918,9 @@ export function CustomPlayer({
 
       player.on("error", (e: any) => {
         if (unmountedRef.current) return;
+        // Epoch em que ESTE player foi montado. Um erro que chega depois de uma
+        // troca pertence à fonte antiga e não pode derrubar a nova.
+        const epochDoPlayer = epochNoSetup;
 
         // [DIAG] Timing e detalhe do erro — remover após confirmar causa raiz
         const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
@@ -1743,6 +1943,17 @@ export function CustomPlayer({
         const fi = fonteIdx;
         const len = allFontes.length;
         const embedUrl = fonte?.embedUrl ?? "";
+
+        // Classificação e decisão centralizadas: o mesmo caminho usado pelos
+        // vigias de primeiro frame e de stall.
+        if (!avaliarFalha({
+          http: httpStatus,
+          jwCode: e?.code,
+          mensagem: e?.message,
+          url: srcUrl,
+          epochErro: epochDoPlayer,
+          fi, len, embedUrl,
+        })) return;
         const pos = progressoRef.current;
         const sinceRenewal = lastReExtractSuccessAtRef.current > 0
           ? Date.now() - lastReExtractSuccessAtRef.current
@@ -1905,6 +2116,8 @@ export function CustomPlayer({
     });
 
     return () => {
+      if (firstFrameTimerRef.current) { clearTimeout(firstFrameTimerRef.current); firstFrameTimerRef.current = null; }
+      if (stallTimerRef.current) { clearInterval(stallTimerRef.current); stallTimerRef.current = null; }
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
@@ -1929,8 +2142,9 @@ export function CustomPlayer({
     }
 
     video.src = streamUrl;
-    if (initialProgressoSeg > 5) {
-      video.addEventListener("loadedmetadata", () => { video.currentTime = initialProgressoSeg; }, { once: true });
+    const retomarEmNativo = Math.max(retomarEmRef.current, initialProgressoSeg);
+    if (retomarEmNativo > 5) {
+      video.addEventListener("loadedmetadata", () => { video.currentTime = retomarEmNativo; }, { once: true });
     }
     video.play().catch(() => setAutoPlayBlocked(true));
 
@@ -2264,7 +2478,7 @@ export function CustomPlayer({
                         return (
                           <button
                             key={i}
-                            onClick={() => { switchFonte(i); setShowSources(false); }}
+                            onClick={() => { switchFonte(i, true); setShowSources(false); }}
                             className={`w-full text-left px-4 py-2.5 text-xs transition-all ${
                               fonteIdx === i
                                 ? "bg-[#E50914] text-white font-semibold"
