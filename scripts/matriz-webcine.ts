@@ -30,6 +30,9 @@ const CASOS: Caso[] = [
   { rotulo: "SÉRIE  Dexter S1E1", tmdbId: "1405", type: "tv", season: 1, episode: 1, titleHint: "Dexter" },
   { rotulo: "ANIME  Hunter x Hunter S1E1", tmdbId: "46298", type: "tv", season: 1, episode: 1, titleHint: "Hunter x Hunter" },
   { rotulo: "ANIME  Jujutsu Kaisen S1E1", tmdbId: "95479", type: "tv", season: 1, episode: 1, titleHint: "Jujutsu Kaisen" },
+  // Achados por scripts/achar-casos-webcine.ts: audio legendado e legenda externa.
+  { rotulo: "ANIME  ONIMAI S1E1 (legendado)", tmdbId: "198152", type: "tv", season: 1, episode: 1, titleHint: "ONIMAI" },
+  { rotulo: "FILME  Attack on Titan (legenda)", tmdbId: "1333100", type: "movie", titleHint: "Attack on Titan: O ÚLTIMO ATAQUE" },
 ];
 
 type Linha = {
