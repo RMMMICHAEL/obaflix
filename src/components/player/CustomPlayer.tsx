@@ -409,6 +409,14 @@ export function CustomPlayer({
   // montagem: retomar por ela depois que a reprodução avançou rebaixaria
   // dezenas de minutos de vídeo — ~468 MB por episódio.
   const retomarEmRef = useRef(0);
+  // Lido por ref dentro do switchFonte. Como prop na lista de dependencias,
+  // qualquer atualizacao trocava a identidade do switchFonte, que e dependencia
+  // do extract, que dispara o efeito de extracao: a fonte tocando era
+  // reextraida do nada.
+  const initialProgressoSegRef = useRef(initialProgressoSeg);
+  initialProgressoSegRef.current = initialProgressoSeg;
+  // Ultima URL efetivamente extraida, para nao reextrair a mesma fonte.
+  const ultimoExtraidoRef = useRef<string | null>(null);
   const stallUltimoRef = useRef(0);
   const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -672,6 +680,12 @@ export function CustomPlayer({
   // tivesse avançado para o Player 2 seria jogado numa fonte do Player 1 no meio da
   // reprodução. A identidade da fonte é a URL; o índice é só posição.
   useEffect(() => {
+    // Sem isto, a fonte inicial ficava sem identidade ate a primeira troca, e o
+    // realinhamento nao protegia justamente o momento em que a lista cresce.
+    if (!fonteSelecionadaRef.current && allFontes[fonteIdx]?.embedUrl) {
+      fonteSelecionadaRef.current = allFontes[fonteIdx].embedUrl;
+      sourceIdRef.current = sourceIdDe(allFontes[fonteIdx].embedUrl);
+    }
     const alvo = fonteSelecionadaRef.current;
     if (!alvo) return;
     if (allFontes[fonteIdx]?.embedUrl === alvo) return;
@@ -966,7 +980,7 @@ export function CustomPlayer({
     // REQUISITO: a nova fonte retoma da posição REAL, nunca de initialProgressoSeg,
     // que é prop fixada na montagem. Trocar aos 40 min e voltar ao começo
     // rebaixaria ~360 MB — mais do que toda a economia da extração nativa.
-    retomarEmRef.current = Math.max(progressoRef.current, initialProgressoSeg);
+    retomarEmRef.current = Math.max(progressoRef.current, initialProgressoSegRef.current);
     sourceEpochRef.current += 1;
     sourceIdRef.current = sourceIdDe(allFontesRef.current[idx]?.embedUrl ?? String(idx));
     // Uma troca automatica nao herda a escolha do usuario: depois que o sistema
@@ -1017,7 +1031,9 @@ export function CustomPlayer({
     serverSwitchCountRef.current += 1;
     isChangingAudioTrackRef.current = false;
     initialLoadRef.current = true; // nova fonte = novo ciclo de carga inicial
-  }, [initialProgressoSeg]);
+    // Fonte nova precisa extrair, mesmo que ja tenha sido tocada antes.
+    ultimoExtraidoRef.current = null;
+  }, []);
 
   switchFonteRef.current = switchFonte;
 
@@ -1171,8 +1187,16 @@ export function CustomPlayer({
   extractRef.current = extract;
 
   useEffect(() => {
-    if (!fonte?.embedUrl) return;
-    extract(fonte.embedUrl);
+    const alvo = fonte?.embedUrl;
+    if (!alvo) return;
+    // `extract` troca de identidade quando allFontes.length muda — e ele muda
+    // alguns segundos depois do primeiro render, quando as alternativas do
+    // Player 1 chegam. Sem esta guarda, a fonte que ja estava tocando era
+    // reextraida, e uma falha nessa reextracao derrubava a reproducao para a
+    // fonte seguinte sem passar pela camada de failover.
+    if (ultimoExtraidoRef.current === alvo) return;
+    ultimoExtraidoRef.current = alvo;
+    extract(alvo);
   }, [fonte?.embedUrl, extract]);
 
   // ── Download da mídia atual ─────────────────────────────────────────────────
@@ -1898,19 +1922,38 @@ export function CustomPlayer({
 
       // Vigia do primeiro frame: sem frame nesse tempo, a fonte nao esta
       // entregando. Falhar aqui e barato - nenhum segmento foi baixado ainda.
+      //
+      // Lento nao e travado: o SuperFlix percorre desafio, redirects e um CDN
+      // vagaroso antes do primeiro frame. Se o player ja tem buffer, ele esta
+      // baixando, e o prazo e estendido uma vez em vez de derrubar a fonte.
       if (firstFrameTimerRef.current) clearTimeout(firstFrameTimerRef.current);
-      firstFrameTimerRef.current = setTimeout(() => {
+      let prorrogado = false;
+      const vigiarPrimeiroFrame = () => {
         firstFrameTimerRef.current = null;
         if (unmountedRef.current || !initialLoadRef.current) return;
         if (sourceEpochRef.current !== epochNoSetup) return;
+
+        let buffer = 0;
+        try { buffer = Number(jwRef.current?.getBuffer?.() ?? 0); } catch { buffer = 0; }
+        if (buffer > 0 && !prorrogado) {
+          prorrogado = true;
+          console.warn(
+            `[diag/failover] sem primeiro frame em ${LIMITES.T_FIRST_FRAME_MS}ms, ` +
+            `mas buffer=${buffer}% - prorrogando uma vez`,
+          );
+          firstFrameTimerRef.current = setTimeout(vigiarPrimeiroFrame, LIMITES.T_FIRST_FRAME_MS);
+          return;
+        }
+
         avaliarFalha({
-          mensagem: `sem primeiro frame em ${LIMITES.T_FIRST_FRAME_MS}ms`,
+          mensagem: `sem primeiro frame em ${prorrogado ? LIMITES.T_FIRST_FRAME_MS * 2 : LIMITES.T_FIRST_FRAME_MS}ms`,
           epochErro: epochNoSetup,
           fi: fonteIdx,
           len: allFontes.length,
           embedUrl: fonte?.embedUrl ?? "",
         });
-      }, LIMITES.T_FIRST_FRAME_MS);
+      };
+      firstFrameTimerRef.current = setTimeout(vigiarPrimeiroFrame, LIMITES.T_FIRST_FRAME_MS);
 
       // Vigia de stall: posicao parada com o player em buffering. Pausa e seek
       // nao contam - so travamento real.
