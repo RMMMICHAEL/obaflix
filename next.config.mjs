@@ -7,17 +7,22 @@
  * separada por vírgula, sem esquema), e o header só é emitido nas rotas que
  * realmente montam iframe.
  *
- * Sem a variável configurada, nenhum iframe de terceiro é autorizado. É a
- * falha segura correta: um provedor a mais some do menu, em vez de a lista
- * inteira vazar por padrão.
+ * Sem a variável configurada vale a lista abaixo, que é a que já estava em uso.
+ * Deixar o padrão vazio seria uma quebra silenciosa: servidores sem extrator
+ * caem no iframe e sumiriam do menu sem erro visível — foi exatamente o caso de
+ * strmup e vidnest. A variável existe para estreitar a lista por deploy, nunca
+ * para ser o único lugar que a define.
  */
-const FRAME_HOSTS = (process.env.PLAYER_FRAME_HOSTS ?? "")
-  .split(",")
-  .map((h) => h.trim())
-  .filter(Boolean)
-  .flatMap((h) => [`https://${h}`, `https://*.${h}`]);
+const FRAME_HOSTS_PADRAO = [
+  "playhide.shop", "luluvdo.com", "lulu.gg", "streamwish.com", "playerwish.com",
+  "hlswish.com", "superflixapi.pro", "strmup.to", "vidnest.live",
+];
 
-const frameSrc = FRAME_HOSTS.length ? FRAME_HOSTS.join(" ") : "'none'";
+const frameSrc = (process.env.PLAYER_FRAME_HOSTS
+  ? process.env.PLAYER_FRAME_HOSTS.split(",").map((h) => h.trim()).filter(Boolean)
+  : FRAME_HOSTS_PADRAO)
+  .flatMap((h) => [`https://${h}`, `https://*.${h}`])
+  .join(" ") || "'none'";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
