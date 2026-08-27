@@ -196,6 +196,23 @@ object ObaLog {
         }.getOrElse { "url-invalida" }
     }
 
+    private val URL_EM_TEXTO = Regex("""https?://[^\s"'<>)\]]+""")
+
+    /**
+     * Texto arbitrario — mensagem de console de pagina de terceiro, causa de
+     * excecao — sem segredo.
+     *
+     * O console do provedor imprime as proprias URLs assinadas, e ate aqui elas
+     * eram repassadas cruas ao logcat. Cada URL encontrada passa por [url], que
+     * troca a query pela contagem de parametros; o que sobrar de token longo
+     * solto no texto vira <Nch>.
+     */
+    fun texto(raw: String?): String {
+        if (raw.isNullOrBlank()) return "-"
+        val semUrl = URL_EM_TEXTO.replace(raw) { url(it.value) }
+        return TOKEN_LONGO.replace(semUrl) { "<${it.value.length}ch>" }
+    }
+
     /** So o host, para quando o caminho tambem nao interessa. */
     fun host(raw: String?): String = runCatching {
         java.net.URL(raw ?: return@runCatching "-").host.lowercase(Locale.ROOT)

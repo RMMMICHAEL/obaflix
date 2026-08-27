@@ -110,16 +110,21 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
+                // O console de uma pagina de terceiro imprime as URLs assinadas
+                // do proprio provedor. Repassar cru colocava token e query no
+                // logcat; ObaLog.texto mascara sem perder a mensagem.
                 when (msg.messageLevel()) {
                     ConsoleMessage.MessageLevel.ERROR -> ObaLog.alerta(
                         ObaLog.Fase.PLAYER, "console_erro",
-                        "msg" to texto.take(240),
+                        "msg" to ObaLog.texto(texto).take(240),
                         "origem" to ObaLog.arquivo(msg.sourceId()),
                         "linha" to msg.lineNumber(),
                     )
                     // WARN e abaixo sao ruido em pagina de terceiro (o provedor
-                    // enche o console). Vao para o logcat cru, fora da trilha.
-                    else -> Log.d(TAG, "[JS] $texto — ${msg.sourceId()}:${msg.lineNumber()}")
+                    // enche o console). So saem com -PdiagLogs, e mascarados.
+                    else -> if (BuildConfig.DIAG_LOGS) {
+                        Log.d(TAG, "[JS] ${ObaLog.texto(texto).take(240)} — ${ObaLog.arquivo(msg.sourceId())}:${msg.lineNumber()}")
+                    }
                 }
                 return false
             }

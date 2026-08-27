@@ -55,6 +55,47 @@ Isto muda tudo sobre onde a classificação de erro é possível de graça:
 3. Sempre estime impacto de consumo na **Vercel e no Supabase**, e prefira a
    opção mais econômica
 
+## Regra obrigatória: revisão de segurança em toda alteração
+
+Nenhuma alteração está concluída sem **revisão explícita de segurança**, junto da
+revisão funcional e de consumo. Não vale descobrir a brecha depois.
+
+Aplica-se sempre que a mudança tocar: **player, extractor, API, token, proxy, URL
+de mídia, cache, banco, sessão ou frontend**.
+
+### O que verificar
+
+A mudança criou vazamento novo de:
+
+- nome de provider, domínio real, credencial, URL interna, token
+- informação de usuário, endpoint sensível
+- exposição em logs, source maps, responses ou código cliente
+
+Ou abriu:
+
+- possibilidade de replay, hotlink, acesso sem sessão
+- SSRF, CORS incorreto
+
+### O que o relatório final precisa dizer
+
+Três itens, sempre, mesmo quando o resultado é "nada":
+
+1. **O que foi revisado** — quais superfícies foram checadas
+2. **Risco encontrado** — ou "nenhum", explicitamente
+3. **Mitigação aplicada** — ou por que não foi necessária
+
+### Exposição por público
+
+- **Usuário comum** — nomes genéricos (`Servidor 1`, `Servidor 2`). Nunca nomes
+  reais de provider, domínios, tokens, querystrings sensíveis ou log detalhado.
+- **Admin autenticado** — visão técnica completa: provider real, host, videoId,
+  sourceId, tipo de mídia, rota, status e diagnóstico. O mapeamento real vive no
+  backend ou em configuração não exposta ao cliente comum.
+
+Detecção de DevTools, ofuscação e nomes genéricos são **dissuasão**, nunca a
+proteção principal. A proteção real continua sendo sessão, token de curta
+duração, expiração, rate limit e backend que não devolve o que não precisa.
+
 ## Outras regras
 
 - Depois de commitar, **sempre** `git push` sem perguntar (branch atual → `main`)

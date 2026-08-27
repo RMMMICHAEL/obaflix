@@ -16,6 +16,9 @@ import {
   recordAbuseAttempt,
 } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import {
+  resolverFonte, acrescentarFontes, projetarPublica, type FontePublica,
+} from "@/lib/fontes";
 import crypto from "crypto";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
@@ -1237,12 +1240,24 @@ export async function GET(req: NextRequest) {
   const userId = (session.user as { id: string }).id;
   if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
-  const url = req.nextUrl.searchParams.get("url");
+  // A fonte chega como id opaco. A URL real é resolvida aqui e não volta ao
+  // cliente, exceto no iframe de fallback — único caso em que o navegador
+  // precisa dela para renderizar alguma coisa.
+  const sessao = req.nextUrl.searchParams.get("sessao");
+  const fonteId = req.nextUrl.searchParams.get("fonteId");
   const playToken = req.nextUrl.searchParams.get("playToken");
 
-  if (!url || !playToken) {
+  if (!sessao || !fonteId || !playToken) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 400, headers: NO_STORE });
   }
+
+  const fonte = await resolverFonte(sessao, userId, fonteId);
+  if (!fonte) {
+    await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: "/extract: fonte não resolvida" });
+    return NextResponse.json({ error: "Fonte indisponível" }, { status: 404, headers: NO_STORE });
+  }
+  const url = fonte.embedUrl;
 
   const tokenCheck = await verifyPlayToken(playToken, userId, url, ip);
   if (!tokenCheck.ok) {
@@ -1266,8 +1281,41 @@ export async function GET(req: NextRequest) {
       const motivo = result.motivo ?? "sem_fonte_extraivel";
       // Registra a desistência com a mesma visibilidade de um sucesso: antes só
       // o audit log sabia, e o cliente recebia um 200 idêntico ao de um stream.
-      xlog("iframe_fallback", { motivo, url: url.slice(0, 120) });
+      xlog("iframe_fallback", { motivo, provider: fonte.provider, fonte: fonte.ordem });
+      // Provedores cujo iframe nunca reproduz: o cliente já tratava isso como
+      // falha e trocava de fonte. Responder o erro aqui evita mandar a URL do
+      // provedor ao navegador para um iframe que não ia funcionar.
+      if (fonte.iframeInvalido) {
+        return NextResponse.json(
+          { error: "Stream não encontrado", motivo },
+          { status: 404, headers: NO_STORE },
+        );
+      }
       return NextResponse.json({ tipo: "iframe", stream: result.stream, motivo }, { headers: NO_STORE });
+    }
+
+    // Os servidores do webcine chegam junto da extração (/videos já é buscado
+    // lá). Viram fontes da sessão com id opaco, em vez de uma lista de videoId
+    // que o cliente concatenava na URL do provedor.
+    let fontesPublicas: FontePublica[] | undefined;
+    if (Array.isArray(result.fontes) && result.fontes.length) {
+      const novas = result.fontes.map((f: CineVsFonte) => ({
+        embedUrl: `${url}&video=${f.videoId}`,
+        provider: fonte.provider,
+        servidor: `${fonte.servidor} · ${f.label ?? f.audioType ?? f.videoId}`,
+        idioma: fonte.idioma,
+        tokenized: fonte.tokenized,
+        nativo: fonte.nativo,
+        iframeDireto: fonte.iframeDireto,
+        iframeDesafio: fonte.iframeDesafio,
+        iframeInvalido: fonte.iframeInvalido,
+        semExtrator: !f.disponivel,
+        disponivel: f.disponivel !== false,
+        ...(f.motivoIndisponivel ? { motivoIndisponivel: f.motivoIndisponivel } : {}),
+        videoId: f.videoId,
+      }));
+      const crescida = await acrescentarFontes(sessao, userId, novas);
+      if (crescida) fontesPublicas = crescida.map(projetarPublica);
     }
 
     // MP4: stream token is single-use (SET NX) — JW Player makes multiple range requests
@@ -1278,7 +1326,7 @@ export async function GET(req: NextRequest) {
       // vod01e001.fun (Voltz) bloqueia IPs de datacenter; webcinevs2 usa cnvs_token tempo-limitado
       if (url.includes("voltz.php") || url.includes("webcinevs2.com")) {
         return NextResponse.json(
-          { tipo: "mp4_direct", stream: result.stream, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+          { tipo: "mp4_direct", stream: result.stream, subtitles: result.subtitles, fontes: fontesPublicas },
           { headers: NO_STORE },
         );
       }
@@ -1293,7 +1341,7 @@ export async function GET(req: NextRequest) {
     // direto custa zero. Qualquer dúvida sobre o CORS cai no proxy (fechado).
     if (result.tipo === "hls" && result.corsLiberado && url.includes("webcinevs2.com")) {
       return NextResponse.json(
-        { tipo: "hls_direct", stream: result.stream, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+        { tipo: "hls_direct", stream: result.stream, subtitles: result.subtitles, fontes: fontesPublicas },
         { headers: NO_STORE },
       );
     }
@@ -1312,14 +1360,17 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { tipo: result.tipo, streamToken, subtitles: result.subtitles, fontes: result.fontes, videoId: result.videoId },
+      { tipo: result.tipo, streamToken, subtitles: result.subtitles, fontes: fontesPublicas },
       { headers: NO_STORE },
     );
 
   } catch (err: any) {
     const detalhe = String(err?.message).slice(0, 80);
     audit("stream_rejected", { userId, ip, ua, detail: `extração falhou: ${detalhe}` });
-    xlog("iframe_fallback", { motivo: "erro", detalhe, url: url.slice(0, 120) });
+    xlog("iframe_fallback", { motivo: "erro", detalhe, provider: fonte.provider, fonte: fonte.ordem });
+    if (fonte.iframeInvalido) {
+      return NextResponse.json({ error: "Stream não encontrado", motivo: "erro" }, { status: 404, headers: NO_STORE });
+    }
     return NextResponse.json({ tipo: "iframe", stream: url, motivo: "erro" }, { headers: NO_STORE });
   }
 }

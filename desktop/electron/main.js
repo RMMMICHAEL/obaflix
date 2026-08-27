@@ -156,7 +156,7 @@ async function registerPlayerStream(stream, referer) {
   log.info("player.cdn", "estado do player atualizado", {
     cdn: principal,
     hosts: playerState.cdnHostnames.size,
-    referer: log.shortUrl(playerState.embedReferer || "-", 80),
+    referer: log.safeUrl(playerState.embedReferer || "-"),
   });
 }
 
@@ -203,10 +203,10 @@ else {
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
 async function extractSecuredLink(embedUrl) {
   const provider0 = detectProvider(embedUrl);
-  const t = log.timer("player.extract", { provider: provider0 || "?", embed: log.shortUrl(embedUrl) });
+  const t = log.timer("player.extract", { provider: provider0 || "?", embed: log.safeUrl(embedUrl) });
   try {
     const native = await extractStreamNative(embedUrl);
-    t.step("extracao_nativa", { provider: native.provider, tipo: native.tipo, stream: log.shortUrl(native.stream, 90) });
+    t.step("extracao_nativa", { provider: native.provider, tipo: native.tipo, stream: log.safeUrl(native.stream) });
     const { stream, tipo, provider, referer, subtitles } = native;
     await assertPublicHttpsStream(stream);
     t.step("validacao_dns");
@@ -241,7 +241,7 @@ async function extractSecuredLink(embedUrl) {
           wrapperUrl: `http://127.0.0.1:${localPort}/superflix-wrapper?token=${LOCAL_SERVER_TOKEN}`,
         },
       );
-      t.step("fallback_chromium", { stream: log.shortUrl(result.stream, 90) });
+      t.step("fallback_chromium", { stream: log.safeUrl(result.stream) });
 
       await assertPublicHttpsStream(result.stream);
       t.step("validacao_dns");
@@ -330,7 +330,7 @@ function startLocalServer() {
         const embedUrl = url.searchParams.get("embedUrl");
         if (!embedUrl) { res.writeHead(400, CORS); res.end("embedUrl obrigatório"); return; }
 
-        const tReq = log.timer("local.extract", { embed: log.shortUrl(embedUrl) });
+        const tReq = log.timer("local.extract", { embed: log.safeUrl(embedUrl) });
         try {
           const { stream, tipo, referer } = await extractSecuredLink(embedUrl);
           tReq.step("extraido");
@@ -480,7 +480,7 @@ function configureSession() {
       http: details.statusCode,
       tipo: details.resourceType,
       dur: ms === null ? undefined : `${ms}ms`,
-      url: log.shortUrl(details.url, 140),
+      url: log.safeUrl(details.url),
     };
     if (details.statusCode >= 400) log.warn("rede", "resposta com erro", fields);
     else if (isMediaSegment(details.url)) log.trace("rede", "ok", fields);
@@ -497,7 +497,7 @@ function configureSession() {
       erro: details.error,
       tipo: details.resourceType,
       dur: ms === null ? undefined : `${ms}ms`,
-      url: log.shortUrl(details.url, 140),
+      url: log.safeUrl(details.url),
     });
   });
 
@@ -583,13 +583,13 @@ function configureSession() {
             const redirect = `http://127.0.0.1:${localPort}/extract?token=${LOCAL_SERVER_TOKEN}&embedUrl=${encodeURIComponent(embedUrl)}`;
             log.info("intercept", "extract → servidor local", {
               provider: detectProvider(embedUrl),
-              embed: log.shortUrl(embedUrl, 100),
+              embed: log.safeUrl(embedUrl),
             });
             callback({ redirectURL: redirect });
             return;
           }
           log.debug("intercept", "extract segue para a Vercel (sem extrator nativo)", {
-            embed: log.shortUrl(embedUrl, 100),
+            embed: log.safeUrl(embedUrl),
           });
         }
 
@@ -615,12 +615,12 @@ function configureSession() {
           const isNativeRola34 = url.searchParams.get("native") === "1";
           const shouldBypassToCdn = !!cdnUrl && !hasSig && (hasNativeParam ? isNativeRola34 : true);
           if (shouldBypassToCdn) {
-            log.debug("intercept", "proxy → CDN direto", { url: log.shortUrl(cdnUrl, 120) });
+            log.debug("intercept", "proxy → CDN direto", { url: log.safeUrl(cdnUrl) });
             callback({ redirectURL: cdnUrl });
             return;
           }
           log.debug("intercept", "proxy segue pela Vercel", {
-            temSig: hasSig, temNative: hasNativeParam, url: log.shortUrl(cdnUrl || "-", 100),
+            temSig: hasSig, temNative: hasNativeParam, url: log.safeUrl(cdnUrl || "-"),
           });
         }
       } catch (e) { log.error("intercept", "erro no interceptador", e); }
@@ -694,30 +694,30 @@ function setupWebContents() {
   });
 
   // ── Ciclo de vida da navegação ─────────────────────────────────────────
-  wc.on("did-start-loading", () => log.debug("nav", "did-start-loading", { url: log.shortUrl(wc.getURL(), 120) }));
+  wc.on("did-start-loading", () => log.debug("nav", "did-start-loading", { url: log.safeUrl(wc.getURL()) }));
 
   wc.on("did-start-navigation", (_e, url, isInPlace, isMainFrame) => {
     if (!isMainFrame) return;
-    log.info("nav", "navegando", { url: log.shortUrl(url, 140), mesmaPagina: isInPlace });
+    log.info("nav", "navegando", { url: log.safeUrl(url), mesmaPagina: isInPlace });
   });
 
   wc.on("did-redirect-navigation", (_e, url, isInPlace, isMainFrame) => {
     if (!isMainFrame) return;
-    log.info("nav", "redirect", { para: log.shortUrl(url, 140) });
+    log.info("nav", "redirect", { para: log.safeUrl(url) });
   });
 
   wc.on("did-navigate", (_e, url, httpCode, httpStatus) => {
-    log.info("nav", "documento carregado", { url: log.shortUrl(url, 140), http: httpCode, status: httpStatus });
+    log.info("nav", "documento carregado", { url: log.safeUrl(url), http: httpCode, status: httpStatus });
     // A causa mais provável de "404 no aplicativo": o servidor respondeu 404 e o
     // usuário só vê a página de erro do Next. Agora fica explícito no log.
-    if (httpCode >= 400) log.error("nav", "a página respondeu com erro HTTP", { http: httpCode, url: log.shortUrl(url, 140) });
+    if (httpCode >= 400) log.error("nav", "a página respondeu com erro HTTP", { http: httpCode, url: log.safeUrl(url) });
   });
 
   wc.on("did-finish-load", () => {
     const url = wc.getURL();
-    log.info("nav", "did-finish-load", { url: log.shortUrl(url, 140) });
+    log.info("nav", "did-finish-load", { url: log.safeUrl(url) });
     if (url.startsWith(OBAFLIX_ORIGIN)) {
-      if (bootTimer && !siteLoaded) { siteLoaded = true; bootTimer.done({ url: log.shortUrl(url, 100) }); bootTimer = null; }
+      if (bootTimer && !siteLoaded) { siteLoaded = true; bootTimer.done({ url: log.safeUrl(url) }); bootTimer = null; }
       wc.executeJavaScript("window.__OBAFLIX_DESKTOP__ = true;").catch(() => {});
     }
   });
@@ -726,7 +726,7 @@ function setupWebContents() {
     if (!isMainFrame) return;
     if (errorCode === -3) return; // ERR_ABORTED: navegação substituída, não é falha
     log.error("nav", "falha ao carregar a página", {
-      codigo: errorCode, descricao: errorDescription, url: log.shortUrl(validatedURL, 140),
+      codigo: errorCode, descricao: errorDescription, url: log.safeUrl(validatedURL),
     });
     if (bootTimer) { bootTimer.fail(new Error(`${errorDescription} (${errorCode})`)); bootTimer = null; }
     // Volta para o splash com o motivo, em vez de deixar a janela em branco.
@@ -757,7 +757,7 @@ function setupWebContents() {
     // O ruído de terceiros (players embed) fica em debug; o que o app registra
     // como warn/error sobe junto com a origem e a linha.
     log[name === "info" ? "debug" : name]("console", message.slice(0, 500), {
-      origem: log.shortUrl(sourceId || "-", 100), linha: line,
+      origem: log.safeUrl(sourceId || "-"), linha: line,
     });
   });
 
@@ -873,7 +873,7 @@ ipcMain.handle("install-update", (event) => {
 // QUANDO chamar este caminho (em vez do fluxo web via Vercel) é feita no site por
 // supportsNativeDesktopExtraction() (src/components/player/CustomPlayer.tsx).
 ipcMain.handle("extract-stream", async (event, embedUrl) => {
-  const t = log.timer("ipc.extract-stream", { embed: log.shortUrl(String(embedUrl ?? ""), 100) });
+  const t = log.timer("ipc.extract-stream", { embed: log.safeUrl(String(embedUrl ?? "")) });
   try {
     if (!isTrustedIpc(event)) throw new Error("Origem IPC não autorizada");
     if (typeof embedUrl !== "string" || embedUrl.length > 4096) throw new Error("URL inválida");

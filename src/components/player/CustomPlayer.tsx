@@ -46,8 +46,6 @@ function loadJW(cb: () => void) {
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Props {
-  urlDub: string | null;
-  urlLeg: string | null;
   titulo: string;
   nomeEpisodio?: string;
   thumbUrl?: string;
@@ -68,38 +66,38 @@ interface Props {
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
 type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
+/**
+ * Uma fonte, como /api/player/fontes devolve.
+ *
+ * Não há `embedUrl`, `provider` nem host: o cliente identifica a fonte por um id
+ * opaco e o servidor traduz. O que sobra são capacidades — o player precisa
+ * saber COMO tratar a fonte, nunca QUEM a serve.
+ *
+ * Para conta administrativa a resposta traz campos técnicos a mais; eles são
+ * opcionais aqui e só existem depois de o servidor confirmar o role no banco.
+ */
 interface Fonte {
-  label: string;
-  embedUrl: string;
-  tokenized: boolean;
-  /** Servidor interno do mesmo player (ex.: "Automático", "WatchPlayer"). */
-  servidor?: string;
-  /** Provedor reconhecido por detectProvider; usado só no diagnóstico. */
-  provider?: string;
-  /** Fonte sem extrator conhecido — só serve como iframe de última linha. */
-  semExtrator?: boolean;
-}
-
-/** Um servidor do webcine, como a rota de extract devolve em `fontes`. */
-interface WebcineFonte {
-  videoId: number;
-  audioType: string;
-  isPremium: boolean;
-  isCode: boolean;
-  sortOrder: number;
-  locked: boolean;
-  label: string;
+  id: string;
+  rotulo: string;
+  idioma: "dub" | "leg" | null;
   disponivel: boolean;
   motivoIndisponivel?: string;
-}
-
-/** Uma fonte do Playerflix, como /api/player/playerflix-sources devolve. */
-interface PlayerflixSource {
-  id: string;
-  name: string;
-  provider: string;
-  url: string;
-  hasExtractor: boolean;
+  /** Extrator nativo disponível: a extração roda no aparelho (IP residencial). */
+  nativo: boolean;
+  /** Embed que já é player completo: carrega em iframe sem extração. */
+  iframeDireto: boolean;
+  /** Precisa do desafio Cloudflare visível no Android antes da extração. */
+  iframeDesafio: boolean;
+  /** Iframe deste provedor nunca reproduz: cair nele significa falha real. */
+  iframeInvalido: boolean;
+  /** Sem extrator conhecido — só serve como iframe de última linha. */
+  semExtrator: boolean;
+  /** Diagnóstico administrativo. Ausente para usuário comum. */
+  provider?: string;
+  servidor?: string;
+  host?: string;
+  embedUrl?: string;
+  videoId?: number;
 }
 interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
 interface QualityLevel { label?: string; height?: number; width?: number; bitrate?: number; }
@@ -191,64 +189,6 @@ function captionTextShadow(edgeStyle: CaptionEdgeStyle) {
   ].join(",");
 }
 
-// Identifica players que utilizam URLs temporárias com token CDN (rola3/rola4).
-// Usado exclusivamente pelo parseFontes para classificar fontes no momento da criação:
-// essas fontes só aparecem quando isDesktop=true (não funcionam com IP de datacenter).
-function isTokenizedUrl(url: string) {
-  return /\/(rola3|rola4)\//.test(url) || /embedplayer/.test(url) || /xn--kcksk7a2bl5le7b6doc1h3f|xn--tckasiu6cvova0eb5fua2449g98vg/.test(url);
-}
-
-// Providers com extrator nativo no Electron/Android (desktop/electron/extractors.js e
-// StreamExtractor.kt) — reproduzem direto do CDN com IP residencial do usuário, sem
-// proxy de segmentos pela Vercel. Superset de isTokenizedUrl: cobre também PlayHide,
-// LuluVid, Rola2 (legado /rola/), Wish, Bolt e Big. Ao contrário de isTokenizedUrl, NÃO
-// afeta quais fontes aparecem no site web — só decide, quando isDesktop=true, se a
-// extração usa o bridge nativo (desktop.extractStream) em vez do fluxo web via Vercel.
-// Ver docs/player-native-extraction.md para o mapa completo e como adicionar um novo player.
-function supportsNativeDesktopExtraction(url: string) {
-  if (isTokenizedUrl(url)) return true;
-  try {
-    const { hostname, pathname } = new URL(url);
-    // Player 1. Sem este caminho, o Electron caía no fluxo web e TODO segmento
-    // passava pelo proxy da Vercel — ~477 MB de Transfer Out por episódio, contra
-    // ~0 no Android, que já extraía nativamente. O extrator nativo também é quem
-    // informa o CDN ao registerPlayerStream, sem o qual o main.js não injeta o
-    // Referer do embed e o CDN do WatchPlay devolve 403.
-    if (isPlayerflixAjaxUrl(url)) return true;
-    if (pathname.includes("voltz.php")) return true;
-    if (hostname.includes("lulu")) return true;
-    if (hostname.includes("hide")) return true;
-    if (hostname.includes("wish")) return true;
-    if (hostname.includes("llanfair") || pathname.includes("/rola/")) return true;
-    if (hostname.includes("bolt")) return true;
-    if (hostname.includes("bigshare") || hostname.includes("big")) return true;
-    if (hostname.includes("watchplay")) return true;
-    if (/(^|\.)superflixapi\.(pro|sbs)$/i.test(hostname)) return true;
-    if (hostname === "redecanais.capital" || hostname.endsWith(".redecanais.capital")) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function isSuperflixUrl(url: string) {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    return /(^|\.)superflixapi\.(pro|sbs)$/i.test(hostname);
-  } catch {
-    return false;
-  }
-}
-
-function isPlayerflixAjaxUrl(url: string) {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname === "playerflix.ink" && parsed.pathname === "/inc/Ajax.php";
-  } catch {
-    return false;
-  }
-}
-
 function friendlyPlayerError(error: unknown, label: string): string {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const detail = raw.trim();
@@ -272,37 +212,43 @@ function buildElectronProxyUrl(cdnUrl: string, referer?: string | null) {
   return `/api/player/proxy?url=${encodeURIComponent(cdnUrl)}&native=1${ref}`;
 }
 
-function parseFontes(urls: string | null, prefix: string, includeTokenized: boolean): Fonte[] {
-  if (!urls) return [];
-  return urls.split(",")
-    .map((u) => u.trim())
-    .filter((u) => u && (includeTokenized || !isTokenizedUrl(u)))
-    .map((u, i) => ({ label: `${prefix} ${i + 1}`, embedUrl: u, tokenized: isTokenizedUrl(u) }));
-}
-
-// Separa a URL do Voltz (contém "voltz.php") das demais fontes de urlDub/urlLeg,
-// para que possa ser posicionada como Player 1 independentemente da ordem do warez2.
-function splitVoltz(urls: string | null): { voltz: string | null; rest: string | null } {
-  if (!urls) return { voltz: null, rest: null };
-  const parts = urls.split(",").map((u) => u.trim()).filter(Boolean);
-  const idx = parts.findIndex((u) => u.includes("voltz.php"));
-  if (idx === -1) return { voltz: null, rest: urls };
-  const voltz = parts[idx];
-  const rest = parts.filter((_, i) => i !== idx).join(",") || null;
-  return { voltz, rest };
-}
-
 // Extrai o hostname real de uma URL de erro do JW Player.
 // No path Electron (native=1), srcUrl tem forma https://obaflix.vercel.app/api/player/proxy?url=<cdnUrl>&native=1 —
 // o hostname relevante está dentro do parâmetro url=, não no proxy.
+/**
+ * Etiqueta anônima e estável para o host de origem de um erro.
+ *
+ * Antes devolvia o hostname do CDN, que ia parar no console do navegador e —
+ * via onConsoleMessage — no logcat do Android. Duas linhas com a mesma etiqueta
+ * continuam significando "mesmo host", que é o que o diagnóstico precisa; qual
+ * host é, só o backend sabe.
+ */
+const etiquetasHost = new Map<string, string>();
 function diagDomain(srcUrl: string): string {
   if (!srcUrl) return "n/a";
+  let host: string;
   try {
     const u = new URL(srcUrl);
     const inner = u.searchParams.get("url");
-    return new URL(inner || srcUrl).hostname;
+    host = new URL(inner || srcUrl).hostname;
   } catch {
-    return srcUrl.slice(0, 40);
+    return "url-invalida";
+  }
+  let etiqueta = etiquetasHost.get(host);
+  if (!etiqueta) {
+    etiqueta = `h${etiquetasHost.size + 1}`;
+    etiquetasHost.set(host, etiqueta);
+  }
+  return etiqueta;
+}
+
+/** Só o nome do arquivo pedido — sem host, sem query, sem token. */
+function diagArquivo(srcUrl: string): string {
+  try {
+    const caminho = new URL(srcUrl).pathname;
+    return caminho.substring(caminho.lastIndexOf("/") + 1) || "/";
+  } catch {
+    return "-";
   }
 }
 
@@ -359,7 +305,7 @@ function formatTime(s: number): string {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 export function CustomPlayer({
-  urlDub, urlLeg, titulo, nomeEpisodio, thumbUrl, logoUrl, sinopse,
+  titulo, nomeEpisodio, thumbUrl, logoUrl, sinopse,
   conteudoId, conteudoTipo, tmdbId,
   episodioId, temporada, numeroEp, prevUrl, nextUrl, duracaoSeg, initialProgressoSeg = 0,
 }: Props) {
@@ -404,6 +350,9 @@ export function CustomPlayer({
   // Identidade da fonte ativa por URL, imune ao crescimento da lista de fontes.
   const fonteSelecionadaRef = useRef<string | null>(null);
   const allFontesRef = useRef<Fonte[]>([]);
+  const resolverUrlNativaRef = useRef<(id: string, signal?: AbortSignal) => Promise<string>>(
+    async () => { throw new Error("indisponível"); },
+  );
   // ── Failover ──────────────────────────────────────────────────────────────
   // Epoch monotônica da fonte ativa. Toda requisição carrega a epoch em que
   // começou; erro com epoch diferente é eco da fonte anterior e não diz nada
@@ -463,16 +412,24 @@ export function CustomPlayer({
   const isAndroid = desktopBridge?.platform === "android" ||
     (typeof window !== "undefined" && (window as any).__OBAFLIX_ANDROID__ === true);
 
-  // Servidores alternativos que o Playerflix conhece para este conteúdo. A lista é
-  // aditiva: enquanto estiver vazia — carregando, falhou ou o conteúdo não tem
-  // alternativas — o Player 1 se comporta exatamente como antes.
-  const [playerflixSources, setPlayerflixSources] = useState<PlayerflixSource[]>([]);
   /**
-   * Servidores do webcine para o episodio atual. Chegam na resposta do extract
-   * — `/videos` ja e buscado la — entao listar nao custa chamada nenhuma.
+   * Lista de fontes, montada pelo servidor. A sessão é o que autoriza traduzir
+   * um id opaco de volta para a URL real, e vive só no Redis.
+   *
+   * A lista continua crescendo depois do primeiro render — as alternativas do
+   * Playerflix e os servidores do Webcine chegam depois —, exatamente como
+   * antes; o que mudou é que quem acrescenta é o servidor.
    */
-  const [webcineFontes, setWebcineFontes] = useState<WebcineFonte[]>([]);
-  // Servidores que já falharam de forma fatal, por embedUrl, com o motivo.
+  const [sessaoFontes, setSessaoFontes] = useState<string | null>(null);
+  const [allFontes, setAllFontes] = useState<Fonte[]>([]);
+  const sessaoFontesRef = useRef<string | null>(null);
+  /**
+   * URL real por fonte, resolvida sob demanda em Electron/Android. Fica em ref
+   * porque a renovação de token reextrai a MESMA fonte várias vezes por
+   * episódio — sem o cache seria uma ida ao servidor por renovação.
+   */
+  const urlNativaRef = useRef<Map<string, string>>(new Map());
+  // Servidores que já falharam de forma fatal, por id de fonte, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
   // ── Download ────────────────────────────────────────────────────────────────
@@ -492,204 +449,13 @@ export function CustomPlayer({
   const [recorteFim, setRecorteFim] = useState(0);
   const [arrastandoAlca, setArrastandoAlca] = useState<"inicio" | "fim" | null>(null);
 
-  const allFontes: Fonte[] = [];
-
-  // Players 1, 2 e 5 montam a URL a partir do tmdbId. Parte do catálogo grava
-  // "0" nesse campo (títulos sem correspondência no TMDB), e "0" é uma string
-  // truthy — passava na checagem e gerava embeds como
-  // `Ajax.php?id=0&type=tv`, que falham sempre. Só um inteiro positivo serve.
-  const tmdbValido = tmdbId && /^[1-9][0-9]*$/.test(String(tmdbId).trim())
-    ? String(tmdbId).trim()
-    : null;
-
-  const { voltz: voltzUrl, rest: urlDubRest } = splitVoltz(urlDub);
-
-  const parsedFontes = [
-    ...parseFontes(urlDubRest, "[Dub]", isDesktop),
-    ...parseFontes(urlLeg, "[Leg]", isDesktop),
-  ];
-
-  const isProvider = (fonte: Fonte, provider: string) => {
-    try {
-      return new URL(fonte.embedUrl).hostname.toLowerCase().includes(provider);
-    } catch {
-      return fonte.embedUrl.toLowerCase().includes(provider);
-    }
-  };
-
-  const hideFonte = parsedFontes.find((fonte) =>
-    isProvider(fonte, "hide"),
-  );
-
-  const wishFonte = parsedFontes.find((fonte) =>
-    isProvider(fonte, "wish"),
-  );
-
-  const redeCanaisFonte = parsedFontes.find((fonte) =>
-    isProvider(fonte, "redecanais.capital"),
-  );
-
-  // Webcine — primeiro da lista para facilitar o teste.
-  //
-  // Vale a posicao por consumo: a midia sai de um CDN que nao valida Referer nem
-  // Origin (medido em 26/08/2026), entao ela vai direto ao dispositivo nos tres
-  // ambientes e nao gera Transfer Out na Vercel. O WatchPlay, em comparacao,
-  // custa ~468 MB por episodio no site porque precisa do proxy.
-  //
-  // A extracao roda na rota da Vercel: as credenciais do webcine ficam em
-  // variavel de ambiente e nunca chegam ao exe nem ao APK.
-  if (tmdbValido) {
-    const q = titulo ? `&q=${encodeURIComponent(titulo)}` : "";
-    const webcineUrl = conteudoTipo === "serie" && temporada && numeroEp
-      ? `https://webcinevs2.com/?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}${q}`
-      : conteudoTipo === "filme"
-        ? `https://webcinevs2.com/?id=${tmdbValido}&type=movie${q}`
-        : null;
-
-    if (webcineUrl) {
-      // Entrada primaria: o extrator escolhe a primeira fonte disponivel.
-      allFontes.push({
-        label: "Player 1",
-        embedUrl: webcineUrl,
-        tokenized: false,
-        servidor: "Webcine",
-        provider: "webcine",
-      });
-
-      // Uma entrada por servidor do webcine, identificada pelo video id — que e
-      // o unico identificador estavel: audio_type se repete (nos quatro titulos
-      // medidos havia duas fontes "dubbed"). Bloqueada aparece como
-      // indisponivel; nunca ha tentativa de contornar a restricao.
-      for (const f of webcineFontes) {
-        allFontes.push({
-          label: "Player 1",
-          embedUrl: `${webcineUrl}&video=${f.videoId}`,
-          tokenized: false,
-          servidor: `Webcine · ${f.label}`,
-          provider: "webcine",
-          ...(f.disponivel ? {} : { semExtrator: true }),
-        });
-      }
-    }
-  }
-
-  // Player 1: PlayerFlix.
-  //
-  // A entrada primária continua sendo a URL Ajax: o extrator escolhe o servidor
-  // internamente, como sempre fez. As fontes explícitas do Playerflix entram logo
-  // depois, com o mesmo rótulo "Player 1" e um `servidor` próprio — servem para o
-  // failover automático (switchFonte já percorre a lista em ordem) e para a troca
-  // manual. Se a lista vier vazia, sobra só a primária e nada muda.
-  if (tmdbValido) {
-    const ajaxUrl = conteudoTipo === "serie" && temporada && numeroEp
-      ? `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=tv&season=${temporada}&episode=${numeroEp}`
-      : conteudoTipo === "filme"
-        ? `https://playerflix.ink/inc/Ajax.php?id=${tmdbValido}&type=movie`
-        : null;
-
-    if (ajaxUrl) {
-      allFontes.push({
-        label: "Player 1",
-        embedUrl: ajaxUrl,
-        tokenized: false,
-        servidor: "Automático",
-      });
-
-      for (const fonteExplicita of playerflixSources) {
-        // A fonte sem extrator só faz sentido onde o iframe do provedor funciona.
-        if (!fonteExplicita.hasExtractor && !isDesktop) continue;
-        allFontes.push({
-          label: "Player 1",
-          embedUrl: fonteExplicita.url,
-          tokenized: false,
-          servidor: fonteExplicita.name,
-          provider: fonteExplicita.provider,
-          semExtrator: !fonteExplicita.hasExtractor,
-        });
-      }
-    }
-  }
-
-  // Player 2: SuperFlix — Electron apenas, nunca Android.
-  //
-  // O provedor bloqueia o aplicativo pelo nome do pacote: a WebView do Android
-  // envia "X-Requested-With: com.obaflix" e o superflixapi.pro responde uma
-  // pagina de acesso negado em vez do embed (Chrome e Firefox recebem o desafio
-  // normal, entao o bloqueio e nominal, nao uma politica geral contra apps).
-  // No Electron nao ha esse header e o player funciona, por isso a fonte
-  // continua disponivel la. Oferecer no Android so entrega uma tela de erro.
-  if (
-    isDesktop &&
-    !isAndroid &&
-    tmdbValido &&
-    (conteudoTipo === "filme" ||
-      (conteudoTipo === "serie" && temporada && numeroEp))
-  ) {
-    const superflixUrl =
-      conteudoTipo === "filme"
-        ? `https://superflixapi.sbs/filme/${encodeURIComponent(tmdbValido)}`
-        : `https://superflixapi.sbs/serie/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`;
-
-    allFontes.push({
-      label: "Player 2",
-      embedUrl: superflixUrl,
-      tokenized: false,
-    });
-  }
-
-  // Player 3: Voltz — somente Electron/Android.
-  // No site, o MP4 direto pode falhar por CORS ou exigência de Referer.
-  if (isDesktop && voltzUrl) {
-    allFontes.push({
-      label: "Player 3",
-      embedUrl: voltzUrl,
-      tokenized: false,
-    });
-  }
-
-  // Player 4: Hide
-  if (hideFonte) {
-    allFontes.push({
-      ...hideFonte,
-      label: "Player 4",
-    });
-  }
-
-  // Player 5: WatchPlay. Os extratores (Kotlin, Electron e rota web) já tratavam
-  // /tvshow desde sempre; era só aqui que a fonte não chegava a ser oferecida.
-  if (isDesktop && tmdbValido) {
-    if (conteudoTipo === "filme") {
-      allFontes.push({
-        label: "Player 5",
-        embedUrl: `https://v1.watchplay.shop/movie/${encodeURIComponent(tmdbValido)}`,
-        tokenized: false,
-      });
-    } else if (conteudoTipo === "serie" && temporada && numeroEp) {
-      allFontes.push({
-        label: "Player 5",
-        embedUrl: `https://v1.watchplay.shop/tvshow/${encodeURIComponent(tmdbValido)}/${temporada}/${numeroEp}`,
-        tokenized: false,
-      });
-    }
-  }
-
-  // Player 6: Wish
-  if (wishFonte) {
-    allFontes.push({
-      ...wishFonte,
-      label: "Player 6",
-    });
-  }
-
-  // Player 7: RedeCanais — somente Android. A URL do conteúdo precisa estar
-  // cadastrada em urlDub/urlLeg; o app não escolhe resultados por título para
-  // evitar reproduzir um filme ou episódio diferente por engano.
-  if (isAndroid && redeCanaisFonte) {
-    allFontes.push({
-      ...redeCanaisFonte,
-      label: "Player 7",
-    });
-  }
+  // A montagem da lista saiu daqui. Ela vivia neste arquivo, e por isso cada
+  // domínio de provedor era string literal do bundle — visível sem sequer
+  // fazer login. Agora /api/player/fontes monta no servidor e devolve ids
+  // opacos; a ordem e as regras por ambiente são as mesmas de antes, em
+  // src/lib/fontes.ts.
+  const ambiente: "web" | "electron" | "android" =
+    isAndroid ? "android" : isDesktop ? "electron" : "web";
 
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
@@ -728,14 +494,21 @@ export function CustomPlayer({
   const [isCasting, setIsCasting] = useState(false);
   // sources dropdown
   const [showSources, setShowSources] = useState(false);
+  // Painel técnico. Só existe quando a resposta de /api/player/fontes veio na
+  // projeção administrativa — o que só acontece depois de o servidor confirmar
+  // o role no banco. O cliente não decide quem é admin.
+  const [showDiag, setShowDiag] = useState(false);
 
   const fonte = allFontes[fonteIdx];
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
-  const rotuloDiag = fonte?.servidor ? `${fonte.label} · ${fonte.servidor}` : fonte?.label ?? "?";
+  // Rótulo do diagnóstico. Para usuário comum é o genérico ("Servidor 3"); a
+  // conta administrativa recebe `servidor` do backend e vê o nome real junto.
+  const rotuloDiag = fonte?.servidor ? `${fonte.rotulo} · ${fonte.servidor}` : fonte?.rotulo ?? "?";
 
   allFontesRef.current = allFontes;
+  sessaoFontesRef.current = sessaoFontes ?? sessaoFontesRef.current;
 
   // As alternativas do Player 1 entram no meio da lista alguns segundos depois do
   // primeiro render, deslocando todos os índices seguintes. Sem realinhar, quem já
@@ -744,14 +517,14 @@ export function CustomPlayer({
   useEffect(() => {
     // Sem isto, a fonte inicial ficava sem identidade ate a primeira troca, e o
     // realinhamento nao protegia justamente o momento em que a lista cresce.
-    if (!fonteSelecionadaRef.current && allFontes[fonteIdx]?.embedUrl) {
-      fonteSelecionadaRef.current = allFontes[fonteIdx].embedUrl;
-      sourceIdRef.current = sourceIdDe(allFontes[fonteIdx].embedUrl);
+    if (!fonteSelecionadaRef.current && allFontes[fonteIdx]?.id) {
+      fonteSelecionadaRef.current = allFontes[fonteIdx].id;
+      sourceIdRef.current = sourceIdDe(allFontes[fonteIdx].id);
     }
     const alvo = fonteSelecionadaRef.current;
     if (!alvo) return;
-    if (allFontes[fonteIdx]?.embedUrl === alvo) return;
-    const novoIdx = allFontes.findIndex((f) => f.embedUrl === alvo);
+    if (allFontes[fonteIdx]?.id === alvo) return;
+    const novoIdx = allFontes.findIndex((f) => f.id === alvo);
     if (novoIdx >= 0 && novoIdx !== fonteIdx) {
       console.log(`[diag/server] lista cresceu; fonte realinhada idx=${fonteIdx}→${novoIdx}`);
       setFonteIdx(novoIdx);
@@ -1044,7 +817,7 @@ export function CustomPlayer({
     // rebaixaria ~360 MB — mais do que toda a economia da extração nativa.
     retomarEmRef.current = Math.max(progressoRef.current, initialProgressoSegRef.current);
     sourceEpochRef.current += 1;
-    sourceIdRef.current = sourceIdDe(allFontesRef.current[idx]?.embedUrl ?? String(idx));
+    sourceIdRef.current = sourceIdDe(allFontesRef.current[idx]?.id ?? String(idx));
     // Uma troca automatica nao herda a escolha do usuario: depois que o sistema
     // moveu a fonte, o servidor ativo nao foi mais decisao dele.
     escolhaManualRef.current = manual;
@@ -1059,7 +832,7 @@ export function CustomPlayer({
     streamExpiresAtRef.current = null;
     // Guarda a fonte por URL, não por índice: a lista cresce quando as
     // alternativas do Player 1 chegam, e aí o índice passa a apontar para outra.
-    fonteSelecionadaRef.current = allFontesRef.current[idx]?.embedUrl ?? null;
+    fonteSelecionadaRef.current = allFontesRef.current[idx]?.id ?? null;
     setFonteIdx(idx);
     setStatus("idle");
     setStreamUrl(null);
@@ -1100,7 +873,35 @@ export function CustomPlayer({
   switchFonteRef.current = switchFonte;
 
   // ── Extract ──────────────────────────────────────────────────────────────────
-  const extract = useCallback(async (embedUrl: string) => {
+  /**
+   * Resolve a URL real de uma fonte. Só em Electron/Android, e só para as
+   * fontes que o servidor marcou como de extração local — nesses ambientes o
+   * aparelho precisa fazer a requisição ele mesmo, senão o CDN recusa o IP de
+   * datacenter da Vercel e a mídia volta para o proxy (centenas de MB por
+   * episódio). No site esta função nunca é chamada.
+   */
+  const resolverUrlNativa = useCallback(async (fonteId: string, signal?: AbortSignal) => {
+    const cache = urlNativaRef.current.get(fonteId);
+    if (cache) return cache;
+    const sessao = sessaoFontesRef.current;
+    if (!sessao) throw new Error("Sessão de reprodução indisponível");
+    const res = await fetch("/api/player/fonte-nativa", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessao, fonteId }),
+      signal,
+    });
+    if (!res.ok) throw new Error("Fonte indisponível");
+    const { embedUrl } = await res.json();
+    if (!embedUrl) throw new Error("Fonte indisponível");
+    urlNativaRef.current.set(fonteId, embedUrl);
+    return embedUrl as string;
+  }, []);
+
+  resolverUrlNativaRef.current = resolverUrlNativa;
+
+  // ── Extract ──────────────────────────────────────────────────────────────────
+  const extract = useCallback(async (fonteId: string) => {
     extractAbortRef.current?.abort();
     const ctrl = new AbortController();
     extractAbortRef.current = ctrl;
@@ -1112,6 +913,11 @@ export function CustomPlayer({
     setError("");
     setStreamUrl(null);
     try {
+      const alvo = allFontesRef.current.find((f) => f.id === fonteId);
+      if (!alvo) throw new Error("Servidor compatível não encontrado");
+      const sessao = sessaoFontesRef.current;
+      if (!sessao) throw new Error("Sessão de reprodução indisponível");
+
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
       let tipo: string;
       let playerUrl: string;
@@ -1119,7 +925,8 @@ export function CustomPlayer({
       // No Android o iframe fica visível apenas durante a validação Cloudflare. Em
       // paralelo, o bridge aguarda cf_clearance e então troca a página do provedor
       // pela mídia extraída localmente. Isso evita terminar no 404 do iframe.
-      if (isAndroid && isSuperflixUrl(embedUrl)) {
+      if (isAndroid && alvo.iframeDesafio) {
+        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
         // Mantém o carregamento padrão do app por cima até a página do provedor
@@ -1140,16 +947,18 @@ export function CustomPlayer({
           file: buildElectronProxyUrl(track.file, track.referer || data.referer),
           kind: "captions",
         })));
-      } else if (embedUrl.startsWith("https://vidsrc-embed.ru/embed/")) {
-        // Vidsrc já é um player embed completo. Carrega direto no iframe para não
-      // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que deve
-      // continuar dentro do player do próprio provedor.
+      } else if (alvo.iframeDireto) {
+        // Embed que já é player completo. Carrega direto no iframe para não
+        // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que
+        // deve continuar dentro do player do próprio provedor.
+        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
         setStatus("playing");
         return;
-      } else if (desktop && supportsNativeDesktopExtraction(embedUrl)) {
+      } else if (desktop && alvo.nativo) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
+        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
         const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
           await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
@@ -1165,50 +974,48 @@ export function CustomPlayer({
           kind: "captions",
         })));
       } else {
-        // Web: obtém play token primeiro, depois extrai
+        // Web: obtém play token primeiro, depois extrai. Nenhuma URL de provedor
+        // trafega — o id opaco é o que identifica a fonte nas duas chamadas.
         const tokenRes = await fetch("/api/player/token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ embedUrl }),
+          body: JSON.stringify({ sessao, fonteId }),
           signal: ctrl.signal,
         });
         if (!tokenRes.ok) throw new Error("Falha ao obter autorização de reprodução");
         const { playToken } = await tokenRes.json();
 
         const extractRes = await fetch(
-          `/api/player/extract?url=${encodeURIComponent(embedUrl)}&playToken=${encodeURIComponent(playToken)}`,
+          `/api/player/extract?sessao=${encodeURIComponent(sessao)}&fonteId=${encodeURIComponent(fonteId)}`
+          + `&playToken=${encodeURIComponent(playToken)}`,
           { signal: ctrl.signal },
         );
         const data = await extractRes.json();
-        if (!extractRes.ok) throw new Error(data.error || "Stream não encontrado");
+
+        // A rota responde 404 quando a extração falha numa fonte cujo iframe
+        // nunca reproduz. Antes ela devolvia 200 com a URL do provedor, e era o
+        // cliente que descobria que aquilo não ia tocar.
+        if (!extractRes.ok) {
+          const motivo = data.motivo ?? "desconhecido";
+          setServidoresFalhos((atual) => (atual[fonteId] ? atual : {
+            ...atual,
+            [fonteId]: motivo === "timeout" ? "sem resposta" : "extração falhou",
+          }));
+          logEtapa(rotuloDiag, motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", { mensagem: motivo });
+          throw new Error(data.error || `Stream não encontrado (${motivo})`);
+        }
 
         tipo = data.tipo ?? "hls";
         if (tipo === "iframe") {
-          // A rota responde 200 mesmo quando desiste da extração, então este
-          // caminho é invisível no DevTools: o pulo para a próxima fonte nasce
-          // do throw abaixo, não de um erro de rede. O motivo vem do servidor
-          // ("timeout", "sem_fonte_extraivel", "erro") e é registrado aqui para
-          // aparecer no console do navegador e no logcat do Android.
+          // Desistência da extração: o provedor serve o próprio player. O motivo
+          // vem do servidor ("timeout", "sem_fonte_extraivel", "erro").
           const motivo = data.motivo ?? "desconhecido";
-          // Falha de extração é fatal para esta fonte: marca para o menu mostrar
-        // "indisponível" e para não insistir nela na troca manual.
-        if (fonte?.embedUrl) {
-          const url = fonte.embedUrl;
-          const razao = motivo === "timeout" ? "sem resposta" : "extração falhou";
-          setServidoresFalhos((atual) => (atual[url] ? atual : { ...atual, [url]: razao }));
-        }
-        logEtapa(rotuloDiag, motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", {
-            url: embedUrl,
-            mensagem: motivo,
-          });
-          console.warn(
-            `[player] extração desistiu: motivo=${motivo} fonte=${fonte?.label ?? "?"} ` +
-            `— servindo iframe do provedor`,
-          );
-          // esses players nunca servem iframe válido — iframe fallback = extração falhou
-          if (embedUrl.includes("playerflix.ink") || embedUrl.includes("webcinevs2.com")) {
-            throw new Error(`Stream não encontrado (${motivo})`);
-          }
+          setServidoresFalhos((atual) => (atual[fonteId] ? atual : {
+            ...atual,
+            [fonteId]: motivo === "timeout" ? "sem resposta" : "extração falhou",
+          }));
+          logEtapa(rotuloDiag, motivo === "timeout" ? "TIMEOUT" : "EXTRACT_FAILED", { mensagem: motivo });
+          console.warn(`[player] extração desistiu: motivo=${motivo} fonte=${alvo.rotulo} — servindo iframe do provedor`);
           playerUrl = data.stream!;
         } else if (tipo === "mp4_direct") {
           // CDN bloqueia IPs de datacenter — serve URL direta ao browser (IP residencial passa)
@@ -1216,8 +1023,8 @@ export function CustomPlayer({
           playerUrl = data.stream;
           tipo = "mp4";
         } else if (tipo === "hls_direct") {
-          // Só o webcine chega aqui, e só quando a rota MEDIU que o CDN aceita
-          // origem arbitraria. Evita ~188 MB de Transfer Out por episodio.
+          // Só chega aqui quando a rota MEDIU que o CDN aceita origem arbitrária.
+          // Evita ~188 MB de Transfer Out por episódio.
           if (!data.stream) throw new Error("Stream não encontrado");
           playerUrl = data.stream;
           tipo = "hls";
@@ -1231,8 +1038,7 @@ export function CustomPlayer({
         }
         directStreamRef.current = playerUrl;
 
-        // Legendas separadas da faixa de video. Ate agora a rota web nao tinha
-        // esse campo e elas eram buscadas e descartadas.
+        // Legendas separadas da faixa de video.
         if (Array.isArray(data.subtitles) && data.subtitles.length) {
           setSubtitleTracks(
             data.subtitles.map((t: { url: string; label?: string; language?: string }) => ({
@@ -1242,7 +1048,11 @@ export function CustomPlayer({
             })),
           );
         }
-        if (Array.isArray(data.fontes)) setWebcineFontes(data.fontes as WebcineFonte[]);
+        // A lista cresce quando o servidor descobre servidores internos da fonte
+        // (os do Webcine chegam junto da extração). Já vem projetada e opaca.
+        if (Array.isArray(data.fontes) && data.fontes.length) {
+          setAllFontes(data.fontes as Fonte[]);
+        }
       }
 
       setStreamTipo(tipo as StreamTipo);
@@ -1258,17 +1068,17 @@ export function CustomPlayer({
       if (fonteIdx < allFontes.length - 1) {
         switchFonte(fonteIdx + 1);
       } else {
-        setError(friendlyPlayerError(e, fonte?.label ?? "Player"));
+        setError(friendlyPlayerError(e, fonte?.rotulo ?? "Servidor"));
         setStatus("error");
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonteIdx, allFontes.length, switchFonte, isAndroid]);
+  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa]);
 
   extractRef.current = extract;
 
   useEffect(() => {
-    const alvo = fonte?.embedUrl;
+    const alvo = fonte?.id;
     if (!alvo) return;
     // `extract` troca de identidade quando allFontes.length muda — e ele muda
     // alguns segundos depois do primeiro render, quando as alternativas do
@@ -1278,7 +1088,7 @@ export function CustomPlayer({
     if (ultimoExtraidoRef.current === alvo) return;
     ultimoExtraidoRef.current = alvo;
     extract(alvo);
-  }, [fonte?.embedUrl, extract]);
+  }, [fonte?.id, extract]);
 
   // ── Download da mídia atual ─────────────────────────────────────────────────
   // Só no app desktop: o navegador não consegue mandar o Referer que os CDNs
@@ -1370,49 +1180,87 @@ export function CustomPlayer({
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
   useEffect(() => {
     if (!fonte) return;
-    const irmas = allFontes.filter((f) => f.label === fonte.label);
-    const posicao = irmas.findIndex((f) => f.embedUrl === fonte.embedUrl) + 1;
+    const posicao = allFontes.findIndex((f) => f.id === fonte.id) + 1;
+    // `servidor` só existe na resposta administrativa; para usuário comum a
+    // linha sai apenas com o rótulo genérico e a posição na lista.
     console.log(
-      `[diag/server] player=${fonte.label} server=${fonte.servidor ?? "-"} ` +
-      `provider=${fonte.provider ?? "auto"} attempt=${posicao}/${irmas.length}`,
+      `[diag/server] fonte=${fonte.rotulo} attempt=${posicao}/${allFontes.length}` +
+      (fonte.servidor ? ` server=${fonte.servidor} provider=${fonte.provider ?? "-"}` : ""),
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonte?.embedUrl]);
+  }, [fonte?.id]);
 
-  // Descobre os servidores alternativos do Player 1. É estritamente aditivo: erro,
-  // lista vazia ou resposta lenta deixam o Player 1 como está hoje. Roda em
-  // paralelo à extração da fonte primária, sem atrasá-la.
+  // Carrega a lista de fontes do servidor.
+  //
+  // Duas fases, pelo mesmo motivo de sempre: a lista base sai rápido e a
+  // reprodução começa; as alternativas do Playerflix custam até 8s no provedor
+  // e chegam depois, de forma aditiva. Antes as duas fases existiam com a
+  // montagem no cliente — agora as duas rodam no servidor e o navegador recebe
+  // só ids opacos.
   useEffect(() => {
-    setPlayerflixSources([]);
     setServidoresFalhos({});
-    if (!tmdbValido) return;
+    setAllFontes([]);
+    setSessaoFontes(null);
+    sessaoFontesRef.current = null;
+    urlNativaRef.current.clear();
+    if (!conteudoId) return;
     if (conteudoTipo === "serie" && (!temporada || !numeroEp)) return;
 
     const ctrl = new AbortController();
-    const params = new URLSearchParams({ tmdbId: String(tmdbValido) });
-    if (conteudoTipo === "serie") {
-      params.set("type", "tv");
-      params.set("season", String(temporada));
-      params.set("episode", String(numeroEp));
-    } else {
-      params.set("type", "movie");
-    }
+    const corpoBase = {
+      conteudoId,
+      conteudoTipo,
+      temporada: temporada ?? null,
+      numeroEp: numeroEp ?? null,
+      ambiente,
+    };
 
-    fetch(`/api/player/playerflix-sources?${params.toString()}`, { signal: ctrl.signal })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const lista: PlayerflixSource[] = Array.isArray(data?.sources) ? data.sources : [];
-        if (!lista.length) return;
-        setPlayerflixSources(lista);
-        console.log(
-          `[diag/server] player=Player 1 alternativas=${lista.length} ` +
-          lista.map((s) => `${s.name}(${s.provider})`).join(" "),
-        );
-      })
-      .catch(() => { /* aditivo: sem alternativas, o Player 1 segue como hoje */ });
+    (async () => {
+      try {
+        const res = await fetch("/api/player/fontes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(corpoBase),
+          signal: ctrl.signal,
+        });
+        if (!res.ok) throw new Error("Não foi possível carregar os servidores");
+        const data = await res.json();
+        const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
+        sessaoFontesRef.current = data?.sessao ?? null;
+        setSessaoFontes(data?.sessao ?? null);
+        setAllFontes(lista);
+        if (!lista.length) {
+          setError("Nenhum servidor disponível para este título.");
+          setStatus("error");
+          return;
+        }
+
+        // Fase 2: aditiva. Falha, lista vazia ou lentidão deixam a base como está.
+        const res2 = await fetch("/api/player/fontes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...corpoBase, sessao: data.sessao, alternativas: true }),
+          signal: ctrl.signal,
+        });
+        if (!res2.ok) return;
+        const data2 = await res2.json();
+        const lista2: Fonte[] = Array.isArray(data2?.fontes) ? data2.fontes : [];
+        if (lista2.length > lista.length) {
+          console.log(`[diag/server] alternativas=${lista2.length - lista.length} total=${lista2.length}`);
+          setAllFontes(lista2);
+        }
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
+        if (!sessaoFontesRef.current) {
+          setError("Não foi possível carregar os servidores. Tente novamente.");
+          setStatus("error");
+        }
+      }
+    })();
 
     return () => ctrl.abort();
-  }, [tmdbValido, conteudoTipo, temporada, numeroEp]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
 
   // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
   // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
@@ -1423,7 +1271,7 @@ export function CustomPlayer({
   // toque do usuário não passa.
   useEffect(() => {
     if (status !== "extracting" || streamTipo !== "iframe") return;
-    if (!streamUrl || !isSuperflixUrl(streamUrl)) return;
+    if (!streamUrl || !fonte?.iframeDesafio) return;
     const timer = setTimeout(() => setStatus("playing"), 4000);
     return () => clearTimeout(timer);
   }, [status, streamTipo, streamUrl]);
@@ -1497,7 +1345,7 @@ export function CustomPlayer({
         if (!state || state === "playing" || state === "paused") return;
         if (!autoRetryDoneRef.current) {
           autoRetryDoneRef.current = true;
-          extractRef.current(fonte?.embedUrl ?? "");
+          extractRef.current(fonte?.id ?? "");
         } else {
           setShowRetry(true);
         }
@@ -1709,7 +1557,7 @@ export function CustomPlayer({
         return Math.min(REEXTRACT_BASE_DELAY_MS * 2 ** failedAttempts, REEXTRACT_MAX_DELAY_MS);
       }
 
-      function runReExtract(embedUrl: string, fi: number, len: number) {
+      function runReExtract(fonteId: string, fi: number, len: number) {
         reExtractingRef.current = true;
         reExtractCountRef.current += 1;
         const attempt = reExtractCountRef.current;
@@ -1749,7 +1597,10 @@ export function CustomPlayer({
           fail(`extractStream excedeu ${REEXTRACT_SAFETY_TIMEOUT_MS}ms sem resposta`);
         }, REEXTRACT_SAFETY_TIMEOUT_MS);
 
-        desktop.extractStream(embedUrl)
+        // A URL real é resolvida na hora (e fica em cache no ref), em vez de
+        // ter sido entregue ao navegador junto com a lista.
+        resolverUrlNativaRef.current(fonteId)
+          .then((embedUrl: string) => desktop.extractStream(embedUrl))
           .then((data: any) => {
             if (settled) return;
             settled = true;
@@ -1778,14 +1629,15 @@ export function CustomPlayer({
               kind: "captions",
               default: track.default ?? index === 0,
             }));
-            const newManifestDomain = (() => { try { return new URL(data.stream).hostname; } catch { return "?"; } })();
+            const newManifestDomain = diagDomain(data.stream);
 
             // [DIAG] Contexto da renovação — remover após confirmar causa dos 500 em .woff
             const prevItem = jwRef.current.getPlaylistItem?.();
-            const prevRawUrl: string = prevItem?.file || prevItem?.sources?.[0]?.file || "desconhecido";
-            console.log(`[diag/renewal] URL anterior (proxy): ${prevRawUrl.slice(0, 120)}`);
-            console.log(`[diag/renewal] URL nova (proxy):     ${newUrl.slice(0, 120)}`);
-            console.log(`[diag/renewal] Domínio CDN novo:     ${newManifestDomain}`);
+            const prevRawUrl: string = prevItem?.file || prevItem?.sources?.[0]?.file || "";
+            // Só arquivo e etiqueta de host: a URL do proxy carrega a do CDN
+            // inteira no parâmetro `url`, com token e assinatura junto.
+            console.log(`[diag/renewal] anterior: arquivo=${diagArquivo(prevRawUrl)} host=${diagDomain(prevRawUrl)}`);
+            console.log(`[diag/renewal] nova:     arquivo=${diagArquivo(newUrl)} host=${newManifestDomain}`);
 
             recoveryLog("log", "token-renewal-success", myGeneration, attempt, fi, len, pos, sinceRenewal,
               `tipo=${renewedType}; domínio=${newManifestDomain}; load+${pos > 5 ? `seek(${pos}s)` : "play"}`);
@@ -1841,10 +1693,10 @@ export function CustomPlayer({
 
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       const expiresAt = streamExpiresAtRef.current;
-      const embedUrlForExpiry = fonte?.embedUrl;
+      const fonteIdForExpiry = fonte?.id;
       const aheadMs = expiresAt ? expiresAt - Date.now() : 0;
       if (
-        expiresAt && embedUrlForExpiry &&
+        expiresAt && fonteIdForExpiry &&
         aheadMs >= EXPIRY_MIN_AHEAD_MS && aheadMs <= EXPIRY_MAX_AHEAD_MS &&
         (window as any).obaflixDesktop
       ) {
@@ -1856,7 +1708,7 @@ export function CustomPlayer({
           recoveryLog("log", "token-expiry", null, reExtractCountRef.current + 1,
             fonteIdx, allFontes.length, progressoRef.current, -1,
             `token expira em ${Math.round(EXPIRY_RENEW_MARGIN_MS / 1000)}s; renovando antes`);
-          runReExtract(embedUrlForExpiry, fonteIdx, allFontes.length);
+          runReExtract(fonteIdForExpiry, fonteIdx, allFontes.length);
         }, aheadMs - EXPIRY_RENEW_MARGIN_MS);
       }
 
@@ -1876,7 +1728,7 @@ export function CustomPlayer({
         epochErro: number;
         fi: number;
         len: number;
-        embedUrl: string;
+        fonteId: string;
       }): boolean => {
         const { veredito, motivo } = classificarFalha({
           http: sinal.http,
@@ -1892,7 +1744,9 @@ export function CustomPlayer({
           .filter((t) => agoraMs - t < LIMITES.JANELA_EXTRACAO_MS);
 
         const inElectronAgora = typeof window !== "undefined" && !!(window as any).obaflixDesktop;
-        const podeReextrair = (inElectronAgora && supportsNativeDesktopExtraction(sinal.embedUrl))
+        // Quem sabe se a fonte tem extrator nativo é o servidor; a resposta
+        // vem como capacidade da fonte, não deduzida do host no cliente.
+        const podeReextrair = (inElectronAgora && (allFontesRef.current[sinal.fi]?.nativo ?? false))
           || (streamTipo === "mp4" && !inElectronAgora);
 
         const { acao, detalhe } = decidirAcao(veredito, {
@@ -1908,14 +1762,14 @@ export function CustomPlayer({
 
         const proxima = sinal.fi < sinal.len - 1 ? allFontes[sinal.fi + 1] : null;
         logFailover({
-          servidor: fonte?.servidor ?? fonte?.label ?? "?",
-          provider: fonte?.provider ?? "?",
+          servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+          provider: fonte?.provider ?? "-",
           sourceId: sourceIdRef.current,
           tentativa: retriesRef.current + 1,
           motivo: `${veredito}:${motivo}`,
           retries: retriesRef.current,
           acao,
-          escolhido: acao === "failover" ? (proxima?.servidor ?? proxima?.label ?? null) : null,
+          escolhido: acao === "failover" ? (proxima?.servidor ?? proxima?.rotulo ?? null) : null,
         });
 
         if (acao === "ignorar") return false;
@@ -1950,7 +1804,7 @@ export function CustomPlayer({
               return false;
             }
             if (escalado.acao === "erro") {
-              setError(friendlyPlayerError(new Error(`${motivo} - ${escalado.detalhe}`), fonte?.label ?? "Player"));
+              setError(friendlyPlayerError(new Error(`${motivo} - ${escalado.detalhe}`), fonte?.rotulo ?? "Servidor"));
               setStatus("error");
               return false;
             }
@@ -1992,7 +1846,7 @@ export function CustomPlayer({
         }
 
         if (acao === "erro") {
-          setError(friendlyPlayerError(new Error(`${motivo} - ${detalhe}`), fonte?.label ?? "Player"));
+          setError(friendlyPlayerError(new Error(`${motivo} - ${detalhe}`), fonte?.rotulo ?? "Servidor"));
           setStatus("error");
           return false;
         }
@@ -2031,7 +1885,7 @@ export function CustomPlayer({
           epochErro: epochNoSetup,
           fi: fonteIdx,
           len: allFontes.length,
-          embedUrl: fonte?.embedUrl ?? "",
+          fonteId: fonte?.id ?? "",
         });
       };
       firstFrameTimerRef.current = setTimeout(vigiarPrimeiroFrame, LIMITES.T_FIRST_FRAME_MS);
@@ -2066,7 +1920,7 @@ export function CustomPlayer({
           epochErro: epochNoSetup,
           fi: fonteIdx,
           len: allFontes.length,
-          embedUrl: fonte?.embedUrl ?? "",
+          fonteId: fonte?.id ?? "",
         });
       }, 2000);
 
@@ -2094,7 +1948,9 @@ export function CustomPlayer({
         logEtapa(
           rotuloDiag,
           classificarEtapa({ url: srcUrl, http: httpStatus, jwCode: e?.code, mensagem: e?.message }),
-          { url: srcUrl, http: httpStatus, jwCode: e?.code, ms: msSinceLoad },
+          // classificarEtapa precisa do caminho para saber a fase; o log leva
+          // só o nome do arquivo, nunca o host nem a query.
+          { url: diagArquivo(srcUrl), http: httpStatus, jwCode: e?.code, ms: msSinceLoad },
         );
 
         if (Date.now() < suppressErrorUntilRef.current) {
@@ -2104,7 +1960,7 @@ export function CustomPlayer({
 
         const fi = fonteIdx;
         const len = allFontes.length;
-        const embedUrl = fonte?.embedUrl ?? "";
+        const fonteId = fonte?.id ?? "";
 
         // Classificação e decisão centralizadas: o mesmo caminho usado pelos
         // vigias de primeiro frame e de stall.
@@ -2114,7 +1970,7 @@ export function CustomPlayer({
           mensagem: e?.message,
           url: srcUrl,
           epochErro: epochDoPlayer,
-          fi, len, embedUrl,
+          fi, len, fonteId,
         })) return;
         const pos = progressoRef.current;
         const sinceRenewal = lastReExtractSuccessAtRef.current > 0
@@ -2181,14 +2037,15 @@ export function CustomPlayer({
               const tokenRes = await fetch("/api/player/token", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ embedUrl }),
+                body: JSON.stringify({ sessao: sessaoFontesRef.current, fonteId }),
                 signal: abortCtrl.signal,
               });
               if (!tokenRes.ok) throw new Error("Falha ao obter token");
               const { playToken } = await tokenRes.json();
 
               const extractRes = await fetch(
-                `/api/player/extract?url=${encodeURIComponent(embedUrl)}&playToken=${encodeURIComponent(playToken)}`,
+                `/api/player/extract?sessao=${encodeURIComponent(sessaoFontesRef.current ?? "")}`
+                + `&fonteId=${encodeURIComponent(fonteId)}&playToken=${encodeURIComponent(playToken)}`,
                 { signal: abortCtrl.signal },
               );
               const data = await extractRes.json();
@@ -2241,7 +2098,7 @@ export function CustomPlayer({
 
         // Renovação de token: apenas fontes com extração nativa em Electron/Android, com
         // tentativas restantes. Qualquer outro player vai direto para fallback.
-        if (inElectron && supportsNativeDesktopExtraction(embedUrl) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
+        if (inElectron && (fonte?.nativo ?? false) && reExtractCountRef.current < REEXTRACT_MAX_CONSECUTIVE_FAILURES) {
 
           // Nenhum frame exibido ainda: fonte inválida para este episódio, não token expirado
           if (initialLoadRef.current) {
@@ -2265,14 +2122,14 @@ export function CustomPlayer({
           reExtractDebounceRef.current = setTimeout(() => {
             reExtractDebounceRef.current = null;
             if (unmountedRef.current || reExtractingRef.current) return;
-            runReExtract(embedUrl, fi, len);
+            runReExtract(fonteId, fi, len);
           }, delay);
           return;
         }
 
         // Fallback direto: fonte sem extração nativa, não-Electron, ou max-retries atingido
         fallback("source-switch", "log",
-          `${supportsNativeDesktopExtraction(embedUrl) ? `max-retries=${reExtractCountRef.current}` : "non-native"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
+          `${fonte?.nativo ? `max-retries=${reExtractCountRef.current}` : "non-native"} → fi=${fi}→${fi < len - 1 ? fi + 1 : "error"}`);
       });
 
     });
@@ -2519,7 +2376,7 @@ export function CustomPlayer({
         </video>
       )}
 
-      {streamTipo === "iframe" && streamUrl && isSuperflixUrl(streamUrl) && status === "playing" && (
+      {streamTipo === "iframe" && streamUrl && fonte?.iframeDesafio && status === "playing" && (
         <div className="absolute top-0 left-0 right-0 z-[9998] px-14 pt-4 pb-7 text-center pointer-events-none bg-gradient-to-b from-black/90 to-transparent">
           <p className="text-white text-[13px] md:text-sm leading-snug drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
             Escolha um servidor para assistir. Recomendamos o Servidor Alternativo, se estiver disponível.
@@ -2535,15 +2392,15 @@ export function CustomPlayer({
             // Cross-origin não deixa ler o conteúdo, mas o evento de load chega.
             // É o sinal de que a tela de servidores já está desenhada e o
             // carregamento padrão pode sair.
-            if (isSuperflixUrl(streamUrl)) setStatus("playing");
+            if (fonte?.iframeDesafio) setStatus("playing");
           }}
           className="absolute inset-0 w-full h-full border-0 touch-auto"
-          allow={isSuperflixUrl(streamUrl)
+          allow={fonte?.iframeDesafio
             ? "autoplay *; encrypted-media *; picture-in-picture *; fullscreen *; clipboard-write *; accelerometer *; gyroscope *; web-share *"
             : "autoplay; fullscreen; picture-in-picture"}
           allowFullScreen
           referrerPolicy="origin-when-cross-origin"
-          sandbox={isSuperflixUrl(streamUrl)
+          sandbox={fonte?.iframeDesafio
             ? undefined
             : "allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"}
           title={`${titulo} - player`}
@@ -2636,7 +2493,7 @@ export function CustomPlayer({
                   {showSources && (
                     <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[140px] shadow-2xl">
                       {allFontes.map((f, i) => {
-                        const falhou = servidoresFalhos[f.embedUrl];
+                        const falhou = servidoresFalhos[f.id] || (f.disponivel ? "" : (f.motivoIndisponivel || "indisponível"));
                         return (
                           <button
                             key={i}
@@ -2649,8 +2506,11 @@ export function CustomPlayer({
                                   : "text-white/70 hover:bg-white/10 hover:text-white"
                             }`}
                           >
-                            {/* Servidores internos do mesmo player não viram Player 6, 7... */}
-                            {f.servidor ? `${f.label} · ${f.servidor}` : f.label}
+                            {/* Nome real só aparece na resposta administrativa. */}
+                            {f.servidor ? `${f.rotulo} · ${f.servidor}` : f.rotulo}
+                            {f.idioma && (
+                              <span className="text-white/40"> · {f.idioma === "dub" ? "Dublado" : "Legendado"}</span>
+                            )}
                             {falhou && (
                               <span className="block text-[10px] text-white/30 mt-0.5">indisponível</span>
                             )}
@@ -3322,6 +3182,54 @@ export function CustomPlayer({
         </div>
       )}
 
+      {/* Diagnóstico técnico — administrador autenticado.
+          A presença de `provider` é o sinal: usuário comum recebe a projeção
+          pública, onde esse campo simplesmente não existe. Nada aqui é
+          escondido por CSS; o dado nem chega ao navegador comum. */}
+      {fonte?.provider && (
+        <div className="absolute bottom-24 left-4 z-[99998] max-w-[min(92vw,26rem)]">
+          <button
+            onClick={() => setShowDiag((v) => !v)}
+            className="rounded-full border border-white/20 bg-black/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/70 backdrop-blur transition hover:bg-black/90 hover:text-white"
+          >
+            {showDiag ? "Ocultar diagnóstico" : "Diagnóstico"}
+          </button>
+          {showDiag && (
+            <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg border border-white/15 bg-black/85 p-3 font-mono text-[10px] leading-relaxed text-white/80 backdrop-blur">
+              <dt className="text-white/40">fonte</dt>
+              <dd>{fonte.rotulo} ({fonteIdx + 1}/{allFontes.length})</dd>
+              <dt className="text-white/40">provider</dt>
+              <dd className="text-[#ffd900]">{fonte.provider}</dd>
+              <dt className="text-white/40">servidor</dt>
+              <dd className="break-all">{fonte.servidor ?? "-"}</dd>
+              <dt className="text-white/40">host</dt>
+              <dd className="break-all">{fonte.host ?? "-"}</dd>
+              {fonte.videoId !== undefined && (<>
+                <dt className="text-white/40">videoId</dt>
+                <dd>{fonte.videoId}</dd>
+              </>)}
+              <dt className="text-white/40">sourceId</dt>
+              <dd className="break-all">{fonte.id}</dd>
+              <dt className="text-white/40">mídia</dt>
+              <dd>{streamTipo}</dd>
+              <dt className="text-white/40">rota</dt>
+              <dd>
+                {!streamUrl ? "-"
+                  : streamUrl.startsWith("/api/player/proxy") ? "proxy Vercel"
+                  : streamUrl.startsWith("/") ? "same-origin"
+                  : "CDN direto"}
+              </dd>
+              <dt className="text-white/40">status</dt>
+              <dd>{status}{recovering ? " · renovando" : ""}</dd>
+              <dt className="text-white/40">nativo</dt>
+              <dd>{fonte.nativo ? "sim" : "não"}</dd>
+              <dt className="text-white/40">embed</dt>
+              <dd className="break-all text-white/50">{fonte.embedUrl ?? "-"}</dd>
+            </dl>
+          )}
+        </div>
+      )}
+
       {/* Retry */}
       {showRetry && status !== "error" && status !== "extracting" && (
         <div className="absolute inset-0 z-[99999] flex items-center justify-center bg-black/50">
@@ -3329,7 +3237,7 @@ export function CustomPlayer({
             onClick={() => {
               setShowRetry(false);
               if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
-              extractRef.current(fonte?.embedUrl ?? "");
+              extractRef.current(fonte?.id ?? "");
             }}
             className="flex flex-col items-center gap-3 text-white/70 hover:text-white transition-colors group"
           >
@@ -3354,7 +3262,7 @@ export function CustomPlayer({
               <ArrowLeft size={15} /> Voltar
             </button>
             <button
-              onClick={() => extract(fonte?.embedUrl ?? "")}
+              onClick={() => extract(fonte?.id ?? "")}
               className="bg-white text-black text-xs font-bold px-5 py-2.5 rounded-full hover:bg-zinc-200 transition"
             >
               Tentar novamente

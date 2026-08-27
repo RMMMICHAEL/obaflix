@@ -5,53 +5,6 @@ import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
 import { imgUrl, getTVImages, pickLogo, logoUrl as buildLogoUrl } from "@/lib/tmdb";
 
-// Fontes RedeCanais confirmadas pelos HARs fornecidos. Manter o endpoint
-// interno do player evita depender da automação da página externa do episódio.
-const REDECANAIS_EPISODES: Record<string, string> = {
-  "4607:1:1": "https://redecanais.capital/player3/server.php?categoria=vod&server=RCServer01&subfolder=videos&vid=LOSTT01EP01&gid=0B265dpk7MD54cWtsLXVGSmhWeFk",
-  "69050:1:1": "https://redecanais.capital/player3/server.php?categoria=vod&server=RCServer13&subfolder=ondemand&vid=RVDLT01EP01",
-};
-
-function getRedeCanaisEpisodeUrl(tmdbId: string | null, temporada: number, numeroEp: number) {
-  if (!tmdbId) return null;
-  return REDECANAIS_EPISODES[`${tmdbId}:${temporada}:${numeroEp}`] ?? null;
-}
-
-// Busca URLs extras do warez2 para o episódio (voltz como player 1)
-async function getWarez2Ep(
-  serieId: string,
-  temporada: number,
-  ep: number
-): Promise<{ br: string[]; eng: string[] }> {
-  try {
-    const params = new URLSearchParams({
-      item_id: serieId,
-      season_num: String(temporada),
-      episode_num: String(ep),
-    });
-    const r = await fetch(
-      `https://megafrixapi.com/iptv/warez2.php?${params}`,
-      { headers: { "User-Agent": "okhttp/4.9.3" }, next: { revalidate: 0 } }
-    );
-    if (!r.ok) return { br: [], eng: [] };
-    const data = await r.json().catch(() => null);
-    return { br: data?.br ?? [], eng: data?.eng ?? [] };
-  } catch {
-    return { br: [], eng: [] };
-  }
-}
-
-// Mescla URLs do warez2 (prioridade) com as do banco
-function mergeEpUrls(warezUrls: string[], dbUrl: string | null): string | null {
-  const all = [...warezUrls];
-  if (dbUrl) {
-    dbUrl.split(",").map((u) => u.trim()).filter(Boolean).forEach((u) => {
-      if (!all.includes(u)) all.push(u);
-    });
-  }
-  return all.length > 0 ? all.join(",") : null;
-}
-
 export default async function AssistirEpPage({
   params,
 }: {
@@ -68,15 +21,20 @@ export default async function AssistirEpPage({
   const numeroEp = Number(params.ep.replace("ep", ""));
 
   const [serie, episodio] = await Promise.all([
-    prisma.serie.findUnique({ where: { id: params.id } }),
+    prisma.serie.findUnique({
+      where: { id: params.id },
+      select: { id: true, titulo: true, sinopse: true, tmdbId: true, poster: true, background: true },
+    }),
+    // Sem urlDub/urlLeg: nada que identifique provedor entra no render.
     prisma.episodio.findFirst({
       where: { serieId: params.id, temporada, numeroEp },
+      select: { id: true, titulo: true, thumbnail: true, temporada: true, numeroEp: true },
     }),
   ]);
 
   if (!serie || !episodio) notFound();
 
-  const [prevEp, nextEp, historico, warez, images] = await Promise.all([
+  const [prevEp, nextEp, historico, images] = await Promise.all([
     prisma.episodio.findFirst({
       where: {
         serieId: params.id,
@@ -86,6 +44,7 @@ export default async function AssistirEpPage({
         ],
       },
       orderBy: [{ temporada: "desc" }, { numeroEp: "desc" }],
+      select: { temporada: true, numeroEp: true },
     }),
     prisma.episodio.findFirst({
       where: {
@@ -96,14 +55,13 @@ export default async function AssistirEpPage({
         ],
       },
       orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
+      select: { temporada: true, numeroEp: true },
     }),
     userId
       ? prisma.watchHistory.findUnique({
           where: { userId_conteudoId_episodioId: { userId, conteudoId: serie.id, episodioId: episodio.id } },
         })
       : null,
-    // Busca voltz e outros players extras via warez2 (em paralelo com o resto)
-    getWarez2Ep(params.id, temporada, numeroEp),
     serie.tmdbId ? getTVImages(serie.tmdbId) : null,
   ]);
 
@@ -114,19 +72,9 @@ export default async function AssistirEpPage({
     ? `/assistir/serie/${params.id}/t${nextEp.temporada}/ep${nextEp.numeroEp}`
     : undefined;
 
-  // Voltz (e outros players do warez2) ficam em primeiro na lista
-  const redeCanaisUrl = getRedeCanaisEpisodeUrl(serie.tmdbId, temporada, numeroEp);
-  const urlDub = mergeEpUrls(
-    redeCanaisUrl ? [...warez.br, redeCanaisUrl] : warez.br,
-    episodio.urlDub,
-  );
-  const urlLeg = mergeEpUrls(warez.eng, episodio.urlLeg);
-
   return (
     <CustomPlayer
       key={episodio.id}
-      urlDub={urlDub}
-      urlLeg={urlLeg}
       titulo={serie.titulo}
       nomeEpisodio={episodio.titulo ?? undefined}
       thumbUrl={imgUrl(episodio.thumbnail || serie.background || serie.poster || null, "original")}

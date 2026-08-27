@@ -41,12 +41,38 @@ function shortUrl(raw, max = 120) {
   return `${raw.slice(0, max)}…(+${raw.length - max})`;
 }
 
-/** Remove segredos óbvios que não devem parar num arquivo de log compartilhável. */
+/**
+ * Remove segredos óbvios que não devem parar num arquivo de log compartilhável.
+ *
+ * O padrão anterior exigia `?` ou `&` colado ao nome, então `cnvs_token=` e
+ * `verify=` — os dois que os CDNs em uso realmente assinam — passavam inteiros
+ * para o arquivo em disco. Agora qualquer parâmetro terminado em `token`, mais
+ * a lista nominal, é mascarado.
+ */
 function scrub(value) {
   if (typeof value !== "string") return value;
   return value
-    .replace(/([?&](?:token|access_token|password|secret|key|sig)=)[^&\s]+/gi, "$1***")
-    .replace(/(Authorization:\s*Bearer\s+)\S+/gi, "$1***");
+    .replace(/([?&][\w-]*(?:token|password|secret|signature|sig|key|auth|verify|cfv|expires|hash|md5)=)[^&\s]*/gi, "$1***")
+    .replace(/(Authorization:\s*Bearer\s+)\S+/gi, "$1***")
+    .replace(/(Cookie:\s*)\S+/gi, "$1***");
+}
+
+/**
+ * URL sem query nenhuma: host + caminho.
+ *
+ * Para linhas que só precisam dizer "qual recurso", e não "com quais
+ * parâmetros". É a query que carrega assinatura de CDN, e nenhum diagnóstico
+ * daqui depende dela.
+ */
+function safeUrl(raw) {
+  if (typeof raw !== "string" || !raw) return "-";
+  try {
+    const u = new URL(raw);
+    const params = u.searchParams.size ?? [...u.searchParams].length;
+    return `${u.host}${u.pathname}${params ? `?<${params}p>` : ""}`;
+  } catch {
+    return scrub(raw).slice(0, 80);
+  }
 }
 
 function formatFields(fields) {
@@ -221,5 +247,6 @@ module.exports = {
   error,
   timer,
   shortUrl,
+  safeUrl,
   LEVELS,
 };

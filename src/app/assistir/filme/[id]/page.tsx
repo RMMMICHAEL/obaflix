@@ -5,59 +5,39 @@ import { prisma } from "@/lib/prisma";
 import { CustomPlayer } from "@/components/player/CustomPlayer";
 import { imgUrl, getMovieImages, pickLogo, logoUrl as buildLogoUrl } from "@/lib/tmdb";
 
-async function getWarez2Filme(
-  filmeId: string
-): Promise<{ br: string[]; eng: string[] }> {
-  try {
-    const r = await fetch(
-      `https://megafrixapi.com/iptv/warez2.php?item_id=${encodeURIComponent(filmeId)}`,
-      { headers: { "User-Agent": "okhttp/4.9.3" }, next: { revalidate: 0 } }
-    );
-    if (!r.ok) return { br: [], eng: [] };
-    const data = await r.json().catch(() => null);
-    return { br: data?.br ?? [], eng: data?.eng ?? [] };
-  } catch {
-    return { br: [], eng: [] };
-  }
-}
-
-function mergeFilmeUrls(warezUrls: string[], dbUrl: string | null): string | null {
-  const all = [...warezUrls];
-  if (dbUrl) {
-    dbUrl.split(",").map((u) => u.trim()).filter(Boolean).forEach((u) => {
-      if (!all.includes(u)) all.push(u);
-    });
-  }
-  return all.length > 0 ? all.join(",") : null;
-}
-
+/**
+ * A página não conhece mais nenhuma fonte.
+ *
+ * Até aqui ela buscava o warez2 e passava `urlDub`/`urlLeg` como props do
+ * CustomPlayer — que é Client Component, então cada URL real de provedor era
+ * serializada no payload RSC e saía legível no "ver código-fonte". Agora quem
+ * monta a lista é /api/player/fontes, e o navegador recebe só ids opacos.
+ */
 export default async function AssistirFilmePage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
   const userId = (session?.user as any)?.id;
   if (!userId) redirect(`/login?callbackUrl=${encodeURIComponent(`/assistir/filme/${params.id}`)}`);
 
-  const filme = await prisma.filme.findUnique({ where: { id: params.id } });
+  const filme = await prisma.filme.findUnique({
+    where: { id: params.id },
+    // Sem urlDub/urlLeg: nada que identifique provedor entra no render.
+    select: {
+      id: true, titulo: true, sinopse: true, tmdbId: true,
+      poster: true, background: true, duracao: true,
+    },
+  });
   if (!filme) notFound();
 
-  const [historico, warez, images] = await Promise.all([
-    userId
-      ? prisma.watchHistory.findFirst({
-          where: { userId, conteudoId: params.id, episodioId: null },
-          orderBy: { updatedAt: "desc" },
-        })
-      : null,
-    getWarez2Filme(params.id),
+  const [historico, images] = await Promise.all([
+    prisma.watchHistory.findFirst({
+      where: { userId, conteudoId: params.id, episodioId: null },
+      orderBy: { updatedAt: "desc" },
+    }),
     filme.tmdbId ? getMovieImages(filme.tmdbId) : null,
   ]);
 
-  // Voltz (e outros players do warez2) ficam em primeiro na lista
-  const urlDub = mergeFilmeUrls(warez.br, filme.urlDub);
-  const urlLeg = mergeFilmeUrls(warez.eng, filme.urlLeg);
-
   return (
     <CustomPlayer
-      urlDub={urlDub}
-      urlLeg={urlLeg}
       titulo={filme.titulo}
       thumbUrl={imgUrl(filme.background || filme.poster || null, "original")}
       logoUrl={buildLogoUrl(pickLogo(images))}

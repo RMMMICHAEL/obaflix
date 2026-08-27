@@ -6,6 +6,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { createPlayToken, checkRateLimit, isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
+import { resolverFonte } from "@/lib/fontes";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -52,17 +53,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Muitas solicitações" }, { status: 429, headers: NO_STORE });
   }
 
-  let embedUrl: string;
+  // O cliente manda um id opaco, nunca a URL: quem traduz id → embedUrl é a
+  // sessão de fontes no Redis, criada por /api/player/fontes. Além de tirar o
+  // domínio real do navegador, isso fecha a escolha de destino pelo cliente —
+  // antes ele propunha a URL e o servidor só validava contra a allowlist.
+  let corpo: { sessao?: unknown; fonteId?: unknown };
   try {
-    const body = await readJsonBody<{ embedUrl?: unknown }>(req, 8192);
-    const requestedEmbedUrl = body?.embedUrl;
-    if (!requestedEmbedUrl || typeof requestedEmbedUrl !== "string" || requestedEmbedUrl.length > 4096) throw new Error();
-    embedUrl = requestedEmbedUrl;
-    await assertAllowedMediaUrl(embedUrl);
+    corpo = await readJsonBody(req, 2048);
   } catch {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  const playToken = createPlayToken(userId, embedUrl, ip);
+  const sessao = typeof corpo.sessao === "string" ? corpo.sessao : "";
+  const fonteId = typeof corpo.fonteId === "string" ? corpo.fonteId : "";
+  if (!sessao || !fonteId) {
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+
+  const fonte = await resolverFonte(sessao, userId, fonteId);
+  if (!fonte) {
+    await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: "fonte não resolvida" });
+    return NextResponse.json({ error: "Fonte indisponível" }, { status: 404, headers: NO_STORE });
+  }
+
+  // A allowlist continua, agora como segunda linha: protege contra uma sessão
+  // montada com um host que deixou de ser aceito entre um deploy e outro.
+  try {
+    await assertAllowedMediaUrl(fonte.embedUrl);
+  } catch {
+    return NextResponse.json({ error: "Fonte indisponível" }, { status: 403, headers: NO_STORE });
+  }
+
+  const playToken = createPlayToken(userId, fonte.embedUrl, ip);
   return NextResponse.json({ playToken }, { headers: NO_STORE });
 }

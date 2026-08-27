@@ -149,13 +149,26 @@ function buildUpstashClient(): RedisClient | null {
 // Singleton — instanciado uma vez por processo (sobrevive entre requests no mesmo worker warm)
 let _client: RedisClient | null = null;
 
+// Em `next dev` cada rota é compilada em seu próprio bundle, então um `_client`
+// só de módulo dava um MemoryStore por rota: a sessão de fontes criada em
+// /api/player/fontes não existia em /api/player/token. Em produção o cliente é
+// o Upstash e a questão não se coloca — mas o fallback precisa se comportar
+// como um store único para o fluxo ser testável localmente. Mesmo padrão de
+// globalThis que src/lib/prisma.ts já usa.
+const globalParaRedis = globalThis as unknown as { obaflixMemoryStore?: RedisClient };
+
 export function getRedis(): RedisClient {
   if (!_client) {
     const distributed = buildUpstashClient();
     if (!distributed && process.env.NODE_ENV === "production") {
       throw new Error("Redis distribuído obrigatório em produção");
     }
-    _client = distributed ?? new MemoryStore();
+    if (distributed) {
+      _client = distributed;
+    } else {
+      globalParaRedis.obaflixMemoryStore ??= new MemoryStore();
+      _client = globalParaRedis.obaflixMemoryStore;
+    }
   }
   return _client;
 }
