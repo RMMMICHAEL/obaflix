@@ -80,10 +80,12 @@ const nextConfig = {
     // Servidores sem extrator nativo caem no iframe; se o host nao estiver em
     // PLAYER_FRAME_HOSTS o player some sem erro visivel (foi o caso de
     // strmup/vidnest, servidores 3 e 4 de varias series).
+    //
+    // Só /assistir/* monta iframe de provedor. /player usa <video> via
+    // StreamPlayer e não precisa da lista — fica na regra restritiva.
     return [
       { source: "/assistir/:path*", headers: [...baseHeaders, csp(frameSrc)] },
-      { source: "/player/:path*", headers: [...baseHeaders, csp(frameSrc)] },
-      { source: "/((?!assistir|player).*)", headers: [...baseHeaders, csp("'none'")] },
+      { source: "/((?!assistir).*)", headers: [...baseHeaders, csp("'none'")] },
     ];
   },
 };
