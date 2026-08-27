@@ -150,90 +150,44 @@ export const getTVImages = (tmdbId: string | number) =>
   );
 
 /**
- * Escolhe o backdrop do card, preferindo arte que ja traga o titulo desenhado.
+ * Escolhe o backdrop LIMPO, sem titulo desenhado na arte.
  *
- * No TMDB, `iso_639_1` de um backdrop diz qual texto esta impresso na arte:
+ * No TMDB, `iso_639_1` de um backdrop diz qual texto esta impresso na imagem:
  * `null` e arte limpa, "pt"/"en" tem o nome queimado naquele idioma.
  *
- * A regra passou por tres versoes. Primeiro "pt > en > null", que enchia o
- * catalogo de arte legendada e fazia o card exibir o nome duas vezes. Depois
- * "null primeiro", que resolveu a duplicacao mas deixou tudo sem titulo. Esta
- * versao busca o meio-termo, medida em amostra de 160 filmes e 160 series:
+ * O card desenha o nome por cima — logo oficial quando existe, texto quando
+ * nao existe. Entao a arte precisa vir sem nome: backdrop com titulo queimado
+ * mais o logo por cima coloca o nome duas vezes na mesma imagem, que foi
+ * exatamente o motivo de o logo ter sido removido da primeira vez.
  *
- *  - exigir voto da comunidade e o que separa arte boa de upload amador. Sem
- *    esse filtro, 48% dos filmes caiam em imagem que ninguem nunca votou;
- *    com ele, 14% — a mesma taxa da arte limpa;
- *  - so PT no topo, nunca EN. Arte com o nome em ingles nao resolve nada: o
- *    rotulo em portugues teria de ficar assim mesmo (senao o usuario perde a
- *    unica referencia no idioma dele), e o card acabaria com dois nomes na
- *    tela — exatamente o problema que originou toda esta regra. Se o titulo
- *    queimado nao esta em portugues, arte limpa e melhor;
- *  - 1920px preferencial, 1280px aceitavel: abaixo disso a tipografia da arte
- *    legendada aparece borrada no card.
+ * Medido em amostra de 320 titulos: 98% dos filmes e 94% das series tem ao
+ * menos um backdrop limpo, entao os degraus seguintes quase nunca entram.
+ * Quando entram, o card ainda assim se protege — ver LandscapeCard.
  *
- * EN continua no fim da lista como ultimo recurso, para titulos sem nenhuma
- * outra arte — nesse caso o rotulo permanece visivel.
+ * Empate resolvido por vote_average e depois pela largura.
  */
-const LARGURA_MINIMA_LEGENDADA = 1920;
-
-type Degrau = { lang: string | null; validado?: boolean; minLargura?: number };
-
-const PRIORIDADE_BACKDROP: Degrau[] = [
-  { lang: "pt", validado: true, minLargura: LARGURA_MINIMA_LEGENDADA },
-  { lang: "pt", validado: true, minLargura: 1280 },
-  { lang: null },
-  { lang: "pt" },
-  { lang: "en" },
-];
-
-function melhorDoDegrau(backdrops: TmdbImageEntry[], d: Degrau): TmdbImageEntry | undefined {
-  return [...backdrops]
-    .filter((b) => (b.iso_639_1 ?? null) === d.lang)
-    .filter((b) => (d.validado ? (b.vote_count ?? 0) > 0 : true))
-    .filter((b) => (d.minLargura ? (b.width ?? 0) >= d.minLargura : true))
-    .sort((a, b) => b.vote_average - a.vote_average || (b.width ?? 0) - (a.width ?? 0))[0];
-}
-
-/** A escolha completa: o card precisa saber se a arte ja carrega o nome. */
-export function pickBackdropEntry(images: TmdbImages | null | undefined): TmdbImageEntry | null {
-  const backdrops = images?.backdrops;
-  if (!backdrops?.length) return null;
-  for (const d of PRIORIDADE_BACKDROP) {
-    const e = melhorDoDegrau(backdrops, d);
-    if (e) return e;
-  }
-  return backdrops[0];
-}
-
-/**
- * Se a arte escolhida traz o titulo em portugues, o card omite o rotulo.
- * Arte em ingles nao conta: "Inception" sem "A Origem" embaixo deixaria o
- * usuario sem o nome que ele conhece.
- */
-export function backdropTemTituloPt(entry: TmdbImageEntry | null | undefined): boolean {
-  return (entry?.iso_639_1 ?? null) === "pt";
-}
-
 export function pickBackdrop(images: TmdbImages | null | undefined): string | null {
-  return pickBackdropEntry(images)?.file_path ?? null;
-}
-
-/**
- * O hero desenha o titulo com o logo PNG por cima, entao arte com nome queimado
- * duplicaria ali. Continua preferindo a limpa.
- */
-export function pickHeroBackdropLimpo(images: TmdbImages | null | undefined): string | null {
   const backdrops = images?.backdrops;
   if (!backdrops?.length) return null;
+
+  const byLang = (lang: string | null) =>
+    [...backdrops]
+      .filter((b) => (b.iso_639_1 ?? null) === lang)
+      .sort((a, b) => b.vote_average - a.vote_average || (b.width ?? 0) - (a.width ?? 0))[0];
+
   return (
-    melhorDoDegrau(backdrops, { lang: null })?.file_path ??
-    melhorDoDegrau(backdrops, { lang: "pt" })?.file_path ??
-    melhorDoDegrau(backdrops, { lang: "en" })?.file_path ??
+    byLang(null)?.file_path ??
+    byLang("pt")?.file_path ??
+    byLang("en")?.file_path ??
     backdrops[0].file_path
   );
 }
 
-export const pickHeroBackdrop = pickHeroBackdropLimpo;
+/**
+ * O hero quer a mesma arte limpa, porque tambem desenha o titulo por cima.
+ * Mantido como nome proprio porque as paginas de detalhe ja o importam assim.
+ */
+export const pickHeroBackdrop = pickBackdrop;
 
 /**
  * Ordem de preferencia do logo, exatamente como pedido no hero:

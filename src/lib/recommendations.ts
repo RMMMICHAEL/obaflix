@@ -5,11 +5,11 @@ import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 export type RecommendationKind = "filme" | "serie" | "anime" | "desenho";
 
 /**
- * O card fechado das prateleiras desenha só arte e nome. `logo`, `ano`, `nota`,
+ * O card desenha arte e nome, e o nome vem do logo oficial. `ano`, `nota`,
  * `urlDub` e `urlLeg` viajavam na resposta sem nunca serem renderizados — 88
- * cards por visita carregando cinco campos mortos. O que a pontuação e os
- * filtros precisam (nota, popularidade, gêneros, áudio) fica no lado do
- * servidor, em `PoolItem`, e não atravessa a rede.
+ * cards por visita carregando campos mortos. O que a pontuação e os filtros
+ * precisam (nota, popularidade, gêneros, áudio) fica no lado do servidor, em
+ * `PoolItem`, e não atravessa a rede.
  */
 export interface RecommendationCard {
   id: string;
@@ -17,8 +17,7 @@ export interface RecommendationCard {
   titulo: string;
   poster: string | null;
   background: string | null;
-  /** Arte ja traz o titulo em portugues: o card omite o rotulo. */
-  backgroundTituloPt: boolean | null;
+  logo: string | null;
 }
 
 export interface RecommendationRow {
@@ -64,7 +63,7 @@ interface PoolItem {
   titulo: string;
   poster: string | null;
   background: string | null;
-  backgroundTituloPt: boolean | null;
+  logo: string | null;
   ano: number | null;
   nota: number | null;
   popularidade: number | null;
@@ -85,7 +84,7 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
       orderBy: [...ordemPopular],
       take: POOL_TAKE,
       select: {
-        id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
+        id: true, titulo: true, poster: true, background: true, logo: true,
         ano: true, nota: true, popularidade: true,
         urlDub: true, urlLeg: true,
         generos: { select: { generoId: true } },
@@ -96,7 +95,7 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
       orderBy: [...ordemPopular],
       take: POOL_TAKE,
       select: {
-        id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
+        id: true, titulo: true, poster: true, background: true, logo: true,
         ano: true, nota: true, popularidade: true, tipo: true,
         generos: { select: { generoId: true } },
         // Só para derivar dois booleanos. O array não entra no cache — vira
@@ -114,15 +113,13 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
   // Separados por tipo: o corte em 180 é por modelo, como era o `take`.
   return {
     filmes: filmes.map((f): PoolItem => ({
-      id: f.id, tipo: "filme", titulo: f.titulo, poster: f.poster, background: f.background,
-      backgroundTituloPt: f.backgroundTituloPt,
+      id: f.id, tipo: "filme", titulo: f.titulo, poster: f.poster, background: f.background, logo: f.logo,
       ano: f.ano, nota: f.nota, popularidade: f.popularidade,
       generoIds: f.generos.map((g) => g.generoId),
       temDub: Boolean(f.urlDub), temLeg: Boolean(f.urlLeg),
     })),
     series: series.map((s): PoolItem => ({
-      id: s.id, tipo: normalizeSeriesType(s.tipo), titulo: s.titulo, poster: s.poster, background: s.background,
-      backgroundTituloPt: s.backgroundTituloPt,
+      id: s.id, tipo: normalizeSeriesType(s.tipo), titulo: s.titulo, poster: s.poster, background: s.background, logo: s.logo,
       ano: s.ano, nota: s.nota, popularidade: s.popularidade,
       generoIds: s.generos.map((g) => g.generoId),
       temDub: s.episodios.some((ep) => Boolean(ep.urlDub)),
@@ -147,12 +144,12 @@ const getPoolCompartilhado = unstable_cache(
  * lê.
  */
 const selecaoSinalFilme = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true,
+  id: true, titulo: true, poster: true, background: true, logo: true,
   generos: { select: { generoId: true } },
 } as const;
 
 const selecaoSinalSerie = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, tipo: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, tipo: true,
   generos: { select: { generoId: true } },
 } as const;
 
@@ -161,7 +158,7 @@ interface MidiaSinal {
   titulo: string;
   poster: string | null;
   background: string | null;
-  backgroundTituloPt: boolean | null;
+  logo: string | null;
   tipo: RecommendationKind;
   generoIds: number[];
 }
@@ -174,14 +171,14 @@ function normalizeSeriesType(tipo: string): RecommendationKind {
   return tipo === "anime" || tipo === "desenho" ? tipo : "serie";
 }
 
-function toCard(item: { id: string; tipo: RecommendationKind; titulo: string; poster: string | null; background: string | null; backgroundTituloPt: boolean | null }): RecommendationCard {
+function toCard(item: { id: string; tipo: RecommendationKind; titulo: string; poster: string | null; background: string | null; logo: string | null }): RecommendationCard {
   return {
     id: item.id,
     tipo: item.tipo,
     titulo: item.titulo,
     poster: item.poster,
     background: item.background,
-    backgroundTituloPt: item.backgroundTituloPt,
+    logo: item.logo,
   };
 }
 
@@ -242,15 +239,13 @@ export async function getRecommendationsForUser(userId: string): Promise<{ rows:
   const signalMedia = new Map<string, MidiaSinal>();
   for (const row of signalFilms) {
     signalMedia.set(`filme:${row.id}`, {
-      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
-      backgroundTituloPt: row.backgroundTituloPt,
+      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background, logo: row.logo,
       tipo: "filme", generoIds: row.generos.map((g) => g.generoId),
     });
   }
   for (const row of signalSeries) {
     signalMedia.set(`serie:${row.id}`, {
-      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background,
-      backgroundTituloPt: row.backgroundTituloPt,
+      id: row.id, titulo: row.titulo, poster: row.poster, background: row.background, logo: row.logo,
       tipo: normalizeSeriesType(row.tipo), generoIds: row.generos.map((g) => g.generoId),
     });
   }

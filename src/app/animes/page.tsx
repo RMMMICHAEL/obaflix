@@ -22,21 +22,20 @@ const animeCatalogWhere: Prisma.SerieWhereInput = {
 };
 
 const selBrowse = {
-  id: true, tmdbId: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, logo: true,
+  id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, createdAt: true,
 } as const;
 
 const selHero = { id: true, titulo: true, sinopse: true, background: true } as const;
 
 const selGrid = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true,
 } as const;
 
 function toRow(s: any) {
   return {
     id: s.id, tipo: "anime" as const, titulo: s.titulo,
-    poster: s.poster ?? null, background: s.background ?? null,
-    backgroundTituloPt: s.backgroundTituloPt ?? null, logo: s.logo ?? null,
+    poster: s.poster ?? null, background: s.background ?? null, logo: s.logo ?? null,
     ano: s.ano ?? null, nota: s.nota ?? null,
     isNew: s.createdAt ? Date.now() - new Date(s.createdAt).getTime() < NEW_MS : false,
   };
@@ -45,8 +44,7 @@ function toRow(s: any) {
 function toGrid(s: any) {
   return {
     id: s.id, tipo: "anime" as const,
-    titulo: s.titulo, poster: s.poster ?? null, background: s.background ?? null,
-    backgroundTituloPt: s.backgroundTituloPt ?? null,
+    titulo: s.titulo, poster: s.poster ?? null, background: s.background ?? null, logo: s.logo ?? null,
     ano: s.ano ?? null, nota: s.nota ?? null,
   };
 }

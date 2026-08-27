@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 
 const selBrowse = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, backgroundTituloPt: true, logo: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true,
   sinopse: true, ano: true, nota: true, urlDub: true, urlLeg: true, createdAt: true,
 } as const;
 
@@ -23,15 +23,14 @@ const selHero = { id: true, titulo: true, sinopse: true, background: true } as c
 // `background` entra aqui de graca: mesma linha ja lida do Postgres, so mais
 // uma coluna no SELECT. Sem query extra e sem round-trip a mais no Supabase.
 const selGrid = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true,
   urlDub: true, urlLeg: true,
 } as const;
 
 function toRow(f: any) {
   return {
     id: f.id, tipo: "filme" as const, titulo: f.titulo,
-    poster: f.poster ?? null, background: f.background ?? null,
-    backgroundTituloPt: f.backgroundTituloPt ?? null, logo: f.logo ?? null,
+    poster: f.poster ?? null, background: f.background ?? null, logo: f.logo ?? null,
     ano: f.ano ?? null, nota: f.nota ?? null,
     urlDub: f.urlDub ?? null, urlLeg: f.urlLeg ?? null,
     isNew: f.createdAt ? Date.now() - new Date(f.createdAt).getTime() < NEW_MS : false,
@@ -41,8 +40,7 @@ function toRow(f: any) {
 function toGrid(f: any) {
   return {
     id: f.id, tipo: "filme" as const, titulo: f.titulo,
-    poster: f.poster ?? null, background: f.background ?? null,
-    backgroundTituloPt: f.backgroundTituloPt ?? null,
+    poster: f.poster ?? null, background: f.background ?? null, logo: f.logo ?? null,
     ano: f.ano ?? null, nota: f.nota ?? null,
     urlDub: f.urlDub ?? null, urlLeg: f.urlLeg ?? null,
   };

@@ -63,7 +63,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     prisma.filme.findMany({
       where: { id: { not: filme.id }, generos: { some: { generoId: { in: generoIds } } } },
       take: 20,
-      select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true, urlDub: true, urlLeg: true },
+      select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, urlDub: true, urlLeg: true },
     }),
     userId
       ? prisma.watchHistory.findFirst({
@@ -90,7 +90,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
     const dbRecs = await prisma.filme.findMany({
       where: { tmdbId: { in: tmdbIds } },
-      select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true, urlDub: true, urlLeg: true },
+      select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, urlDub: true, urlLeg: true },
     });
     recCards = dbRecs.map((f) => ({ ...f, tipo: "filme" as const }));
   }

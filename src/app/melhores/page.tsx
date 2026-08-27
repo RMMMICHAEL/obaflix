@@ -8,20 +8,20 @@ import { editorialAliases, EMMY_SERIES, matchEditorialEntries, OSCAR_FILMS } fro
 export const dynamic = "force-dynamic";
 
 const selFilme = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, logo: true, sinopse: true, duracao: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, duracao: true, ano: true, nota: true,
   urlDub: true, urlLeg: true, top250: true, popularRank: true,
   generos: { select: { genero: { select: { nome: true } } } },
 } as const;
 
 const selSerie = {
-  id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
+  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
   top250: true, popularRank: true,
   generos: { select: { genero: { select: { nome: true } } } },
   _count: { select: { episodios: true } },
 } as const;
 
 const awardSelect = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, backgroundTituloPt: true, ano: true,
+  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true, ano: true,
 } as const;
 
 function uniqueGenres(rows: Array<{ genero: { nome: string } }>) {
@@ -102,14 +102,12 @@ export default async function MelhoresPage() {
 
   const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
     id: item.id, tipo: "filme" as const, titulo: item.titulo,
-    poster: item.poster ?? null, background: item.background ?? null,
-    backgroundTituloPt: item.backgroundTituloPt ?? null,
+    poster: item.poster ?? null, background: item.background ?? null, logo: item.logo ?? null,
     ano: item.ano ?? null, count: entry.value ?? 0,
   }));
   const emmyItems = matchEditorialEntries(EMMY_SERIES, emmyRaw).map(({ item, entry }) => ({
     id: item.id, tipo: "serie" as const, titulo: item.titulo,
-    poster: item.poster ?? null, background: item.background ?? null,
-    backgroundTituloPt: item.backgroundTituloPt ?? null,
+    poster: item.poster ?? null, background: item.background ?? null, logo: item.logo ?? null,
     ano: item.ano ?? null, count: entry.value ?? 0,
   }));
 

@@ -13,10 +13,10 @@
  * Regras:
  *  - busca só itens com artCheckedAt = null, na ordem de popularidade;
  *  - consulta o TMDB uma vez por título (o endpoint images traz tudo);
- *  - pickBackdropEntry prefere arte com o título já desenhado, desde que tenha
- *    voto da comunidade e ao menos 1920px, com PT antes de EN; sem isso, cai
- *    na arte limpa (ver a justificativa medida em src/lib/tmdb.ts);
- *  - grava `backgroundTituloPt` para o card saber se deve omitir o rótulo;
+ *  - pickBackdrop escolhe arte LIMPA (iso_639_1 = null): o card desenha o nome
+ *    por cima, com o logo oficial quando existe, entao arte com titulo queimado
+ *    duplicaria o nome;
+ *  - pickLogo alimenta esse nome, e por isso deixou de ser opcional;
  *  - compara com o valor atual e só grava o campo que realmente mudou;
  *  - marca como verificado mesmo quando nenhuma troca é necessária.
  *
@@ -37,7 +37,7 @@
  */
 import { Prisma } from "@prisma/client";
 import { prisma } from "../src/lib/prisma";
-import { getMovieImages, getTVImages, pickLogo, pickBackdropEntry, backdropTemTituloPt } from "../src/lib/tmdb";
+import { getMovieImages, getTVImages, pickLogo, pickBackdrop } from "../src/lib/tmdb";
 
 const args = process.argv.slice(2);
 const opcao = (nome: string) => {
@@ -70,14 +70,12 @@ interface Pendente {
   id: string;
   background: string | null;
   logo: string | null;
-  /** null = nao mexer (titulo sem backdrop); true/false = valor a gravar. */
-  tituloPt: boolean | null;
 }
 
 interface Metricas {
   consultados: number;
   backgroundMudou: number;
-  comTitulo: number;
+  comLogo: number;
   jaCorreto: number;
   semBackdrop: number;
   itensGravados: number;
@@ -87,7 +85,7 @@ interface Metricas {
 }
 
 const zerar = (): Metricas => ({
-  consultados: 0, backgroundMudou: 0, comTitulo: 0, jaCorreto: 0, semBackdrop: 0,
+  consultados: 0, backgroundMudou: 0, comLogo: 0, jaCorreto: 0, semBackdrop: 0,
   itensGravados: 0, queriesEscrita: 0, erros: 0, picoConcorrencia: 0,
 });
 
@@ -129,21 +127,19 @@ async function gravarLote(tabela: Prisma.Sql, linhas: Pendente[], m: Metricas) {
   if (!linhas.length) return;
 
   const valores = linhas.map(
-    (l) => Prisma.sql`(${l.id}::text, ${l.background}::text, ${l.logo}::text, ${l.tituloPt}::boolean)`,
+    (l) => Prisma.sql`(${l.id}::text, ${l.background}::text, ${l.logo}::text)`,
   );
 
   await prisma.$executeRaw`
     UPDATE ${tabela} AS t
-       SET background          = COALESCE(v.background, t.background),
-           logo                = COALESCE(v.logo, t.logo),
-           -- false e valor legitimo aqui; so NULL significa "mantem".
-           "backgroundTituloPt" = COALESCE(v."tituloPt", t."backgroundTituloPt"),
+       SET background      = COALESCE(v.background, t.background),
+           logo            = COALESCE(v.logo, t.logo),
            "artCheckedAt"  = ${new Date()}::timestamptz,
            "updatedAt"     = CASE
                                WHEN v.background IS NOT NULL OR v.logo IS NOT NULL
                                THEN now() ELSE t."updatedAt"
                              END
-      FROM (VALUES ${Prisma.join(valores)}) AS v(id, background, logo, "tituloPt")
+      FROM (VALUES ${Prisma.join(valores)}) AS v(id, background, logo)
      WHERE t.id = v.id
   `;
 
@@ -179,29 +175,21 @@ async function processar(
             const imgs = await imagens(row.tmdbId!);
             m.consultados++;
 
-            const escolhido = pickBackdropEntry(imgs);
-            const bg = escolhido?.file_path ?? null;
+            const bg = pickBackdrop(imgs);
             const logo = pickLogo(imgs);
+            if (logo) m.comLogo++;
 
-            const pend: Pendente = { id: row.id, background: null, logo: null, tituloPt: null };
+            const pend: Pendente = { id: row.id, background: null, logo: null };
             if (!bg) {
               m.semBackdrop++;
+            } else if (bg !== row.background) {
+              pend.background = bg;
+              m.backgroundMudou++;
             } else {
-              // A marca de titulo embutido acompanha a arte escolhida, entao e
-              // gravada mesmo quando o file_path nao mudou: a regra de escolha
-              // mudou e o valor antigo pode estar errado.
-              pend.tituloPt = backdropTemTituloPt(escolhido);
-              if (pend.tituloPt) m.comTitulo++;
-              if (bg !== row.background) {
-                pend.background = bg;
-                m.backgroundMudou++;
-              } else {
-                m.jaCorreto++;
-              }
+              m.jaCorreto++;
             }
-            // O logo não vai mais para o card, mas alimenta o hero da página de
-            // detalhe. Como a consulta ao TMDB já foi feita e a escrita viaja
-            // junto com o lote, gravar sai de graça.
+            // O logo virou o nome do card: e ele que aparece sobre o banner
+            // quando existe. Deixou de ser acessorio.
             if (logo && logo !== row.logo) pend.logo = logo;
 
             // Entra na fila mesmo sem troca: a marcação é o que impede este
@@ -294,7 +282,7 @@ async function main() {
   console.log(`filmes processados  : ${mf.consultados}`);
   console.log(`séries processadas  : ${ms.consultados}`);
   console.log(`backgrounds trocados: ${soma("backgroundMudou")}`);
-  console.log(`com título embutido : ${soma("comTitulo")}`);
+  console.log(`com logo oficial    : ${soma("comLogo")}`);
   console.log(`já estavam corretos : ${soma("jaCorreto")}`);
   console.log(`sem backdrop no TMDB: ${soma("semBackdrop")}`);
   console.log(`itens gravados      : ${soma("itensGravados")}`);

@@ -42,13 +42,13 @@ export async function GET() {
     filmeIds.length
       ? prisma.filme.findMany({
           where: { id: { in: filmeIds } },
-          select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true },
+          select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true },
         })
       : [],
     serieIds.length
       ? prisma.serie.findMany({
           where: { id: { in: serieIds } },
-          select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true, tipo: true },
+          select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, tipo: true },
         })
       : [],
   ]);
@@ -69,8 +69,7 @@ export async function GET() {
         tipo: h.conteudoTipo,
         titulo: content.titulo,
         poster: content.poster,
-        background: content.background ?? null,
-    backgroundTituloPt: content.backgroundTituloPt ?? null,
+        background: content.background ?? null, logo: content.logo ?? null,
         ano: content.ano ?? null,
         nota: content.nota ?? null,
         progressoSeg: h.progressoSeg,

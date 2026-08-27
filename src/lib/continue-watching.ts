@@ -48,13 +48,13 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
     movieIds.length
       ? prisma.filme.findMany({
           where: { id: { in: movieIds } },
-          select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true },
+          select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true },
         })
       : [],
     seriesIds.length
       ? prisma.serie.findMany({
           where: { id: { in: seriesIds } },
-          select: { id: true, titulo: true, poster: true, background: true, backgroundTituloPt: true, ano: true, nota: true },
+          select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true },
         })
       : [],
   ]);

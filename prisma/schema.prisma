@@ -36,10 +36,6 @@ model Filme {
   // backfill parar de revisitar quem ja tinha logo, mesmo com background
   // errado, e `updatedAt` muda por qualquer escrita.
   artCheckedAt         DateTime?
-  // true quando o backdrop escolhido ja traz o titulo desenhado EM PORTUGUES.
-  // So nesse caso o card omite o nome abaixo do banner: com arte em ingles o
-  // rotulo continua, senao o usuario perde a unica referencia no idioma dele.
-  backgroundTituloPt   Boolean?
   sagaId           Int?
   originalLanguage String?
   urlDub           String?       @db.Text
@@ -77,10 +73,6 @@ model Serie {
   popularRankPrev      Int?
   popularCheckedAt     DateTime?
   artCheckedAt         DateTime?
-  // true quando o backdrop escolhido ja traz o titulo desenhado EM PORTUGUES.
-  // So nesse caso o card omite o nome abaixo do banner: com arte em ingles o
-  // rotulo continua, senao o usuario perde a unica referencia no idioma dele.
-  backgroundTituloPt   Boolean?
   tipo             String        @default("serie")
   originalLanguage String?
   createdAt        DateTime      @default(now())

@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { Play } from "lucide-react";
-import { imgUrl } from "@/lib/tmdb";
+import { imgUrl, logoUrl } from "@/lib/tmdb";
 
 function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
   (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
@@ -15,8 +15,7 @@ interface Props {
   titulo: string;
   poster: string | null;
   background?: string | null;
-  /** Arte ja traz o titulo desenhado em portugues: o rotulo abaixo some. */
-  backgroundTituloPt?: boolean | null;
+  /** Logo oficial do TMDB. Quando existe, e ele o nome do card. */
   logo?: string | null;
   ano?: number | null;
   nota?: number | null;
@@ -32,27 +31,37 @@ interface Props {
    * curto para as duas versoes divergirem no primeiro ajuste de estilo.
    */
   layout?: "row" | "grid";
-  /** Quando o chamador ja desenha o proprio rotulo abaixo do card. */
+  /** Quando o chamador ja desenha o proprio rotulo. */
   hideTitle?: boolean;
 }
 
 /**
- * Card das prateleiras comuns: banner horizontal, sem texto permanente.
+ * Card das prateleiras: banner 16:9 com o nome desenhado por cima.
  *
- * O componente se chamava LandscapeCard mas renderizava `aspect-[2/3]` — um
- * poster vertical estreito — com titulo, nota e ano fixos embaixo. Numa tela
- * larga isso empilhava capa, texto, badges e a fileira seguinte no mesmo campo
- * de visao, e a home lia como catalogo, nao como vitrine.
+ * O nome sai do logo oficial do TMDB quando ele existe — 74% dos filmes e 81%
+ * das series do catalogo — e cai para texto quando nao existe. Os dois ocupam
+ * a MESMA area segura, no mesmo canto, entao a estrutura do card nao muda entre
+ * um caso e outro e a fileira fica alinhada. Nao ha rotulo abaixo do card: era
+ * ele que fazia cards vizinhos terem alturas diferentes.
  *
- * Agora a arte conduz sozinha: 16:9, poucos itens grandes por fileira, e os
- * metadados so aparecem na interacao. Poster vertical fica exclusivo do Top 10,
- * onde ele compoe com o numero.
+ * Duas travas que existem por causa de tentativas anteriores:
+ *
+ * 1. O logo ja esteve aqui e foi removido porque aparecia sobre backdrop que
+ *    ja trazia o titulo desenhado — o nome saia duas vezes na mesma imagem.
+ *    Por isso `pickBackdrop` volta a escolher sempre arte limpa
+ *    (iso_639_1 = null). Se aquela prioridade mudar, este card quebra junto.
+ *
+ * 2. A area segura tem largura E altura definidas em percentual do banner, que
+ *    por sua vez tem altura real vinda do `aspect-video`. A versao antiga usava
+ *    `max-h` em percentual contra um pai de altura automatica, e os logos
+ *    apareciam de 17% a 146% do tamanho pretendido.
+ *
+ * A caixa fixa com `object-contain` da conta da variacao de forma dos logos,
+ * que vai de 0,8:1 a 16,9:1 (medido em 240 titulos): o wordmark largo encosta
+ * na largura, o emblema quadrado encosta na altura, e nenhum estoura.
  */
-// `logo`, `ano`, `nota`, `urlDub` e `urlLeg` seguem na interface porque os
-// chamadores repassam o item inteiro por spread, mas nao sao mais desenhados no
-// card fechado: a arte e o nome bastam, e o resto vai para a interacao.
 export function LandscapeCard({
-  id, tipo, titulo, poster, background, backgroundTituloPt, progresso, episodeLabel, isNew,
+  id, tipo, titulo, poster, background, logo, progresso, episodeLabel, isNew,
   layout = "row", hideTitle = false,
 }: Props) {
   const isGrid = layout === "grid";
@@ -62,10 +71,8 @@ export function LandscapeCard({
   // recurso: recortado no meio, ele perde justamente o enquadramento que
   // identifica o titulo.
   const bgSrc = background ? imgUrl(background, "w780") : poster ? imgUrl(poster, "w342") : "/placeholder.jpg";
+  const logoSrc = logo ? logoUrl(logo, "w300") : null;
 
-  // Larguras calibradas para 5 a 7 cards visiveis no desktop: ~5 em 1280px e
-  // ~6,6 em 1920px. Cards mais largos que isso derrubam a contagem para 4 e a
-  // fileira perde a leitura de vitrine.
   const pct = progresso?.duracaoSeg
     ? Math.min((progresso.progressoSeg / progresso.duracaoSeg) * 100, 100)
     : 0;
@@ -100,9 +107,11 @@ export function LandscapeCard({
             onError={imgFallback}
           />
 
-          {/* Sem gradiente e sem texto por cima da arte: o nome vive abaixo do
-              card, ou ja vem desenhado no proprio banner. Escurecer a imagem so
-              serviria para dar contraste a um texto que nao esta aqui. */}
+          {/* O gradiente voltou porque agora ha nome sobre a arte. Cobre so a
+              metade de baixo, que e onde ele vive. */}
+          {!hideTitle && (
+            <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/35 to-transparent pointer-events-none" />
+          )}
 
           <div className="absolute inset-0 hidden md:flex items-center justify-center opacity-0 group-hover/card:opacity-100 transition-opacity duration-200">
             <div className="w-11 h-11 rounded-full bg-white/90 flex items-center justify-center">
@@ -110,8 +119,32 @@ export function LandscapeCard({
             </div>
           </div>
 
-          {/* Um badge por vez. Nota, ano e DUB/LEG saem do card fechado: eram
-              quatro informacoes disputando espaco com a arte. */}
+          {/* Area segura do nome: a mesma caixa serve para logo e para texto. */}
+          {!hideTitle && (
+            <div className="absolute left-[5%] bottom-[7%] w-[58%] h-[30%] flex items-end pointer-events-none">
+              {logoSrc ? (
+                <div className="relative w-full h-full">
+                  <Image
+                    src={logoSrc}
+                    alt={titulo}
+                    fill
+                    // `contain` preserva a proporcao original; ancorar embaixo e
+                    // a esquerda mantem a linha de base igual em todos os cards,
+                    // mesmo com logos de alturas muito diferentes.
+                    className="object-contain object-left-bottom drop-shadow-[0_2px_6px_rgba(0,0,0,0.65)]"
+                    sizes="(max-width: 768px) 140px, 190px"
+                    loading="lazy"
+                  />
+                </div>
+              ) : (
+                <span className="text-white font-semibold leading-tight line-clamp-2 text-[clamp(13px,1.15vw,17px)] drop-shadow-[0_2px_6px_rgba(0,0,0,0.8)]">
+                  {titulo}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Um badge por vez, sempre no canto oposto ao nome. */}
           {episodeLabel ? (
             <span className="absolute top-2 right-2 px-2 py-0.5 rounded text-[10px] font-semibold text-white bg-black/70 backdrop-blur">
               {episodeLabel}
@@ -128,27 +161,6 @@ export function LandscapeCard({
             </div>
           )}
         </div>
-
-        {/* Nome abaixo do banner. Uma linha so: com duas, fileiras vizinhas
-            ficam com alturas diferentes conforme o tamanho do titulo e o ritmo
-            da pagina quebra.
-
-            Quando a arte ja traz o titulo desenhado em portugues, a linha
-            continua ocupando o mesmo espaco mas fica invisivel. Remove-la de
-            vez faria os cards da mesma fileira terem alturas diferentes, e a
-            prateleira fica desalinhada justamente porque so parte do catalogo
-            tem arte legendada. O nome segue acessivel pelo alt da imagem e pelo
-            title do link. */}
-        {!hideTitle && (
-          <p
-            aria-hidden={backgroundTituloPt ? "true" : undefined}
-            className={`mt-2 px-0.5 text-[13px] md:text-sm text-zinc-300 truncate transition-colors ${
-              backgroundTituloPt ? "invisible" : "group-hover/card:text-white"
-            }`}
-          >
-            {titulo}
-          </p>
-        )}
       </Link>
     </div>
   );
