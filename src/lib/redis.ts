@@ -132,7 +132,26 @@ function buildUpstashClient(): RedisClient | null {
       const result = await client.set(key, String(value), Object.keys(args).length ? args : undefined);
       return result === "OK" ? "OK" : null;
     },
-    get: (key) => client.get(key),
+    /**
+     * O cliente do Upstash desserializa a resposta por padrão
+     * (`automaticDeserialization`), então `get` devolve o valor JÁ passado por
+     * JSON.parse: um objeto para quem gravou JSON, um number para quem gravou
+     * "1". A interface aqui promete `string | null`, e todo chamador conta com
+     * isso — `isIpBlocked` comparava `val === "1"` contra o number 1, e a
+     * sessão de fontes recebia um objeto onde esperava texto.
+     *
+     * O stub in-memory devolve string, então a divergência só aparecia em
+     * produção. Normalizar aqui mantém o contrato único nos dois caminhos.
+     *
+     * Não dá para desligar `automaticDeserialization` no cliente inteiro:
+     * `incr` passaria a devolver "1" e `checkRateLimit`, que compara
+     * `count === 1` para definir o TTL, deixaria a chave sem expiração.
+     */
+    async get(key) {
+      const valor = await client.get(key);
+      if (valor === null || valor === undefined) return null;
+      return typeof valor === "string" ? valor : JSON.stringify(valor);
+    },
     del: (key) => client.del(key),
     incr: (key) => client.incr(key),
     expire: (key, seconds) => client.expire(key, seconds),

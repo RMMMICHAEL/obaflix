@@ -64,6 +64,23 @@ interface Props {
 }
 
 type Status = "idle" | "extracting" | "loading" | "playing" | "error";
+
+/** Intervalo mínimo entre reaberturas de sessão — teto de requisições. */
+const REABERTURA_MIN_INTERVALO_MS = 60_000;
+
+/**
+ * A sessão de fontes morreu no servidor (410 / `codigo: "sessao_invalida"`).
+ * Distinto de "esta fonte falhou": nenhuma outra fonte da mesma sessão
+ * resolveria, então o tratamento é reabrir, não trocar de servidor.
+ */
+class ErroSessao extends Error {
+  motivo?: string;
+  constructor(motivo?: string) {
+    super("Sessão de reprodução expirada");
+    this.name = "ErroSessao";
+    this.motivo = motivo;
+  }
+}
 type StreamTipo = "hls" | "mp4" | "iframe" | "native";
 
 /**
@@ -429,6 +446,15 @@ export function CustomPlayer({
    * episódio — sem o cache seria uma ida ao servidor por renovação.
    */
   const urlNativaRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Última reabertura de sessão. Existe para não repetir o incidente que esta
+   * regressão produziu: com a sessão morta, cada fonte tentada gerava um
+   * token/extract próprio e o player percorria a lista inteira gerando
+   * requisição a cada passo. Agora a sessão é reaberta no máximo uma vez por
+   * minuto, e uma falha de sessão nunca vira troca de servidor.
+   */
+  const ultimaReaberturaRef = useRef(0);
+  const abrirSessaoRef = useRef<((signal?: AbortSignal) => Promise<Fonte[]>) | null>(null);
   // Servidores que já falharam de forma fatal, por id de fonte, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
@@ -982,7 +1008,13 @@ export function CustomPlayer({
           body: JSON.stringify({ sessao, fonteId }),
           signal: ctrl.signal,
         });
-        if (!tokenRes.ok) throw new Error("Falha ao obter autorização de reprodução");
+        if (!tokenRes.ok) {
+          // 410 = a sessão inteira morreu. Trocar de fonte aqui só produziria
+          // outro token 410; quem resolve é reabrir a sessão, uma vez.
+          const erro = await tokenRes.json().catch(() => ({}));
+          if (erro?.codigo === "sessao_invalida") throw new ErroSessao(erro.motivo);
+          throw new Error("Falha ao obter autorização de reprodução");
+        }
         const { playToken } = await tokenRes.json();
 
         const extractRes = await fetch(
@@ -996,6 +1028,7 @@ export function CustomPlayer({
         // nunca reproduz. Antes ela devolvia 200 com a URL do provedor, e era o
         // cliente que descobria que aquilo não ia tocar.
         if (!extractRes.ok) {
+          if (data?.codigo === "sessao_invalida") throw new ErroSessao(data.motivo);
           const motivo = data.motivo ?? "desconhecido";
           setServidoresFalhos((atual) => (atual[fonteId] ? atual : {
             ...atual,
@@ -1065,6 +1098,34 @@ export function CustomPlayer({
       }
     } catch (e: any) {
       if (e?.name === "AbortError") return;
+
+      // Sessão morta não é falha da fonte: nenhuma outra fonte da mesma sessão
+      // funcionaria, e tentar todas era exatamente o que multiplicava as
+      // requisições. Reabre uma vez e retoma no MESMO índice — a lista é
+      // determinística para o mesmo conteúdo e ambiente, então a posição
+      // continua apontando para o mesmo servidor.
+      if (e instanceof ErroSessao) {
+        const desdeUltima = Date.now() - ultimaReaberturaRef.current;
+        if (desdeUltima < REABERTURA_MIN_INTERVALO_MS) {
+          console.warn(`[diag/sessao] reabertura recusada: ${desdeUltima}ms desde a anterior (motivo=${e.motivo})`);
+          setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
+          setStatus("error");
+          return;
+        }
+        console.warn(`[diag/sessao] sessao_invalida (motivo=${e.motivo}) — reabrindo uma vez`);
+        try {
+          const nova = await abrirSessaoRef.current?.() ?? [];
+          const equivalente = nova[fonteIdx] ?? nova[0];
+          if (!equivalente) throw new Error("sem fontes após reabrir");
+          extractRef.current(equivalente.id);
+          return;
+        } catch {
+          setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
+          setStatus("error");
+          return;
+        }
+      }
+
       if (fonteIdx < allFontes.length - 1) {
         switchFonte(fonteIdx + 1);
       } else {
@@ -1190,6 +1251,38 @@ export function CustomPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fonte?.id]);
 
+  /**
+   * Abre uma sessão de fontes e devolve a lista já opaca. Reutilizável: serve
+   * tanto para a montagem quanto para a reabertura depois de o servidor
+   * responder `sessao_invalida`.
+   */
+  const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[]> => {
+    const res = await fetch("/api/player/fontes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conteudoId,
+        conteudoTipo,
+        temporada: temporada ?? null,
+        numeroEp: numeroEp ?? null,
+        ambiente,
+      }),
+      signal,
+    });
+    if (!res.ok) throw new Error("Não foi possível carregar os servidores");
+    const data = await res.json();
+    const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
+    sessaoFontesRef.current = data?.sessao ?? null;
+    // Os ids mudam a cada sessão: o cache de URL nativa da anterior não vale.
+    urlNativaRef.current.clear();
+    ultimaReaberturaRef.current = Date.now();
+    setSessaoFontes(data?.sessao ?? null);
+    setAllFontes(lista);
+    return lista;
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
+
+  abrirSessaoRef.current = abrirSessao;
+
   // Carrega a lista de fontes do servidor.
   //
   // Duas fases, pelo mesmo motivo de sempre: a lista base sai rápido e a
@@ -1203,32 +1296,15 @@ export function CustomPlayer({
     setSessaoFontes(null);
     sessaoFontesRef.current = null;
     urlNativaRef.current.clear();
+    ultimaReaberturaRef.current = 0;
     if (!conteudoId) return;
     if (conteudoTipo === "serie" && (!temporada || !numeroEp)) return;
 
     const ctrl = new AbortController();
-    const corpoBase = {
-      conteudoId,
-      conteudoTipo,
-      temporada: temporada ?? null,
-      numeroEp: numeroEp ?? null,
-      ambiente,
-    };
 
     (async () => {
       try {
-        const res = await fetch("/api/player/fontes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(corpoBase),
-          signal: ctrl.signal,
-        });
-        if (!res.ok) throw new Error("Não foi possível carregar os servidores");
-        const data = await res.json();
-        const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
-        sessaoFontesRef.current = data?.sessao ?? null;
-        setSessaoFontes(data?.sessao ?? null);
-        setAllFontes(lista);
+        const lista = await abrirSessao(ctrl.signal);
         if (!lista.length) {
           setError("Nenhum servidor disponível para este título.");
           setStatus("error");
@@ -1239,7 +1315,15 @@ export function CustomPlayer({
         const res2 = await fetch("/api/player/fontes", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...corpoBase, sessao: data.sessao, alternativas: true }),
+          body: JSON.stringify({
+            conteudoId,
+            conteudoTipo,
+            temporada: temporada ?? null,
+            numeroEp: numeroEp ?? null,
+            ambiente,
+            sessao: sessaoFontesRef.current,
+            alternativas: true,
+          }),
           signal: ctrl.signal,
         });
         if (!res2.ok) return;
@@ -1260,7 +1344,7 @@ export function CustomPlayer({
 
     return () => ctrl.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente, abrirSessao]);
 
   // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
   // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
@@ -2040,7 +2124,16 @@ export function CustomPlayer({
                 body: JSON.stringify({ sessao: sessaoFontesRef.current, fonteId }),
                 signal: abortCtrl.signal,
               });
-              if (!tokenRes.ok) throw new Error("Falha ao obter token");
+              if (!tokenRes.ok) {
+                // Sessão morta durante a renovação: cair no source-switch faria
+                // o player percorrer a lista gerando um token por fonte, todos
+                // condenados ao mesmo 410. Encerra aqui.
+                const erroTk = await tokenRes.json().catch(() => ({}));
+                if (erroTk?.codigo === "sessao_invalida") {
+                  throw new Error("Sessão de reprodução expirada; recarregue a página");
+                }
+                throw new Error("Falha ao obter token");
+              }
               const { playToken } = await tokenRes.json();
 
               const extractRes = await fetch(
@@ -2049,6 +2142,9 @@ export function CustomPlayer({
                 { signal: abortCtrl.signal },
               );
               const data = await extractRes.json();
+              if (data?.codigo === "sessao_invalida") {
+                throw new Error("Sessão de reprodução expirada; recarregue a página");
+              }
               if (!extractRes.ok || (!data.streamToken && !data.stream)) throw new Error(data.error || "Stream vazio");
 
               clearTimeout(safetyTimer);

@@ -78,11 +78,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Fonte não disponível neste modo" }, { status: 403, headers: NO_STORE });
   }
 
-  const fonte = await resolverFonte(sessao, userId, fonteId);
+  const { fonte, motivo } = await resolverFonte(sessao, userId, fonteId);
   if (!fonte) {
-    await recordAbuseAttempt(ip);
-    audit("stream_rejected", { userId, ip, ua, detail: "/fonte-nativa: fonte não resolvida" });
-    return NextResponse.json({ error: "Fonte indisponível" }, { status: 404, headers: NO_STORE });
+    const sessaoMorreu = motivo !== undefined;
+    if (!sessaoMorreu) await recordAbuseAttempt(ip);
+    audit("stream_rejected", { userId, ip, ua, detail: `/fonte-nativa: não resolvida (${motivo ?? "id_desconhecido"})` });
+    return NextResponse.json(
+      {
+        error: sessaoMorreu ? "Sessão de reprodução expirada" : "Fonte indisponível",
+        codigo: sessaoMorreu ? "sessao_invalida" : "fonte_desconhecida",
+      },
+      { status: sessaoMorreu ? 410 : 404, headers: NO_STORE },
+    );
   }
 
   // Só os três casos em que o dispositivo tem de fazer a requisição ele mesmo.

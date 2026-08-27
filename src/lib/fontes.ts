@@ -190,11 +190,51 @@ export function hostDe(url: string): string {
 // ── Estado no Redis ───────────────────────────────────────────────────────────
 
 /**
- * TTL da sessão de fontes. Precisa cobrir um filme inteiro com failover no fim,
- * porque a troca de servidor aos 2h ainda resolve o mesmo mapa. Uma entrada é
- * um JSON de poucos KB por reprodução ativa — irrelevante para a cota do Redis.
+ * TTL da sessão de fontes.
+ *
+ * O mapa NÃO é de uso único: o mesmo `fonteId` é resolvido várias vezes numa
+ * reprodução — troca manual de servidor, retry, failover, renovação de token
+ * expirado e retomada de posição passam todos por aqui. Nada consome nem apaga
+ * a entrada.
+ *
+ * E o TTL é deslizante: toda leitura bem-sucedida renova a expiração, então a
+ * sessão não pode morrer enquanto o usuário estiver na tela de reprodução. O
+ * TTL só corre quando ninguém mais toca nela.
  */
 const SESSAO_TTL_SEC = 4 * 60 * 60;
+
+// ── Diagnóstico do ciclo de vida ──────────────────────────────────────────────
+// Só em desenvolvimento, com PLAYER_DIAG=1, ou quando quem pediu é admin.
+// Nunca imprime embedUrl, token ou sessão inteira.
+
+function diagAtivo(admin = false): boolean {
+  return admin || process.env.NODE_ENV !== "production" || process.env.PLAYER_DIAG === "1";
+}
+
+/** Prefixo curto: identifica a sessão nos logs sem servir para resolvê-la. */
+function marca(valor: string): string {
+  return `${valor.slice(0, 6)}…`;
+}
+
+export function diagFonte(
+  evento: string,
+  campos: Record<string, string | number | boolean | null | undefined>,
+  admin = false,
+): void {
+  if (!diagAtivo(admin)) return;
+  const partes = Object.entries(campos)
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ");
+  console.log(`[fontes/${evento}] ${partes}`);
+}
+
+/** Por que uma sessão não resolveu. Vira o `codigo` da resposta HTTP. */
+export type MotivoSessao =
+  | "formato_invalido"
+  | "ausente"
+  | "dono_diferente"
+  | "corrompida";
 
 const chaveSessao = (sessao: string) => `play:fontes:${sessao}`;
 
@@ -207,6 +247,8 @@ interface SessaoArmazenada {
    */
   ambiente: Ambiente;
   fontes: FonteReal[];
+  /** Epoch de criação — só para o diagnóstico dizer a idade da sessão. */
+  criadaEm?: number;
 }
 
 function novoId(): string {
@@ -224,34 +266,99 @@ export async function criarSessaoFontes(
   fontes: FonteReal[],
 ): Promise<string> {
   const sessao = crypto.randomBytes(16).toString("base64url");
-  const payload: SessaoArmazenada = { uid: userId, ambiente, fontes };
+  const payload: SessaoArmazenada = { uid: userId, ambiente, fontes, criadaEm: Date.now() };
   await getRedis().set(chaveSessao(sessao), JSON.stringify(payload), { ex: SESSAO_TTL_SEC });
+  diagFonte("criada", {
+    sessao: marca(sessao), uid: marca(userId), ambiente,
+    fontes: fontes.length, ttl: SESSAO_TTL_SEC,
+    ids: fontes.map((f) => `${f.ordem}:${marca(f.id)}`).join(","),
+  });
   return sessao;
 }
 
-async function lerSessao(sessao: string, userId: string): Promise<SessaoArmazenada | null> {
-  if (!/^[A-Za-z0-9_-]{16,64}$/.test(sessao)) return null;
-  const bruto = await getRedis().get(chaveSessao(sessao));
-  if (!bruto) return null;
-  try {
-    const dados = JSON.parse(typeof bruto === "string" ? bruto : String(bruto)) as SessaoArmazenada;
-    // A sessão pertence a quem a criou. Sem esta checagem, um id vazado viraria
-    // um resolvedor de URL para qualquer conta autenticada.
-    if (dados.uid !== userId) return null;
-    return dados;
-  } catch {
-    return null;
+type LeituraSessao =
+  | { ok: true; dados: SessaoArmazenada; ttl: number }
+  | { ok: false; motivo: MotivoSessao; ttl: number };
+
+/**
+ * Lê a sessão e renova o TTL. Devolve o motivo quando falha — é ele que a rota
+ * usa para dizer POR QUE respondeu 410, em vez de um "expirada" genérico que
+ * escondeu a causa real desta regressão.
+ */
+async function lerSessaoDetalhado(sessao: string, userId: string): Promise<LeituraSessao> {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(sessao)) {
+    return { ok: false, motivo: "formato_invalido", ttl: -2 };
   }
+  const redis = getRedis();
+  const chave = chaveSessao(sessao);
+  const bruto = await redis.get(chave);
+  if (bruto === null || bruto === undefined) {
+    return { ok: false, motivo: "ausente", ttl: -2 };
+  }
+
+  let dados: SessaoArmazenada;
+  try {
+    // O adaptador do Redis normaliza para string; o `typeof` continua aqui como
+    // rede de segurança para qualquer cliente que volte a desserializar sozinho.
+    dados = (typeof bruto === "string" ? JSON.parse(bruto) : bruto) as SessaoArmazenada;
+  } catch {
+    return { ok: false, motivo: "corrompida", ttl: -2 };
+  }
+  if (!dados || !Array.isArray(dados.fontes)) {
+    return { ok: false, motivo: "corrompida", ttl: -2 };
+  }
+
+  // A sessão pertence a quem a criou. Sem esta checagem, um id vazado viraria
+  // um resolvedor de URL para qualquer conta autenticada.
+  if (dados.uid !== userId) return { ok: false, motivo: "dono_diferente", ttl: -2 };
+
+  // TTL deslizante: enquanto houver reprodução, a sessão não expira.
+  const ttl = await redis.ttl(chave);
+  await redis.expire(chave, SESSAO_TTL_SEC);
+  return { ok: true, dados, ttl };
 }
 
+async function lerSessao(sessao: string, userId: string): Promise<SessaoArmazenada | null> {
+  const r = await lerSessaoDetalhado(sessao, userId);
+  return r.ok ? r.dados : null;
+}
+
+/** Para as rotas relatarem o motivo exato ao cliente e ao log. */
+export async function diagnosticarSessao(
+  sessao: string,
+  userId: string,
+): Promise<{ ok: boolean; motivo?: MotivoSessao; ttl: number; fontes: number }> {
+  const r = await lerSessaoDetalhado(sessao, userId);
+  return r.ok
+    ? { ok: true, ttl: r.ttl, fontes: r.dados.fontes.length }
+    : { ok: false, motivo: r.motivo, ttl: r.ttl, fontes: 0 };
+}
+
+/**
+ * Resolve um `fonteId`. Repetível por desenho: nada é consumido nem apagado, e
+ * cada resolução renova o TTL da sessão.
+ */
 export async function resolverFonte(
   sessao: string,
   userId: string,
   fonteId: string,
-): Promise<FonteReal | null> {
-  const dados = await lerSessao(sessao, userId);
-  if (!dados) return null;
-  return dados.fontes.find((f) => f.id === fonteId) ?? null;
+  admin = false,
+): Promise<{ fonte: FonteReal | null; motivo?: MotivoSessao; ttl: number }> {
+  const r = await lerSessaoDetalhado(sessao, userId);
+  if (!r.ok) {
+    diagFonte("resolve_falhou", {
+      sessao: marca(sessao), uid: marca(userId), fonteId: marca(fonteId),
+      motivo: r.motivo,
+    }, admin);
+    return { fonte: null, motivo: r.motivo, ttl: r.ttl };
+  }
+  const fonte = r.dados.fontes.find((f) => f.id === fonteId) ?? null;
+  diagFonte("resolve", {
+    sessao: marca(sessao), uid: marca(userId), fonteId: marca(fonteId),
+    achou: !!fonte, ordem: fonte?.ordem, provider: fonte?.provider,
+    ttlAntes: r.ttl, ttlRenovado: SESSAO_TTL_SEC, naSessao: r.dados.fontes.length,
+  }, admin);
+  return { fonte, ttl: r.ttl };
 }
 
 export async function lerFontes(sessao: string, userId: string): Promise<FonteReal[] | null> {
@@ -290,6 +397,10 @@ export async function acrescentarFontes(
   }
 
   await getRedis().set(chaveSessao(sessao), JSON.stringify(dados), { ex: SESSAO_TTL_SEC });
+  diagFonte("cresceu", {
+    sessao: marca(sessao), uid: marca(userId),
+    total: dados.fontes.length, novas: novas.length,
+  });
   return dados.fontes;
 }
 

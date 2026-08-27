@@ -70,11 +70,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  const fonte = await resolverFonte(sessao, userId, fonteId);
+  const { fonte, motivo } = await resolverFonte(sessao, userId, fonteId);
   if (!fonte) {
-    await recordAbuseAttempt(ip);
-    audit("play_token_rejected", { userId, ip, ua, detail: "fonte não resolvida" });
-    return NextResponse.json({ error: "Fonte indisponível" }, { status: 404, headers: NO_STORE });
+    // `codigo` separa os dois casos que antes vinham como o mesmo 404: a sessão
+    // inteira sumiu (o cliente precisa reabrir) ou só este id não existe nela
+    // (o cliente pode seguir para a próxima fonte). Sem isso o player tentava
+    // todas as fontes em sequência e multiplicava requisições à toa.
+    const sessaoMorreu = motivo !== undefined;
+    if (!sessaoMorreu) await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: `fonte não resolvida (${motivo ?? "id_desconhecido"})` });
+    return NextResponse.json(
+      {
+        error: sessaoMorreu ? "Sessão de reprodução expirada" : "Fonte indisponível",
+        codigo: sessaoMorreu ? "sessao_invalida" : "fonte_desconhecida",
+        motivo,
+      },
+      { status: sessaoMorreu ? 410 : 404, headers: NO_STORE },
+    );
   }
 
   // A allowlist continua, agora como segunda linha: protege contra uma sessão

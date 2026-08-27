@@ -10,6 +10,7 @@ import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
+  diagnosticarSessao, diagFonte,
   projetarPublica, projetarAdmin, detectarProvider, ehTokenizada,
   suportaExtracaoNativa, ehSuperflix, hostDe,
   type Ambiente, type FonteReal,
@@ -212,10 +213,15 @@ export async function POST(req: NextRequest) {
   // ── Segunda fase: alternativas do Playerflix numa sessão já existente ──────
   if (typeof corpo.sessao === "string" && corpo.alternativas === true) {
     const sessao = corpo.sessao;
-    const atuais = await lerFontes(sessao, userId);
-    if (!atuais) {
-      return NextResponse.json({ error: "Sessão de reprodução expirada" }, { status: 410, headers: NO_STORE });
+    const estado = await diagnosticarSessao(sessao, userId);
+    if (!estado.ok) {
+      diagFonte("alternativas_410", { motivo: estado.motivo, uid: userId.slice(0, 6) + "…" }, ehAdmin);
+      return NextResponse.json(
+        { error: "Sessão de reprodução expirada", codigo: "sessao_invalida", motivo: estado.motivo },
+        { status: 410, headers: NO_STORE },
+      );
     }
+    const atuais = (await lerFontes(sessao, userId)) ?? [];
 
     const primeira = atuais.find((f) => f.provider === "playerflix");
     if (!primeira) return NextResponse.json({ sessao, fontes: projetar(atuais) }, { headers: NO_STORE });

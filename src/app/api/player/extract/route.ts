@@ -1251,11 +1251,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 400, headers: NO_STORE });
   }
 
-  const fonte = await resolverFonte(sessao, userId, fonteId);
+  const { fonte, motivo } = await resolverFonte(sessao, userId, fonteId);
   if (!fonte) {
-    await recordAbuseAttempt(ip);
-    audit("play_token_rejected", { userId, ip, ua, detail: "/extract: fonte não resolvida" });
-    return NextResponse.json({ error: "Fonte indisponível" }, { status: 404, headers: NO_STORE });
+    const sessaoMorreu = motivo !== undefined;
+    if (!sessaoMorreu) await recordAbuseAttempt(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: `/extract: fonte não resolvida (${motivo ?? "id_desconhecido"})` });
+    return NextResponse.json(
+      {
+        error: sessaoMorreu ? "Sessão de reprodução expirada" : "Fonte indisponível",
+        codigo: sessaoMorreu ? "sessao_invalida" : "fonte_desconhecida",
+        motivo,
+      },
+      { status: sessaoMorreu ? 410 : 404, headers: NO_STORE },
+    );
   }
   const url = fonte.embedUrl;
 
