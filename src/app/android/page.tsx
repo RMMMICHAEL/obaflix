@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { unstable_cache } from "next/cache";
 import Image from "next/image";
 import Link from "next/link";
 import { ChevronRight, Play, Star } from "lucide-react";
@@ -43,6 +44,103 @@ type AndroidEpisode = {
   numeroEp: number;
   isNew: boolean;
 };
+
+const filmSelect = {
+  id: true, titulo: true, sinopse: true, poster: true, background: true,
+  ano: true, nota: true, urlDub: true, urlLeg: true,
+} as const;
+
+const seriesSelect = {
+  id: true, titulo: true, sinopse: true, poster: true, background: true,
+  ano: true, nota: true, tipo: true,
+} as const;
+
+const ordemPopular = [
+  { popularidade: { sort: "desc" as const, nulls: "last" as const } },
+  { nota: "desc" as const },
+];
+
+/**
+ * Catalogo da /android: identico para todo usuario, entao vive em cache
+ * compartilhado em vez de ser refeito a cada visita.
+ *
+ * A pagina e `force-dynamic` porque checa sessao e monta "continuar
+ * assistindo", mas isso nao obrigava as seis consultas de catalogo a rodarem
+ * junto — elas nao dependem de quem esta olhando. Sao ~5 mil queries por dia
+ * de tráfego moderado trocadas por 6 a cada 5 minutos.
+ *
+ * As datas dos episodios sao consumidas AQUI DENTRO de proposito: o
+ * unstable_cache serializa o retorno em JSON, e um `Date` volta como string.
+ * Fazer `createdAt.getTime()` depois do cache quebraria na segunda visita.
+ * Sair daqui com `isNew` ja resolvido em booleano evita a armadilha; a janela
+ * e de 48h, entao os 5 minutos de defasagem nao mudam nada.
+ */
+const getCatalogoAndroid = unstable_cache(
+  async () => {
+    const [featuredMovies, recentMovies, popularSeries, animes, desenhos, recentEpisodes] = await Promise.all([
+      prisma.filme.findMany({
+        where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+        orderBy: ordemPopular,
+        take: 8,
+        select: filmSelect,
+      }),
+      prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 18, select: filmSelect }),
+      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
+      prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
+      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
+      prisma.episodio.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 28,
+        select: {
+          id: true,
+          serieId: true,
+          titulo: true,
+          thumbnail: true,
+          temporada: true,
+          numeroEp: true,
+          createdAt: true,
+          serie: { select: { titulo: true, poster: true, createdAt: true } },
+        },
+      }),
+    ]);
+
+    const now = Date.now();
+    const episodeItems: AndroidEpisode[] = recentEpisodes
+      .filter((episode, index, all) => {
+        const newSeries = now - episode.serie.createdAt.getTime() < 14 * 24 * 60 * 60 * 1000 || episode.serieId.startsWith("sf_");
+        if (!newSeries) return true;
+        return !all.some((other, otherIndex) =>
+          otherIndex < index &&
+          other.serieId === episode.serieId &&
+          (other.temporada > episode.temporada ||
+            (other.temporada === episode.temporada && other.numeroEp > episode.numeroEp)),
+        );
+      })
+      .slice(0, 18)
+      .map((episode) => ({
+        id: episode.id,
+        serieId: episode.serieId,
+        serieTitulo: episode.serie.titulo,
+        titulo: episode.titulo,
+        thumbnail: episode.thumbnail,
+        poster: episode.serie.poster,
+        temporada: episode.temporada,
+        numeroEp: episode.numeroEp,
+        isNew: now - episode.createdAt.getTime() < 48 * 60 * 60 * 1000,
+      }));
+
+    return {
+      hero: featuredMovies[0] ?? null,
+      movies: recentMovies.map((item): AndroidItem => ({ ...item, tipo: "filme" })),
+      series: popularSeries.map((item): AndroidItem => ({ ...item, tipo: "serie" })),
+      animeItems: animes.map((item): AndroidItem => ({ ...item, tipo: "anime" })),
+      cartoonItems: desenhos.map((item): AndroidItem => ({ ...item, tipo: "desenho" })),
+      episodeItems,
+    };
+  },
+  ["android-catalogo-v1"],
+  { revalidate: 300, tags: ["android-catalogo"] },
+);
 
 function MediaRail({ title, href, items }: { title: string; href: string; items: AndroidItem[] }) {
   if (!items.length) return null;
@@ -125,87 +223,11 @@ export default async function AndroidHomePage() {
   const userId = (session?.user as { id?: string } | undefined)?.id;
   if (!userId) redirect("/login?callbackUrl=%2Fandroid");
 
-  const filmSelect = {
-    id: true, titulo: true, sinopse: true, poster: true, background: true,
-    ano: true, nota: true, urlDub: true, urlLeg: true,
-  } as const;
-  const seriesSelect = {
-    id: true, titulo: true, sinopse: true, poster: true, background: true,
-    ano: true, nota: true, tipo: true,
-  } as const;
-
-  const [featuredMovies, recentMovies, popularSeries, animes, desenhos, recentEpisodes, continueItems] = await Promise.all([
-    prisma.filme.findMany({
-      where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 8,
-      select: filmSelect,
-    }),
-    prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 18, select: filmSelect }),
-    prisma.serie.findMany({
-      where: { tipo: "serie" },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 18,
-      select: seriesSelect,
-    }),
-    prisma.serie.findMany({
-      where: { tipo: "anime" },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 18,
-      select: seriesSelect,
-    }),
-    prisma.serie.findMany({
-      where: { tipo: "desenho" },
-      orderBy: [{ popularidade: { sort: "desc", nulls: "last" } }, { nota: "desc" }],
-      take: 18,
-      select: seriesSelect,
-    }),
-    prisma.episodio.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 28,
-      select: {
-        id: true,
-        serieId: true,
-        titulo: true,
-        thumbnail: true,
-        temporada: true,
-        numeroEp: true,
-        createdAt: true,
-        serie: { select: { titulo: true, poster: true, createdAt: true } },
-      },
-    }),
-    userId ? getContinueWatchingItems(userId) : Promise.resolve([]),
+  const [catalogo, continueItems] = await Promise.all([
+    getCatalogoAndroid(),
+    getContinueWatchingItems(userId),
   ]);
-
-  const hero = featuredMovies[0];
-  const movies: AndroidItem[] = recentMovies.map((item) => ({ ...item, tipo: "filme" }));
-  const series: AndroidItem[] = popularSeries.map((item) => ({ ...item, tipo: "serie" }));
-  const animeItems: AndroidItem[] = animes.map((item) => ({ ...item, tipo: "anime" }));
-  const cartoonItems: AndroidItem[] = desenhos.map((item) => ({ ...item, tipo: "desenho" }));
-  const now = Date.now();
-  const episodeItems: AndroidEpisode[] = recentEpisodes
-    .filter((episode, index, all) => {
-      const newSeries = now - episode.serie.createdAt.getTime() < 14 * 24 * 60 * 60 * 1000 || episode.serieId.startsWith("sf_");
-      if (!newSeries) return true;
-      return !all.some((other, otherIndex) =>
-        otherIndex < index &&
-        other.serieId === episode.serieId &&
-        (other.temporada > episode.temporada ||
-          (other.temporada === episode.temporada && other.numeroEp > episode.numeroEp)),
-      );
-    })
-    .slice(0, 18)
-    .map((episode) => ({
-      id: episode.id,
-      serieId: episode.serieId,
-      serieTitulo: episode.serie.titulo,
-      titulo: episode.titulo,
-      thumbnail: episode.thumbnail,
-      poster: episode.serie.poster,
-      temporada: episode.temporada,
-      numeroEp: episode.numeroEp,
-      isNew: now - episode.createdAt.getTime() < 48 * 60 * 60 * 1000,
-    }));
+  const { hero, movies, series, animeItems, cartoonItems, episodeItems } = catalogo;
 
   if (!hero) {
     return (
@@ -221,7 +243,11 @@ export default async function AndroidHomePage() {
     <div className="android-home">
       <section className="android-hero" aria-labelledby="android-featured-title">
         <Image
-          src={hero.background ? imgUrl(hero.background, "original") : hero.poster ? imgUrl(hero.poster, "w780") : "/placeholder-bg.jpg"}
+          // "original" trazia o arquivo cru do TMDB: medido em 1.055 KB contra
+          // 98 KB no w1280 — 26x mais peso, com `priority`, na primeira coisa
+          // que um celular baixa. Nenhuma tela de telefone ou tablet usa essa
+          // resolucao, e com images.unoptimized nao ha redimensionamento.
+          src={hero.background ? imgUrl(hero.background, "w1280") : hero.poster ? imgUrl(hero.poster, "w780") : "/placeholder-bg.jpg"}
           alt=""
           fill
           sizes="100vw"

@@ -99,6 +99,10 @@ model Episodio {
   progresso WatchHistory[]
 
   @@unique([serieId, temporada, numeroEp])
+
+  // "Novos episodios" ordena 358 mil linhas por createdAt. Sem indice a
+  // query levava ~2,6s de trabalho de banco e segurava a /android inteira.
+  @@index([createdAt(sort: Desc)])
 }
 
 model Genero {
