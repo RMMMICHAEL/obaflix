@@ -1,6 +1,6 @@
 package com.obaflix.bridge
 
-import com.obaflix.BuildConfig
+import com.obaflix.core.BuildConfig
 import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,7 +11,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.net.URL
 import java.net.URLEncoder
-import java.util.Base64
+import android.util.Base64
 
 // ── Extração nativa multi-provider (Android WebView) ───────────────────────────
 // Porta em Kotlin da mesma lógica de src/app/api/player/extract/route.ts e de
@@ -60,7 +60,9 @@ object PlayerExtractors {
         }
 
     private suspend fun moon(obfuscatedScript: String): String = withContext(Dispatchers.IO) {
-        val encoded = Base64.getEncoder().encodeToString(obfuscatedScript.toByteArray())
+        // NO_WRAP = alfabeto padrao, com padding e sem quebra de linha —
+        // exatamente o que getEncoder() produzia.
+        val encoded = Base64.encodeToString(obfuscatedScript.toByteArray(), Base64.NO_WRAP)
         val body = "data=${URLEncoder.encode(encoded, "UTF-8")}"
             .toRequestBody("application/x-www-form-urlencoded".toMediaType())
         val request = Request.Builder()
@@ -244,7 +246,7 @@ object PlayerExtractors {
 
         validUrl(candidate)?.let { return it }
         return runCatching {
-            String(Base64.getDecoder().decode(candidate), Charsets.UTF_8)
+            String(Base64.decode(candidate, Base64.DEFAULT), Charsets.UTF_8)
         }.getOrNull()?.let(::validUrl)
     }
 

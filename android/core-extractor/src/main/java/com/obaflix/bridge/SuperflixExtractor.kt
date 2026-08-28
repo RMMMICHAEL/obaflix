@@ -14,7 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
 import java.net.URLDecoder
-import java.util.Base64
+import android.util.Base64
 
 
 /**
@@ -114,7 +114,10 @@ object SuperflixExtractor {
             val resolved = resolveUrl(raw, baseUrl) ?: return
             val file = secureTransportUrl(resolved) ?: return
             if (!Regex("""\.(?:vtt|srt|ass|ssa)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(file)) return
-            found.putIfAbsent(file, SubtitleTrack(file, label?.takeIf { it.isNotBlank() } ?: "Português"))
+            // putIfAbsent so existe da API 24; o modulo alcanca a 21.
+            if (!found.containsKey(file)) {
+                found[file] = SubtitleTrack(file, label?.takeIf { it.isNotBlank() } ?: "Português")
+            }
         }
 
         Regex("""<track\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(normalized).forEach { match ->
@@ -364,7 +367,8 @@ object SuperflixExtractor {
     private fun decodeTokenPayload(token: String): JSONObject? = try {
         val part = token.substringBefore('.')
         val padded = part + "=".repeat((4 - part.length % 4) % 4)
-        val decoded = Base64.getUrlDecoder().decode(padded)
+        // URL_SAFE = mesmo alfabeto do getUrlDecoder() (- e _ no lugar de + e /).
+        val decoded = Base64.decode(padded, Base64.URL_SAFE)
         JSONObject(String(decoded, Charsets.UTF_8))
     } catch (_: Exception) {
         null
@@ -734,7 +738,7 @@ object SuperflixExtractor {
         client: OkHttpClient,
         cookies: CookieStore,
         embedUrl: String,
-        initialReferer: String? = com.obaflix.BuildConfig.OBAFLIX_URL + "/",
+        initialReferer: String? = com.obaflix.core.BuildConfig.OBAFLIX_URL + "/",
     ): Page {
         var current = embedUrl
         var referer: String? = initialReferer
@@ -1045,14 +1049,14 @@ object SuperflixExtractor {
         }
 
         val subtitles = linkedMapOf<String, SubtitleTrack>()
-        candidate.subtitles.forEach { subtitles.putIfAbsent(it.file, it) }
+        candidate.subtitles.forEach { if (!subtitles.containsKey(it.file)) subtitles[it.file] = it }
         // As legendas declaradas no master costumam apontar para uma sub-playlist
         // .m3u8, que o próprio hls.js resolve. Só um arquivo VTT/SRT direto pode
         // virar `track` do JW Player; o resto apenas conta como capacidade da fonte.
         info?.subtitles?.forEach { track ->
             if (!Regex("""\.(?:vtt|srt)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(track.file)) return@forEach
             secureTransportUrl(track.file)?.let { file ->
-                subtitles.putIfAbsent(file, track.copy(file = file))
+                if (!subtitles.containsKey(file)) subtitles[file] = track.copy(file = file)
             }
         }
 
@@ -1087,7 +1091,7 @@ object SuperflixExtractor {
     private suspend fun extractWithCookies(
         embedUrl: String,
         initialCookieHeader: String?,
-        initialReferer: String? = com.obaflix.BuildConfig.OBAFLIX_URL + "/",
+        initialReferer: String? = com.obaflix.core.BuildConfig.OBAFLIX_URL + "/",
     ): NativeExtractResult {
         val input = try { URL(embedUrl) } catch (_: Exception) { throw Exception("URL SuperFlix inválida") }
         if (!isChainHost(input.host)) throw Exception("URL SuperFlix inválida")

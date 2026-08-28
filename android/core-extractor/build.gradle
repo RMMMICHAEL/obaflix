@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    // Namespace proprio: e o que decide onde BuildConfig e R sao gerados.
+    // Os pacotes Kotlin continuam com.obaflix / com.obaflix.bridge /
+    // com.obaflix.player — nenhum import mudou de lugar na extracao.
+    namespace 'com.obaflix.core'
+    compileSdk 34
+
+    defaultConfig {
+        // 21, nao 26: o :tv precisa alcancar TV Box com Android 5 e 6, e o
+        // minSdk de uma biblioteca tem de ser menor ou igual ao de quem consome.
+        minSdk 21
+
+        buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    // `api` e nao `implementation`: quem consome o extractor recebe as respostas
+    // do OkHttp e os tipos de corrotina na propria assinatura publica.
+    api 'com.squareup.okhttp3:okhttp:4.12.0'
+    api 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    api 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core-ktx:1.12.0'
+}

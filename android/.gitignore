@@ -8,5 +8,7 @@
 .externalNativeBuild/
 .cxx/
 local.properties
-app/build/
-app/release/
+# Saida de build de qualquer modulo. Antes so 'app/build/' era ignorado, e
+# com :core-extractor e :tv isso deixaria artefato de build entrar no commit.
+build/
+release/

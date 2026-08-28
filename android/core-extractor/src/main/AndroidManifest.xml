@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A extracao faz requisicoes propria. Declarar aqui e nao em cada app
+         garante que movel e TV nunca fiquem sem a permissao por descuido. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>

@@ -13,7 +13,8 @@ android {
         targetSdk 34
         versionCode 9
         versionName "1.0.9"
-        buildConfigField "String", "OBAFLIX_URL", '"https://obaflix.vercel.app"'
+        // Mesmo valor que o :core-extractor le — ambos saem de gradle.properties.
+        buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
 
         // Diagnostico: liga a inspecao via chrome://inspect tambem no APK de
         // release. O logcat estruturado ([oba]) sai sempre; isto e so para quando
@@ -65,6 +66,10 @@ android {
 }
 
 dependencies {
+    // Extracao de midia compartilhada com o :tv. Traz okhttp, corrotinas e
+    // webkit como `api`, alem das regras de R8 da ponte JS.
+    implementation project(':core-extractor')
+
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'

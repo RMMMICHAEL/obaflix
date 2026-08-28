@@ -10,6 +10,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.annotation.RequiresApi
 import com.obaflix.ObaflixApp
 import com.obaflix.removerRequestedWithHeader
 import kotlinx.coroutines.CompletableDeferred
@@ -163,6 +164,10 @@ object RedeCanaisExtractor {
                             )
                         }
 
+                        // Esta sobrecarga chega na API 23. Abaixo disso o sistema
+                        // chama a versao antiga e a falha vira timeout do withTimeout
+                        // em vez de erro imediato — mais lento, nunca incorreto.
+                        @RequiresApi(android.os.Build.VERSION_CODES.M)
                         override fun onReceivedError(
                             view: WebView,
                             request: WebResourceRequest,

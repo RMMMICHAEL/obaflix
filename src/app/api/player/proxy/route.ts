@@ -52,15 +52,20 @@ function clientUa(req: NextRequest): string {
  * Playlists, chaves e trilhas alternativas ainda passam pelo proxy autenticado,
  * mas segmentos TS/fMP4 não consomem Fast Origin Transfer da Vercel.
  *
- * Android/Electron continuam buscando no CDN pelo IP do aparelho. Navegadores
+ * Android/Electron/TV continuam buscando no CDN pelo IP do aparelho. Navegadores
  * comuns precisam do proxy same-origin porque os CDNs atuais bloqueiam CORS.
  * MEDIA_SEGMENT_DELIVERY=direct|proxy permite forçar um dos modos.
+ *
+ * `ObaflixTV/` entrou como marcador próprio, e não reaproveitando `ObaflixApp/`:
+ * um episódio em 1080p passa de 1 GB, então um ambiente nativo que caia no proxy
+ * por engano vira Transfer Out imediato. Marcador separado também mantém móvel e
+ * TV distinguíveis no log — se um dos dois começar a proxiar, dá para saber qual.
  */
 function shouldProxyMediaThroughApp(ua: string): boolean {
   const configured = process.env.MEDIA_SEGMENT_DELIVERY?.toLowerCase();
   if (configured === "proxy") return true;
   if (configured === "direct") return false;
-  return !/(?:ObaflixApp\/|Electron\/)/i.test(ua);
+  return !/(?:ObaflixApp\/|ObaflixTV\/|Electron\/)/i.test(ua);
 }
 
 /** Nega silenciosamente com erro genérico */

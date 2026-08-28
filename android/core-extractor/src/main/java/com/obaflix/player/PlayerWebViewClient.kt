@@ -7,7 +7,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.net.Uri
-import com.obaflix.BuildConfig
+import androidx.annotation.RequiresApi
+import com.obaflix.core.BuildConfig
 import com.obaflix.ObaflixApp
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerExtractors
@@ -62,6 +63,9 @@ class PlayerWebViewClient(
      * WebView morta fica inutilizavel, entao quem trata precisa descarta-la e
      * criar outra; e o que rebuildWebViewAposCrash faz.
      */
+    // A propria callback so existe da API 26 — abaixo disso o sistema mata o
+    // processo sem avisar ninguem, e nao ha o que interceptar.
+    @RequiresApi(android.os.Build.VERSION_CODES.O)
     override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
         val crashed = detail?.didCrash() ?: false
         val motivo = if (crashed) "crash do renderer" else "renderer encerrado pelo sistema (memoria)"

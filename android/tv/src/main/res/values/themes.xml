@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose desenha tudo; o tema do sistema so precisa dar o fundo certo
+         antes do primeiro quadro, para a TV nao piscar branco na abertura. -->
+    <style name="Theme.ObaflixTv" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fundo</item>
+        <item name="android:colorBackground">@color/fundo</item>
+    </style>
+</resources>

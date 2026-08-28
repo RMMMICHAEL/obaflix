@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  O oposto do que o aplicativo de referencia faz.
+
+  Ele libera cleartext para qualquer dominio no base-config e ainda desativa a
+  verificacao de certificado no player (trustAllCerts + HostnameVerifier sempre
+  verdadeiro), o que torna um ataque de intermediario trivial.
+
+  Aqui: HTTPS obrigatorio e apenas as ancoras do sistema. Excluir "user" impede
+  que um certificado instalado pelo usuario (proxy de interceptacao) seja aceito.
+  Se algum provedor so servir HTTP, ele entra num domain-config nominal — nunca
+  no base-config.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

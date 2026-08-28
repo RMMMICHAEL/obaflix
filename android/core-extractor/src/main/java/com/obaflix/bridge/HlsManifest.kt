@@ -92,7 +92,10 @@ object HlsManifest {
                             val uri = attrs["URI"]?.takeIf { it.isNotBlank() } ?: return@forEach
                             val resolved = runCatching { URL(URL(baseUrl), uri).toString() }.getOrNull()
                                 ?: return@forEach
-                            subtitles.putIfAbsent(resolved, SubtitleTrack(resolved, name ?: "Legenda"))
+                            // putIfAbsent so existe da API 24; o modulo alcanca a 21.
+                            if (!subtitles.containsKey(resolved)) {
+                                subtitles[resolved] = SubtitleTrack(resolved, name ?: "Legenda")
+                            }
                         }
                     }
                 }

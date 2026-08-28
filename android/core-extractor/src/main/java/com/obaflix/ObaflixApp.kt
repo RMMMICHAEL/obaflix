@@ -71,7 +71,12 @@ class ObaflixApp : Application() {
      * bloqueio automatico do header X-Requested-With so existe da 118 em diante,
      * e aparelhos com WebView antiga falham em manifestos que funcionam nos demais.
      */
-    private fun webViewVersion(): String = runCatching {
-        android.webkit.WebView.getCurrentWebViewPackage()?.versionName ?: "desconhecida"
-    }.getOrDefault("indisponivel")
+    private fun webViewVersion(): String {
+        // getCurrentWebViewPackage chega na API 26. Abaixo disso nao ha como
+        // descobrir a versao, e o log registra isso em vez de estourar.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return "indisponivel"
+        return runCatching {
+            android.webkit.WebView.getCurrentWebViewPackage()?.versionName ?: "desconhecida"
+        }.getOrDefault("indisponivel")
+    }
 }

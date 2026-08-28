@@ -1,5 +1,6 @@
 package com.obaflix
 
+import android.annotation.SuppressLint
 import android.webkit.WebSettings
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
@@ -21,6 +22,10 @@ import com.obaflix.bridge.ObaLog
  * fabricante. Abaixo da 118 o recurso nao existe e o header continua indo — nao
  * ha fallback seguro, apenas log.
  */
+// O lint marca REQUESTED_WITH_HEADER_ALLOW_LIST como RestrictedApi somente
+// depois que este arquivo virou biblioteca: a checagem compara o groupId de
+// quem chama, e modulo de app nao tinha um. A API e a mesma de antes.
+@SuppressLint("RestrictedApi")
 fun removerRequestedWithHeader(settings: WebSettings, origem: String) {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
         ObaLog.alerta(ObaLog.Fase.SESSAO, "requested_with_nao_suportado", "origem" to origem)

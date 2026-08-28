@@ -1,0 +1,87 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.obaflix.tv'
+    compileSdk 34
+
+    defaultConfig {
+        // applicationId proprio: a TV convive com o app movel no mesmo Google
+        // account sem que uma instalacao substitua a outra.
+        applicationId "com.obaflix.tv"
+
+        // 21 cobre TV Box com Android 5 e 6, que e boa parte do parque instalado.
+        // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+        buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
+    }
+
+    buildFeatures {
+        buildConfig true
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.5.10'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+        // O Compose for TV ainda marca a API como experimental. Optar aqui evita
+        // espalhar @OptIn por cada composable da interface.
+        freeCompilerArgs += ['-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api']
+    }
+
+    def keystorePropsFile = rootProject.file("key.properties")
+    if (keystorePropsFile.exists()) {
+        def keystoreProps = new Properties()
+        keystoreProps.load(new FileInputStream(keystorePropsFile))
+        signingConfigs {
+            release {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+        buildTypes.release.signingConfig signingConfigs.release
+    }
+}
+
+dependencies {
+    // A prova de que a extracao e compartilhada: o app de TV consome o mesmo
+    // modulo que o movel, sem uma linha de extrator propria.
+    implementation project(':core-extractor')
+
+    implementation platform('androidx.compose:compose-bom:2024.02.02')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.foundation:foundation'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+
+    // Compose for TV: foco de D-Pad, halo desenhado pelo sistema, componentes
+    // dimensionados para leitura a distancia.
+    implementation 'androidx.tv:tv-material:1.0.0-alpha10'
+
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+}

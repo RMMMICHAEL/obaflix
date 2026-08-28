@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Banner do launcher do Android TV: proporcao 320x180 exigida pelo leanback. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <path
+        android:fillColor="#111116"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <path
+        android:fillColor="#E5292E"
+        android:pathData="M118,62 L154,90 L118,118 Z" />
+
+    <path
+        android:fillColor="#F2F2F4"
+        android:pathData="M168,84h44v12h-44z" />
+    <path
+        android:fillColor="#6C7885"
+        android:pathData="M168,104h28v6h-28z" />
+</vector>

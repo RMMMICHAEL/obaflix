@@ -14,4 +14,11 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Obaflix"
-include(":app")
+
+// Extracao de midia: provedores, manifesto HLS, headers e diagnostico de rede.
+// Compartilhado entre o app movel e o app de TV para que os dois nao divirjam —
+// e a divergencia silenciosa entre ambientes ja custou caro antes.
+include(":core-extractor")
+
+include(":app")   // movel  — WebView + ponte
+include(":tv")    // Android TV / TV Box — Compose for TV
