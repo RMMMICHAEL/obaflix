@@ -1,6 +1,7 @@
 package com.obaflix.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -97,7 +98,7 @@ private fun Conteudo(home: Home, aoSair: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(28.dp),
     ) {
         item { Destaque(home.destaque, aoSair) }
-        items(home.fileiras) { fileira -> FileiraHorizontal(fileira) }
+        items(home.fileiras, key = { it.titulo }) { fileira -> FileiraHorizontal(fileira) }
     }
 }
 
@@ -173,11 +174,18 @@ private fun FileiraHorizontal(fileira: Fileira) {
             modifier = Modifier.padding(bottom = 12.dp),
         )
         LazyRow(
+            // focusGroup: sem ele a travessia de foco atravessa a fileira item
+            // a item e pode alcancar um no que a lista ja reciclou. E dai que
+            // vem o "LayoutCoordinate operations are only valid when isAttached
+            // is true" — o foco chega num no que nao existe mais.
+            modifier = Modifier.focusGroup(),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             // Folga a direita para o ultimo card nao colar na borda da tela.
             contentPadding = androidx.compose.foundation.layout.PaddingValues(end = 48.dp),
         ) {
-            items(fileira.itens) { item -> Card(item, fileira.paisagem) }
+            // Chave estavel: sem ela a identidade do no muda a cada recomposicao
+            // e o foco fica apontando para o item errado — ou para nenhum.
+            items(fileira.itens, key = { it.id }) { item -> Card(item, fileira.paisagem) }
         }
     }
 }

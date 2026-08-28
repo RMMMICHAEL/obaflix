@@ -69,17 +69,18 @@ object SessaoAtual {
         val temRefresh = ArmazenamentoSessao.refreshToken(context) != null
         val renovou = if (temRefresh) PareamentoTv.renovar(context) else false
 
-        val novoEstado = if (renovou) {
-            EstadoApp.Autenticado(ArmazenamentoSessao.deviceId(context))
-        } else {
-            // Sem refresh, ou refresh recusado (expirado, revogado, reutilizado).
-            // Em qualquer um dos casos o caminho e o mesmo: parear de novo.
-            EstadoApp.NaoAutenticado
-        }
-
         val decorrido = System.currentTimeMillis() - comeco
         if (decorrido < SPLASH_MINIMO_MS) delay(SPLASH_MINIMO_MS - decorrido)
 
-        _estado.value = novoEstado
+        // Publica pelos mesmos metodos que todo o resto usa. Atribuir
+        // `_estado.value` direto daqui funcionava, mas pulava o log — e foi
+        // exatamente o que deixou a inicializacao invisivel no logcat.
+        if (renovou) {
+            marcarAutenticado(ArmazenamentoSessao.deviceId(context))
+        } else {
+            // Sem refresh, ou refresh recusado (expirado, revogado, reutilizado).
+            // Em qualquer um dos casos o caminho e o mesmo: parear de novo.
+            marcarNaoAutenticado()
+        }
     }
 }

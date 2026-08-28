@@ -16,8 +16,8 @@ android {
         // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
         minSdk 21
         targetSdk 34
-        versionCode 2
-        versionName "0.2.0"
+        versionCode 3
+        versionName "0.2.1"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
@@ -72,7 +72,9 @@ dependencies {
     // modulo que o movel, sem uma linha de extrator propria.
     implementation project(':core-extractor')
 
-    implementation platform('androidx.compose:compose-bom:2024.02.02')
+    // 2024.06.00 = Compose 1.6.8. A 1.6.1 tinha o defeito de foco que
+    // derrubava o aplicativo ao navegar entre fileiras com o D-Pad.
+    implementation platform('androidx.compose:compose-bom:2024.06.00')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.ui:ui-tooling-preview'
     implementation 'androidx.compose.foundation:foundation'
