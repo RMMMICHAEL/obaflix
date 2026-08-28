@@ -1,9 +1,9 @@
 package com.obaflix.tv.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -12,14 +12,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -27,226 +26,313 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
-import com.obaflix.tv.catalogo.Item
+import coil.compose.AsyncImage
+import com.obaflix.tv.catalogo.ApiObaflix
+import com.obaflix.tv.navegacao.Aba
+import com.obaflix.tv.navegacao.Camada
+import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.sessao.PareamentoTv
+import com.obaflix.tv.ui.componentes.EspacoH
+import com.obaflix.tv.ui.componentes.LocalRestaurador
+import com.obaflix.tv.ui.componentes.Restaurador
+import com.obaflix.tv.ui.componentes.escalaFoco
+import com.obaflix.tv.ui.componentes.escalar
+import com.obaflix.tv.ui.componentes.focavel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
-import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Casca do aplicativo.
+ * Moldura do aplicativo.
  *
- * Uma tela só, com pilha de rotas em memória — nada de recriar Activity para
- * abrir um detalhe. É o que torna a volta instantânea e permite restaurar onde
- * a pessoa estava, que é o que mais incomoda quando falta numa TV.
+ * Uma composicao so, com tres camadas empilhadas:
+ *
+ *  1. **Arte de fundo** — acompanha o que esta focado, com fusao lenta. E o que
+ *     tira a tela do aspecto de lista tecnica: o catalogo passa a ocupar o
+ *     fundo inteiro em vez de flutuar sobre chapado.
+ *  2. **Moldura** — barra de abas e o conteudo da aba corrente. As abas ficam
+ *     compostas mesmo quando cobertas, e e isso que devolve a pessoa a mesma
+ *     fileira e ao mesmo card quando ela volta de um conteudo.
+ *  3. **Camadas** — ficha e player, por cima de tudo.
+ *
+ * Enquanto ha camada aberta, a moldura inteira e desativada para o foco. Sem
+ * isso, uma seta para baixo dentro da ficha encontraria os cards da Home
+ * escondidos atras e o cursor sumiria da tela.
  */
-
-enum class SecaoTv(val rotulo: String, val chave: String) {
-    INICIO("Início", "inicio"),
-    FILMES("Filmes", "filme"),
-    SERIES("Séries", "serie"),
-    ANIMES("Animes", "anime"),
-    DESENHOS("Desenhos", "desenho"),
-}
-
-sealed interface Rota {
-    data class Secao(val secao: SecaoTv) : Rota
-    data object Busca : Rota
-    data class Detalhe(val id: String, val tipo: String) : Rota
-    data class Player(
-        val conteudoId: String,
-        val tipo: String,
-        val titulo: String,
-        val temporada: Int? = null,
-        val numeroEp: Int? = null,
-        val episodioId: String? = null,
-        val inicioSeg: Int = 0,
-    ) : Rota
-}
-
 @Composable
 fun AppTv() {
-    val context = LocalContext.current
-    val escopo = rememberCoroutineScope()
-    val pilha = remember { mutableStateListOf<Rota>(Rota.Secao(SecaoTv.INICIO)) }
-    var confirmandoSaida by remember { mutableStateOf(false) }
+    val restaurador = remember { Restaurador() }
+    var fundoDesejado by remember { mutableStateOf<String?>(null) }
+    var fundoAtual by remember { mutableStateOf<String?>(null) }
 
-    val atual = pilha.last()
-    // Player e detalhe ocupam a tela inteira: a barra superior sumiria atrás do
-    // conteúdo e roubaria foco do que importa naquele momento.
-    val comBarra = atual is Rota.Secao || atual is Rota.Busca
-
-    fun abrir(rota: Rota) {
-        pilha.add(rota)
-        confirmandoSaida = false
+    // A arte so troca depois de o foco parar. Sem esta pausa, atravessar uma
+    // fileira com a seta pressionada dispararia um download de backdrop por
+    // card — trabalho jogado fora e engasgo garantido em TV Box fraca.
+    LaunchedEffect(fundoDesejado) {
+        delay(450)
+        fundoAtual = fundoDesejado
     }
 
-    fun trocarSecao(rota: Rota) {
-        // Trocar de aba não empilha: a barra é navegação lateral, não um caminho.
-        // Empilhar faria o Voltar percorrer todas as abas já visitadas.
-        while (pilha.size > 1) pilha.removeAt(pilha.size - 1)
-        pilha[0] = rota
-        confirmandoSaida = false
-    }
-
-    BackHandler {
-        when {
-            pilha.size > 1 -> {
-                pilha.removeAt(pilha.size - 1)
-                confirmandoSaida = false
-            }
-            // Na raiz, sair exige confirmação. Esbarrar no Voltar e cair fora do
-            // aplicativo é das coisas mais irritantes que uma TV faz.
-            confirmandoSaida -> Unit
-            else -> {
-                confirmandoSaida = true
-                Toast.makeText(context, "Aperte Voltar de novo para sair", Toast.LENGTH_SHORT).show()
-            }
+    // Fechou a ultima camada: o cursor volta para o card de onde saiu. A
+    // rolagem ja esta preservada porque a moldura nunca foi descartada — o que
+    // se restaura aqui e so a posicao do foco.
+    LaunchedEffect(Navegacao.emCamada) {
+        if (!Navegacao.emCamada) {
+            delay(60)
+            restaurador.restaurar()
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(Cores.Fundo)) {
-        if (comBarra) {
-            BarraSuperior(
-                secaoAtiva = (atual as? Rota.Secao)?.secao,
-                buscaAtiva = atual is Rota.Busca,
-                aoEscolherSecao = { trocarSecao(Rota.Secao(it)) },
-                aoBuscar = { trocarSecao(Rota.Busca) },
-                aoSair = { escopo.launch { PareamentoTv.sair(context) } },
+    CompositionLocalProvider(LocalRestaurador provides restaurador) {
+        Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
+
+            FundoDinamico(fundoAtual)
+
+            Moldura(
+                bloqueado = Navegacao.emCamada,
+                aoFocarArte = { fundoDesejado = it },
             )
-        }
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            val abrirItem: (Item) -> Unit = { abrir(Rota.Detalhe(it.id, it.tipo)) }
-
-            when (val rota = atual) {
-                is Rota.Secao -> when (rota.secao) {
-                    SecaoTv.INICIO -> TelaHome(aoAbrir = abrirItem)
-                    else -> TelaSecao(rota.secao, aoAbrir = abrirItem)
+            Navegacao.pilha.forEach { camada ->
+                when (camada) {
+                    is Camada.Detalhe -> TelaDetalhe(camada)
+                    is Camada.Player -> TelaPlayer(camada.pedido)
                 }
-
-                is Rota.Busca -> TelaBusca(aoAbrir = abrirItem)
-
-                is Rota.Detalhe -> TelaDetalhe(
-                    id = rota.id,
-                    tipo = rota.tipo,
-                    aoReproduzir = { abrir(it) },
-                    aoAbrirRelacionado = abrirItem,
-                )
-
-                is Rota.Player -> TelaPlayer(
-                    rota = rota,
-                    aoFechar = { pilha.removeAt(pilha.size - 1) },
-                    aoTrocarEpisodio = { nova ->
-                        pilha[pilha.size - 1] = nova
-                    },
-                )
             }
         }
     }
 }
 
 /**
- * Barra superior.
+ * Arte de fundo da moldura.
  *
- * Fica no topo e não numa lateral porque as fileiras já usam a largura inteira;
- * um menu lateral comeria justamente o espaço onde os pôsteres precisam caber.
+ * Escurecida em duas passadas: um veu uniforme para o texto ter contraste em
+ * qualquer cena e um degrade de baixo para cima, que e onde ficam as fileiras.
+ * Sem os dois, poster claro sobre backdrop claro fica ilegivel.
  */
 @Composable
-private fun BarraSuperior(
-    secaoAtiva: SecaoTv?,
-    buscaAtiva: Boolean,
-    aoEscolherSecao: (SecaoTv) -> Unit,
-    aoBuscar: () -> Unit,
-    aoSair: () -> Unit,
-) {
-    val margem = margemSegura()
+private fun FundoDinamico(caminho: String?) {
+    Crossfade(
+        targetState = ApiObaflix.imagem(caminho, "w780"),
+        animationSpec = tween(700),
+        label = "fundo",
+    ) { url ->
+        if (url != null) {
+            Box(Modifier.fillMaxSize()) {
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Box(Modifier.fillMaxSize().background(Cores.Veu.copy(alpha = 0.72f)))
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            0f to Cores.Veu.copy(alpha = 0.55f),
+                            0.45f to Cores.Veu.copy(alpha = 0.80f),
+                            1f to Cores.Veu,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Moldura(bloqueado: Boolean, aoFocarArte: (String?) -> Unit) {
+    val margem = margemHorizontal()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .focusProperties { canFocus = !bloqueado }
+            .focusGroup(),
+    ) {
+        BarraTopo(margem = margem, bloqueada = bloqueado)
+
+        when (Navegacao.aba) {
+            Aba.Inicio -> TelaHome(aoFocarArte)
+            Aba.Filmes -> TelaCatalogo(Aba.Filmes, aoFocarArte)
+            Aba.Series -> TelaCatalogo(Aba.Series, aoFocarArte)
+            Aba.Animes -> TelaCatalogo(Aba.Animes, aoFocarArte)
+            Aba.Kids -> TelaCatalogo(Aba.Kids, aoFocarArte)
+            Aba.Busca -> TelaBusca()
+        }
+    }
+
+    // BACK na moldura: de qualquer aba volta para o Inicio. Sair do aplicativo
+    // so acontece a partir do Inicio, que e o comportamento que a televisao
+    // ensina — ninguem espera fechar o app apertando BACK dentro de "Filmes".
+    BackHandler(enabled = !bloqueado && Navegacao.aba != Aba.Inicio) {
+        Navegacao.irPara(Aba.Inicio)
+    }
+}
+
+/**
+ * Barra de abas.
+ *
+ * O foco destaca; o OK e que troca de aba. Trocar no foco pareceria mais fluido
+ * por um segundo e custaria uma consulta ao catalogo a cada passagem de seta —
+ * seis abas atravessadas seriam seis cargas que ninguem pediu.
+ */
+@Composable
+private fun BarraTopo(margem: androidx.compose.ui.unit.Dp, bloqueada: Boolean) {
+    val context = LocalContext.current
+    val escopo = androidx.compose.runtime.rememberCoroutineScope()
+    val primeiroItem = remember { FocusRequester() }
+    var relogio by remember { mutableStateOf(agora()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            relogio = agora()
+            delay(20_000)
+        }
+    }
+
+    // O foco inicial do aplicativo nasce na barra. E o unico ponto da tela em
+    // que a pessoa sempre se reconhece ao ligar a televisao.
+    LaunchedEffect(Unit) {
+        if (!bloqueada) runCatching { primeiroItem.requestFocus() }
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .focusGroup()
-            .padding(
-                start = margem.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                end = margem.calculateRightPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                top = 20.dp,
-                bottom = 14.dp,
-            ),
+            .padding(start = margem, end = margem, top = 20.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = "OBAFLIX",
-            color = Cores.Destaque,
-            fontSize = Escala.Secao,
-            fontWeight = FontWeight.Black,
-            modifier = Modifier.padding(end = 28.dp),
-        )
+        Marca()
+        EspacoH(36.dp)
 
-        SecaoTv.entries.forEach { secao ->
-            AbaSuperior(
-                rotulo = secao.rotulo,
-                ativa = secao == secaoAtiva,
-                aoAcionar = { aoEscolherSecao(secao) },
-            )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.focusGroup(),
+        ) {
+            Aba.values().forEachIndexed { indice, aba ->
+                ItemMenu(
+                    aba = aba,
+                    selecionada = Navegacao.aba == aba,
+                    modifier = if (indice == 0) Modifier.focusRequester(primeiroItem) else Modifier,
+                )
+            }
         }
-
-        Box(Modifier.width(20.dp))
-        AbaSuperior(rotulo = "Buscar", ativa = buscaAtiva, aoAcionar = aoBuscar)
 
         Box(Modifier.weight(1f))
-        AbaSuperior(rotulo = "Sair", ativa = false, aoAcionar = aoSair)
+
+        Text(text = relogio, color = Cores.TextoFraco, fontSize = Escala.Rotulo)
+        EspacoH(20.dp)
+        BotaoConta(aoSair = { escopo.launch { PareamentoTv.sair(context) } })
     }
 }
 
 @Composable
-private fun AbaSuperior(rotulo: String, ativa: Boolean, aoAcionar: () -> Unit) {
-    val interacao = remember { MutableInteractionSource() }
-    val focado by interacao.collectIsFocusedAsState()
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun Marca() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (focado) Cores.Superficie else androidx.compose.ui.graphics.Color.Transparent)
-                .focusable(interactionSource = interacao)
-                .aoConfirmar(aoAcionar)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text = rotulo,
-                color = when {
-                    focado -> Cores.Texto
-                    ativa -> Cores.Texto
-                    else -> Cores.TextoFraco
-                },
-                fontSize = Escala.Rotulo,
-                fontWeight = if (ativa || focado) FontWeight.Bold else FontWeight.Normal,
-            )
-        }
-        // Sublinhado marca a aba aberta; o fundo marca a que está sob o foco.
-        // Separar os dois evita a confusão de "onde estou" com "onde vou".
-        Box(
-            Modifier
-                .padding(top = 3.dp)
-                .height(3.dp)
-                .width(if (ativa) 26.dp else 0.dp)
-                .background(Cores.Destaque, RoundedCornerShape(2.dp)),
+            Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(Cores.Destaque),
+        )
+        EspacoH(10.dp)
+        Text(
+            text = "OBAFLIX",
+            color = Cores.Texto,
+            fontSize = Escala.Secao,
+            fontWeight = FontWeight.Black,
         )
     }
 }
 
-/** Devolve o foco para o conteúdo assim que a tela entra. */
 @Composable
-fun focoInicial(): FocusRequester {
-    val pedido = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { pedido.requestFocus() } }
-    return pedido
+private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifier) {
+    val interacao = remember { MutableInteractionSource() }
+    val focado by interacao.collectIsFocusedAsState()
+    val escala = escalaFoco(focado, alvo = 1.06f)
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .escalar(escala)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (focado) Cores.FocoHalo else Color.Transparent)
+            .focavel(interacao = interacao) { Navegacao.irPara(aba) }
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = aba.rotulo,
+            color = when {
+                focado -> Color(0xFF101014)
+                selecionada -> Cores.Texto
+                else -> Cores.TextoApagado
+            },
+            fontSize = Escala.Rotulo,
+            fontWeight = if (selecionada || focado) FontWeight.Black else FontWeight.Medium,
+        )
+        // Sublinhado vermelho: diz qual aba esta aberta mesmo quando o foco ja
+        // desceu para o catalogo e nao ha mais nada destacado la em cima.
+        Box(
+            Modifier
+                .padding(top = 4.dp)
+                .size(width = 22.dp, height = 3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(if (selecionada) Cores.Destaque else Color.Transparent),
+        )
+    }
 }
 
-fun Modifier.focoInicialEm(pedido: FocusRequester): Modifier = focusRequester(pedido)
+/**
+ * Conta.
+ *
+ * Sair passou a viver aqui, e nao no meio do destaque: e uma acao rara, e
+ * ocupar espaco nobre da Home com ela era sintoma de tela de fundacao. Pede
+ * confirmacao porque um OK acidental no controle remoto desfaria o pareamento
+ * e obrigaria a pessoa a pegar o celular de novo.
+ */
+@Composable
+private fun BotaoConta(aoSair: () -> Unit) {
+    var confirmando by remember { mutableStateOf(false) }
+    val interacao = remember { MutableInteractionSource() }
+    val focado by interacao.collectIsFocusedAsState()
+    val escala = escalaFoco(focado, alvo = 1.06f)
+
+    Box(
+        modifier = Modifier
+            .escalar(escala)
+            .clip(RoundedCornerShape(50))
+            .background(if (focado) Cores.FocoHalo else Cores.Superficie)
+            .focavel(interacao = interacao) {
+                if (confirmando) aoSair() else confirmando = true
+            }
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = if (confirmando) "Confirmar saída" else "Conta",
+            color = if (focado) Color(0xFF101014) else Cores.TextoFraco,
+            fontSize = Escala.Rotulo,
+        )
+    }
+
+    // Sai do modo de confirmacao sozinho: um "Confirmar saída" esquecido na
+    // barra vira armadilha para o proximo OK.
+    LaunchedEffect(confirmando, focado) {
+        if (confirmando && !focado) {
+            delay(4000)
+            confirmando = false
+        }
+    }
+}
+
+private fun agora(): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())

@@ -27,6 +27,17 @@ private const val REFERER_DEFAULT = "https://megaflix.lat/"
 
 object PlayerExtractors {
 
+    /**
+     * User-Agent que a extracao usa nas requisicoes aos provedores.
+     *
+     * Publico porque quem reproduz precisa repetir o mesmo par
+     * User-Agent/Referer: ha CDN que amarra o link ao par com que ele foi
+     * gerado, e um dos dois diferente vira 403 no meio do video, sem erro
+     * visivel. No site quem repete e o proxy da Vercel; no Electron, o
+     * onBeforeSendHeaders; no movel, a WebView; na TV, o ExoPlayer.
+     */
+    const val UA_EXTRACAO: String = UA_NATIVE
+
     // ── HTTP helpers ─────────────────────────────────────────────────────────
 
     suspend fun fetchHtml(url: String, referer: String = REFERER_DEFAULT): String =

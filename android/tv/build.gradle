@@ -16,8 +16,8 @@ android {
         // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
         minSdk 21
         targetSdk 34
-        versionCode 4
-        versionName "0.3.0"
+        versionCode 5
+        versionName "0.4.0"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
@@ -48,7 +48,14 @@ android {
         jvmTarget = '1.8'
         // O Compose for TV ainda marca a API como experimental. Optar aqui evita
         // espalhar @OptIn por cada composable da interface.
-        freeCompilerArgs += ['-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api']
+        freeCompilerArgs += [
+            '-opt-in=androidx.tv.material3.ExperimentalTvMaterial3Api',
+            // focusRestorer, animacao de entrada e saida dos paineis do player:
+            // a interface de TV vive nas duas APIs, e optar aqui evita anotar
+            // cada composable da tela.
+            '-opt-in=androidx.compose.foundation.ExperimentalFoundationApi',
+            '-opt-in=androidx.compose.animation.ExperimentalAnimationApi',
+        ]
     }
 
     def keystorePropsFile = rootProject.file("key.properties")

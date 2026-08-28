@@ -15,6 +15,8 @@ import coil.memory.MemoryCache
 import com.obaflix.bridge.ObaLog
 import com.obaflix.tv.sessao.EstadoApp
 import com.obaflix.tv.sessao.SessaoAtual
+import com.obaflix.tv.catalogo.ApiObaflix
+import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.AppTv
 import com.obaflix.tv.ui.TelaPareamento
 import com.obaflix.tv.ui.TelaSplash
@@ -39,6 +41,7 @@ class MainActivity : ComponentActivity() {
             "diag" to BuildConfig.DIAG_LOGS,
         )
 
+        ApiObaflix.instalar(this)
         configurarImagens()
         setContent { TemaObaflixTv { Raiz() } }
     }
@@ -84,6 +87,15 @@ private fun Raiz() {
     when (estado) {
         is EstadoApp.Inicializando -> TelaSplash()
         is EstadoApp.NaoAutenticado -> TelaPareamento()
+        // Depois do QR Code a pessoa cai direto na Home nova. Nao existe mais
+        // tela intermediaria de fundacao: o aplicativo de release vai do
+        // pareamento ao catalogo.
         is EstadoApp.Autenticado -> AppTv()
+    }
+
+    // Sessao caiu ou foi encerrada: a pilha de telas some junto. Sem isso, o
+    // proximo login reabriria a ficha ou o player do usuario anterior.
+    LaunchedEffect(estado) {
+        if (estado is EstadoApp.NaoAutenticado) Navegacao.limpar()
     }
 }
