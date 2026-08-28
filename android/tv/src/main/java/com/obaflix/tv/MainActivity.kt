@@ -5,17 +5,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import coil.Coil
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.obaflix.bridge.ObaLog
-import com.obaflix.tv.sessao.ArmazenamentoSessao
-import com.obaflix.tv.sessao.EstadoSessao
-import com.obaflix.tv.sessao.PareamentoTv
-import com.obaflix.tv.sessao.SessaoTv
-import com.obaflix.tv.ui.TelaDiagnostico
+import com.obaflix.tv.sessao.EstadoApp
+import com.obaflix.tv.sessao.SessaoAtual
+import com.obaflix.tv.ui.TelaHome
 import com.obaflix.tv.ui.TelaPareamento
 import com.obaflix.tv.ui.TelaSplash
 import com.obaflix.tv.ui.TemaObaflixTv
@@ -23,9 +23,10 @@ import com.obaflix.tv.ui.TemaObaflixTv
 /**
  * Unica Activity do aplicativo de TV.
  *
- * Fase 1: o fluxo de entrada na conta. Ainda nao ha Home nem catalogo — de
- * proposito, porque parear precisa estar estavel antes de existir tela de
- * conteudo em cima dele.
+ * A navegacao inteira sai de um estado so, publicado por `SessaoAtual`. Quem
+ * autentica nao chama tela nenhuma: persiste a sessao e muda o estado. A raiz
+ * reage. Isso vale igual para o pareamento, para a renovacao no boot e para o
+ * logout — tres caminhos, um mecanismo, nenhuma Activity recriada.
  */
 class MainActivity : ComponentActivity() {
 
@@ -38,39 +39,51 @@ class MainActivity : ComponentActivity() {
             "diag" to BuildConfig.DIAG_LOGS,
         )
 
+        configurarImagens()
         setContent { TemaObaflixTv { Raiz() } }
     }
 }
 
-private enum class Rota { SPLASH, PAREAMENTO, CONECTADO }
+/**
+ * Limites do cache de imagem.
+ *
+ * O padrao do Coil reserva uma fatia da heap pensada para celular. Numa TV Box
+ * de 1 GB isso derruba o aplicativo assim que a Home carrega meia duzia de
+ * fileiras de poster. 15% da heap e um disco pequeno seguram o catalogo sem
+ * empurrar o resto para fora da memoria.
+ *
+ * `crossfade` desligado tambem e escolha de aparelho fraco: a animacao custa
+ * uma composicao extra por imagem e, com muitas entrando ao mesmo tempo numa
+ * fileira, o que aparece na tela e engasgo, nao suavidade.
+ */
+private fun ComponentActivity.configurarImagens() {
+    Coil.setImageLoader {
+        ImageLoader.Builder(this)
+            .memoryCache { MemoryCache.Builder(this).maxSizePercent(0.15).build() }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("imagens"))
+                    .maxSizeBytes(96L * 1024 * 1024)
+                    .build()
+            }
+            .crossfade(false)
+            .build()
+    }
+}
 
 @Composable
 private fun Raiz() {
     val context = LocalContext.current
-    var rota by remember { mutableStateOf(Rota.SPLASH) }
-    var splashPronta by remember { mutableStateOf(false) }
-    var sessaoResolvida by remember { mutableStateOf(false) }
+    val estado by SessaoAtual.estado.collectAsState()
 
-    // A checagem de sessao roda em paralelo ao splash, e nao depois dele: assim
-    // os 700 ms da animacao sao os mesmos 700 ms da rede, e nao a soma dos dois.
-    LaunchedEffect(Unit) {
-        // Com refresh guardado, a TV tenta renovar antes de decidir qualquer
-        // coisa. E o caminho normal de toda abertura depois da primeira.
-        if (ArmazenamentoSessao.refreshToken(context) != null) {
-            PareamentoTv.renovar(context)
-        }
-        val estado = SessaoTv.verificar()
-        rota = if (estado is EstadoSessao.Autenticado) Rota.CONECTADO else Rota.PAREAMENTO
-        sessaoResolvida = true
-    }
+    // Roda uma vez por processo. Reentrar na composicao — troca de tema, giro,
+    // recomposicao — nao dispara outra verificacao, entao nao ha como cair num
+    // ciclo de checar sessao e voltar para o splash.
+    LaunchedEffect(Unit) { SessaoAtual.restaurar(context) }
 
-    when {
-        !splashPronta || !sessaoResolvida ->
-            TelaSplash(aoTerminar = { splashPronta = true })
-
-        rota == Rota.PAREAMENTO ->
-            TelaPareamento(aoConcluir = { rota = Rota.CONECTADO })
-
-        else -> TelaDiagnostico(aoSair = { rota = Rota.PAREAMENTO })
+    when (estado) {
+        is EstadoApp.Inicializando -> TelaSplash()
+        is EstadoApp.NaoAutenticado -> TelaPareamento()
+        is EstadoApp.Autenticado -> TelaHome(aoSair = { /* SessaoAtual ja mudou o estado */ })
     }
 }

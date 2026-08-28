@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -17,27 +16,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.obaflix.tv.BuildConfig
-import kotlinx.coroutines.delay
 
 /**
  * Abertura do aplicativo.
  *
- * Curta de proposito: em TV Box fraca, cada segundo de splash e um segundo a
- * mais entre apertar o botao e ver conteudo. O fundo ja vem do tema do sistema,
- * entao a tela nao pisca branco antes do primeiro quadro do Compose.
+ * Nao decide nada e nao tem temporizador proprio: fica no ar enquanto o estado
+ * for Inicializando, e sai quando `SessaoAtual` publicar o resultado. O piso de
+ * tempo que evita o piscar da tela vive la, junto da verificacao — dois relogios
+ * independentes acabariam se desencontrando.
  *
  * A versao no canto nao e enfeite: e diagnostico de campo. Quando alguem relata
  * um problema, e a primeira coisa a perguntar.
  */
-private const val DURACAO_MS = 700L
-
 @Composable
-fun TelaSplash(aoTerminar: () -> Unit) {
-    LaunchedEffect(Unit) {
-        delay(DURACAO_MS)
-        aoTerminar()
-    }
-
+fun TelaSplash() {
     Box(
         modifier = Modifier
             .fillMaxSize()

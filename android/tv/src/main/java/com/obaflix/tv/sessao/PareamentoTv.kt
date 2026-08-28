@@ -166,9 +166,14 @@ object PareamentoTv {
 
             when (val r = consultar(context, convite)) {
                 is ResultadoPoll.Aprovado -> {
+                    // Ordem importa: primeiro o que precisa sobreviver a um
+                    // fechamento do aplicativo, so entao o estado que move a
+                    // interface. Invertido, uma queda entre as duas linhas
+                    // deixaria a Home aberta sem credencial para renovar.
                     ArmazenamentoSessao.salvar(context, r.refreshToken, r.deviceId)
                     SessaoTv.definirAccessToken(r.accessToken)
                     ObaLog.evento(ObaLog.Fase.SESSAO, "tv_pareada")
+                    SessaoAtual.marcarAutenticado(r.deviceId)
                     aoAtualizar(r)
                     return
                 }
@@ -233,6 +238,7 @@ object PareamentoTv {
         // usuario pediu para sair, e o refresh expira sozinho de qualquer forma.
         ArmazenamentoSessao.limpar(context)
         SessaoTv.definirAccessToken(null)
+        SessaoAtual.marcarNaoAutenticado()
         ObaLog.evento(ObaLog.Fase.SESSAO, "tv_logout", "servidor" to ok)
         ok
     }

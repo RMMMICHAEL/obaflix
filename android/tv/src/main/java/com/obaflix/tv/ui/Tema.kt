@@ -20,6 +20,8 @@ object Cores {
     val Destaque = Color(0xFFE5292E)
     val Texto = Color(0xFFF2F2F4)
     val TextoFraco = Color(0xFF9AA3AF)
+    /** Realce do item focado. Branco puro: e o unico ponteiro que a TV tem. */
+    val FocoHalo = Color(0xFFFFFFFF)
     val Ok = Color(0xFF6FD49C)
     val Alerta = Color(0xFFE0B265)
     val Falha = Color(0xFFF09186)

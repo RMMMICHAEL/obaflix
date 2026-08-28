@@ -42,7 +42,7 @@ import com.obaflix.tv.sessao.PareamentoTv
  * fica so na memoria do aparelho. O QR leva unicamente o codigo publico.
  */
 @Composable
-fun TelaPareamento(aoConcluir: () -> Unit) {
+fun TelaPareamento() {
     val context = LocalContext.current
     var convite by remember { mutableStateOf<PareamentoTv.Convite?>(null) }
     var mensagem by remember { mutableStateOf<String?>(null) }
@@ -60,7 +60,9 @@ fun TelaPareamento(aoConcluir: () -> Unit) {
         convite = novo
         PareamentoTv.aguardar(context, novo) { resultado ->
             when (resultado) {
-                is PareamentoTv.ResultadoPoll.Aprovado -> aoConcluir()
+                // Nada a fazer: PareamentoTv ja persistiu a sessao e publicou o
+                // estado, e a raiz trocou de tela antes desta linha rodar.
+                is PareamentoTv.ResultadoPoll.Aprovado -> Unit
                 is PareamentoTv.ResultadoPoll.Expirado ->
                     mensagem = "O código expirou. Gere um novo para continuar."
                 is PareamentoTv.ResultadoPoll.Falha ->
