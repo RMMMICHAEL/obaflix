@@ -1,6 +1,4 @@
 import { notFound } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import {
   imgUrl,
   getSerie,
@@ -16,6 +14,7 @@ import {
 } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
+import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
@@ -23,7 +22,15 @@ import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
-export const dynamic = "force-dynamic";
+// Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
+// EstadoPessoal depois da hidratacao. 1h e mais curto que o filme porque serie no
+// ar ganha episodio — e o sync revalida este caminho quando escreve.
+export const revalidate = 3600;
+
+/** Vazio de proposito — ver a nota em /filme/[id]. */
+export async function generateStaticParams() {
+  return [];
+}
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const serie = await prisma.serie.findUnique({
@@ -44,9 +51,6 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
 }
 
 export default async function SeriePage({ params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
-
   const serie = await prisma.serie.findUnique({
     where: { id: params.id },
     include: { generos: { include: { genero: true } } },
@@ -54,7 +58,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   if (!serie) notFound();
 
-  const [episodios, videos, credits, tmdbDetails, tmdbRecs, images, certificacao, episodeProgressList, continueEp] =
+  const [episodios, videos, credits, tmdbDetails, tmdbRecs, images, certificacao] =
     await Promise.all([
       prisma.episodio.findMany({
         where: { serieId: serie.id },
@@ -73,28 +77,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
       serie.tmdbId ? getTVImages(serie.tmdbId) : null,
       serie.tmdbId ? getTVCertification(serie.tmdbId) : null,
-      userId
-        ? prisma.watchHistory.findMany({
-            where: { userId, serieId: serie.id, episodioId: { not: null } },
-            select: { episodioId: true, progressoSeg: true, duracaoSeg: true, concluido: true },
-          })
-        : Promise.resolve([]),
-      userId
-        ? prisma.watchHistory.findFirst({
-            where: { userId, serieId: serie.id, concluido: false, progressoSeg: { gt: 30 } },
-            orderBy: { updatedAt: "desc" },
-            select: { temporada: true, numeroEp: true },
-          })
-        : Promise.resolve(null),
     ]);
-
-  const progressoMap: Record<string, { progressoSeg: number; duracaoSeg: number | null; concluido: boolean }> =
-    Object.fromEntries(
-      episodeProgressList.map((p) => [
-        p.episodioId!,
-        { progressoSeg: p.progressoSeg, duracaoSeg: p.duracaoSeg ?? null, concluido: p.concluido },
-      ])
-    );
 
   // EpisodeGrid e client component: o que atravessa vira payload publico, entao
   // a URL da fonte fica aqui e so a disponibilidade segue adiante.
@@ -149,15 +132,13 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
   const heroLogo = serie.logo ?? pickLogo(images);
   const heroBackdrop = serie.background ?? pickHeroBackdrop(images);
 
-  // Botão principal: retoma de onde parou, senão abre o primeiro episódio.
+  // Botao principal na versao neutra: primeiro episodio. Se o usuario tiver onde
+  // retomar, o MediaHero troca href e rotulo quando o estado pessoal chega.
   const primeiroEp = episodios[0];
-  const alvo = continueEp ?? (primeiroEp ? { temporada: primeiroEp.temporada, numeroEp: primeiroEp.numeroEp } : null);
-  const watchHref = alvo ? `/assistir/serie/${serie.id}/t${alvo.temporada}/ep${alvo.numeroEp}` : null;
-  const watchLabel = alvo
-    ? continueEp
-      ? `Continuar T${alvo.temporada} E${alvo.numeroEp}`
-      : `Assistir T${alvo.temporada} E${alvo.numeroEp}`
-    : "Assistir";
+  const watchHref = primeiroEp
+    ? `/assistir/serie/${serie.id}/t${primeiroEp.temporada}/ep${primeiroEp.numeroEp}`
+    : null;
+  const watchLabel = primeiroEp ? `Assistir T${primeiroEp.temporada} E${primeiroEp.numeroEp}` : "Assistir";
 
   // TMDB recommendations → match with DB
   let recCards: any[] = [];
@@ -219,6 +200,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
   };
 
   return (
+    <EstadoPessoalProvider conteudoId={serie.id} tipo="serie">
     <div className="min-h-screen">
       <JsonLd data={[seriesSchema, breadcrumbSchema]} />
 
@@ -250,10 +232,9 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
             serieId={serie.id}
             episodios={episodiosPublicos}
             temporadas={temporadas}
-            progresso={progressoMap}
             ratingMap={epRatingMap}
             metadataMap={epMetadataMap}
-            initialSeason={continueEp?.temporada ?? temporadas[0]}
+            initialSeason={temporadas[0]}
           />
         </div>
       )}
@@ -278,5 +259,6 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         </div>
       )}
     </div>
+    </EstadoPessoalProvider>
   );
 }

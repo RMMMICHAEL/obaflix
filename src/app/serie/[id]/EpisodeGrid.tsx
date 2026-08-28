@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Check, ChevronDown, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
+import { useEstadoPessoal } from "@/components/ui/EstadoPessoal";
 
 interface Ep {
   id: string;
@@ -35,7 +36,6 @@ export function EpisodeGrid({
   serieId,
   episodios,
   temporadas,
-  progresso = {},
   ratingMap = {},
   metadataMap = {},
   initialSeason,
@@ -43,12 +43,26 @@ export function EpisodeGrid({
   serieId: string;
   episodios: Ep[];
   temporadas: number[];
-  progresso?: Record<string, EpProgress>;
   ratingMap?: Record<string, number>;
   metadataMap?: Record<string, EpMetadata>;
   initialSeason?: number;
 }) {
+  // O grid vem do HTML cacheado ja na primeira temporada; progresso e temporada
+  // de retomada chegam depois, sem segurar a pintura.
+  const { continuar, progressoEpisodios } = useEstadoPessoal();
+  const progresso: Record<string, EpProgress> = progressoEpisodios;
+
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
+  const usuarioEscolheu = useRef(false);
+
+  useEffect(() => {
+    // Pula para a temporada de onde o usuario parou — mas nunca por cima de uma
+    // escolha manual, senao o select se mexeria embaixo do dedo dele.
+    if (usuarioEscolheu.current) return;
+    const alvo = continuar?.temporada;
+    if (alvo != null && temporadas.includes(alvo)) setTemp(alvo);
+  }, [continuar, temporadas]);
+
   const eps = episodios.filter((e) => e.temporada === temp);
 
   // Quantos episodios cada temporada tem, para rotular as opcoes do select.
@@ -89,7 +103,10 @@ export function EpisodeGrid({
           <select
             id="seletor-temporada"
             value={temp}
-            onChange={(event) => setTemp(Number(event.target.value))}
+            onChange={(event) => {
+              usuarioEscolheu.current = true;
+              setTemp(Number(event.target.value));
+            }}
             className="min-h-11 appearance-none rounded-full bg-zinc-800 py-2.5 pl-5 pr-11 text-sm font-semibold text-white outline-none ring-1 ring-white/15 transition-colors duration-200 hover:bg-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70"
           >
             {temporadas.map((season) => (

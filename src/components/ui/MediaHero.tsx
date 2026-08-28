@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
+import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
 
@@ -75,6 +76,23 @@ export function MediaHero({
   shareUrl,
 }: MediaHeroProps) {
   const [expandida, setExpandida] = useState(false);
+
+  // O HTML desta pagina e cacheado e igual para todo mundo, entao "continuar
+  // assistindo" nao pode vir do servidor: chega aqui depois da hidratacao.
+  //
+  // Sem skeleton no rotulo de proposito: o HTML cacheado e o mesmo servido para
+  // quem esta deslogado e para o crawler, e um placeholder pulsante deixaria o
+  // botao sem texto para eles. Melhor o rotulo neutro e uma troca so.
+  const { continuar } = useEstadoPessoal();
+  const retomandoEpisodio = continuar?.temporada != null && continuar?.numeroEp != null;
+  const rotuloFinal = retomandoEpisodio
+    ? `Continuar T${continuar!.temporada} E${continuar!.numeroEp}`
+    : continuar
+      ? "Continuar assistindo"
+      : watchLabel;
+  const hrefFinal = retomandoEpisodio
+    ? `/assistir/serie/${conteudoId}/t${continuar!.temporada}/ep${continuar!.numeroEp}`
+    : watchHref;
 
   const bgSrc = backdrop ? imgUrl(backdrop, "original") : "/placeholder-bg.jpg";
   const logoSrc = logoUrl(logo, "w500");
@@ -302,12 +320,12 @@ export function MediaHero({
         )}
 
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          {watchHref && (
+          {hrefFinal && (
             <Link
-              href={watchHref}
+              href={hrefFinal}
               className="flex h-12 items-center justify-center gap-2.5 rounded-xl bg-white px-8 text-[15px] font-bold text-black shadow-[0_8px_30px_rgba(0,0,0,0.45)] transition-colors hover:bg-zinc-200 md:h-[3.25rem] md:text-base"
             >
-              <Play size={19} fill="black" strokeWidth={0} /> {watchLabel}
+              <Play size={19} fill="black" strokeWidth={0} /> {rotuloFinal}
             </Link>
           )}
 

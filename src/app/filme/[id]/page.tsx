@@ -1,6 +1,4 @@
 import { notFound } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import {
   imgUrl,
   getMovieVideos,
@@ -16,11 +14,26 @@ import { prisma } from "@/lib/prisma";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow } from "@/components/ui/PeopleRow";
+import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
-export const dynamic = "force-dynamic";
+// Pagina publica e igual para todo mundo: nada de sessao entra no render, o que
+// permite servir do cache. O estado do usuario chega depois, via EstadoPessoal.
+// 6h e folgado porque a linha so muda quando o sync escreve — e quando escreve,
+// o proprio sync revalida o caminho deste id.
+export const revalidate = 21600;
+
+/**
+ * Vazio de proposito: nao prerendera nada no build (sao 25 mil filmes), mas e o
+ * que faz a rota dinamica entrar no cache de rota. Sem isto o Next trata cada
+ * /filme/:id como render sob demanda e devolve `no-store`, e o `revalidate`
+ * acima nao vale de nada.
+ */
+export async function generateStaticParams() {
+  return [];
+}
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const filme = await prisma.filme.findUnique({
@@ -41,9 +54,6 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
 }
 
 export default async function FilmePage({ params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
-
   const filme = await prisma.filme.findUnique({
     where: { id: params.id },
     include: { generos: { include: { genero: true } } },
@@ -54,7 +64,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   const generoIds = filme.generos.map((g: any) => g.generoId);
 
   // Fetch TMDB data + DB similares in parallel
-  const [videos, credits, tmdbRecs, images, certificacao, dbSimilares, continueFilme] = await Promise.all([
+  const [videos, credits, tmdbRecs, images, certificacao, dbSimilares] = await Promise.all([
     filme.tmdbId ? getMovieVideos(filme.tmdbId) : null,
     filme.tmdbId ? getMovieCredits(filme.tmdbId) : null,
     filme.tmdbId ? getMovieRecommendations(filme.tmdbId) : null,
@@ -67,13 +77,6 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
       // ler a URL aqui so serviria para ela vazar no payload do cliente.
       select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true },
     }),
-    userId
-      ? prisma.watchHistory.findFirst({
-          where: { userId, conteudoId: filme.id, episodioId: null, concluido: false, progressoSeg: { gt: 30 } },
-          orderBy: { updatedAt: "desc" },
-          select: { progressoSeg: true },
-        })
-      : Promise.resolve(null),
   ]);
 
   const trailer = pickTrailer(videos?.results);
@@ -139,6 +142,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
   };
 
   return (
+    <EstadoPessoalProvider conteudoId={filme.id} tipo="filme">
     <div className="min-h-screen">
       <JsonLd data={[movieSchema, breadcrumbSchema]} />
 
@@ -158,7 +162,6 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         top250={filme.top250}
         generos={filme.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }))}
         watchHref={`/assistir/filme/${filme.id}`}
-        watchLabel={continueFilme ? "Continuar assistindo" : "Assistir"}
         trailerKey={trailer?.key}
         dub={!!filme.urlDub}
         leg={!!filme.urlLeg}
@@ -185,5 +188,6 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         </div>
       )}
     </div>
+    </EstadoPessoalProvider>
   );
 }
