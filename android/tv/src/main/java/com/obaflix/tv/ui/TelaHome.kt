@@ -130,7 +130,7 @@ private fun DestaqueDuplo(
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = margem),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         BannerDestaque(pares, Modifier.weight(1f), aoFocarArte)
         if (impares.isNotEmpty()) {
@@ -168,7 +168,7 @@ private fun BannerDestaque(
 
     Box(
         modifier = modifier
-            .height(320.dp)
+            .height(com.obaflix.tv.ui.Medidas.BannerAltura)
             .escalar(escala)
             .clip(forma)
             .background(Cores.Superficie)

@@ -2,6 +2,10 @@ package com.obaflix.tv.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,12 +28,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -46,38 +50,41 @@ import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.player.Pedido
-import com.obaflix.tv.ui.componentes.CardEpisodio
+import com.obaflix.tv.ui.componentes.CardPoster
+import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
 import com.obaflix.tv.ui.componentes.LinhaMeta
 import com.obaflix.tv.ui.componentes.Pilula
 import com.obaflix.tv.ui.componentes.enderecoDe
+import com.obaflix.tv.ui.componentes.escalaFoco
+import com.obaflix.tv.ui.componentes.escalar
+import com.obaflix.tv.ui.componentes.focavel
+import kotlinx.coroutines.launch
 
 /**
- * Ficha do conteudo.
+ * Ficha do conteudo — reproduz o activity_voddetails.
  *
- * Uma tela so resolve filme e serie. Para serie, temporada e episodios ficam
- * abaixo das informacoes, na mesma tela: obrigar a pessoa a entrar em "ver
- * temporadas" e depois em "temporada 1" e tres OKs para chegar onde ela ja
- * sabia que queria ir.
+ * Coluna de informacao a esquerda, janela de preview a direita; abaixo, a linha
+ * de botoes (Assistir, Favorito, …); depois, para serie, o seletor de temporada
+ * e os episodios numerados; por fim, "Você também pode gostar". Tudo na mesma
+ * tela: a referencia nao faz a pessoa trocar de contexto para escolher episodio.
  *
- * O progresso mostrado no episodio vem de Continuar Assistindo — o mesmo estado
- * que o site e o aplicativo movel gravam. Nao ha marcacao local de "assistido"
- * nesta televisao; se houvesse, ela discordaria dos outros aparelhos no
- * primeiro episodio visto fora dela.
+ * O progresso vem de Continuar Assistindo — o mesmo estado que o site e o app
+ * movel gravam. Nao ha marcacao local de "assistido" aqui.
  */
 @Composable
 fun TelaDetalhe(destino: Camada.Detalhe) {
     var detalhe by remember(destino.id) { mutableStateOf<Detalhe?>(null) }
+    var relacionados by remember(destino.id) { mutableStateOf<List<Item>>(emptyList()) }
     var erro by remember(destino.id) { mutableStateOf(false) }
     var progressos by remember(destino.id) { mutableStateOf<Map<String, Item>>(emptyMap()) }
     var temporada by remember(destino.id) { mutableStateOf<Int?>(null) }
+    var favorito by remember(destino.id) { mutableStateOf(false) }
     var recarga by remember(destino.id) { mutableStateOf(0) }
 
     val botaoPrincipal = remember { FocusRequester() }
     val margem = margemHorizontal()
 
-    // Recarrega tambem ao voltar do player (recarga muda): o progresso do que
-    // acabou de ser assistido tem de aparecer no episodio sem sair da ficha.
     LaunchedEffect(destino.id, recarga) {
         val carregado = ApiObaflix.detalhe(destino.id, destino.tipo)
         if (carregado == null) {
@@ -86,9 +93,16 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
             detalhe = carregado
             if (temporada == null) temporada = carregado.temporadas.firstOrNull()
         }
-        progressos = ApiObaflix.continuarAssistindo()
-            .orEmpty()
-            .associateBy { it.chaveProgresso }
+        progressos = ApiObaflix.continuarAssistindo().orEmpty().associateBy { it.chaveProgresso }
+    }
+
+    LaunchedEffect(destino.id) {
+        favorito = ApiObaflix.estaNaLista(destino.id, destino.tipo)
+    }
+
+    LaunchedEffect(detalhe) {
+        val base = detalhe?.item ?: return@LaunchedEffect
+        relacionados = ApiObaflix.relacionados(base)
     }
 
     LaunchedEffect(detalhe) {
@@ -97,18 +111,11 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
 
     BackHandler(enabled = true) { Navegacao.voltar() }
 
-    // Volta do player: pede o progresso de novo, para o episodio recem-visto
-    // aparecer com a barra preenchida sem sair da ficha. So recarrega quem
-    // esteve coberto — na primeira composicao nao ha nada a atualizar.
     val noTopo = Navegacao.pilha.lastOrNull() === destino
     var esteveCoberto by remember(destino.id) { mutableStateOf(false) }
     LaunchedEffect(noTopo) {
-        if (!noTopo) {
-            esteveCoberto = true
-        } else if (esteveCoberto) {
-            esteveCoberto = false
-            recarga++
-        }
+        if (!noTopo) esteveCoberto = true
+        else if (esteveCoberto) { esteveCoberto = false; recarga++ }
     }
 
     val base = detalhe?.item ?: destino.previa
@@ -122,9 +129,6 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        // Dois degrades cruzados: um da esquerda, onde fica o texto, e um da
-        // base, onde ficam os episodios. Juntos garantem leitura sobre qualquer
-        // cena sem apagar a arte no canto superior direito.
         Box(
             Modifier.fillMaxSize().background(
                 Brush.horizontalGradient(
@@ -139,7 +143,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
                 Brush.verticalGradient(
                     0f to Cores.Fundo.copy(alpha = 0.55f),
                     0.4f to Color.Transparent,
-                    0.75f to Cores.Fundo.copy(alpha = 0.85f),
+                    0.72f to Cores.Fundo.copy(alpha = 0.9f),
                     1f to Cores.Fundo,
                 ),
             ),
@@ -151,11 +155,16 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
             else -> Conteudo(
                 base = base,
                 detalhe = detalhe,
+                relacionados = relacionados,
                 temporada = temporada,
                 progressos = progressos,
+                favorito = favorito,
                 margem = margem,
                 botaoPrincipal = botaoPrincipal,
                 aoTrocarTemporada = { temporada = it },
+                aoTrocarFavorito = { favorito = it },
+                conteudoId = destino.id,
+                conteudoTipo = destino.tipo,
             )
         }
     }
@@ -165,43 +174,38 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
 private fun Conteudo(
     base: Item,
     detalhe: Detalhe?,
+    relacionados: List<Item>,
     temporada: Int?,
     progressos: Map<String, Item>,
+    favorito: Boolean,
     margem: androidx.compose.ui.unit.Dp,
     botaoPrincipal: FocusRequester,
     aoTrocarTemporada: (Int) -> Unit,
+    aoTrocarFavorito: (Boolean) -> Unit,
+    conteudoId: String,
+    conteudoTipo: String,
 ) {
+    val escopo = rememberCoroutineScope()
     val ehSerie = base.ehSerie
     val episodios = remember(detalhe, temporada) {
         if (detalhe == null || temporada == null) emptyList() else detalhe.episodiosDa(temporada)
     }
 
-    // Onde a pessoa parou. Para serie, o episodio em andamento manda no botao
-    // principal: "Continuar T2 E5" e melhor do que "Assistir" quando ha algo
-    // comecado, e evita que ela procure na faixa qual era mesmo o episodio.
     val emAndamento = remember(progressos, detalhe, base) {
-        if (!ehSerie) {
-            progressos[base.id]
-        } else {
-            detalhe?.episodios?.firstNotNullOfOrNull { ep -> progressos[ep.id] }
-        }
+        if (!ehSerie) progressos[base.id]
+        else detalhe?.episodios?.firstNotNullOfOrNull { ep -> progressos[ep.id] }
     }
 
     val proximo = remember(emAndamento, detalhe, temporada, episodios) {
         when {
             !ehSerie -> null
-            emAndamento?.episodioId != null ->
-                detalhe?.episodios?.firstOrNull { it.id == emAndamento.episodioId }
+            emAndamento?.episodioId != null -> detalhe?.episodios?.firstOrNull { it.id == emAndamento.episodioId }
             else -> detalhe?.episodios?.firstOrNull() ?: episodios.firstOrNull()
         }
     }
 
     fun pedido(episodio: Episodio?, doComeco: Boolean): Pedido {
-        val progresso = if (doComeco) {
-            0
-        } else {
-            progressos[episodio?.id ?: base.id]?.progressoSeg ?: 0
-        }
+        val progresso = if (doComeco) 0 else progressos[episodio?.id ?: base.id]?.progressoSeg ?: 0
         return Pedido(
             conteudoId = base.id,
             conteudoTipo = base.tipo,
@@ -222,7 +226,8 @@ private fun Conteudo(
             .verticalScroll(rememberScrollState())
             .padding(top = margemVertical(), bottom = 24.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = margem)) {
+        // ── Cabecalho: info a esquerda, preview a direita ─────────────────────
+        Row(modifier = Modifier.fillMaxWidth().padding(start = margem, end = margem)) {
             Column(Modifier.weight(1.4f)) {
                 val logo = ApiObaflix.imagem(base.logo, "w500")
                 if (logo != null) {
@@ -231,7 +236,7 @@ private fun Conteudo(
                         contentDescription = base.titulo,
                         contentScale = ContentScale.Fit,
                         alignment = Alignment.CenterStart,
-                        modifier = Modifier.fillMaxWidth(0.7f).height(92.dp),
+                        modifier = Modifier.fillMaxWidth(0.72f).height(84.dp),
                     )
                 } else {
                     Text(
@@ -244,7 +249,7 @@ private fun Conteudo(
                     )
                 }
 
-                EspacoV(14.dp)
+                EspacoV(12.dp)
                 LinhaMeta(
                     ano = base.ano,
                     nota = base.nota,
@@ -263,7 +268,7 @@ private fun Conteudo(
                     )
                 }
 
-                EspacoV(16.dp)
+                EspacoV(14.dp)
                 base.sinopse?.let {
                     Text(
                         text = it,
@@ -271,73 +276,136 @@ private fun Conteudo(
                         fontSize = Escala.Corpo,
                         maxLines = 4,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth(0.92f),
+                        modifier = Modifier.fillMaxWidth(0.94f),
                     )
-                }
-
-                EspacoV(22.dp)
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    val rotuloPrincipal = when {
-                        ehSerie && emAndamento != null && proximo != null ->
-                            "Continuar T" + proximo.temporada + " E" + proximo.numeroEp
-                        ehSerie -> "Assistir"
-                        emAndamento != null && emAndamento.progressoSeg > 0 -> "Continuar"
-                        else -> "Assistir"
-                    }
-                    Pilula(
-                        texto = rotuloPrincipal,
-                        principal = true,
-                        modifier = Modifier.focusRequester(botaoPrincipal),
-                        aoClicar = {
-                            Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = false)))
-                        },
-                    )
-                    if (emAndamento != null && emAndamento.progressoSeg > 0) {
-                        Pilula(texto = "Do início", aoClicar = {
-                            Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = true)))
-                        })
-                    }
-                    Pilula(texto = "Voltar", aoClicar = { Navegacao.voltar() })
                 }
             }
 
-            // Moldura de previa. Comeca como arte parada e vira video sem som
-            // se a pessoa permanecer na ficha — ver PreviaMuda para o porque da
-            // espera. Enquanto ela apenas navega, nada de midia e consumido.
             PreviaMuda(
                 pedido = pedido(proximo, doComeco = true),
                 arte = base.background ?: base.poster,
                 modifier = Modifier
                     .weight(1f)
-                    .height(240.dp)
-                    .padding(start = 28.dp, top = 6.dp),
+                    .height(215.dp)
+                    .padding(start = 30.dp, top = 4.dp),
             )
         }
 
+        // ── Botoes de acao ────────────────────────────────────────────────────
+        EspacoV(22.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = margem, end = margem).focusGroup(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            val rotuloPrincipal = when {
+                ehSerie && emAndamento != null && proximo != null ->
+                    "Continuar T" + proximo.temporada + " E" + proximo.numeroEp
+                emAndamento != null && emAndamento.progressoSeg > 0 -> "Continuar"
+                else -> "Assistir"
+            }
+            BotaoAcao(
+                icone = "▶",
+                texto = rotuloPrincipal,
+                principal = true,
+                modifier = Modifier.focusRequester(botaoPrincipal),
+                aoClicar = { Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = false))) },
+            )
+            if (emAndamento != null && emAndamento.progressoSeg > 0) {
+                BotaoAcao(icone = "↺", texto = "Do início") {
+                    Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = true)))
+                }
+            }
+            BotaoAcao(
+                icone = if (favorito) "★" else "☆",
+                texto = if (favorito) "Favorito" else "Favoritar",
+            ) {
+                escopo.launch {
+                    val novo = ApiObaflix.alternarLista(conteudoId, conteudoTipo, favorito)
+                    aoTrocarFavorito(novo)
+                }
+            }
+            BotaoAcao(icone = "←", texto = "Voltar") { Navegacao.voltar() }
+        }
+
+        // ── Temporadas + episodios ────────────────────────────────────────────
         if (ehSerie && detalhe != null && detalhe.temporadas.isNotEmpty()) {
             EspacoV(26.dp)
             SeletorTemporada(detalhe.temporadas, temporada, margem, aoTrocarTemporada)
-            EspacoV(14.dp)
-            FaixaEpisodiosDetalhe(
+            EspacoV(12.dp)
+            GradeEpisodios(
                 episodios = episodios,
                 progressos = progressos,
                 emAndamento = emAndamento?.episodioId,
                 margem = margem,
-                aoAbrir = { ep ->
-                    Navegacao.abrir(Camada.Player(pedido(ep, doComeco = false)))
-                },
+                aoAbrir = { ep -> Navegacao.abrir(Camada.Player(pedido(ep, doComeco = false))) },
             )
+        }
+
+        // ── Relacionados ──────────────────────────────────────────────────────
+        if (relacionados.isNotEmpty()) {
+            EspacoV(26.dp)
+            Text(
+                text = "Você também pode gostar",
+                color = Cores.Texto,
+                fontSize = Escala.Secao,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = margem, bottom = 10.dp),
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
+                contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 12.dp),
+                modifier = Modifier.focusGroup(),
+            ) {
+                itemsIndexed(relacionados, key = { _, it -> it.id }) { indice, item ->
+                    CardPoster(
+                        item = item,
+                        chaveFoco = enderecoDe("relacionados", indice),
+                        largura = Medidas.SimilarLargura,
+                        altura = Medidas.SimilarAltura,
+                        aoAbrir = { Navegacao.abrirDetalhe(it) },
+                    )
+                }
+            }
         }
     }
 }
 
-/**
- * Seletor de temporada.
- *
- * A troca e instantanea porque todos os episodios ja vieram na abertura da
- * ficha, numa requisicao so. Buscar por temporada faria a faixa piscar em
- * branco a cada seta.
- */
+/** Botao de acao com icone + rotulo, como a linha mLayoutButtons da referencia. */
+@Composable
+private fun BotaoAcao(
+    icone: String,
+    texto: String,
+    principal: Boolean = false,
+    modifier: Modifier = Modifier,
+    aoClicar: () -> Unit,
+) {
+    val interacao = remember { MutableInteractionSource() }
+    val focado by interacao.collectIsFocusedAsState()
+    val escala = escalaFoco(focado, alvo = 1.05f)
+    val forma = RoundedCornerShape(6.dp)
+    val fundo = when {
+        focado -> Cores.FocoHalo
+        principal -> Cores.Destaque
+        else -> Cores.Superficie
+    }
+    val corTexto = if (focado) Color(0xFF101014) else Cores.Texto
+
+    Row(
+        modifier = modifier
+            .height(Medidas.BotaoAcaoAltura)
+            .escalar(escala)
+            .clip(forma)
+            .background(fundo)
+            .focavel(interacao = interacao, aoClicar = aoClicar)
+            .padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(text = icone, color = corTexto, fontSize = Escala.Rotulo, fontWeight = FontWeight.Black)
+        Text(text = texto, color = corTexto, fontSize = Escala.Rotulo, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
 @Composable
 private fun SeletorTemporada(
     temporadas: List<Int>,
@@ -347,21 +415,23 @@ private fun SeletorTemporada(
 ) {
     LazyRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(horizontal = margem, vertical = 4.dp),
+        contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 4.dp),
         modifier = Modifier.focusGroup(),
     ) {
         itemsIndexed(temporadas, key = { _, t -> t }) { _, t ->
-            Pilula(
-                texto = "Temporada " + t,
-                selecionado = t == atual,
-                aoClicar = { aoTrocar(t) },
-            )
+            Pilula(texto = "Temporada " + t, selecionado = t == atual, aoClicar = { aoTrocar(t) })
         }
     }
 }
 
+/**
+ * Episodios como botoes numerados, como o mSelectionView da referencia.
+ *
+ * O primeiro carrega um ícone de play; os demais, o numero. O que esta em
+ * andamento fica destacado, e os indisponiveis aparecem apagados.
+ */
 @Composable
-private fun FaixaEpisodiosDetalhe(
+private fun GradeEpisodios(
     episodios: List<Episodio>,
     progressos: Map<String, Item>,
     emAndamento: String?,
@@ -370,30 +440,78 @@ private fun FaixaEpisodiosDetalhe(
 ) {
     if (episodios.isEmpty()) {
         Box(Modifier.fillMaxWidth().padding(horizontal = margem)) {
-            Text(
-                text = "Nenhum episódio cadastrado nesta temporada.",
-                color = Cores.TextoApagado,
-                fontSize = Escala.Rotulo,
-            )
+            Text("Nenhum episódio nesta temporada.", color = Cores.TextoApagado, fontSize = Escala.Rotulo)
         }
         return
     }
-
     val rolagem = rememberLazyListState()
     LazyRow(
         state = rolagem,
-        horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
-        contentPadding = PaddingValues(start = margem, end = margem, top = 6.dp, bottom = 16.dp),
-        modifier = Modifier.fillMaxHeight().focusGroup(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth().focusGroup(),
     ) {
-        itemsIndexed(episodios, key = { _, ep -> ep.id }) { indice, episodio ->
-            CardEpisodio(
-                episodio = episodio,
-                progresso = progressos[episodio.id]?.progresso ?: 0f,
-                emReproducao = episodio.id == emAndamento,
-                chaveFoco = enderecoDe("episodios", indice),
-                aoAbrir = aoAbrir,
+        itemsIndexed(episodios, key = { _, ep -> ep.id }) { indice, ep ->
+            BotaoEpisodio(
+                rotulo = if (indice == 0) "▶" else ep.numeroEp.toString(),
+                emAndamento = ep.id == emAndamento,
+                progresso = progressos[ep.id]?.progresso ?: 0f,
+                disponivel = ep.disponivel,
+                aoClicar = { if (ep.disponivel) aoAbrir(ep) },
             )
+        }
+    }
+}
+
+@Composable
+private fun BotaoEpisodio(
+    rotulo: String,
+    emAndamento: Boolean,
+    progresso: Float,
+    disponivel: Boolean,
+    aoClicar: () -> Unit,
+) {
+    val interacao = remember { MutableInteractionSource() }
+    val focado by interacao.collectIsFocusedAsState()
+    val escala = escalaFoco(focado, alvo = 1.1f)
+    val forma = RoundedCornerShape(6.dp)
+    val fundo = when {
+        focado -> Cores.FocoHalo
+        emAndamento -> Cores.Destaque
+        else -> Cores.Superficie
+    }
+    val cor = when {
+        focado -> Color(0xFF101014)
+        !disponivel -> Cores.TextoApagado
+        else -> Cores.Texto
+    }
+
+    Box(
+        modifier = Modifier
+            .width(64.dp)
+            .height(52.dp)
+            .escalar(escala)
+            .clip(forma)
+            .background(fundo)
+            .border(
+                width = if (emAndamento && !focado) 0.dp else 1.dp,
+                color = if (focado) Color.Transparent else Cores.SuperficieAlta,
+                shape = forma,
+            )
+            .focavel(interacao = interacao, aoClicar = aoClicar),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = rotulo, color = cor, fontSize = Escala.Corpo, fontWeight = FontWeight.Bold)
+        if (progresso > 0f) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(Color.Black.copy(alpha = 0.4f)),
+            ) {
+                Box(Modifier.fillMaxWidth(progresso).fillMaxHeight().background(Cores.Nota))
+            }
         }
     }
 }

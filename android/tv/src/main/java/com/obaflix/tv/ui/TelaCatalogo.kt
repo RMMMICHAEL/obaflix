@@ -1,8 +1,6 @@
 package com.obaflix.tv.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -16,11 +14,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,30 +28,22 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
-import coil.compose.AsyncImage
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Genero
 import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.navegacao.Aba
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.componentes.CardPoster
-import com.obaflix.tv.ui.componentes.EspacoV
-import com.obaflix.tv.ui.componentes.LinhaMeta
-import com.obaflix.tv.ui.componentes.Pilula
 import com.obaflix.tv.ui.componentes.colunas
 import com.obaflix.tv.ui.componentes.enderecoDe
 import com.obaflix.tv.ui.componentes.escalaFoco
@@ -59,13 +51,10 @@ import com.obaflix.tv.ui.componentes.escalar
 import com.obaflix.tv.ui.componentes.focavel
 
 /**
- * Ordenacoes que a rota de catalogo aceita.
- *
- * Sao exatamente as do backend — nenhuma foi inventada para a televisao. Uma
- * opcao a mais aqui viraria um filtro que devolve a lista errada em silencio.
+ * Ordens que a rota de catalogo aceita. Sao exatamente as do backend.
  */
 private enum class Ordem(val rotulo: String, val chave: String) {
-    Todos("Todos", "recente"),
+    Recentes("Recentes", "recente"),
     Populares("Populares", "popular"),
     Lancamentos("Lançamentos", "lancamento"),
     Nota("Melhor nota", "nota"),
@@ -73,14 +62,17 @@ private enum class Ordem(val rotulo: String, val chave: String) {
 }
 
 /**
- * Tela de catalogo — Filmes, Series, Animes e Kids.
+ * Tela de catalogo — Filmes, Séries, Animes e Kids.
  *
- * As quatro abas usam a mesma tela porque, no backend, sao a mesma consulta com
- * um `tipo` diferente. Manter quatro copias divergiria na primeira correcao.
+ * Reproduz o activity_vodcategory da referencia: **barra lateral** a esquerda
+ * (Buscar, Ordenar, e a lista de generos) e uma **grade de 6 colunas** a
+ * direita, com titulo e contagem no topo. Nao ha mais painel grande e vazio: o
+ * catalogo ocupa a tela.
  *
- * Genero e ano nao sao listas fixas: saem dos proprios itens que chegaram na
- * primeira pagina. Assim nenhum atalho promete uma categoria que o catalogo nao
- * tem, e nao foi preciso criar rota nova no servidor para descobrir isso.
+ * As quatro abas compartilham esta tela porque, no backend, sao a mesma
+ * consulta com um `tipo` diferente. Os generos saem da primeira pagina — nenhum
+ * atalho promete uma categoria que o catalogo nao tem, e nao foi preciso criar
+ * rota nova para descobrir isso.
  */
 @Composable
 fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
@@ -91,32 +83,29 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         else -> null
     }
 
-    var ordem by remember(aba) { mutableStateOf(Ordem.Todos) }
+    var ordem by remember(aba) { mutableStateOf(Ordem.Recentes) }
     var genero by remember(aba) { mutableStateOf<Genero?>(null) }
-    var ano by remember(aba) { mutableStateOf<Int?>(null) }
 
     var itens by remember(aba) { mutableStateOf<List<Item>>(emptyList()) }
+    var total by remember(aba) { mutableStateOf(0) }
     var pagina by remember(aba) { mutableStateOf(1) }
     var paginas by remember(aba) { mutableStateOf(1) }
     var carregando by remember(aba) { mutableStateOf(true) }
     var erro by remember(aba) { mutableStateOf(false) }
     var recarga by remember(aba) { mutableStateOf(0) }
 
-    // Vocabulario de filtros: congelado na primeira carga sem filtro. Se fosse
-    // recalculado a cada resposta, escolher "Ação" faria as outras opcoes
-    // sumirem da tela — e nao haveria como voltar.
     var generosConhecidos by remember(aba) { mutableStateOf<List<Genero>>(emptyList()) }
-    var anosConhecidos by remember(aba) { mutableStateOf<List<Int>>(emptyList()) }
 
     val grade = rememberLazyGridState()
     val margem = margemHorizontal()
-    val colunas = colunas(larguraTelaDp(), margem.value.toInt())
+    val larguraGrade = larguraTelaDp() - Medidas.RailLargura.value.toInt() - margem.value.toInt() - 24
+    val nColunas = colunas(larguraGrade)
 
     suspend fun carregar(paginaAlvo: Int) {
         val resposta = if (tipo == null) {
-            ApiObaflix.filmes(paginaAlvo, genero?.id, ano, ordem.chave)
+            ApiObaflix.filmes(paginaAlvo, genero?.id, null, ordem.chave)
         } else {
-            ApiObaflix.series(tipo, paginaAlvo, genero?.id, ano, ordem.chave)
+            ApiObaflix.series(tipo, paginaAlvo, genero?.id, null, ordem.chave)
         }
         if (resposta == null) {
             erro = itens.isEmpty()
@@ -126,6 +115,7 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         itens = if (paginaAlvo == 1) resposta.itens else itens + resposta.itens
         pagina = resposta.pagina
         paginas = resposta.paginas
+        total = maxOf(total, itens.size)
         erro = false
         carregando = false
 
@@ -133,29 +123,22 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
             generosConhecidos = resposta.itens.flatMap { it.generos }
                 .distinctBy { it.id }
                 .sortedBy { it.nome }
-                .take(12)
-        }
-        if (anosConhecidos.isEmpty()) {
-            anosConhecidos = resposta.itens.mapNotNull { it.ano }.distinct().sortedDescending().take(8)
+                .take(16)
         }
     }
 
-    // Trocar um filtro recomeca da pagina 1 e rola para o topo — continuar no
-    // meio da grade anterior mostraria um resultado que nao corresponde mais ao
-    // que esta selecionado.
-    LaunchedEffect(aba, ordem, genero, ano, recarga) {
+    LaunchedEffect(aba, ordem, genero, recarga) {
         carregando = true
         itens = emptyList()
+        total = 0
         carregar(1)
         runCatching { grade.scrollToItem(0) }
     }
 
-    // Pagina seguinte quando o foco chega perto do fim. O gatilho e a posicao
-    // visivel, nao um botao: em televisao ninguem procura "carregar mais".
     val precisaMais by remember {
         derivedStateOf {
             val ultimo = grade.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            ultimo >= itens.size - colunas * 2
+            ultimo >= itens.size - nColunas * 2
         }
     }
     LaunchedEffect(Unit) {
@@ -167,214 +150,171 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         }
     }
 
-    Box(Modifier.fillMaxWidth().weight(1f)) {
-        when {
-            itens.isNotEmpty() -> LazyVerticalGrid(
-                columns = GridCells.Fixed(colunas),
-                state = grade,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = margem, end = margem, top = 8.dp, bottom = margemVertical(),
-                ),
-                horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
-            ) {
-                item(span = { GridItemSpan(maxLineSpan) }, key = "cabecalho") {
-                    Cabecalho(
-                        aba = aba,
-                        destaque = itens.first(),
-                        ordem = ordem,
-                        genero = genero,
-                        ano = ano,
-                        generos = generosConhecidos,
-                        anos = anosConhecidos,
-                        aoOrdem = { ordem = it },
-                        aoGenero = { genero = it },
-                        aoAno = { ano = it },
-                        aoFocarArte = aoFocarArte,
-                    )
-                }
+    Row(Modifier.fillMaxWidth().weight(1f)) {
+        // ── Barra lateral ────────────────────────────────────────────────────
+        Rail(
+            aba = aba,
+            ordem = ordem,
+            genero = genero,
+            generos = generosConhecidos,
+            aoBuscar = { Navegacao.irPara(Aba.Busca) },
+            aoOrdem = { ordem = Ordem.values()[(ordem.ordinal + 1) % Ordem.values().size] },
+            aoGenero = { genero = it },
+        )
 
-                itemsIndexed(itens, key = { _, item -> item.id }) { indice, item ->
-                    CardPoster(
-                        item = item,
-                        chaveFoco = enderecoDe("grade-" + aba.name, indice),
-                        aoFocar = { aoFocarArte(it.background) },
-                        aoAbrir = { Navegacao.abrirDetalhe(it) },
-                    )
-                }
-
-                if (pagina < paginas) {
-                    item(span = { GridItemSpan(maxLineSpan) }, key = "rodape") {
-                        Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "Carregando mais…",
-                                color = Cores.TextoApagado,
-                                fontSize = Escala.Rotulo,
+        // ── Grade ────────────────────────────────────────────────────────────
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            Column(Modifier.fillMaxSize()) {
+                CabecalhoCatalogo(
+                    titulo = aba.rotulo.lowercase().replaceFirstChar { it.uppercase() },
+                    genero = genero?.nome,
+                    ordem = ordem.rotulo,
+                    total = if (itens.isNotEmpty()) itens.size else null,
+                    pagina = pagina,
+                    paginas = paginas,
+                )
+                when {
+                    itens.isNotEmpty() -> LazyVerticalGrid(
+                        columns = GridCells.Fixed(nColunas),
+                        state = grade,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 20.dp, end = margem, top = 6.dp, bottom = margemVertical(),
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        itemsIndexed(itens, key = { _, item -> item.id }) { indice, item ->
+                            CardPoster(
+                                item = item,
+                                chaveFoco = enderecoDe("grade-" + aba.name, indice),
+                                aoFocar = { aoFocarArte(it.background) },
+                                aoAbrir = { Navegacao.abrirDetalhe(it) },
                             )
                         }
                     }
+
+                    carregando -> Aviso("Carregando…")
+                    erro -> Aviso("Não foi possível carregar.", "Tentar de novo") { recarga++ }
+                    else -> Aviso("Nada encontrado.")
                 }
             }
-
-            carregando -> Aviso("Carregando…")
-            erro -> Aviso("Não foi possível carregar.", "Tentar de novo") { recarga++ }
-            else -> Aviso("Nada encontrado com esses filtros.")
         }
     }
 }
 
 /**
- * Cabecalho da tela: destaque grande a esquerda, atalhos a direita.
+ * Barra lateral: Buscar, Ordenar e a lista de generos.
  *
- * O destaque e o primeiro item da selecao corrente, entao ele muda junto com o
- * filtro — a tela responde ao que foi escolhido em vez de exibir sempre a mesma
- * capa. E um card focavel de verdade: OK abre a ficha.
+ * Espelha a coluna esquerda do activity_vodcategory (320px -> 168dp). Selecionar
+ * um genero recarrega a grade na hora; "Ordenar" cicla entre as ordens que o
+ * backend aceita, mostrando a atual.
  */
 @Composable
-private fun Cabecalho(
+private fun Rail(
     aba: Aba,
-    destaque: Item,
     ordem: Ordem,
     genero: Genero?,
-    ano: Int?,
     generos: List<Genero>,
-    anos: List<Int>,
-    aoOrdem: (Ordem) -> Unit,
+    aoBuscar: () -> Unit,
+    aoOrdem: () -> Unit,
     aoGenero: (Genero?) -> Unit,
-    aoAno: (Int?) -> Unit,
-    aoFocarArte: (String?) -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(280.dp),
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            CartazDestaque(
-                item = destaque,
-                modifier = Modifier.weight(1.35f).fillMaxHeight(),
-                aoFocarArte = aoFocarArte,
+    LazyColumn(
+        modifier = Modifier
+            .width(Medidas.RailLargura)
+            .fillMaxHeight()
+            .background(Cores.Painel.copy(alpha = 0.6f)),
+        contentPadding = PaddingValues(top = 16.dp, bottom = margemVertical()),
+    ) {
+        item { RailItem("Buscar", destaque = true, aoClicar = aoBuscar) }
+        item { RailItem("Ordenar: " + ordem.rotulo, destaque = true, aoClicar = aoOrdem) }
+        item {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.12f)),
             )
-
-            Column(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Sobretitulo(aba.rotulo.lowercase().replaceFirstChar { it.uppercase() })
-
-                GrupoFiltro(rotulo = "Ordenar") {
-                    Ordem.values().forEach { opcao ->
-                        Pilula(
-                            texto = opcao.rotulo,
-                            selecionado = opcao == ordem,
-                            aoClicar = { aoOrdem(opcao) },
-                        )
-                    }
-                }
-
-                if (generos.isNotEmpty()) {
-                    GrupoFiltro(rotulo = "Gênero") {
-                        Pilula("Todos", selecionado = genero == null, aoClicar = { aoGenero(null) })
-                        generos.forEach { g ->
-                            Pilula(g.nome, selecionado = genero?.id == g.id, aoClicar = { aoGenero(g) })
-                        }
-                    }
-                }
-
-                if (anos.isNotEmpty()) {
-                    GrupoFiltro(rotulo = "Ano") {
-                        Pilula("Todos", selecionado = ano == null, aoClicar = { aoAno(null) })
-                        anos.forEach { a ->
-                            Pilula(a.toString(), selecionado = ano == a, aoClicar = { aoAno(a) })
-                        }
-                    }
-                }
-            }
+        }
+        item { RailItem("Todos", selecionado = genero == null, aoClicar = { aoGenero(null) }) }
+        items(generos, key = { it.id }) { g ->
+            RailItem(g.nome, selecionado = genero?.id == g.id, aoClicar = { aoGenero(g) })
         }
     }
 }
 
-/**
- * Uma linha de atalhos.
- *
- * Rola na horizontal porque a lista de generos nao cabe na largura reservada, e
- * quebrar em duas linhas empurraria a grade para fora da tela.
- */
 @Composable
-private fun GrupoFiltro(rotulo: String, conteudo: @Composable () -> Unit) {
-    Column {
-        Text(text = rotulo, color = Cores.TextoApagado, fontSize = Escala.Miudo)
-        EspacoV(6.dp)
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(vertical = 4.dp),
-            content = { conteudo() },
-        )
-    }
-}
-
-@Composable
-private fun CartazDestaque(
-    item: Item,
-    modifier: Modifier,
-    aoFocarArte: (String?) -> Unit,
+private fun RailItem(
+    texto: String,
+    selecionado: Boolean = false,
+    destaque: Boolean = false,
+    aoClicar: () -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
-    val escala = escalaFoco(focado, alvo = 1.02f)
-    val forma = RoundedCornerShape(14.dp)
 
     Box(
-        modifier = modifier
-            .escalar(escala)
-            .clip(forma)
-            .background(Cores.Superficie)
-            .border(
-                width = if (focado) 3.dp else 0.dp,
-                color = if (focado) Cores.FocoHalo else Color.Transparent,
-                shape = forma,
-            )
-            .focavel(
-                interacao = interacao,
-                aoFocar = { aoFocarArte(item.background) },
-                aoClicar = { Navegacao.abrirDetalhe(item) },
-            ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .background(if (focado) Cores.Destaque else Color.Transparent)
+            .focavel(interacao = interacao, aoClicar = aoClicar)
+            .padding(horizontal = 20.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
-        ApiObaflix.imagem(item.background ?: item.poster, "w1280")?.let { url ->
-            AsyncImage(
-                model = url,
-                contentDescription = item.titulo,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
+        // Marca vermelha do item selecionado, quando o foco esta noutro lugar.
+        if (selecionado && !focado) {
+            Box(Modifier.width(4.dp).height(20.dp).clip(RoundedCornerShape(2.dp)).background(Cores.Destaque))
         }
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    0f to Color.Transparent,
-                    0.5f to Color.Black.copy(alpha = 0.4f),
-                    1f to Color.Black.copy(alpha = 0.92f),
-                ),
-            ),
+        Text(
+            text = texto,
+            color = when {
+                focado -> Cores.Texto
+                selecionado -> Cores.Texto
+                destaque -> Cores.TextoFraco
+                else -> Cores.TextoFraco
+            },
+            fontSize = Escala.Rotulo,
+            fontWeight = if (selecionado || focado || destaque) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = if (selecionado && !focado) 10.dp else 0.dp),
         )
-        Column(Modifier.align(Alignment.BottomStart).padding(22.dp)) {
-            Text(
-                text = item.titulo,
-                color = Cores.Texto,
-                fontSize = Escala.Titulo,
-                fontWeight = FontWeight.Black,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            EspacoV(8.dp)
-            LinhaMeta(
-                ano = item.ano,
-                nota = item.nota,
-                generos = item.generos.map { it.nome },
-                tipo = rotuloTipo(item.tipo),
-            )
+    }
+}
+
+@Composable
+private fun CabecalhoCatalogo(
+    titulo: String,
+    genero: String?,
+    ordem: String,
+    total: Int?,
+    pagina: Int,
+    paginas: Int,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = margemHorizontal(), top = 14.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = genero?.let { titulo + " · " + it } ?: titulo,
+            color = Cores.Texto,
+            fontSize = Escala.Secao,
+            fontWeight = FontWeight.Black,
+        )
+        if (total != null) {
+            com.obaflix.tv.ui.componentes.EspacoH(12.dp)
+            Text(text = total.toString() + "+", color = Cores.Nota, fontSize = Escala.Rotulo, fontWeight = FontWeight.Bold)
+        }
+        Box(Modifier.weight(1f))
+        Text(text = ordem, color = Cores.TextoApagado, fontSize = Escala.Miudo)
+        if (paginas > 1) {
+            com.obaflix.tv.ui.componentes.EspacoH(16.dp)
+            Text(text = pagina.toString() + " / " + paginas, color = Cores.TextoApagado, fontSize = Escala.Miudo)
         }
     }
 }

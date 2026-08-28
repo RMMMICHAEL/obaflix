@@ -59,20 +59,24 @@ object ApiObaflix {
 
     // ── Transporte ───────────────────────────────────────────────────────────
 
-    private fun requisicao(caminho: String, corpo: JSONObject?): Request =
+    private fun requisicao(caminho: String, corpo: JSONObject?, corpoDelete: Boolean): Request =
         Request.Builder()
             .url(BuildConfig.OBAFLIX_URL + caminho)
             .header("User-Agent", SessaoTv.userAgent)
             .apply {
                 SessaoTv.accessToken()?.let { header("Authorization", "Bearer " + it) }
-                if (corpo != null) post(corpo.toString().toRequestBody(JSON)) else get()
+                when {
+                    corpoDelete -> delete()
+                    corpo != null -> post(corpo.toString().toRequestBody(JSON))
+                    else -> get()
+                }
             }
             .build()
 
     private data class Resposta(val status: Int, val corpo: String?)
 
-    private fun chamar(caminho: String, corpo: JSONObject?): Resposta = runCatching {
-        ObaflixApp.httpClient.newCall(requisicao(caminho, corpo)).execute().use { r ->
+    private fun chamar(caminho: String, corpo: JSONObject?, corpoDelete: Boolean): Resposta = runCatching {
+        ObaflixApp.httpClient.newCall(requisicao(caminho, corpo, corpoDelete)).execute().use { r ->
             Resposta(r.code, if (r.isSuccessful) r.body?.string() else null)
         }
     }.getOrElse {
@@ -90,15 +94,15 @@ object ApiObaflix {
      * tambem nao vale mais e insistir so gera trafego. PareamentoTv.renovar ja
      * limpa a credencial e a raiz cai no pareamento.
      */
-    private suspend fun executar(caminho: String, corpo: JSONObject?): String? =
+    private suspend fun executar(caminho: String, corpo: JSONObject? = null, corpoDelete: Boolean = false): String? =
         withContext(Dispatchers.IO) {
-            val primeira = chamar(caminho, corpo)
+            val primeira = chamar(caminho, corpo, corpoDelete)
             if (primeira.status != 401) return@withContext primeira.corpo
 
             val ctx = contexto ?: return@withContext null
             val renovou = travaRenovacao.withLock { PareamentoTv.renovar(ctx) }
             if (!renovou) return@withContext null
-            chamar(caminho, corpo).corpo
+            chamar(caminho, corpo, corpoDelete).corpo
         }
 
     private suspend fun objeto(caminho: String, corpo: JSONObject? = null): JSONObject? =
@@ -302,6 +306,43 @@ object ApiObaflix {
                 series.getOrNull(i)?.let { add(it) }
             }
         }
+    }
+
+    // ── Relacionados ───────────────────────────────────────────────────────────
+
+    /**
+     * "Você também pode gostar".
+     *
+     * O backend nao tem rota de similaridade por item, entao a aproximacao mais
+     * barata e honesta e o proprio catalogo filtrado pelo primeiro genero do
+     * conteudo — uma consulta so, que a rota ja sabe responder. Sem genero, cai
+     * para os populares do mesmo tipo. O proprio item e removido da lista.
+     */
+    suspend fun relacionados(base: Item): List<Item> {
+        val genero = base.generos.firstOrNull()?.id
+        val pagina = if (base.tipo == "filme") {
+            filmes(1, genero, null, "popular")
+        } else {
+            series(base.tipo, 1, genero, null, "popular")
+        }
+        return pagina?.itens.orEmpty().filter { it.id != base.id }.take(20)
+    }
+
+    // ── Favoritos (watchlist) ──────────────────────────────────────────────────
+
+    suspend fun estaNaLista(id: String, tipo: String): Boolean {
+        val o = objeto("/api/user/watchlist/check?conteudoId=" + id + "&conteudoTipo=" + tipo)
+        return o?.optBoolean("inWatchlist", false) ?: false
+    }
+
+    /** Alterna o favorito. Devolve o novo estado. */
+    suspend fun alternarLista(id: String, tipo: String, estavaNaLista: Boolean): Boolean {
+        if (estavaNaLista) {
+            executar("/api/user/watchlist/" + id + "?tipo=" + tipo, corpoDelete = true)
+            return false
+        }
+        executar("/api/user/watchlist", JSONObject().put("conteudoId", id).put("conteudoTipo", tipo))
+        return true
     }
 
     // ── Progresso ────────────────────────────────────────────────────────────

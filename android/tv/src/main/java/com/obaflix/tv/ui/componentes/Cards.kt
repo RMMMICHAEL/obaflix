@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -30,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -43,32 +43,32 @@ import com.obaflix.tv.ui.Medidas
 /**
  * Cartoes do catalogo.
  *
- * Tres formatos, uma so linguagem visual: mesma borda de foco, mesma escala,
- * mesmo canto, mesma barra de progresso. O que muda e a proporcao — retrato
- * para poster, paisagem para o que precisa de cena (continuar assistindo,
- * episodio).
+ * Reproduzem o item de poster da referencia (layout_item_vod_programs /
+ * item_home_column_program): poster 133x195dp, nome **sempre** visivel abaixo
+ * em duas linhas, selo de nota no canto e barra de progresso quando ha o que
+ * mostrar. O foco cresce o card, acende a borda branca e clareia o nome — os
+ * tres juntos, porque um sinal so nao se le a tres metros.
  *
- * Enquanto a arte nao chega, o lugar dela ja esta desenhado com o titulo em
- * cima do preenchimento. Fileira sem placeholder pisca em cinza e depois pula;
- * com placeholder, a tela nasce estavel e so ganha nitidez.
+ * A arte usa a moldura ja desenhada enquanto nao chega: fileira sem placeholder
+ * pisca em cinza e pula, com placeholder a tela nasce estavel.
  */
 
 @Composable
-private fun MolduraCard(
-    largura: androidx.compose.ui.unit.Dp,
-    altura: androidx.compose.ui.unit.Dp,
+private fun MolduraArte(
+    largura: Dp,
+    altura: Dp,
     focado: Boolean,
     modifier: Modifier = Modifier,
     conteudo: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
 ) {
-    val escala = escalaFoco(focado)
+    val escala = escalaFoco(focado, alvo = 1.06f)
     val forma = RoundedCornerShape(Medidas.Canto)
     Box(
         modifier = modifier
             .width(largura)
             .height(altura)
             .escalar(escala)
-            .shadow(if (focado) 16.dp else 0.dp, forma)
+            .shadow(if (focado) 14.dp else 0.dp, forma)
             .clip(forma)
             .background(Cores.Superficie)
             .border(
@@ -90,10 +90,10 @@ private fun ArteOuTitulo(url: String?, titulo: String) {
             modifier = Modifier.fillMaxSize(),
         )
     } else {
-        Box(Modifier.fillMaxSize().padding(12.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
             Text(
                 text = titulo,
-                color = Cores.TextoFraco,
+                color = Cores.TextoApagado,
                 fontSize = Escala.Miudo,
                 textAlign = TextAlign.Center,
                 maxLines = 3,
@@ -103,12 +103,6 @@ private fun ArteOuTitulo(url: String?, titulo: String) {
     }
 }
 
-/**
- * Barra de progresso.
- *
- * So aparece onde ha o que mostrar. Uma barra vazia em todo card viraria ruido
- * e tiraria justamente o sinal que faz Continuar Assistindo funcionar de longe.
- */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.BarraProgresso(fracao: Float) {
     if (fracao <= 0f) return
@@ -117,23 +111,23 @@ private fun androidx.compose.foundation.layout.BoxScope.BarraProgresso(fracao: F
             .align(Alignment.BottomStart)
             .fillMaxWidth()
             .height(5.dp)
-            .background(Color.Black.copy(alpha = 0.6f)),
+            .background(Color.Black.copy(alpha = 0.55f)),
     ) {
         Box(Modifier.fillMaxWidth(fracao).fillMaxHeight().background(Cores.Destaque))
     }
 }
 
-/** Selo de nota, no canto da arte. Some quando o catalogo nao tem nota. */
+/** Selo de nota no canto inferior esquerdo, como o mTextScore da referencia. */
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.SeloNota(nota: Double?) {
     if (nota == null) return
     Box(
         modifier = Modifier
-            .align(Alignment.TopEnd)
-            .padding(6.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color.Black.copy(alpha = 0.66f))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .align(Alignment.BottomEnd)
+            .padding(5.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.7f))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
     ) {
         Text(
             text = String.format("%.1f", nota),
@@ -144,20 +138,37 @@ private fun androidx.compose.foundation.layout.BoxScope.SeloNota(nota: Double?) 
     }
 }
 
+/** Nome sob o poster: sempre visivel, clareia no foco (sel_text_color_white). */
+@Composable
+private fun NomeCard(texto: String, focado: Boolean, largura: Dp) {
+    Text(
+        text = texto,
+        color = if (focado) Cores.Texto else Cores.TextoFraco,
+        fontSize = Escala.Miudo,
+        fontWeight = if (focado) FontWeight.Bold else FontWeight.Normal,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.width(largura).padding(top = 6.dp, start = 3.dp, end = 3.dp),
+    )
+}
+
 @Composable
 fun CardPoster(
     item: Item,
     chaveFoco: String,
+    largura: Dp = Medidas.PosterLargura,
+    altura: Dp = Medidas.PosterAltura,
     aoFocar: (Item) -> Unit = {},
     aoAbrir: (Item) -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
 
-    Column(modifier = Modifier.width(Medidas.PosterLargura)) {
-        MolduraCard(
-            largura = Medidas.PosterLargura,
-            altura = Medidas.PosterAltura,
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(largura)) {
+        MolduraArte(
+            largura = largura,
+            altura = altura,
             focado = focado,
             modifier = Modifier.focavel(
                 interacao = interacao,
@@ -170,14 +181,7 @@ fun CardPoster(
             SeloNota(item.nota)
             BarraProgresso(item.progresso)
         }
-        Text(
-            text = item.titulo,
-            color = if (focado) Cores.Texto else Cores.TextoFraco,
-            fontSize = Escala.Miudo,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        NomeCard(item.titulo, focado, largura)
     }
 }
 
@@ -185,7 +189,8 @@ fun CardPoster(
  * Card deitado, para Continuar Assistindo.
  *
  * Usa o backdrop e nao o poster: quem volta para um conteudo ja sabe o que e, e
- * a cena do filme diz "voce parou aqui" melhor do que a capa.
+ * a cena diz "voce parou aqui" melhor que a capa. Espelha o
+ * item_home_history_list da referencia (sombra na base + progresso).
  */
 @Composable
 fun CardPaisagem(
@@ -198,7 +203,7 @@ fun CardPaisagem(
     val focado by interacao.collectIsFocusedAsState()
 
     Column(modifier = Modifier.width(Medidas.PaisagemLargura)) {
-        MolduraCard(
+        MolduraArte(
             largura = Medidas.PaisagemLargura,
             altura = Medidas.PaisagemAltura,
             focado = focado,
@@ -209,17 +214,12 @@ fun CardPaisagem(
                 aoClicar = { aoAbrir(item) },
             ),
         ) {
-            ArteOuTitulo(
-                ApiObaflix.imagem(item.background ?: item.poster, "w780"),
-                item.titulo,
-            )
-            // Degrade so na base: o rotulo do episodio precisa ser legivel sobre
-            // qualquer cena, e escurecer a arte inteira apagaria o card.
+            ArteOuTitulo(ApiObaflix.imagem(item.background ?: item.poster, "w500"), item.titulo)
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(44.dp)
                     .background(
                         Brush.verticalGradient(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f)),
@@ -232,27 +232,17 @@ fun CardPaisagem(
                     color = Cores.Texto,
                     fontSize = Escala.Miudo,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.BottomStart).padding(10.dp, 12.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp, 10.dp),
                 )
             }
             BarraProgresso(item.progresso)
         }
-        Text(
-            text = item.titulo,
-            color = if (focado) Cores.Texto else Cores.TextoFraco,
-            fontSize = Escala.Miudo,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        NomeCard(item.titulo, focado, Medidas.PaisagemLargura)
     }
 }
 
 /**
- * Card de episodio.
- *
- * Mostra a fracao ja assistida vinda de Continuar Assistindo — e o mesmo
- * progresso sincronizado do site, nao um segundo controle local.
+ * Card de episodio deitado, para a faixa do player (thumb + numero).
  */
 @Composable
 fun CardEpisodio(
@@ -265,10 +255,10 @@ fun CardEpisodio(
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
 
-    Column(modifier = Modifier.width(Medidas.EpisodioLargura)) {
-        MolduraCard(
-            largura = Medidas.EpisodioLargura,
-            altura = Medidas.EpisodioAltura,
+    Column(modifier = Modifier.width(Medidas.PaisagemLargura)) {
+        MolduraArte(
+            largura = Medidas.PaisagemLargura,
+            altura = Medidas.PaisagemAltura,
             focado = focado,
             modifier = Modifier.focavel(
                 interacao = interacao,
@@ -281,7 +271,7 @@ fun CardEpisodio(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(40.dp)
                     .background(
                         Brush.verticalGradient(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f)),
@@ -289,49 +279,32 @@ fun CardEpisodio(
                     ),
             )
             Row(
-                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp, 10.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp, 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (emReproducao) {
-                    Box(
-                        Modifier.size(8.dp).clip(RoundedCornerShape(4.dp)).background(Cores.Destaque),
-                    )
-                    Spacer(Modifier.width(6.dp))
+                    Box(Modifier.width(7.dp).height(7.dp).clip(RoundedCornerShape(4.dp)).background(Cores.Destaque))
+                    Spacer(Modifier.width(5.dp))
                 }
-                Text(
-                    text = "E" + episodio.numeroEp,
-                    color = Cores.Texto,
-                    fontSize = Escala.Miudo,
-                    fontWeight = FontWeight.Bold,
-                )
+                Text("E" + episodio.numeroEp, color = Cores.Texto, fontSize = Escala.Miudo, fontWeight = FontWeight.Bold)
             }
             if (!episodio.disponivel) {
-                Box(
-                    Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(text = "Indisponível", color = Cores.TextoFraco, fontSize = Escala.Miudo)
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)), contentAlignment = Alignment.Center) {
+                    Text("Indisponível", color = Cores.TextoFraco, fontSize = Escala.Miudo)
                 }
             }
             BarraProgresso(progresso)
         }
-        Text(
-            text = episodio.rotulo,
-            color = if (focado) Cores.Texto else Cores.TextoFraco,
-            fontSize = Escala.Miudo,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        NomeCard(episodio.rotulo, focado, Medidas.PaisagemLargura)
     }
 }
 
 /**
- * Botao horizontal de filtro e de acao.
+ * Botao/atalho horizontal.
  *
- * O mesmo componente serve para "Gênero", "Assistir" e "Temporada 2": em
- * televisao o que distingue um do outro e a posicao na tela, nao a forma. Um
- * unico desenho de foco para tudo deixa a navegacao previsivel.
+ * Serve para filtro, acao e temporada: em televisao o que distingue um do outro
+ * e a posicao, nao a forma. Um unico desenho de foco deixa a navegacao
+ * previsivel.
  */
 @Composable
 fun Pilula(
@@ -345,7 +318,7 @@ fun Pilula(
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
     val escala = escalaFoco(focado, alvo = 1.05f)
-    val forma = RoundedCornerShape(50)
+    val forma = RoundedCornerShape(6.dp)
 
     val fundo = when {
         focado -> Cores.FocoHalo
@@ -370,7 +343,7 @@ fun Pilula(
                 shape = forma,
             )
             .focavel(interacao = interacao, chaveFoco = chaveFoco, aoClicar = aoClicar)
-            .padding(horizontal = 22.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -383,30 +356,27 @@ fun Pilula(
     }
 }
 
-/** Cabecalho de secao. Existe para as fileiras e as grades falarem igual. */
+/** Cabecalho de secao (icone + titulo 20sp), como item_home_column. */
 @Composable
 fun TituloSecao(texto: String, modifier: Modifier = Modifier) {
-    Text(
-        text = texto,
-        color = Cores.Texto,
-        fontSize = Escala.Secao,
-        fontWeight = FontWeight.Bold,
-        modifier = modifier.padding(bottom = 12.dp),
-    )
+    Row(modifier = modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(4.dp).height(20.dp).clip(RoundedCornerShape(2.dp)).background(Cores.Destaque))
+        EspacoH(10.dp)
+        Text(text = texto, color = Cores.Texto, fontSize = Escala.Secao, fontWeight = FontWeight.Bold)
+    }
 }
 
-/** Espaco vertical nomeado, para as telas nao ficarem cheias de Spacer solto. */
 @Composable
-fun EspacoV(altura: androidx.compose.ui.unit.Dp) {
+fun EspacoV(altura: Dp) {
     Spacer(Modifier.height(altura))
 }
 
 @Composable
-fun EspacoH(largura: androidx.compose.ui.unit.Dp) {
+fun EspacoH(largura: Dp) {
     Spacer(Modifier.width(largura))
 }
 
-/** Linha de metadados: ano · gêneros · nota. Some o que o catalogo nao tem. */
+/** Linha de metadados: nota (ambar) · tipo · ano · gêneros. Some o que falta. */
 @Composable
 fun LinhaMeta(
     ano: Int?,
@@ -440,5 +410,4 @@ fun LinhaMeta(
     }
 }
 
-/** Arrangement padrao das fileiras, para o espacamento nao divergir por tela. */
 val EspacoEntreCards = Arrangement.spacedBy(Medidas.EspacoCards)

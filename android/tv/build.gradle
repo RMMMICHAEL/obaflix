@@ -16,8 +16,8 @@ android {
         // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
         minSdk 21
         targetSdk 34
-        versionCode 5
-        versionName "0.4.0"
+        versionCode 6
+        versionName "0.5.0"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
@@ -35,7 +35,11 @@ android {
     buildTypes {
         release {
             minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            shrinkResources true
+            debuggable false
+            jniDebuggable false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                rootProject.file('hardening-rules.pro'), 'proguard-rules.pro'
         }
     }
 

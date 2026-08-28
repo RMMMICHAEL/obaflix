@@ -43,6 +43,7 @@ import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.sessao.PareamentoTv
 import com.obaflix.tv.ui.componentes.EspacoH
+import com.obaflix.tv.ui.componentes.EspacoV
 import com.obaflix.tv.ui.componentes.LocalRestaurador
 import com.obaflix.tv.ui.componentes.Restaurador
 import com.obaflix.tv.ui.componentes.escalaFoco
@@ -262,33 +263,38 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
     val focado by interacao.collectIsFocusedAsState()
     val escala = escalaFoco(focado, alvo = 1.06f)
 
+    // Como o item_tab_recyclerview da referencia: sem preenchimento no foco. O
+    // texto clareia (color_text_tab_title) e o sublinhado (color_main, aqui o
+    // vermelho Obaflix) marca a aba aberta — inclusive quando o foco ja desceu
+    // para o catalogo e nao ha mais nada destacado no topo.
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
             .escalar(escala)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (focado) Cores.FocoHalo else Color.Transparent)
             .focavel(interacao = interacao) { Navegacao.irPara(aba) }
-            .padding(horizontal = 18.dp, vertical = 8.dp),
+            .padding(horizontal = 20.dp),
     ) {
         Text(
             text = aba.rotulo,
             color = when {
-                focado -> Color(0xFF101014)
-                selecionada -> Cores.Texto
-                else -> Cores.TextoApagado
+                focado || selecionada -> Cores.Texto
+                else -> Cores.TextoFraco
             },
-            fontSize = Escala.Rotulo,
+            fontSize = Escala.Secao,
             fontWeight = if (selecionada || focado) FontWeight.Black else FontWeight.Medium,
         )
-        // Sublinhado vermelho: diz qual aba esta aberta mesmo quando o foco ja
-        // desceu para o catalogo e nao ha mais nada destacado la em cima.
+        EspacoV(6.dp)
         Box(
             Modifier
-                .padding(top = 4.dp)
-                .size(width = 22.dp, height = 3.dp)
+                .size(width = 26.dp, height = 4.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(if (selecionada) Cores.Destaque else Color.Transparent),
+                .background(
+                    when {
+                        selecionada -> Cores.Destaque
+                        focado -> Cores.Texto.copy(alpha = 0.5f)
+                        else -> Color.Transparent
+                    },
+                ),
         )
     }
 }
