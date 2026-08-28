@@ -1,13 +1,12 @@
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { getUserFromRequest } from "@/lib/authSession";
 import { getRecommendationsForUser } from "@/lib/recommendations";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as { id?: string } | undefined)?.id;
+export async function GET(req: NextRequest) {
+  const usuario = await getUserFromRequest(req);
+  const userId = usuario?.userId;
   // Sem cache no 401: senão o navegador continuaria devolvendo "não autenticado"
   // por um minuto depois do login.
   if (!userId) {

@@ -129,16 +129,73 @@ model SerieGenero {
 }
 
 model User {
-  id        String         @id @default(cuid())
-  nome      String?
-  email     String         @unique
-  senhaHash String?
-  avatar    String?
-  role      String         @default("user")
-  createdAt DateTime       @default(now())
-  historico WatchHistory[]
-  watchlist Watchlist[]
-  likes     Like[]
+  id           String         @id @default(cuid())
+  nome         String?
+  email        String         @unique
+  senhaHash    String?
+  avatar       String?
+  role         String         @default("user")
+  createdAt    DateTime       @default(now())
+  historico    WatchHistory[]
+  watchlist    Watchlist[]
+  likes        Like[]
+  dispositivos TvDevice[]
+}
+
+/// Um aparelho de TV pareado.
+///
+/// O pareamento em si vive no Redis com TTL curto — aqui só chega o que precisa
+/// sobreviver: qual aparelho é, de quem, e se ainda vale. Uma linha por TV.
+model TvDevice {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// O que o usuário lê na lista de dispositivos. Nunca um identificador.
+  nome   String
+  modelo String?
+
+  /// SHA-256 de androidId + modelo. Guardamos o hash, não o identificador do
+  /// aparelho: serve para reconhecer o mesmo aparelho, e não para rastreá-lo
+  /// fora daqui. É o que amarra o poll e o refresh ao aparelho que iniciou.
+  fingerprint String
+
+  criadoEm  DateTime  @default(now())
+  ultimoUso DateTime  @default(now())
+  /// Só o /24 do IPv4 (ou /48 do IPv6) — o suficiente para o usuário reconhecer
+  /// "minha casa" sem guardar o endereço inteiro de ninguém.
+  ultimaRede String?
+  revogadoEm DateTime?
+
+  tokens TvRefreshToken[]
+
+  /// Reparear a mesma TV atualiza a linha em vez de criar outra.
+  @@unique([userId, fingerprint])
+  @@index([userId])
+}
+
+/// Refresh token de um aparelho.
+///
+/// Opaco, nunca um JWT: precisa ser revogável de imediato, e um JWT continuaria
+/// válido até expirar. O banco guarda só o SHA-256 — vazamento de backup não
+/// entrega credencial utilizável.
+///
+/// `familia` é o que detecta roubo: cada rotação cria um token novo na mesma
+/// família. Se um token já usado reaparecer, a família inteira é revogada,
+/// porque ou o ladrão ou o dono legítimo está usando uma cópia.
+model TvRefreshToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  deviceId  String
+  device    TvDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  familia   String
+  criadoEm  DateTime @default(now())
+  expiraEm  DateTime
+  usadoEm   DateTime?
+  revogadoEm DateTime?
+
+  @@index([deviceId])
+  @@index([familia])
 }
 
 model Like {

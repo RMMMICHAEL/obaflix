@@ -83,5 +83,13 @@ dependencies {
     // dimensionados para leitura a distancia.
     implementation 'androidx.tv:tv-material:1.0.0-alpha10'
 
+    // Gerador de QR Code. Java puro, sem Play Services — TV Box AOSP nao os tem.
+    // So o codificador entra no APK; o R8 remove o leitor, que nao usamos.
+    implementation 'com.google.zxing:core:3.5.3'
+
+    // Guarda o refresh token cifrado com chave do Android Keystore.
+    // Exige API 23; abaixo disso ha fallback documentado em ArmazenamentoSessao.
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

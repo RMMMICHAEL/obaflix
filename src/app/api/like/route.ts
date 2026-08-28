@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, readJsonBody } from "@/lib/requestSecurity";
 
@@ -17,9 +16,9 @@ function validContentType(type: unknown): type is string {
 }
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
-  const userId = (session.user as { id: string }).id;
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const userId = usuario.userId;
   if (!(await checkRateLimit(`like:${userId}`, 60, 60)).allowed) {
     return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
   }
@@ -39,9 +38,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
-  const userId = (session.user as { id: string }).id;
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const userId = usuario.userId;
   if (!(await checkRateLimit(`like-write:${userId}`, 60, 60)).allowed) {
     return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
   }

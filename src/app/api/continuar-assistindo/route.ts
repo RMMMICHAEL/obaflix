@@ -1,15 +1,14 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { readJsonBody } from "@/lib/requestSecurity";
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json([]);
+export async function GET(req: NextRequest) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json([]);
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
 
   const history = await prisma.watchHistory.findMany({
     where: {
@@ -85,11 +84,11 @@ export async function GET() {
   return NextResponse.json(items);
 }
 
-export async function DELETE(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+export async function DELETE(req: NextRequest) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
   let body: { historyId?: unknown };
   try { body = await readJsonBody(req, 2048); }
   catch { return NextResponse.json({ error: "Dados inválidos" }, { status: 400 }); }

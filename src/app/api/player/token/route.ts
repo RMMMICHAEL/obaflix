@@ -1,7 +1,6 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { createPlayToken, checkRateLimit, isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
@@ -39,14 +38,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) {
     await recordAbuseAttempt(ip);
     audit("auth_failure", { ip, ua, detail: "/token sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
   if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
   if (!(await checkRateLimit(userId))) {

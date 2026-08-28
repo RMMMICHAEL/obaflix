@@ -1,8 +1,7 @@
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
 import { ehHostHide, ordemEspelhosHide, validarMasterHide } from "@/lib/hideMaster";
 import { extractCineVs, type CineVsFonte, type CineVsSubtitle } from "@/lib/cinevs";
@@ -1230,14 +1229,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) {
     await recordAbuseAttempt(ip);
     audit("auth_failure", { ip, ua, detail: "/extract sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
   if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
   // A fonte chega como id opaco. A URL real é resolvida aqui e não volta ao

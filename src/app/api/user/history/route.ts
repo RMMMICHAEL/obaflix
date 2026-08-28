@@ -1,14 +1,13 @@
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { publicMedia } from "@/lib/publicMedia";
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json([], { status: 401 });
-  const userId = (session.user as { id: string }).id;
+export async function GET(req: NextRequest) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json([], { status: 401 });
+  const userId = usuario.userId;
 
   const historico = await prisma.watchHistory.findMany({
     where: { userId, concluido: false },

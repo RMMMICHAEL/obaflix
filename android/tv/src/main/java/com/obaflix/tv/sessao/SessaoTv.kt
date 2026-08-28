@@ -10,27 +10,32 @@ import okhttp3.Request
 /**
  * Estado da sessao da TV.
  *
- * Na Fase 0 ainda nao existe pareamento, entao nao ha token guardado — e nao
- * guardar nada e justamente o que torna esta fase segura: nao ha segredo em
- * disco para vazar. O que esta rota prova e o outro lado: que o servidor
- * reconhece a TV e responde 401 corretamente a quem chega sem credencial.
- *
- * Quando o pareamento entrar (Fase 1), o refresh token vai para
- * EncryptedSharedPreferences com chave do Android Keystore, e o access token
- * fica so em memoria.
+ * O access token vive **so em memoria**: dura 15 minutos e a TV consegue outro
+ * com o refresh a qualquer momento, entao grava-lo em disco so aumentaria a
+ * superficie sem economizar nada. Quem persiste e o refresh, cifrado, em
+ * ArmazenamentoSessao.
  */
 sealed interface EstadoSessao {
-    /** O servidor respondeu e recusou — caminho de autenticacao funcionando. */
+    /** Sem credencial. A TV precisa parear. */
     data class NaoPareado(val httpStatus: Int) : EstadoSessao
 
-    /** Ha sessao valida. Só ocorre a partir da Fase 1. */
-    data class Autenticado(val nome: String) : EstadoSessao
+    /** Sessao valida. */
+    data class Autenticado(val dispositivo: String?) : EstadoSessao
 
-    /** Nao deu para falar com o servidor. */
+    /** Nao deu para falar com o servidor — nao confundir com nao autenticado. */
     data class SemContato(val motivo: String) : EstadoSessao
 }
 
 object SessaoTv {
+
+    @Volatile
+    private var access: String? = null
+
+    fun accessToken(): String? = access
+
+    fun definirAccessToken(valor: String?) {
+        access = valor
+    }
 
     /**
      * User-Agent da TV.
@@ -45,9 +50,11 @@ object SessaoTv {
         "ObaflixTV/${BuildConfig.VERSION_NAME} (Android ${Build.VERSION.RELEASE}; ${Build.MODEL})"
 
     suspend fun verificar(): EstadoSessao = withContext(Dispatchers.IO) {
+        val token = access
         val requisicao = Request.Builder()
             .url("${BuildConfig.OBAFLIX_URL}/api/tv/whoami")
             .header("User-Agent", userAgent)
+            .apply { if (token != null) header("Authorization", "Bearer $token") }
             .get()
             .build()
 
@@ -55,9 +62,13 @@ object SessaoTv {
             // httpClient vem do :core-extractor — mesmo pool de conexoes que a
             // extracao usa, sem um segundo cliente HTTP no aplicativo.
             ObaflixApp.httpClient.newCall(requisicao).execute().use { resposta ->
-                when (resposta.code) {
-                    200 -> EstadoSessao.Autenticado(resposta.body?.string()?.take(120) ?: "")
-                    else -> EstadoSessao.NaoPareado(resposta.code)
+                if (resposta.code == 200) {
+                    val corpo = resposta.body?.string().orEmpty()
+                    val dispositivo = Regex("\"dispositivo\":\"([^\"]+)\"")
+                        .find(corpo)?.groupValues?.getOrNull(1)
+                    EstadoSessao.Autenticado(dispositivo)
+                } else {
+                    EstadoSessao.NaoPareado(resposta.code)
                 }
             }
         }.getOrElse { erro ->

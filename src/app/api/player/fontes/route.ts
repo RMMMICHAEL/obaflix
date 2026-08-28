@@ -2,8 +2,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
@@ -177,13 +176,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) {
     await recordAbuseAttempt(ip);
     audit("auth_failure", { ip, ua, detail: "/fontes sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
-  const userId = (session.user as { id?: string }).id;
+  const userId = usuario.userId;
   if (!userId) return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
 
   let corpo: Corpo;
@@ -202,7 +201,7 @@ export async function POST(req: NextRequest) {
   // O role só é confirmado no banco, nunca a partir do JWT: é ele que decide se
   // a resposta carrega provider real, host e embedUrl.
   const ehAdmin = await (async () => {
-    if ((session.user as { role?: string }).role !== "admin") return false;
+    if (usuario.role !== "admin") return false;
     const u = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
     return u?.role === "admin";
   })();

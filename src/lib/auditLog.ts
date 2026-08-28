@@ -18,7 +18,12 @@ export type AuditEvent =
   | "concurrent_limit"
   | "rate_limited"
   | "origin_rejected"
-  | "auth_failure";
+  | "auth_failure"
+  // Pareamento de TV. Eventos próprios em vez de reaproveitar os de player:
+  // reaproveitar deixaria o contador de "ip_blocked" subir por uma revogação
+  // de aparelho, que não tem nada a ver, e a métrica perderia sentido.
+  | "tv_paired"
+  | "tv_device_revoked";
 
 interface AuditMeta {
   userId?: string;

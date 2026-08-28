@@ -19,12 +19,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.Text
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.tv.BuildConfig
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.obaflix.tv.sessao.EstadoSessao
+import com.obaflix.tv.sessao.PareamentoTv
 import com.obaflix.tv.sessao.SessaoTv
 
 /**
@@ -56,7 +60,9 @@ private val AMOSTRAS = listOf(
 )
 
 @Composable
-fun TelaDiagnostico() {
+fun TelaDiagnostico(aoSair: () -> Unit) {
+    val context = LocalContext.current
+    val escopo = rememberCoroutineScope()
     var estado by remember { mutableStateOf<EstadoSessao?>(null) }
     var tentativa by remember { mutableStateOf(0) }
     val foco = remember { FocusRequester() }
@@ -110,7 +116,9 @@ fun TelaDiagnostico() {
                 is EstadoSessao.NaoPareado -> Linha(
                     "Sessao", "nao pareada — servidor respondeu ${e.httpStatus}", Cores.Alerta,
                 )
-                is EstadoSessao.Autenticado -> Linha("Sessao", "autenticada", Cores.Ok)
+                is EstadoSessao.Autenticado -> Linha(
+                    "Sessao", "autenticada" + (e.dispositivo?.let { " · aparelho $it" } ?: ""), Cores.Ok,
+                )
                 is EstadoSessao.SemContato -> Linha("Sessao", "sem contato (${e.motivo})", Cores.Falha)
             }
 
@@ -119,11 +127,19 @@ fun TelaDiagnostico() {
             // O Button do Compose for TV ja traz escala, brilho e borda no foco.
             // Reimplementar isso a mao daria um foco que so parece certo na
             // maquina de quem escreveu.
-            Button(
-                onClick = { tentativa++ },
-                modifier = Modifier.focusRequester(foco),
-            ) {
-                Text(text = "Verificar novamente", fontSize = Escala.Corpo)
+            Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(16.dp)) {
+                Button(
+                    onClick = { tentativa++ },
+                    modifier = Modifier.focusRequester(foco),
+                ) {
+                    Text(text = "Verificar novamente", fontSize = Escala.Corpo)
+                }
+                // Sair revoga o aparelho no servidor e apaga o refresh do disco.
+                // Depois disso a TV volta para o pareamento, e o codigo anterior
+                // nao serve mais para nada.
+                Button(onClick = { escopo.launch { PareamentoTv.sair(context); aoSair() } }) {
+                    Text(text = "Sair da conta", fontSize = Escala.Corpo)
+                }
             }
         }
     }

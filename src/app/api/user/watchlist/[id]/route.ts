@@ -1,13 +1,12 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
-  const userId = (session.user as { id: string }).id;
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const userId = usuario.userId;
   const conteudoTipo = req.nextUrl.searchParams.get("tipo") ?? "filme";
 
   await prisma.watchlist.delete({

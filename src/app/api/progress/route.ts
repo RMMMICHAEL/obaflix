@@ -1,17 +1,16 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, readJsonBody } from "@/lib/requestSecurity";
 
 const CONTENT_TYPES = new Set(["filme", "serie"]);
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
   if (!(await checkRateLimit(`progress:${userId}`, 120, 60)).allowed) {
     return NextResponse.json({ error: "Muitas solicitações" }, { status: 429 });
   }
@@ -122,10 +121,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = usuario.userId;
   const conteudoId = req.nextUrl.searchParams.get("conteudoId");
   const episodioId = req.nextUrl.searchParams.get("episodioId");
 

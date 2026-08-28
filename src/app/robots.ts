@@ -19,6 +19,9 @@ export default function robots(): MetadataRoute.Robots {
         "/player/",
         "/assistir/",
         "/buscar/",
+        // Pareamento de TV: ?c=CODIGO gera espaco de URLs sem fim, e a pagina
+        // exige sessao para fazer qualquer coisa.
+        "/parear/",
       ],
     },
     sitemap: absoluteUrl("/sitemap.xml"),

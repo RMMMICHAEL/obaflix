@@ -1,7 +1,6 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getUserFromRequest } from "@/lib/authSession";
 import { assertSafeUrl, safeGet } from "@/lib/ssrf";
 import { headerMatchesHost } from "@/lib/requestSecurity";
 import {
@@ -252,20 +251,25 @@ export async function GET(req: NextRequest) {
     return deny(`referer externo: ${refererHeader.slice(0, 80)}`, ip, "origin_rejected");
   }
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  // Cookie (site, Electron, móvel) ou Bearer (TV) — mesma resolução, mesmo
+  // segredo, um só caminho. A TV chega aqui apenas no fallback em que a
+  // extração local não serve e o CDN precisa da nossa origem; o caminho normal
+  // dela é buscar o CDN direto, sem passar por esta rota.
+  //
+  // Nada mais foi afrouxado: o bloqueio por IP, a checagem de Origin e Referer,
+  // o token de stream de uso único e a assinatura por segmento continuam
+  // exatamente onde estavam. Aceitar Bearer troca a forma de provar quem é o
+  // usuário, não o que ele pode fazer depois de provado.
+  const usuario = await getUserFromRequest(req);
+  if (!usuario) {
     plog(id, "reject", { reason: "no_session" });
     await recordAbuseAttempt(ip);
     audit("auth_failure", { ip, ua, detail: "/proxy sem sessão" });
     return deny("não autenticado", ip, "stream_rejected", 401);
   }
 
-  const userId = (session.user as { id: string }).id;
-  if (!userId) {
-    plog(id, "reject", { reason: "no_userid" });
-    return deny("sessão inválida", ip, "stream_rejected", 401);
-  }
-  plog(id, "auth_ok", { uid: userId.slice(-8) });
+  const userId = usuario.userId;
+  plog(id, "auth_ok", { uid: userId.slice(-8), via: usuario.origem });
 
   let target: Awaited<ReturnType<typeof resolveTarget>>;
   try {
