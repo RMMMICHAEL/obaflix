@@ -222,12 +222,19 @@ export function MediaHero({
         {/* Logo oficial em PNG transparente — ou o titulo estilizado no lugar. */}
         <h1 className="mb-4 md:mb-5">
           {logoSrc ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={logoSrc}
-              alt={titulo}
-              className="h-auto max-h-[clamp(4.5rem,15vw,9.5rem)] w-auto max-w-[min(26rem,78vw)] object-contain object-left drop-shadow-[0_6px_28px_rgba(0,0,0,0.75)]"
-            />
+            <>
+              {/* O logo carrega a marca do titulo em imagem. O texto vai no span
+                  para o h1 existir como texto na pagina, e nao so como alt — por
+                  isso a imagem fica decorativa e o titulo nao e lido duas vezes. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={logoSrc}
+                alt=""
+                aria-hidden="true"
+                className="h-auto max-h-[clamp(4.5rem,15vw,9.5rem)] w-auto max-w-[min(26rem,78vw)] object-contain object-left drop-shadow-[0_6px_28px_rgba(0,0,0,0.75)]"
+              />
+              <span className="sr-only">{titulo}</span>
+            </>
           ) : (
             <span
               className="block max-w-[18ch] bg-gradient-to-b from-white via-white to-zinc-400 bg-clip-text text-[clamp(2.25rem,6.5vw,4.5rem)] font-normal uppercase leading-[0.9] tracking-[0.01em] text-transparent"
