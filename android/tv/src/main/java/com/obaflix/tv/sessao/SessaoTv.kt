@@ -33,6 +33,15 @@ object SessaoTv {
 
     fun accessToken(): String? = access
 
+    /**
+     * User-Agent que a extracao usou.
+     *
+     * O player tem de repetir exatamente o par User-Agent/Referer da extracao:
+     * varios CDN amarram o link ao par, e um deles diferente vira 403 no meio
+     * da reproducao — sem erro visivel, so o video que nao abre.
+     */
+    val uaNavegador: String? get() = com.obaflix.ObaflixApp.webViewUserAgent
+
     fun definirAccessToken(valor: String?) {
         access = valor
     }

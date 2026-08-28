@@ -15,7 +15,7 @@ import coil.memory.MemoryCache
 import com.obaflix.bridge.ObaLog
 import com.obaflix.tv.sessao.EstadoApp
 import com.obaflix.tv.sessao.SessaoAtual
-import com.obaflix.tv.ui.TelaHome
+import com.obaflix.tv.ui.AppTv
 import com.obaflix.tv.ui.TelaPareamento
 import com.obaflix.tv.ui.TelaSplash
 import com.obaflix.tv.ui.TemaObaflixTv
@@ -84,6 +84,6 @@ private fun Raiz() {
     when (estado) {
         is EstadoApp.Inicializando -> TelaSplash()
         is EstadoApp.NaoAutenticado -> TelaPareamento()
-        is EstadoApp.Autenticado -> TelaHome(aoSair = { /* SessaoAtual ja mudou o estado */ })
+        is EstadoApp.Autenticado -> AppTv()
     }
 }

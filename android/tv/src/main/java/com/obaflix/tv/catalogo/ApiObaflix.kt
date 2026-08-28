@@ -140,6 +140,101 @@ object ApiObaflix {
         return Home(destaque, fileiras)
     }
 
+    // ── Detalhe, temporadas e episodios ──────────────────────────────────────
+
+    data class Episodio(
+        val id: String,
+        val serieId: String,
+        val titulo: String?,
+        val temporada: Int,
+        val numeroEp: Int,
+        val thumbnail: String?,
+        val sinopse: String?,
+    )
+
+    data class Detalhe(
+        val item: Item,
+        val generos: List<String>,
+        val temporadas: List<Int>,
+    )
+
+    suspend fun detalhe(id: String, tipo: String): Detalhe? {
+        val rota = if (tipo == "filme") "/api/filmes/$id" else "/api/series/$id"
+        val corpo = buscarTexto(rota, comToken = false) ?: return null
+        val o = runCatching { JSONObject(corpo) }.getOrNull() ?: return null
+        if (o.has("error")) return null
+
+        val generos = mutableListOf<String>()
+        o.optJSONArray("generos")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.optJSONObject("genero")?.optString("nome")
+                    ?.takeIf { it.isNotBlank() }?.let(generos::add)
+            }
+        }
+        return Detalhe(item(o, tipo), generos, emptyList())
+    }
+
+    /**
+     * Episodios de uma serie.
+     *
+     * Sem filtro de temporada: uma serie inteira cabe numa resposta, e trocar de
+     * temporada na tela vira filtro em memoria em vez de ida ao servidor. Menos
+     * invocacao na Vercel e troca instantanea para quem esta com o controle.
+     */
+    suspend fun episodios(serieId: String): List<Episodio> {
+        val corpo = buscarTexto("/api/series/$serieId/episodios", comToken = false) ?: return emptyList()
+        val arr = runCatching { JSONArray(corpo) }.getOrNull() ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { o ->
+                Episodio(
+                    id = o.optString("id"),
+                    serieId = serieId,
+                    titulo = o.optString("titulo").takeIf { it.isNotBlank() && it != "null" },
+                    temporada = o.optInt("temporada", 1),
+                    numeroEp = o.optInt("numeroEp", 1),
+                    thumbnail = o.optString("thumbnail").takeIf { it.isNotBlank() && it != "null" },
+                    sinopse = o.optString("sinopse").takeIf { it.isNotBlank() && it != "null" },
+                )
+            }
+        }
+    }
+
+    // ── Catalogo por secao ───────────────────────────────────────────────────
+
+    /** Uma pagina do catalogo. `pagina` comeca em 1. */
+    suspend fun catalogo(secao: String, pagina: Int): List<Item> {
+        val rota = when (secao) {
+            "filme" -> "/api/filmes?page=$pagina&ordem=recente"
+            "serie" -> "/api/series?page=$pagina&ordem=recente"
+            "anime" -> "/api/series?page=$pagina&tipo=anime&ordem=recente"
+            else -> "/api/series?page=$pagina&tipo=desenho&ordem=recente"
+        }
+        val corpo = buscarTexto(rota, comToken = false) ?: return emptyList()
+        val tipo = if (secao == "filme") "filme" else secao
+        // A rota devolve ora um array, ora { itens: [...] } — aceita os dois.
+        runCatching { JSONArray(corpo) }.getOrNull()?.let { arr ->
+            return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let { item(it, tipo) } }
+        }
+        val o = runCatching { JSONObject(corpo) }.getOrNull() ?: return emptyList()
+        for (chave in listOf("itens", "items", "resultados", "filmes", "series")) {
+            if (o.has(chave)) return lista(o, chave, tipo)
+        }
+        return emptyList()
+    }
+
+    // ── Busca ────────────────────────────────────────────────────────────────
+
+    /** Busca. O servidor devolve filmes e series separados; a tela mostra junto. */
+    suspend fun buscar(termo: String): List<Item> {
+        if (termo.isBlank()) return emptyList()
+        val corpo = buscarTexto(
+            "/api/search?q=" + java.net.URLEncoder.encode(termo, "UTF-8"),
+            comToken = false,
+        ) ?: return emptyList()
+        val o = runCatching { JSONObject(corpo) }.getOrNull() ?: return emptyList()
+        return lista(o, "filmes", "filme") + lista(o, "series", "serie")
+    }
+
     /**
      * Continuar assistindo. Exige sessao.
      *
