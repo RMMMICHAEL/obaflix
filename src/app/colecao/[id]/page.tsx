@@ -47,8 +47,8 @@ export default async function ColecaoPage({ params }: { params: { id: string } }
         logo: null,
         ano: db.ano ?? (Number((part.release_date ?? "").slice(0, 4)) || null),
         nota: db.nota ?? part.vote_average ?? null,
-        urlDub: db.urlDub ?? null,
-        urlLeg: db.urlLeg ?? null,
+        dub: Boolean(db.urlDub),
+        leg: Boolean(db.urlLeg),
       };
     })
     .filter((c): c is NonNullable<typeof c> => c !== null);

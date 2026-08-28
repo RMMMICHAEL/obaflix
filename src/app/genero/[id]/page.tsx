@@ -97,8 +97,6 @@ function GeneroConteudo() {
             background={item.background}
             ano={item.ano}
             nota={item.nota}
-            urlDub={item.urlDub}
-            urlLeg={item.urlLeg}
           />
         ))}
       </div>

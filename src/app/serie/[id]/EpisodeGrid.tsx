@@ -13,8 +13,9 @@ interface Ep {
   temporada: number;
   titulo: string | null;
   thumbnail: string | null;
-  urlDub: string | null;
-  urlLeg: string | null;
+  /** Disponibilidade de audio, nunca a URL da fonte. */
+  dub: boolean;
+  leg: boolean;
   createdAt: Date;
 }
 
@@ -160,8 +161,8 @@ export function EpisodeGrid({
                     {isNovo(ep.createdAt) && !isWatched && (
                       <Badge className="bg-red-600 text-white">NOVO</Badge>
                     )}
-                    {ep.urlDub && <Badge className="bg-zinc-950/80 text-zinc-100">DUB</Badge>}
-                    {ep.urlLeg && <Badge className="bg-zinc-950/80 text-zinc-100">LEG</Badge>}
+                    {ep.dub && <Badge className="bg-zinc-950/80 text-zinc-100">DUB</Badge>}
+                    {ep.leg && <Badge className="bg-zinc-950/80 text-zinc-100">LEG</Badge>}
                   </div>
 
                   {metadata?.runtime && (

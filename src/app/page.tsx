@@ -38,8 +38,13 @@ type CardItem = {
   logo?: string | null;
   ano: number | null;
   nota: number | null;
-  urlDub?: string | null;
-  urlLeg?: string | null;
+  /**
+   * Disponibilidade de audio. Booleano de proposito: `urlDub`/`urlLeg` sao a URL
+   * real do provedor e nao podem atravessar para o cliente — o card so precisa
+   * saber se existe dublado ou legendado para desenhar o badge.
+   */
+  dub?: boolean;
+  leg?: boolean;
   isNew?: boolean;
 };
 
@@ -50,7 +55,7 @@ function dbToCard(r: any, tipo: CardItem["tipo"]): CardItem {
     background: r.background ?? null,
     logo: r.logo ?? null,
     ano: r.ano, nota: r.nota,
-    urlDub: r.urlDub ?? null, urlLeg: r.urlLeg ?? null,
+    dub: Boolean(r.urlDub), leg: Boolean(r.urlLeg),
     isNew: isRecent(r.createdAt),
   };
 }
@@ -72,7 +77,7 @@ function tmdbToCard(item: TmdbItem, dbMap: Map<string, any>, fallbackTipo: CardI
     logo: db?.logo ?? null,
     ano: db?.ano ?? (Number((item.release_date ?? item.first_air_date ?? "").slice(0, 4)) || null),
     nota: db?.nota ?? item.vote_average ?? null,
-    urlDub: db.urlDub ?? null, urlLeg: db.urlLeg ?? null,
+    dub: Boolean(db.urlDub), leg: Boolean(db.urlLeg),
     isNew: isRecent(db.createdAt),
   };
 }
@@ -232,8 +237,8 @@ export default async function HomePage() {
     numeroEp: e.numeroEp,
     tipo: (e.serie.tipo ?? "serie") as "serie" | "anime" | "desenho",
     isNovoEpisodio: isEpRecent(e.createdAt),
-    urlDub: e.urlDub ?? null,
-    urlLeg: e.urlLeg ?? null,
+    dub: Boolean(e.urlDub),
+    leg: Boolean(e.urlLeg),
   }));
 
   if (!dbRecFilmes.length && !trending.length) {

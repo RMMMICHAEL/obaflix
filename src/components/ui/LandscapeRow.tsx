@@ -14,8 +14,6 @@ interface Item {
   logo?: string | null;
   ano?: number | null;
   nota?: number | null;
-  urlDub?: string | null;
-  urlLeg?: string | null;
   progresso?: { progressoSeg: number; duracaoSeg: number | null } | null;
   episodeLabel?: string | null;
   isNew?: boolean;

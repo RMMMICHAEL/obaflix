@@ -176,8 +176,8 @@ export default async function DesenhoPage({
     numeroEp: episode.numeroEp,
     tipo: "desenho",
     isNovoEpisodio: Date.now() - new Date(episode.createdAt).getTime() < NEW_EP_MS,
-    urlDub: episode.urlDub ?? null,
-    urlLeg: episode.urlLeg ?? null,
+    dub: Boolean(episode.urlDub),
+    leg: Boolean(episode.urlLeg),
   }));
 
   return (

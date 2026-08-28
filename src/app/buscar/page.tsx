@@ -68,7 +68,7 @@ function BuscarConteudo() {
           {aba === "tudo" && <h2 className="text-white font-semibold mb-3">Filmes</h2>}
           <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {filmesVisiveis.map((f) => (
-              <LandscapeCard key={f.id} layout="grid" id={f.id} tipo="filme" titulo={f.titulo} poster={f.poster} background={f.background} ano={f.ano} nota={f.nota} urlDub={f.urlDub} urlLeg={f.urlLeg} />
+              <LandscapeCard key={f.id} layout="grid" id={f.id} tipo="filme" titulo={f.titulo} poster={f.poster} background={f.background} ano={f.ano} nota={f.nota} />
             ))}
           </div>
         </div>

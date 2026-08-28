@@ -14,8 +14,9 @@ interface Props {
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
-  urlDub?: string | null;
-  urlLeg?: string | null;
+  /** Disponibilidade de audio, nunca a URL da fonte. */
+  dub?: boolean;
+  leg?: boolean;
   isNew?: boolean;
 }
 
@@ -43,7 +44,7 @@ interface Props {
  * O hover move a composicao inteira (numero + poster), nao so a capa: sao uma
  * peca so, e animar apenas metade quebraria a sobreposicao.
  */
-export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew }: Props) {
+export function RankCard({ rank, id, tipo, titulo, poster, dub, leg, isNew }: Props) {
   const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
 
   // Dois digitos precisam de mais espaco a esquerda para nao ficarem cortados.
@@ -112,12 +113,12 @@ export function RankCard({ rank, id, tipo, titulo, poster, urlDub, urlLeg, isNew
               Novo
             </span>
           )}
-          {!isNew && urlDub && (
+          {!isNew && dub && (
             <span className="absolute bottom-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-bold leading-none text-white backdrop-blur">
               DUB
             </span>
           )}
-          {!isNew && !urlDub && urlLeg && (
+          {!isNew && !dub && leg && (
             <span className="absolute bottom-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[9px] font-bold leading-none text-white backdrop-blur">
               LEG
             </span>

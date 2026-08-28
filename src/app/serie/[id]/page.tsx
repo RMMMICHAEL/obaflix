@@ -59,6 +59,13 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       prisma.episodio.findMany({
         where: { serieId: serie.id },
         orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
+        // Select explicito: sem ele a linha inteira vinha do Postgres e ia
+        // parar no client component, urlDub/urlLeg incluidos.
+        select: {
+          id: true, serieId: true, temporada: true, numeroEp: true,
+          titulo: true, thumbnail: true, createdAt: true,
+          urlDub: true, urlLeg: true,
+        },
       }),
       serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
       serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
@@ -88,6 +95,14 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         { progressoSeg: p.progressoSeg, duracaoSeg: p.duracaoSeg ?? null, concluido: p.concluido },
       ])
     );
+
+  // EpisodeGrid e client component: o que atravessa vira payload publico, entao
+  // a URL da fonte fica aqui e so a disponibilidade segue adiante.
+  const episodiosPublicos = episodios.map(({ urlDub, urlLeg, ...ep }) => ({
+    ...ep,
+    dub: Boolean(urlDub),
+    leg: Boolean(urlLeg),
+  }));
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
 
@@ -233,7 +248,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         <div className="px-4 pt-2 md:px-14 md:pt-4">
           <EpisodeGrid
             serieId={serie.id}
-            episodios={episodios}
+            episodios={episodiosPublicos}
             temporadas={temporadas}
             progresso={progressoMap}
             ratingMap={epRatingMap}

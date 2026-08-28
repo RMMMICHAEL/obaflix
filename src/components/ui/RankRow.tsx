@@ -10,8 +10,9 @@ interface Item {
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
   poster: string | null;
-  urlDub?: string | null;
-  urlLeg?: string | null;
+  /** Disponibilidade de audio, nunca a URL da fonte. */
+  dub?: boolean;
+  leg?: boolean;
   isNew?: boolean;
 }
 

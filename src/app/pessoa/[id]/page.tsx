@@ -48,8 +48,6 @@ function CatalogSection({ title, items }: { title: string; items: PersonCatalogI
               background={item.background}
               ano={item.ano}
               nota={item.nota}
-              urlDub={item.audioDub ? "disponível" : null}
-              urlLeg={item.audioLeg ? "disponível" : null}
             />
             <h3 className="mt-2 line-clamp-2 text-sm font-semibold leading-snug text-zinc-100">{item.titulo}</h3>
             {item.papeis.length > 0 && (

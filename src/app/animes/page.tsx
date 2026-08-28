@@ -173,8 +173,8 @@ export default async function AnimesPage({
     numeroEp: e.numeroEp,
     tipo: "anime",
     isNovoEpisodio: e.createdAt ? Date.now() - new Date(e.createdAt).getTime() < NEW_EP_MS : false,
-    urlDub: e.urlDub ?? null,
-    urlLeg: e.urlLeg ?? null,
+    dub: Boolean(e.urlDub),
+    leg: Boolean(e.urlLeg),
   }));
 
   return (

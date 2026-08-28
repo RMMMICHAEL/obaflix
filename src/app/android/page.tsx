@@ -29,8 +29,9 @@ type AndroidItem = {
   background: string | null;
   ano: number | null;
   nota: number | null;
-  urlDub?: string | null;
-  urlLeg?: string | null;
+  /** Disponibilidade de audio, nunca a URL da fonte. */
+  dub?: boolean;
+  leg?: boolean;
 };
 
 type AndroidEpisode = {
@@ -129,16 +130,24 @@ const getCatalogoAndroid = unstable_cache(
         isNew: now - episode.createdAt.getTime() < 48 * 60 * 60 * 1000,
       }));
 
+    // urlDub/urlLeg saem da linha aqui: o catalogo so precisa saber que existe
+    // audio, e a URL real do provedor nao pode entrar no HTML nem no cache.
+    const semFonte = <T extends { urlDub?: string | null; urlLeg?: string | null }>(
+      { urlDub, urlLeg, ...resto }: T,
+    ) => ({ ...resto, dub: Boolean(urlDub), leg: Boolean(urlLeg) });
+
     return {
-      hero: featuredMovies[0] ?? null,
-      movies: recentMovies.map((item): AndroidItem => ({ ...item, tipo: "filme" })),
+      hero: featuredMovies[0] ? semFonte(featuredMovies[0]) : null,
+      movies: recentMovies.map((item): AndroidItem => ({ ...semFonte(item), tipo: "filme" })),
       series: popularSeries.map((item): AndroidItem => ({ ...item, tipo: "serie" })),
       animeItems: animes.map((item): AndroidItem => ({ ...item, tipo: "anime" })),
       cartoonItems: desenhos.map((item): AndroidItem => ({ ...item, tipo: "desenho" })),
       episodeItems,
     };
   },
-  ["android-catalogo-v1"],
+  // v2: o formato mudou (dub/leg em vez de urlDub/urlLeg). Sem trocar a chave, o
+  // cache continuaria servindo objetos antigos com a URL do provedor dentro.
+  ["android-catalogo-v2"],
   { revalidate: 300, tags: ["android-catalogo"] },
 );
 
@@ -165,7 +174,7 @@ function MediaRail({ title, href, items }: { title: string; href: string; items:
                   fill
                   sizes="(max-width: 480px) 58vw, 260px"
                 />
-                {item.urlDub && <span className="android-audio-badge">DUB</span>}
+                {item.dub && <span className="android-audio-badge">DUB</span>}
               </div>
               <strong>{item.titulo}</strong>
               <span className="android-poster-meta">
@@ -261,7 +270,7 @@ export default async function AndroidHomePage() {
           <div className="android-hero-meta">
             {hero.ano && <span>{hero.ano}</span>}
             {hero.nota && <span><Star size={13} fill="currentColor" /> {hero.nota.toFixed(1)}</span>}
-            {hero.urlDub && <span className="android-quality-pill">Dublado</span>}
+            {hero.dub && <span className="android-quality-pill">Dublado</span>}
           </div>
           {hero.sinopse && <p className="android-hero-summary">{hero.sinopse}</p>}
           <div className="android-hero-actions">

@@ -17,8 +17,9 @@ export interface EpisodioRecenteItem {
   numeroEp: number;
   tipo: "serie" | "anime" | "desenho";
   isNovoEpisodio: boolean;    // adicionado nas últimas 48h
-  urlDub: string | null;
-  urlLeg: string | null;
+  /** Disponibilidade de audio, nunca a URL da fonte. */
+  dub: boolean;
+  leg: boolean;
 }
 
 interface Props {
@@ -64,16 +65,16 @@ function EpisodioCard({ item }: { item: EpisodioRecenteItem }) {
           {/* DUB/LEG badge */}
           {!hovered && (
             <div className="absolute top-1.5 right-1.5 flex gap-1">
-              {item.urlDub && <span className="bg-blue-600/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
-              {item.urlLeg && !item.urlDub && <span className="bg-zinc-700/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
+              {item.dub && <span className="bg-blue-600/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
+              {item.leg && !item.dub && <span className="bg-zinc-700/90 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
             </div>
           )}
 
           {/* Hover overlay */}
           <div className={`absolute inset-0 flex flex-col justify-between p-2 transition-opacity duration-150 ${hovered ? "opacity-100" : "opacity-0"}`}>
             <div className="flex gap-1">
-              {item.urlDub && <span className="bg-blue-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
-              {item.urlLeg && <span className="bg-zinc-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
+              {item.dub && <span className="bg-blue-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">DUB</span>}
+              {item.leg && <span className="bg-zinc-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-sm">LEG</span>}
             </div>
             <div className="flex items-center justify-center">
               <div className="w-10 h-10 rounded-full bg-white/25 backdrop-blur-sm flex items-center justify-center border border-white/50">

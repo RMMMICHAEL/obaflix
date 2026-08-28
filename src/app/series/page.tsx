@@ -153,8 +153,8 @@ export default async function SeriesPage({
     numeroEp: episode.numeroEp,
     tipo: "serie",
     isNovoEpisodio: Date.now() - episode.createdAt.getTime() < NEW_EP_MS,
-    urlDub: episode.urlDub ?? null,
-    urlLeg: episode.urlLeg ?? null,
+    dub: Boolean(episode.urlDub),
+    leg: Boolean(episode.urlLeg),
   }));
 
   const heroItems = heroRaw.map((s) => ({
