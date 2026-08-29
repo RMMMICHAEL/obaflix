@@ -108,7 +108,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
     // Foco no botao Assistir assim que a ficha existe, com insistencia: nenhuma
     // tela pode nascer sem um elemento focado, e a previa (PlayerView) ja nao
     // disputa o D-pad. Para de tentar quando esta ficha deixa de ser o topo.
-    LaunchedEffect(detalhe) {
+    LaunchedEffect(detalhe, com.obaflix.tv.ui.componentes.FocoBridge.pulso) {
         if (detalhe == null) return@LaunchedEffect
         repeat(10) {
             if (Navegacao.pilha.lastOrNull() !== destino) return@LaunchedEffect

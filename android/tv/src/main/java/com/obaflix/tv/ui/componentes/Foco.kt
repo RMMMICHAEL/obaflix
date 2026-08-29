@@ -25,6 +25,28 @@ import kotlinx.coroutines.delay
 const val TAG_FOCO = "ObaFoco"
 
 /**
+ * Ponte para recuperar o foco de fora da composicao (da Activity).
+ *
+ * Serve a um caso so: o bug conhecido do Compose 1.6 em que a busca de foco 2D,
+ * durante um key event, alcanca um no que o `bringIntoView` acabou de
+ * desanexar num segundo passe de layout, e lanca "LayoutCoordinate operations
+ * are only valid when isAttached is true". A Activity intercepta essa excecao
+ * especifica, consome a tecla e chama `recuperar` para limpar o foco quebrado —
+ * o proximo toque parte de um estado valido, sem crash e sem travar o D-pad.
+ */
+object FocoBridge {
+    @Volatile
+    var recuperar: (() -> Unit)? = null
+
+    /**
+     * Pulso de recuperacao. A Activity o incrementa (via `recuperar`) depois de
+     * limpar um foco quebrado; as telas observam este valor e refazem a
+     * restauracao, devolvendo o cursor ao card sem esperar um novo toque.
+     */
+    var pulso by mutableStateOf(0)
+}
+
+/**
  * Restauracao de foco entre telas.
  *
  * Quando a pessoa entra num conteudo e volta, a Home tem de devolver o cursor
@@ -85,9 +107,9 @@ fun EfeitoRestauraFoco(
     tag: String,
 ) {
     val restaurador = LocalRestaurador.current
-    LaunchedEffect(pronto) {
+    LaunchedEffect(pronto, FocoBridge.pulso) {
         if (!pronto) return@LaunchedEffect
-        Log.d(TAG_FOCO, "$tag pronto — restaurando (salvo=${restaurador.endereco})")
+        Log.d(TAG_FOCO, "$tag pronto — restaurando (salvo=${restaurador.endereco}, pulso=${FocoBridge.pulso})")
         var i = 0
         while (i < 24 && !temFoco()) {
             withFrameNanos { }

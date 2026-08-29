@@ -89,6 +89,19 @@ fun AppTv() {
         }
     }
 
+    // Recuperacao do bug de foco do Compose 1.6 (ver MainActivity.dispatchKeyEvent
+    // e FocoBridge): quando a Activity intercepta o "isAttached", limpamos o foco
+    // quebrado e pulsamos — as telas refazem a restauracao e o cursor volta ao
+    // card, sem crash e sem precisar de mouse.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        com.obaflix.tv.ui.componentes.FocoBridge.recuperar = {
+            runCatching { focusManager.clearFocus(force = true) }
+            com.obaflix.tv.ui.componentes.FocoBridge.pulso++
+        }
+        onDispose { com.obaflix.tv.ui.componentes.FocoBridge.recuperar = null }
+    }
+
     // A arte so troca depois de o foco parar. Sem esta pausa, atravessar uma
     // fileira com a seta pressionada dispararia um download de backdrop por
     // card — trabalho jogado fora e engasgo garantido em TV Box fraca.

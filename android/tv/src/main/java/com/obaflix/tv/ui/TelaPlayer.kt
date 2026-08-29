@@ -341,7 +341,8 @@ fun TelaPlayer(pedido: Pedido) {
 
     // Foco no captador de teclas com insistencia: um pedido unico pode chegar
     // antes de o no estar anexado e, sem foco aqui, o D-pad nao comanda o player.
-    LaunchedEffect(Unit) {
+    // Refaz tambem no pulso de recuperacao (ver FocoBridge).
+    LaunchedEffect(com.obaflix.tv.ui.componentes.FocoBridge.pulso) {
         repeat(12) {
             runCatching { teclado.requestFocus() }
             delay(60)

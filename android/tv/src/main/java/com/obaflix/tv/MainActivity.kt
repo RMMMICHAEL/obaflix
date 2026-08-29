@@ -32,6 +32,34 @@ import com.obaflix.tv.ui.TemaObaflixTv
  */
 class MainActivity : ComponentActivity() {
 
+    /**
+     * Rede de seguranca contra um bug conhecido do Compose 1.6.
+     *
+     * Ao navegar com o D-pad, a busca de foco 2D pode alcancar um no que o
+     * `bringIntoView` acabou de desanexar num segundo passe de layout, e lancar
+     * `IllegalStateException: LayoutCoordinate operations are only valid when
+     * isAttached is true` de dentro de `dispatchKeyEvent`. E do framework, nao
+     * do nosso codigo — a correcao definitiva e o Compose 1.7.
+     *
+     * Aqui interceptamos **so** essa excecao (conferindo a mensagem), consumimos
+     * a tecla e limpamos o foco quebrado, para o proximo toque partir de um
+     * estado valido. Nao e um catch generico: qualquer outra excecao sobe
+     * normalmente. Sem isto, um unico toque no momento errado fecha o app.
+     */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        return try {
+            super.dispatchKeyEvent(event)
+        } catch (e: IllegalStateException) {
+            if (e.message?.contains("isAttached") == true) {
+                ObaLog.alerta(ObaLog.Fase.SESSAO, "dpad_foco_isattached", "tecla" to event.keyCode)
+                runCatching { com.obaflix.tv.ui.componentes.FocoBridge.recuperar?.invoke() }
+                true
+            } else {
+                throw e
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
