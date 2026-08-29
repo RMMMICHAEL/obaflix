@@ -16,10 +16,18 @@ android {
         // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
         minSdk 21
         targetSdk 34
-        versionCode 13
-        versionName "0.6.2"
+        versionCode 14
+        versionName "0.6.3"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+        // ABIs que existem no parque de TV: ARM nos aparelhos, x86_64 para o
+        // emulador. Deixar de fora o x86 de 32 bits — que praticamente nao
+        // existe em TV Box — devolve quase um megabyte do que o Conscrypt
+        // acrescentou, sem tirar suporte de nenhum aparelho real.
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+        }
+
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
     }
 

@@ -74,6 +74,16 @@ data class Midia(
     val legendas: List<SubtitleTrack>,
     val qualidades: List<String>,
     val audios: List<String>,
+    /**
+     * Se o conteudo e HLS, decidido pelo **corpo** e nao pela extensao.
+     *
+     * Varios provedores servem o master numa URL terminada em `.txt` — o
+     * padrao `.urlset/master.txt` do StreamWish e do Hide, por exemplo. O
+     * Media3 infere o tipo pela extensao da URI: com `.txt` ele escolhe o
+     * leitor progressivo, que nao entende playlist, e falha em milissegundos.
+     * Este campo e o que permite dizer a ele o tipo certo.
+     */
+    val ehHls: Boolean = false,
 )
 
 /**
@@ -95,6 +105,15 @@ data class Midia(
  * tenta o proximo sozinho.
  */
 object FontesTv {
+
+    /**
+     * Extensoes que sao arquivo de midia, e nao playlist.
+     *
+     * Fora desta lista, a conferencia le o corpo antes de decidir — inclusive
+     * `.txt`, que e como varios provedores entregam o master HLS.
+     */
+    private val BINARIOS = listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".ts", ".m4v")
+
 
     /**
      * Teto de tempo da extracao de UMA fonte.
@@ -210,6 +229,8 @@ object FontesTv {
         }
 
         return Midia(
+            ehHls = info.ehHls || extraido.isMaster ||
+                extraido.tipo.equals("hls", ignoreCase = true),
             url = extraido.stream,
             referer = extraido.referer,
             legendas = (extraido.subtitles + info.subtitles).distinctBy { it.file },
@@ -227,7 +248,11 @@ object FontesTv {
      */
     private suspend fun conferirManifesto(url: String, referer: String?): HlsMediaResumo? =
         withContext(Dispatchers.IO) {
-            val pedeManifesto = url.substringBefore('?').endsWith(".m3u8", ignoreCase = true)
+            // Range so em arquivo de midia de verdade. Playlist com Range volta
+            // 404 em alguns CDN (visto no Cloudflare), e ai uma fonte boa era
+            // descartada por causa da propria conferencia.
+            val caminho = url.substringBefore('?').lowercase()
+            val ehArquivoBinario = BINARIOS.any { caminho.endsWith(it) }
 
             val requisicao = Request.Builder()
                 .url(url)
@@ -236,19 +261,12 @@ object FontesTv {
                 // o ExoPlayer nao consegue abrir.
                 .apply { CabecalhosMidia.de(referer, url).forEach { (n, v) -> header(n, v) } }
                 .apply {
-                    if (pedeManifesto) {
-                        get()
-                    } else {
-                        // GET de dois bytes, e nao HEAD.
-                        //
-                        // CDN da AWS (CloudFront e afins) costuma recusar HEAD
-                        // com 403 mesmo quando o GET funciona — a assinatura da
-                        // URL cobre o metodo. Era isso que descartava fontes de
-                        // video que tocam normalmente no site: a checagem
-                        // reprovava uma midia viva e o player nem tentava.
-                        get()
-                        header("Range", "bytes=0-1")
-                    }
+                    // GET sempre, nunca HEAD: CDN da AWS (CloudFront e afins)
+                    // recusa HEAD com 403 mesmo quando o GET funciona, porque a
+                    // assinatura da URL cobre o metodo.
+                    get()
+                    // Em video, dois bytes bastam para saber que esta vivo.
+                    if (ehArquivoBinario) header("Range", "bytes=0-1")
                 }
                 .build()
 
@@ -261,24 +279,33 @@ object FontesTv {
                         ObaLog.alerta(
                             ObaLog.Fase.MANIFESTO, "tv_manifesto_recusado",
                             "status" to r.code,
-                            "metodo" to (if (pedeManifesto) "GET" else "GET/Range"),
+                            "metodo" to (if (ehArquivoBinario) "GET/Range" else "GET"),
                             "host" to ObaLog.host(url),
                             "servidorCdn" to (r.header("Server") ?: "-"),
                         )
                         return@use null
                     }
-                    if (!pedeManifesto) return@use HlsMediaResumo()
+                    if (ehArquivoBinario) return@use HlsMediaResumo(ehHls = false)
 
+                    // Quem decide se e HLS e o corpo, nao a extensao. Um master
+                    // servido como `.txt` continua sendo um master.
                     val texto = r.body?.string().orEmpty()
                     if (!HlsManifest.looksLikeManifest(texto)) {
-                        ObaLog.alerta(ObaLog.Fase.EXTRACAO, "tv_manifesto_invalido")
-                        return@use null
+                        // Nao e playlist e nao tem extensao de video: pode ser
+                        // um MP4 sem extensao. Responder 200 ja e prova de vida;
+                        // o player descobre o formato sozinho.
+                        ObaLog.evento(
+                            ObaLog.Fase.MANIFESTO, "tv_corpo_nao_e_playlist",
+                            "host" to ObaLog.host(url), "bytes" to texto.length,
+                        )
+                        return@use HlsMediaResumo(ehHls = false)
                     }
                     val info = HlsManifest.parse(texto, url)
                     HlsMediaResumo(
                         variants = info.variants,
                         audioTracks = info.audioTracks,
                         subtitles = info.subtitles,
+                        ehHls = true,
                     )
                 }
             }.getOrElse {
@@ -301,6 +328,8 @@ data class HlsMediaResumo(
     val variants: List<com.obaflix.bridge.HlsVariant> = emptyList(),
     val audioTracks: List<String> = emptyList(),
     val subtitles: List<SubtitleTrack> = emptyList(),
+    /** Confirmado pelo corpo da resposta, nao pela extensao da URL. */
+    val ehHls: Boolean = false,
 )
 
 /**

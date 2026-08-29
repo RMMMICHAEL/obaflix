@@ -1,6 +1,9 @@
 package com.obaflix
 
 import android.app.Application
+import android.os.Build
+import org.conscrypt.Conscrypt
+import java.security.Security
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerState
 import okhttp3.OkHttpClient
@@ -44,8 +47,36 @@ class ObaflixApp : Application() {
         val playerState = PlayerState()
     }
 
+    /**
+     * Instala o Conscrypt como provedor de TLS preferencial.
+     *
+     * So abaixo do Android 10, que e onde o sistema nao negocia TLS 1.3 sozinho.
+     * Acima disso o proprio aparelho ja resolve, e trocar o provedor de quem
+     * esta funcionando seria risco sem ganho.
+     *
+     * Falha silenciosa de proposito: sem o Conscrypt o aplicativo continua como
+     * antes desta linha existir — funcionando com os provedores que aceitam
+     * TLS 1.2, e falhando nos que exigem 1.3.
+     */
+    private fun instalarTlsModerno() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return
+        runCatching {
+            Security.insertProviderAt(Conscrypt.newProvider(), 1)
+        }.onSuccess {
+            ObaLog.evento(ObaLog.Fase.SESSAO, "tls_conscrypt_ativo", "sdk" to Build.VERSION.SDK_INT)
+        }.onFailure {
+            ObaLog.alerta(
+                ObaLog.Fase.SESSAO, "tls_conscrypt_falhou",
+                "erro" to it.javaClass.simpleName,
+            )
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        // Antes de qualquer cliente HTTP nascer: o OkHttp captura a fabrica de
+        // SSL na construcao, e trocar o provedor depois nao teria efeito.
+        instalarTlsModerno()
         httpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)

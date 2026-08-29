@@ -160,10 +160,17 @@ private suspend fun aguardarPronto(player: ExoPlayer): String? =
     } ?: "sem_resposta_${PRONTO_TIMEOUT_MS / 1000}s"
 
 /** Motivo legivel de uma falha do Media3, com o status HTTP quando existe. */
-private fun motivoDe(erro: PlaybackException): String = when (val causa = erro.cause) {
-    is HttpDataSource.InvalidResponseCodeException -> "http_" + causa.responseCode
-    null -> erro.errorCodeName
-    else -> causa.javaClass.simpleName
+private fun motivoDe(erro: PlaybackException): String {
+    // `errorCodeName` vem de uma constante do Media3 e sobrevive ao R8. Antes
+    // isto usava `javaClass.simpleName` da causa, e no APK minificado o motivo
+    // saia como "m" ou "n1" — nome ofuscado, diagnostico nenhum.
+    val codigo = erro.errorCodeName
+    val causa = erro.cause
+    return if (causa is HttpDataSource.InvalidResponseCodeException) {
+        codigo + "/http_" + causa.responseCode
+    } else {
+        codigo
+    }
 }
 
 @Composable
@@ -329,6 +336,7 @@ fun TelaPlayer(pedido: Pedido) {
             "servidor" to fonte.rotulo,
             "url" to ObaLog.url(midia.url),
             "legendas" to midia.legendas.size,
+            "hls" to midia.ehHls,
             "cabecalhos" to CabecalhosMidia.resumo(cabecalhos),
             "retomaMs" to retomarDe,
         )
@@ -349,6 +357,11 @@ fun TelaPlayer(pedido: Pedido) {
 
         val item = MediaItem.Builder()
             .setUri(midia.url)
+            // Sem esta dica o Media3 infere o tipo pela extensao da URI. Varios
+            // provedores entregam o master HLS em `.urlset/master.txt`, e com
+            // `.txt` ele escolhia o leitor progressivo — que nao entende
+            // playlist e falhava em ~50ms, antes de qualquer rede.
+            .apply { if (midia.ehHls) setMimeType(MimeTypes.APPLICATION_M3U8) }
             .setSubtitleConfigurations(legendas)
             .build()
 
