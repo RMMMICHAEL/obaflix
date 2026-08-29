@@ -127,6 +127,7 @@ fun AppTv() {
                 }
                 is Camada.Detalhe -> TelaDetalhe(topo)
                 is Camada.Player -> TelaPlayer(topo.pedido)
+                is Camada.Perfil -> TelaPerfil()
             }
         }
     }
@@ -253,7 +254,7 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
         }
 
         EspacoH(16.dp)
-        BotaoConta(aoSair = { escopo.launch { PareamentoTv.sair(context) } })
+        BotaoPerfil(aoAbrir = { Navegacao.abrir(Camada.Perfil) })
     }
 }
 
@@ -319,16 +320,11 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
 }
 
 /**
- * Conta.
- *
- * Sair passou a viver aqui, e nao no meio do destaque: e uma acao rara, e
- * ocupar espaco nobre da Home com ela era sintoma de tela de fundacao. Pede
- * confirmacao porque um OK acidental no controle remoto desfaria o pareamento
- * e obrigaria a pessoa a pegar o celular de novo.
+ * Botao de Perfil na barra. Abre a area completa (favoritos, historico,
+ * continuar assistindo, sair) — o "Conta" que so tinha o nome virou isso.
  */
 @Composable
-private fun BotaoConta(aoSair: () -> Unit) {
-    var confirmando by remember { mutableStateOf(false) }
+private fun BotaoPerfil(aoAbrir: () -> Unit) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
     val escala = escalaFoco(focado, alvo = 1.06f)
@@ -338,24 +334,13 @@ private fun BotaoConta(aoSair: () -> Unit) {
             .escalar(escala)
             .clip(RoundedCornerShape(50))
             .background(if (focado) Cores.FocoHalo else Cores.Superficie)
-            .focavel(interacao = interacao) {
-                if (confirmando) aoSair() else confirmando = true
-            }
+            .focavel(interacao = interacao) { aoAbrir() }
             .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
         Text(
-            text = if (confirmando) "Confirmar saída" else "Conta",
+            text = "Perfil",
             color = if (focado) Color(0xFF101014) else Cores.TextoFraco,
             fontSize = Escala.Rotulo,
         )
-    }
-
-    // Sai do modo de confirmacao sozinho: um "Confirmar saída" esquecido na
-    // barra vira armadilha para o proximo OK.
-    LaunchedEffect(confirmando, focado) {
-        if (confirmando && !focado) {
-            delay(4000)
-            confirmando = false
-        }
     }
 }

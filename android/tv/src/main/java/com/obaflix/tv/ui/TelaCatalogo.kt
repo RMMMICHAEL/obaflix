@@ -50,6 +50,7 @@ import com.obaflix.tv.navegacao.Aba
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.componentes.CardPoster
 import com.obaflix.tv.ui.componentes.colunas
+import com.obaflix.tv.ui.componentes.Pilula
 import com.obaflix.tv.ui.componentes.EfeitoRestauraFoco
 import com.obaflix.tv.ui.componentes.enderecoDe
 import com.obaflix.tv.ui.componentes.escalaFoco
@@ -93,8 +94,9 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
     // perde o filtro; a grade reaparece como estava e o foco volta ao card.
     val cache = remember(aba) { CacheTelas.catalogo(aba.name) }
 
-    var ordem by remember(aba) { mutableStateOf(Ordem.values().getOrElse(cache.ordemOrdinal) { Ordem.Recentes }) }
+    var ordem by remember(aba) { mutableStateOf(Ordem.values().getOrElse(cache.ordemOrdinal) { Ordem.Populares }) }
     var genero by remember(aba) { mutableStateOf(cache.generos.find { it.id == cache.generoId }) }
+    var ano by remember(aba) { mutableStateOf(cache.anoSel) }
 
     var itens by remember(aba) { mutableStateOf(cache.itens) }
     var total by remember(aba) { mutableStateOf(cache.itens.size) }
@@ -117,9 +119,9 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
 
     suspend fun carregar(paginaAlvo: Int) {
         val resposta = if (tipo == null) {
-            ApiObaflix.filmes(paginaAlvo, genero?.id, null, ordem.chave)
+            ApiObaflix.filmes(paginaAlvo, genero?.id, ano, ordem.chave)
         } else {
-            ApiObaflix.series(tipo, paginaAlvo, genero?.id, null, ordem.chave)
+            ApiObaflix.series(tipo, paginaAlvo, genero?.id, ano, ordem.chave)
         }
         if (resposta == null) {
             erro = itens.isEmpty()
@@ -140,7 +142,7 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
             generosConhecidos = resposta.itens.flatMap { it.generos }
                 .distinctBy { it.id }
                 .sortedBy { it.nome }
-                .take(16)
+                        .take(24)
         }
 
         // Espelha no cache para o retorno ser instantaneo.
@@ -149,10 +151,11 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         cache.paginas = paginas
         cache.ordemOrdinal = ordem.ordinal
         cache.generoId = genero?.id
+        cache.anoSel = ano
         cache.generos = generosConhecidos
     }
 
-    LaunchedEffect(aba, ordem, genero, recarga) {
+    LaunchedEffect(aba, ordem, genero, ano, recarga) {
         // Primeira composicao com cache cheio: nao busca, so aproveita. A
         // rolagem volta pelo estado saveable da grade.
         if (!inicializado && !cache.vazio && recarga == 0) {
@@ -205,6 +208,7 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
                     pagina = pagina,
                     paginas = paginas,
                 )
+                FiltroAno(ano = ano, aoAno = { ano = it })
                 when {
                     itens.isNotEmpty() -> LazyVerticalGrid(
                         columns = GridCells.Fixed(nColunas),
@@ -318,6 +322,30 @@ private fun RailItem(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = if (selecionado && !focado) 10.dp else 0.dp),
         )
+    }
+}
+
+/**
+ * Filtro de ano.
+ *
+ * Os anos sao gerados de 2010 ate o ano atual (java.time.Year.now), entao no
+ * ano que vem aparece 2027 sozinho, sem tocar no codigo. "Todos" limpa o filtro.
+ */
+@Composable
+private fun FiltroAno(ano: Int?, aoAno: (Int?) -> Unit) {
+    val anos = remember {
+        val atual = java.time.Year.now().value
+        (atual downTo 2010).toList()
+    }
+    androidx.compose.foundation.lazy.LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = margemHorizontal(), top = 4.dp, bottom = 6.dp),
+        modifier = Modifier.focusGroup(),
+    ) {
+        item { Pilula("Ano: todos", selecionado = ano == null, aoClicar = { aoAno(null) }) }
+        items(anos) { a ->
+            Pilula(a.toString(), selecionado = ano == a, aoClicar = { aoAno(a) })
+        }
     }
 }
 

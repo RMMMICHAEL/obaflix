@@ -43,6 +43,9 @@ sealed interface Camada {
 
     /** Reproducao em tela cheia. */
     data class Player(val pedido: Pedido) : Camada
+
+    /** Area de perfil: conta, favoritos, historico, continuar assistindo. */
+    data object Perfil : Camada
 }
 
 /**

@@ -66,6 +66,7 @@ object ApiObaflix {
             .apply {
                 SessaoTv.accessToken()?.let { header("Authorization", "Bearer " + it) }
                 when {
+                    corpoDelete && corpo != null -> delete(corpo.toString().toRequestBody(JSON))
                     corpoDelete -> delete()
                     corpo != null -> post(corpo.toString().toRequestBody(JSON))
                     else -> get()
@@ -141,7 +142,36 @@ object ApiObaflix {
         temporada = o.optInt("temporada").takeIf { it > 0 },
         numeroEp = o.optInt("numeroEp").takeIf { it > 0 },
         episodioId = texto(o, "episodioId"),
+        historyId = texto(o, "historyId"),
     )
+
+    /**
+     * Item vindo do Histórico / Favoritos, onde os dados do conteudo vem
+     * aninhados em `filme`/`serie`. Achata para o mesmo Item das outras telas.
+     */
+    private fun itemDeConteudo(o: JSONObject): Item? {
+        val filme = o.optJSONObject("filme")
+        val serie = o.optJSONObject("serie")
+        val fonte = filme ?: serie ?: return null
+        val tipo = if (filme != null) "filme" else texto(serie!!, "tipo") ?: "serie"
+        return Item(
+            id = texto(o, "conteudoId") ?: fonte.optString("id"),
+            titulo = texto(fonte, "titulo") ?: "Sem título",
+            poster = texto(fonte, "poster"),
+            background = texto(fonte, "background"),
+            logo = texto(fonte, "logo"),
+            sinopse = texto(fonte, "sinopse"),
+            ano = fonte.optInt("ano").takeIf { it > 0 },
+            nota = fonte.optDouble("nota").takeIf { !it.isNaN() && it > 0 },
+            tipo = tipo,
+            temporada = o.optInt("temporada").takeIf { it > 0 },
+            numeroEp = o.optInt("numeroEp").takeIf { it > 0 },
+            episodioId = texto(o, "episodioId"),
+            historyId = texto(o, "id"),
+            progressoSeg = o.optInt("progressoSeg"),
+            duracaoSeg = o.optInt("duracaoSeg").takeIf { it > 0 },
+        )
+    }
 
     private fun itens(arr: JSONArray?, tipoPadrao: String): List<Item> {
         if (arr == null) return emptyList()
@@ -170,7 +200,7 @@ object ApiObaflix {
      * payload ja nao traga.
      */
     suspend fun home(): Home? {
-        val raiz = objeto("/api/home") ?: return null
+        val raiz = objeto("/api/tv/home") ?: return null
 
         val fileiras = mutableListOf<Fileira>()
 
@@ -178,29 +208,37 @@ object ApiObaflix {
             fileiras += Fileira("continuar", "Continuar assistindo", it, paisagem = true)
         }
 
-        fun adicionar(id: String, titulo: String, chave: String, tipo: String) {
-            val itens = lista(raiz, chave, tipo)
+        fun adicionar(id: String, titulo: String, chave: String) {
+            val itens = lista(raiz, chave, "filme")
             if (itens.isNotEmpty()) fileiras += Fileira(id, titulo, itens)
         }
 
-        adicionar("filmes-alta", "Em alta", "destaquesFilmes", "filme")
-        adicionar("filmes-novos", "Lançamentos", "lancamentosFilmes", "filme")
-        adicionar("series-alta", "Séries populares", "destaquesSeries", "serie")
-        adicionar("series-novas", "Novas séries", "lancamentosSeries", "serie")
-        adicionar("animes", "Animes", "animes", "anime")
-        adicionar("desenhos", "Kids", "desenhos", "desenho")
+        // Ordem fixa pedida — a mesma lógica do site (popularidade, popularRank,
+        // nota>=7, createdAt). O campo `tipo` de cada item vem do backend.
+        adicionar("em-alta", "Em Alta", "emAlta")
+        adicionar("filmes-populares", "Filmes Populares", "popularesFilmes")
+        adicionar("filmes-top10", "Top 10 Filmes de Hoje", "top10Filmes")
+        adicionar("filmes-avaliados", "Filmes Mais Bem Avaliados", "avaliadosFilmes")
+        adicionar("filmes-novos", "Novos Filmes", "novosFilmes")
+        adicionar("series-populares", "Séries Populares", "popularesSeries")
+        adicionar("series-top10", "Top 10 Séries de Hoje", "top10Series")
+        adicionar("series-avaliadas", "Séries Mais Bem Avaliadas", "avaliadosSeries")
+        adicionar("series-novas", "Novas Séries", "novasSeries")
 
-        // O hero do site ja vem sorteado e com arte grande; o destaque duplo da
-        // televisao usa os primeiros que tenham backdrop, porque um banner sem
-        // arte de fundo vira retangulo cinza no meio da tela.
-        val comArte = lista(raiz, "hero", "filme").filter { it.background != null }
-        val destaques = if (comArte.size >= 2) comArte.take(6) else {
-            (comArte + fileiras.filter { !it.paisagem }
-                .flatMap { it.itens }
-                .filter { it.background != null })
-                .distinctBy { it.id }
-                .take(6)
+        // Categorias em destaque, cada uma com filmes e séries daquele gênero.
+        raiz.optJSONArray("categorias")?.let { cats ->
+            for (i in 0 until cats.length()) {
+                val cat = cats.optJSONObject(i) ?: continue
+                val titulo = texto(cat, "titulo") ?: continue
+                val itens = itens(cat.optJSONArray("itens"), "filme")
+                if (itens.isNotEmpty()) fileiras += Fileira("cat-$i-$titulo", titulo, itens)
+            }
         }
+
+        // Destaque duplo: os primeiros de "Em Alta" que tenham backdrop — um
+        // banner sem arte de fundo vira retangulo cinza no meio da tela.
+        val comArte = lista(raiz, "emAlta", "filme").filter { it.background != null }
+        val destaques = comArte.distinctBy { it.id }.take(6)
 
         return Home(destaques, fileiras)
     }
@@ -315,6 +353,22 @@ object ApiObaflix {
         }.distinctBy { it.tipo + it.id }
     }
 
+    /**
+     * Progresso salvo de UM episodio especifico (ou filme).
+     *
+     * Existe por causa da troca de episodio no player: o episodio novo tem de
+     * comecar na SUA posicao — 00:00 se nunca foi visto —, nunca herdar o minuto
+     * do anterior. Usa a mesma rota /api/progress do site, com episodioId.
+     */
+    suspend fun progresso(conteudoId: String, episodioId: String?): Int {
+        val caminho = "/api/progress?conteudoId=" + conteudoId +
+            (if (episodioId != null) "&episodioId=" + episodioId else "")
+        val o = objeto(caminho) ?: return 0
+        // Concluido volta ao inicio: reassistir do zero e o esperado.
+        if (o.optBoolean("concluido", false)) return 0
+        return o.optInt("progressoSeg", 0)
+    }
+
     // ── Relacionados ───────────────────────────────────────────────────────────
 
     /**
@@ -334,6 +388,30 @@ object ApiObaflix {
         }
         return pagina?.itens.orEmpty().filter { it.id != base.id }.take(20)
     }
+
+    // ── Perfil: histórico e favoritos ──────────────────────────────────────────
+
+    suspend fun historico(): List<Item> {
+        val arr = vetor("/api/user/history") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { itemDeConteudo(it) }
+        }
+    }
+
+    suspend fun favoritos(): List<Item> {
+        val arr = vetor("/api/user/watchlist") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { itemDeConteudo(it) }
+        }
+    }
+
+    /** Remove uma entrada de Continuar/Histórico pelo id da entrada. */
+    suspend fun removerHistorico(historyId: String): Boolean =
+        executar("/api/continuar-assistindo", JSONObject().put("historyId", historyId), corpoDelete = true) != null
+
+    /** Remove um favorito (watchlist). */
+    suspend fun removerFavorito(conteudoId: String, tipo: String): Boolean =
+        executar("/api/user/watchlist/" + conteudoId + "?tipo=" + tipo, corpoDelete = true) != null
 
     // ── Favoritos (watchlist) ──────────────────────────────────────────────────
 

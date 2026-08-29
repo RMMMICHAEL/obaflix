@@ -152,6 +152,22 @@ fun TelaPlayer(pedido: Pedido) {
     var textoEscolhido by remember { mutableStateOf(0) }
     var alturaEscolhida by remember { mutableStateOf(0) }
 
+    // ── Aviso de proximo episodio ────────────────────────────────────────────
+    // Só existe quando há um próximo episódio disponível. cancelouAviso zera a
+    // cada episódio: cancelar vale só para o episódio atual.
+    var avisoProximo by remember { mutableStateOf(false) }
+    var cancelouAviso by remember(episodioAtual) { mutableStateOf(false) }
+    var selecaoAviso by remember { mutableStateOf(0) }
+    var pedirProximo by remember { mutableStateOf(false) }
+    var primeiraAbertura by remember { mutableStateOf(true) }
+
+    // Proximo episodio na ordem real (atravessa a virada de temporada). Só conta
+    // se estiver disponivel para reproduzir.
+    val proximoEp = remember(pedido.episodios, episodioAtual) {
+        val idx = pedido.episodios.indexOfFirst { it.id == episodioAtual }
+        if (idx >= 0) pedido.episodios.getOrNull(idx + 1)?.takeIf { it.disponivel } else null
+    }
+
     // ── Motor ────────────────────────────────────────────────────────────────
 
     val fabricaHttp = remember {
@@ -216,6 +232,13 @@ fun TelaPlayer(pedido: Pedido) {
         carregando = true
         falha = null
 
+        // Mata a midia anterior ANTES de resolver a nova. Sem isto, a troca de
+        // servidor deixava o stream antigo tocando durante a extracao (segundos)
+        // — dois audios ao mesmo tempo. pause+stop+clear garante uma so fonte.
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+
         val midia = FontesTv.resolver(id, fonte)
         if (midia == null) {
             // Cai para a proxima. E o mesmo failover dos outros ambientes: a
@@ -258,10 +281,23 @@ fun TelaPlayer(pedido: Pedido) {
         carregando = false
     }
 
-    // Abertura: uma unica ida ao servidor para a lista de fontes, e a extracao
-    // de uma so delas. As outras nao sao resolvidas ate serem necessarias.
+    // Abertura e troca de episodio. Roda toda vez que `episodioAtual` muda.
+    //
+    // A posicao inicial e SEMPRE a do proprio episodio: na primeira abertura vem
+    // do detalhe (pedido.posicaoSeg); ao trocar de episodio, e buscada
+    // especificamente para o episodio novo — 00:00 se nunca foi visto. Nunca se
+    // reaproveita a posicao do player anterior.
     LaunchedEffect(pedido.conteudoId, episodioAtual) {
         carregando = true
+        avisoProximo = false
+        // Zera a midia e a posicao antes de qualquer coisa: o episodio novo nao
+        // pode herdar o quadro nem o minuto do anterior.
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+        posicaoMs = 0
+        duracaoMs = 0
+
         val abertura = FontesTv.abrir(
             pedido.copy(
                 temporada = temporadaAtual,
@@ -276,7 +312,16 @@ fun TelaPlayer(pedido: Pedido) {
         }
         sessao = abertura.sessao
         fontes = abertura.fontes
-        preparar(0, posicaoMs)
+
+        val alvoMs: Long = when {
+            primeiraAbertura -> {
+                primeiraAbertura = false
+                pedido.posicaoSeg * 1000L
+            }
+            pedido.ehSerie -> ApiObaflix.progresso(pedido.conteudoId, episodioAtual) * 1000L
+            else -> 0L
+        }
+        preparar(0, alvoMs)
     }
 
     DisposableEffect(Unit) {
@@ -289,6 +334,15 @@ fun TelaPlayer(pedido: Pedido) {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 tocando = isPlaying
+            }
+
+            override fun onPlaybackStateChanged(estado: Int) {
+                // Episodio terminou: se ha proximo e o aviso nao foi cancelado,
+                // avanca. O flag e consumido por um efeito, porque trocarEpisodio
+                // e declarado abaixo.
+                if (estado == Player.STATE_ENDED && proximoEp != null && !cancelouAviso) {
+                    pedirProximo = true
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -328,6 +382,15 @@ fun TelaPlayer(pedido: Pedido) {
                 desdeSalvou = 0
                 if (player.isPlaying) salvarProgresso()
             }
+
+            // Aviso de proximo episodio nos ultimos 30s. So aparece com proximo
+            // disponivel, e some se a pessoa cancelou ou voltou atras no tempo.
+            if (proximoEp != null && !cancelouAviso && duracaoMs > 0 && player.isPlaying) {
+                val restante = duracaoMs - posicaoMs
+                avisoProximo = restante in 1..30_000
+            } else if (avisoProximo && cancelouAviso) {
+                avisoProximo = false
+            }
         }
     }
 
@@ -356,13 +419,27 @@ fun TelaPlayer(pedido: Pedido) {
     }
 
     fun trocarEpisodio(episodio: Episodio) {
+        // Salva o progresso do episodio ATUAL antes de trocar; o novo comeca
+        // limpo e busca a propria posicao no efeito de abertura.
         salvarProgresso()
+        avisoProximo = false
         posicaoMs = 0
+        duracaoMs = 0
         temporadaAtual = episodio.temporada
         numeroAtual = episodio.numeroEp
         episodioAtual = episodio.id
         tituloAtual = pedido.titulo + "  ·  T" + episodio.temporada + " E" + episodio.numeroEp
         camada = Camada.Nenhuma
+    }
+
+    // Consome o pedido de avanco (fim do episodio ou contador em zero). Fica
+    // aqui, depois de trocarEpisodio, porque uma funcao local so pode ser
+    // chamada apos declarada.
+    LaunchedEffect(pedirProximo) {
+        if (pedirProximo) {
+            pedirProximo = false
+            proximoEp?.let { trocarEpisodio(it) }
+        }
     }
 
     val grupos = construirGrupos(
@@ -414,6 +491,21 @@ fun TelaPlayer(pedido: Pedido) {
 
     fun aoTeclar(tecla: Key): Boolean {
         ultimaTecla = System.currentTimeMillis()
+
+        // Aviso de proximo episodio: enquanto visivel, o D-pad comanda so ele.
+        // ESQUERDA/DIREITA escolhe, OK confirma, BACK cancela.
+        if (avisoProximo) {
+            when (tecla) {
+                Key.DirectionLeft -> selecaoAviso = 0
+                Key.DirectionRight -> selecaoAviso = 1
+                Key.DirectionCenter, Key.Enter, Key.NumPadEnter ->
+                    if (selecaoAviso == 0) proximoEp?.let { trocarEpisodio(it) }
+                    else { cancelouAviso = true; avisoProximo = false }
+                Key.Back, Key.Escape -> { cancelouAviso = true; avisoProximo = false }
+                else -> {}
+            }
+            return true
+        }
 
         // BACK fecha uma camada por vez, de cima para baixo. So sai do player
         // quando ja nao ha nada aberto — e a regra que impede o BACK acidental
@@ -621,6 +713,76 @@ fun TelaPlayer(pedido: Pedido) {
                 )
             }
         }
+
+        // Aviso de proximo episodio, no canto inferior direito.
+        AnimatedVisibility(
+            visible = avisoProximo && proximoEp != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(margemHorizontal(), margemVertical()),
+        ) {
+            AvisoProximoEpisodio(
+                proximo = proximoEp,
+                segundos = ((duracaoMs - posicaoMs) / 1000).toInt().coerceIn(0, 30),
+                selecao = selecaoAviso,
+            )
+        }
+    }
+}
+
+/**
+ * Aviso de proximo episodio.
+ *
+ * Aparece nos ultimos 30s de uma serie quando ha proximo. O contador conta ate
+ * o fim; sem cancelar, o episodio seguinte comeca sozinho. "Continuar" antecipa;
+ * "Cancelar" deixa o atual terminar.
+ */
+@Composable
+private fun AvisoProximoEpisodio(proximo: Episodio?, segundos: Int, selecao: Int) {
+    Column(
+        modifier = Modifier
+            .width(360.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.92f))
+            .padding(20.dp),
+    ) {
+        Text(
+            text = "Próximo episódio em " + segundos + "s",
+            color = Cores.Texto,
+            fontSize = Escala.Rotulo,
+            fontWeight = FontWeight.Bold,
+        )
+        EspacoV(4.dp)
+        Text(
+            text = proximo?.let { "E" + it.numeroEp + " · " + it.rotulo } ?: "",
+            color = Cores.TextoFraco,
+            fontSize = Escala.Miudo,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        EspacoV(14.dp)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            BotaoAviso("Continuar", selecionado = selecao == 0, modifier = Modifier.weight(1f))
+            BotaoAviso("Cancelar", selecionado = selecao == 1, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun BotaoAviso(texto: String, selecionado: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selecionado) Cores.FocoHalo else Color.White.copy(alpha = 0.14f))
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = texto,
+            color = if (selecionado) Color(0xFF101014) else Cores.Texto,
+            fontSize = Escala.Rotulo,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

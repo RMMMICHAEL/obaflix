@@ -36,7 +36,8 @@ class CatalogoCache {
     var itens: List<Item> = emptyList()
     var pagina: Int = 1
     var paginas: Int = 1
-    var ordemOrdinal: Int = 0
+    var ordemOrdinal: Int = 1 // Populares por padrao
+    var anoSel: Int? = null
     var generoId: Int? = null
     var generos: List<Genero> = emptyList()
 

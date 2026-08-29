@@ -29,6 +29,8 @@ data class Item(
     val temporada: Int? = null,
     val numeroEp: Int? = null,
     val episodioId: String? = null,
+    /** Id da entrada de histórico — usado no Perfil para remover o item. */
+    val historyId: String? = null,
 ) {
     /** Serie, anime e desenho compartilham a mesma rota e o mesmo player. */
     val ehSerie: Boolean get() = tipo != "filme"
