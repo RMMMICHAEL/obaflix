@@ -243,6 +243,9 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
     }
 }
 
+/** Mesma espera das abas: aplica ao parar, nao ao atravessar. */
+private const val ATRASO_FILTRO_MS = 280L
+
 /**
  * Barra lateral: Buscar, Ordenar e a lista de generos.
  *
@@ -278,9 +281,21 @@ private fun Rail(
                     .background(Color.White.copy(alpha = 0.12f)),
             )
         }
-        item { RailItem("Todos", selecionado = genero == null, aoClicar = { aoGenero(null) }) }
+        item {
+            RailItem(
+                "Todos",
+                selecionado = genero == null,
+                aplicaNoFoco = true,
+                aoClicar = { aoGenero(null) },
+            )
+        }
         items(generos, key = { it.id }) { g ->
-            RailItem(g.nome, selecionado = genero?.id == g.id, aoClicar = { aoGenero(g) })
+            RailItem(
+                g.nome,
+                selecionado = genero?.id == g.id,
+                aplicaNoFoco = true,
+                aoClicar = { aoGenero(g) },
+            )
         }
     }
 }
@@ -290,10 +305,27 @@ private fun RailItem(
     texto: String,
     selecionado: Boolean = false,
     destaque: Boolean = false,
+    /**
+     * Se o item se aplica so por receber foco.
+     *
+     * Vale para filtro — genero, ano, categoria: mover a seta ate "Ação" ja
+     * mostra ação. Nao vale para "Buscar" e "Ordenar", que sao acoes: trocar a
+     * ordenacao porque a seta passou por cima seria hostil.
+     */
+    aplicaNoFoco: Boolean = false,
     aoClicar: () -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
+
+    // Espera antes de aplicar; o cancelamento vem do proprio LaunchedEffect,
+    // que morre quando o foco sai. Descer a lista inteira de generos nao gera
+    // uma consulta por genero — so o que ficou sob a seta chega a carregar.
+    LaunchedEffect(focado) {
+        if (!aplicaNoFoco || !focado || selecionado) return@LaunchedEffect
+        kotlinx.coroutines.delay(ATRASO_FILTRO_MS)
+        aoClicar()
+    }
 
     Box(
         modifier = Modifier
@@ -334,7 +366,10 @@ private fun RailItem(
 @Composable
 private fun FiltroAno(ano: Int?, aoAno: (Int?) -> Unit) {
     val anos = remember {
-        val atual = java.time.Year.now().value
+        // Calendar, e nao java.time.Year: aquele so existe da API 26, e o
+        // aplicativo alcanca a 21 para cobrir TV Box com Android 5 e 6 — onde
+        // isto estouraria NoSuchMethodError ao abrir o filtro.
+        val atual = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
         (atual downTo 2010).toList()
     }
     androidx.compose.foundation.lazy.LazyRow(
@@ -342,9 +377,16 @@ private fun FiltroAno(ano: Int?, aoAno: (Int?) -> Unit) {
         contentPadding = PaddingValues(start = 20.dp, end = margemHorizontal(), top = 4.dp, bottom = 6.dp),
         modifier = Modifier.focusGroup(),
     ) {
-        item { Pilula("Ano: todos", selecionado = ano == null, aoClicar = { aoAno(null) }) }
+        item {
+            Pilula(
+                "Ano: todos",
+                selecionado = ano == null,
+                aplicaNoFoco = true,
+                aoClicar = { aoAno(null) },
+            )
+        }
         items(anos) { a ->
-            Pilula(a.toString(), selecionado = ano == a, aoClicar = { aoAno(a) })
+            Pilula(a.toString(), selecionado = ano == a, aplicaNoFoco = true, aoClicar = { aoAno(a) })
         }
     }
 }

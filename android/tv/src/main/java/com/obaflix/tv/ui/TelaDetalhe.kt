@@ -85,6 +85,13 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
     val botaoPrincipal = remember { FocusRequester() }
     val margem = margemHorizontal()
 
+    // Tres chamadas independentes, em paralelo e cada uma escrevendo o seu
+    // estado assim que chega. Em sequencia, a ficha so aparecia depois da soma
+    // das tres — e a mais lenta segurava as outras duas sem motivo.
+    //
+    // Cada bloco e um LaunchedEffect proprio: se um servidor demora, ele atrasa
+    // apenas a sua parte da tela. Trocar de ficha cancela todos, entao resposta
+    // atrasada da ficha anterior nao sobrescreve a nova.
     LaunchedEffect(destino.id, recarga) {
         val carregado = ApiObaflix.detalhe(destino.id, destino.tipo)
         if (carregado == null) {
@@ -93,6 +100,9 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
             detalhe = carregado
             if (temporada == null) temporada = carregado.temporadas.firstOrNull()
         }
+    }
+
+    LaunchedEffect(destino.id, recarga) {
         progressos = ApiObaflix.continuarAssistindo().orEmpty().associateBy { it.chaveProgresso }
     }
 

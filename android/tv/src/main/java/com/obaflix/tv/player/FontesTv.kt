@@ -10,6 +10,7 @@ import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Episodio
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 
 /**
@@ -96,6 +97,17 @@ data class Midia(
 object FontesTv {
 
     /**
+     * Teto de tempo da extracao de UMA fonte.
+     *
+     * Generoso porque alguns provedores exigem desafio de navegador, que demora;
+     * finito porque a alternativa e a tela presa em "carregando" sem nunca
+     * decidir nada. Estourar aqui e um resultado — o player passa para a
+     * proxima fonte em vez de esperar para sempre.
+     */
+    private const val EXTRACAO_TIMEOUT_MS = 25_000L
+
+
+    /**
      * Fontes utilizaveis na televisao.
      *
      * Filtra o que exige navegador: `iframeDireto` e `iframeDesafio` dependem de
@@ -161,7 +173,13 @@ object FontesTv {
         val provedor = PlayerExtractors.detectProvider(embed) ?: "desconhecido"
         val comeco = System.currentTimeMillis()
 
-        val extraido = runCatching { StreamExtractor.extract(embed) }.getOrElse {
+        // Teto de tempo na extracao. Extrator baseado em WebView pode ficar
+        // preso num desafio que nunca resolve, e sem isto a tela fica em
+        // "carregando" para sempre — foi o que se viu em campo.
+        val extraido = runCatching {
+            withTimeoutOrNull(EXTRACAO_TIMEOUT_MS) { StreamExtractor.extract(embed) }
+                ?: throw IllegalStateException("extracao_estourou_tempo")
+        }.getOrElse {
             ObaLog.falha(
                 ObaLog.Fase.EXTRACAO, "tv_fonte_falhou", it,
                 "servidor" to fonte.rotulo, "provedor" to provedor,
@@ -217,15 +235,35 @@ object FontesTv {
                 // conjunto e reproduzir com outro daria um "manifesto vivo" que
                 // o ExoPlayer nao consegue abrir.
                 .apply { CabecalhosMidia.de(referer, url).forEach { (n, v) -> header(n, v) } }
-                .apply { if (!pedeManifesto) head() else get() }
+                .apply {
+                    if (pedeManifesto) {
+                        get()
+                    } else {
+                        // GET de dois bytes, e nao HEAD.
+                        //
+                        // CDN da AWS (CloudFront e afins) costuma recusar HEAD
+                        // com 403 mesmo quando o GET funciona — a assinatura da
+                        // URL cobre o metodo. Era isso que descartava fontes de
+                        // video que tocam normalmente no site: a checagem
+                        // reprovava uma midia viva e o player nem tentava.
+                        get()
+                        header("Range", "bytes=0-1")
+                    }
+                }
                 .build()
 
             runCatching {
-                ObaflixApp.mediaClient.newCall(requisicao).execute().use { r ->
+                // `httpClient`, e nao `mediaClient`: o de midia tem readTimeout
+                // zero de proposito (corpo consumido devagar pelo player), e uma
+                // conferencia com timeout infinito trava a tela sem nunca falhar.
+                ObaflixApp.httpClient.newCall(requisicao).execute().use { r ->
                     if (!r.isSuccessful) {
                         ObaLog.alerta(
-                            ObaLog.Fase.EXTRACAO, "tv_manifesto_recusado",
+                            ObaLog.Fase.MANIFESTO, "tv_manifesto_recusado",
                             "status" to r.code,
+                            "metodo" to (if (pedeManifesto) "GET" else "GET/Range"),
+                            "host" to ObaLog.host(url),
+                            "servidorCdn" to (r.header("Server") ?: "-"),
                         )
                         return@use null
                     }

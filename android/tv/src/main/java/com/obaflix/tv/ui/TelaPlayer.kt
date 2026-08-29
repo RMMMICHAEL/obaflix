@@ -1,3 +1,8 @@
+// Este arquivo e o player: praticamente tudo que ele toca do Media3 esta
+// marcado como instavel (PlayerView, AspectRatioFrameLayout, OkHttpDataSource,
+// HttpDataSource). Optar no arquivo evita repetir a anotacao em cada funcao.
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.obaflix.tv.ui
 
 import android.net.Uri
@@ -79,6 +84,9 @@ import com.obaflix.tv.player.Pedido
 import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlinx.coroutines.launch
 
 /**
@@ -105,6 +113,16 @@ private const val ESCONDER_MS = 5_000L
 private const val SALVAR_A_CADA_MS = 30_000L
 
 /**
+ * Quanto se espera o Media3 sair de BUFFERING e come�ar de fato.
+ *
+ * Uma fonte so conta como boa quando o player chega em READY. Extracao que
+ * devolveu URL e manifesto que respondeu 200 nao provam nada: o segmento pode
+ * dar 403, o codec pode nao existir no aparelho, o CDN pode aceitar a conexao e
+ * nunca mandar byte. Todos esses casos apareciam como "carregando" eterno.
+ */
+private const val PRONTO_TIMEOUT_MS = 20_000L
+
+/**
  * Player de televisao.
  *
  * A extracao roda no aparelho, com o extrator compartilhado; a URL real da
@@ -112,6 +130,42 @@ private const val SALVAR_A_CADA_MS = 30_000L
  * e "Servidor 1", "Servidor 2" — o mesmo que o servidor devolve na projecao
  * publica.
  */
+/**
+ * Suspende ate o player ficar pronto, falhar ou estourar o tempo.
+ *
+ * Devolve null quando ficou pronto; caso contrario, o motivo. E aqui que
+ * "reproduziu" passa a significar reproduziu, e nao "a extracao respondeu".
+ */
+private suspend fun aguardarPronto(player: ExoPlayer): String? =
+    withTimeoutOrNull(PRONTO_TIMEOUT_MS) {
+        if (player.playbackState == Player.STATE_READY) return@withTimeoutOrNull null
+        suspendCancellableCoroutine<String?> { cont ->
+            val ouvinte = object : Player.Listener {
+                override fun onPlaybackStateChanged(estado: Int) {
+                    if (estado == Player.STATE_READY && cont.isActive) {
+                        player.removeListener(this)
+                        cont.resume(null)
+                    }
+                }
+
+                override fun onPlayerError(erro: PlaybackException) {
+                    if (!cont.isActive) return
+                    player.removeListener(this)
+                    cont.resume(motivoDe(erro))
+                }
+            }
+            player.addListener(ouvinte)
+            cont.invokeOnCancellation { player.removeListener(ouvinte) }
+        }
+    } ?: "sem_resposta_${PRONTO_TIMEOUT_MS / 1000}s"
+
+/** Motivo legivel de uma falha do Media3, com o status HTTP quando existe. */
+private fun motivoDe(erro: PlaybackException): String = when (val causa = erro.cause) {
+    is HttpDataSource.InvalidResponseCodeException -> "http_" + causa.responseCode
+    null -> erro.errorCodeName
+    else -> causa.javaClass.simpleName
+}
+
 @Composable
 fun TelaPlayer(pedido: Pedido) {
     val context = LocalContext.current
@@ -127,6 +181,10 @@ fun TelaPlayer(pedido: Pedido) {
     // Marca que o servidor da vez foi escolhido a dedo. Falha em escolha manual
     // nao pode virar avanco silencioso: quem escolheu precisa saber o que houve.
     var escolhaManual by remember { mutableStateOf(false) }
+    // Enquanto o preparo espera por READY, quem trata a falha e o proprio
+    // preparo. Sem esta trava, o ouvinte global avancaria de fonte ao mesmo
+    // tempo e as duas trocas se atropelariam.
+    var aguardandoPreparo by remember { mutableStateOf(false) }
 
     var episodioAtual by remember { mutableStateOf(pedido.episodioId) }
     var temporadaAtual by remember { mutableStateOf(pedido.temporada) }
@@ -298,7 +356,43 @@ fun TelaPlayer(pedido: Pedido) {
         player.prepare()
         player.playWhenReady = true
         fonteAtual = indice
-        carregando = false
+
+        // Só agora se sabe se a fonte presta. Antes daqui, "carregando = false"
+        // era mentira: a extração tinha respondido, mas o vídeo podia nunca
+        // comecar — e a tela ficava parada sem erro nenhum.
+        aguardandoPreparo = true
+        val motivo = aguardarPronto(player)
+        aguardandoPreparo = false
+
+        if (motivo == null) {
+            ObaLog.evento(
+                ObaLog.Fase.PLAYER, "tv_reproducao_iniciada",
+                "servidor" to fonte.rotulo,
+            )
+            // Deu certo: o proximo problema volta a ter failover automatico.
+            escolhaManual = false
+            carregando = false
+            return
+        }
+
+        ObaLog.alerta(
+            ObaLog.Fase.PLAYER, "tv_fonte_nao_iniciou",
+            "servidor" to fonte.rotulo, "motivo" to motivo,
+        )
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+
+        if (!escolhaManual && indice + 1 < fontes.size) {
+            fonteAtual = indice + 1
+            preparar(indice + 1, retomarDe)
+        } else if (escolhaManual) {
+            falha = fonte.rotulo + " não iniciou (" + motivo + "). Escolha outro no menu."
+            carregando = false
+        } else {
+            falha = "Nenhum servidor conseguiu abrir este conteúdo."
+            carregando = false
+        }
     }
 
     // Abertura e troca de episodio. Roda toda vez que `episodioAtual` muda.
@@ -366,6 +460,9 @@ fun TelaPlayer(pedido: Pedido) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // Durante o preparo quem decide e `preparar`; dois caminhos de
+                // failover para a mesma falha se atropelam.
+                if (aguardandoPreparo) return
                 // A causa real, e nao so o codigo generico: status HTTP quando e
                 // resposta do CDN, nome da excecao quando e rede ou parser. Sem
                 // isto, 403 por cabecalho faltando e "fonte quebrada" ficam

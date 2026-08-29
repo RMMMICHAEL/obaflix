@@ -7,6 +7,8 @@ import com.obaflix.tv.BuildConfig
 import com.obaflix.tv.sessao.PareamentoTv
 import com.obaflix.tv.sessao.SessaoTv
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -314,9 +316,17 @@ object ApiObaflix {
             return Detalhe(item(o, "filme"), emptyList(), emptyList())
         }
 
-        val o = objeto("/api/series/" + id) ?: return null
+        // As duas chamadas em paralelo. Em sequencia, a ficha esperava a soma
+        // de duas idas ao servidor para mostrar o titulo — e a lista de
+        // episodios nao depende do corpo da serie para ser pedida.
+        val par = coroutineScope {
+            val corpo = async { objeto("/api/series/" + id) }
+            val eps = async { vetor("/api/series/" + id + "/episodios") }
+            Pair(corpo.await(), eps.await())
+        }
+        val o = par.first ?: return null
+        val arr = par.second
         val base = item(o, tipo)
-        val arr = vetor("/api/series/" + id + "/episodios")
         val episodios = (0 until (arr?.length() ?: 0)).mapNotNull { i ->
             val e = arr?.optJSONObject(i) ?: return@mapNotNull null
             Episodio(

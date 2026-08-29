@@ -200,11 +200,24 @@ private fun Moldura(aoFocarArte: (String?) -> Unit) {
 }
 
 /**
+ * Espera antes de a selecao por foco valer.
+ *
+ * Curto o bastante para parecer imediato a quem para na aba; longo o bastante
+ * para quem atravessa a barra inteira nao disparar uma carga por aba.
+ */
+private const val ATRASO_ABA_MS = 280L
+
+/**
  * Barra de abas.
  *
- * O foco destaca; o OK e que troca de aba. Trocar no foco pareceria mais fluido
- * por um segundo e custaria uma consulta ao catalogo a cada passagem de seta —
- * seis abas atravessadas seriam seis cargas que ninguem pediu.
+ * A aba troca no **foco**, nao no OK: mover a seta para Filmes ja abre Filmes.
+ * E o comportamento que se espera de uma televisao — apertar OK para confirmar
+ * uma navegacao que ja esta visivel e um passo a mais sem funcao.
+ *
+ * O custo que o OK evitava (uma carga por aba atravessada) e resolvido pelo
+ * atraso de ATRASO_ABA_MS: quem passa reto por quatro abas nao dispara carga
+ * nenhuma, porque `LaunchedEffect(focado)` cancela a espera anterior quando o
+ * foco sai. So a aba onde a seta parou chega a carregar.
  */
 @Composable
 private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
@@ -282,6 +295,15 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
     val focado by interacao.collectIsFocusedAsState()
     val escala = escalaFoco(focado, alvo = 1.06f)
 
+    // Selecao por foco, com espera. O cancelamento vem de graca: quando o foco
+    // muda, o Compose cancela esta corrotina e a aba que ficou para tras nunca
+    // chega a pedir nada ao servidor.
+    LaunchedEffect(focado) {
+        if (!focado || selecionada) return@LaunchedEffect
+        kotlinx.coroutines.delay(ATRASO_ABA_MS)
+        Navegacao.irPara(aba)
+    }
+
     // Como o item_tab_recyclerview da referencia: sem preenchimento no foco. O
     // texto clareia e o sublinhado (vermelho Obaflix) marca a aba aberta. O
     // texto e uma linha so (softWrap = false) — BUSCAR nunca quebra na vertical.
@@ -289,6 +311,7 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
             .escalar(escala)
+            // OK continua valendo, para quem tem o habito de confirmar.
             .focavel(interacao = interacao) { Navegacao.irPara(aba) }
             .padding(horizontal = 12.dp, vertical = 2.dp),
     ) {

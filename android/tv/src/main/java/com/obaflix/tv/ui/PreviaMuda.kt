@@ -111,6 +111,9 @@ fun PreviaMuda(pedido: Pedido, arte: String?, ativo: Boolean = true, modifier: M
     }
 }
 
+// Media3 marca OkHttpDataSource e DefaultMediaSourceFactory como instaveis.
+// Optar por funcao mantem o aviso valendo para o resto do arquivo.
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 private fun Reprodutor(url: String, referer: String?) {
     val context = LocalContext.current

@@ -38,6 +38,7 @@ import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.sessao.PareamentoTv
 import com.obaflix.tv.ui.componentes.CardPaisagem
 import com.obaflix.tv.ui.componentes.CardPoster
+import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
 import com.obaflix.tv.ui.componentes.Pilula
 import com.obaflix.tv.ui.componentes.enderecoDe
@@ -56,6 +57,19 @@ import kotlinx.coroutines.launch
  * e-mail, por privacidade), entao o cabecalho mostra o dispositivo. Nada e
  * inventado alem disso.
  */
+/**
+ * Como os favoritos sao agrupados.
+ *
+ * Segue as abas do aplicativo, para a pessoa reconhecer o mesmo vocabulario nos
+ * dois lugares. "Kids" agrupa desenho, que e como o catalogo classifica.
+ */
+private val CATEGORIAS_FAVORITO: List<Pair<String, Set<String>>> = listOf(
+    "Filmes" to setOf("filme"),
+    "Séries" to setOf("serie"),
+    "Animes" to setOf("anime"),
+    "Kids" to setOf("desenho", "kids"),
+)
+
 @Composable
 fun TelaPerfil() {
     val context = LocalContext.current
@@ -117,9 +131,17 @@ fun TelaPerfil() {
                         fontSize = Escala.Rotulo,
                     )
                 }
+                // Voltar visivel e alcancavel pelo controle. O BACK continua
+                // funcionando, mas depender so dele obriga a pessoa a saber que
+                // ele existe — e nem todo controle de TV Box tem tecla obvia.
+                Pilula(
+                    texto = "Voltar",
+                    modifier = Modifier.focusRequester(primeiro),
+                    aoClicar = { Navegacao.voltar() },
+                )
+                EspacoH(12.dp)
                 Pilula(
                     texto = "Sair da conta",
-                    modifier = Modifier.focusRequester(primeiro),
                     aoClicar = { escopo.launch { PareamentoTv.sair(context) } },
                 )
             }
@@ -146,16 +168,28 @@ fun TelaPerfil() {
                             }
                         },
                     )
-                    Secao(
-                        titulo = "Favoritos",
-                        itens = favoritos,
-                        margem = margem,
-                        paisagem = false,
-                        rotuloRemover = "Remover",
-                        aoRemover = { item ->
-                            escopo.launch { ApiObaflix.removerFavorito(item.id, item.tipo); aposRemover() }
-                        },
-                    )
+                    // Favoritos por categoria. Uma lista unica com filme, serie,
+                    // anime e desenho misturados vira uma fileira longa demais
+                    // para percorrer com seta — separar e o que a torna usavel.
+                    // So aparece a categoria que tem conteudo.
+                    CATEGORIAS_FAVORITO.forEach { (rotulo, tipos) ->
+                        val doGrupo = favoritos.filter { it.tipo in tipos }
+                        if (doGrupo.isNotEmpty()) {
+                            Secao(
+                                titulo = "Favoritos · " + rotulo,
+                                itens = doGrupo,
+                                margem = margem,
+                                paisagem = false,
+                                rotuloRemover = "Remover",
+                                aoRemover = { item ->
+                                    escopo.launch {
+                                        ApiObaflix.removerFavorito(item.id, item.tipo)
+                                        aposRemover()
+                                    }
+                                },
+                            )
+                        }
+                    }
                     Secao(
                         titulo = "Histórico",
                         itens = historico,

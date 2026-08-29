@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -313,11 +314,25 @@ fun Pilula(
     principal: Boolean = false,
     chaveFoco: String? = null,
     modifier: Modifier = Modifier,
+    /**
+     * Aplica so por receber foco, com espera.
+     *
+     * Para filtro — ano, temporada, categoria — mover a seta ja e a escolha. O
+     * `LaunchedEffect(focado)` cancela sozinho quando o foco sai, entao
+     * atravessar dez anos nao dispara dez consultas.
+     */
+    aplicaNoFoco: Boolean = false,
     aoClicar: () -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
     val escala = escalaFoco(focado, alvo = 1.05f)
+
+    LaunchedEffect(focado) {
+        if (!aplicaNoFoco || !focado || selecionado) return@LaunchedEffect
+        kotlinx.coroutines.delay(280)
+        aoClicar()
+    }
     val forma = RoundedCornerShape(6.dp)
 
     val fundo = when {

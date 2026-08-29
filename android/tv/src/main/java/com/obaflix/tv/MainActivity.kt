@@ -46,6 +46,11 @@ class MainActivity : ComponentActivity() {
      * estado valido. Nao e um catch generico: qualquer outra excecao sobe
      * normalmente. Sem isto, um unico toque no momento errado fecha o app.
      */
+    // O lint marca `super.dispatchKeyEvent` como RestrictedApi porque a
+    // ComponentActivity o anota para uso interno do androidx. Chamar super de
+    // um override e exatamente o contrato do metodo — o aviso e artefato de o
+    // modulo ter groupId proprio, nao um uso indevido.
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         return try {
             super.dispatchKeyEvent(event)
