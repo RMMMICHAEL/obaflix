@@ -51,9 +51,6 @@ import com.obaflix.tv.ui.componentes.escalar
 import com.obaflix.tv.ui.componentes.focavel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Moldura do aplicativo.
@@ -195,34 +192,37 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp, bloqueada: Boolean) {
     val context = LocalContext.current
     val escopo = androidx.compose.runtime.rememberCoroutineScope()
     val primeiroItem = remember { FocusRequester() }
-    var relogio by remember { mutableStateOf(agora()) }
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            relogio = agora()
-            delay(20_000)
+    // Foco inicial robusto — a raiz da queixa "as setas so funcionam depois de
+    // eu interagir". Um unico requestFocus dispara antes de o no estar anexado e
+    // falha em silencio; o app fica em modo toque e o D-pad nao acha alvo. Aqui
+    // insistimos algumas vezes; assim que o foco fixa, os pedidos seguintes sao
+    // no-op. Para quando alguma camada (ficha/player) assume.
+    LaunchedEffect(bloqueada) {
+        if (bloqueada) return@LaunchedEffect
+        repeat(12) {
+            if (Navegacao.emCamada) return@LaunchedEffect
+            runCatching { primeiroItem.requestFocus() }
+            delay(60)
         }
-    }
-
-    // O foco inicial do aplicativo nasce na barra. E o unico ponto da tela em
-    // que a pessoa sempre se reconhece ao ligar a televisao.
-    LaunchedEffect(Unit) {
-        if (!bloqueada) runCatching { primeiroItem.requestFocus() }
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = margem, end = margem, top = 20.dp, bottom = 8.dp),
+            .padding(start = margem, end = margem, top = 16.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Marca()
-        EspacoH(36.dp)
+        EspacoH(24.dp)
 
+        // As abas ficam no meio, com peso, para caberem em qualquer resolucao. O
+        // texto nunca quebra (softWrap desligado no ItemMenu): se faltar largura,
+        // encolhe/rola em vez de virar duas linhas.
         Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.focusGroup(),
+            modifier = Modifier.weight(1f).focusGroup(),
         ) {
             Aba.values().forEachIndexed { indice, aba ->
                 ItemMenu(
@@ -233,10 +233,7 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp, bloqueada: Boolean) {
             }
         }
 
-        Box(Modifier.weight(1f))
-
-        Text(text = relogio, color = Cores.TextoFraco, fontSize = Escala.Rotulo)
-        EspacoH(20.dp)
+        EspacoH(16.dp)
         BotaoConta(aoSair = { escopo.launch { PareamentoTv.sair(context) } })
     }
 }
@@ -245,14 +242,16 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp, bloqueada: Boolean) {
 private fun Marca() {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
-            Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(Cores.Destaque),
+            Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(Cores.Destaque),
         )
-        EspacoH(10.dp)
+        EspacoH(8.dp)
         Text(
             text = "OBAFLIX",
             color = Cores.Texto,
-            fontSize = Escala.Secao,
+            fontSize = Escala.Rotulo,
             fontWeight = FontWeight.Black,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -264,15 +263,14 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
     val escala = escalaFoco(focado, alvo = 1.06f)
 
     // Como o item_tab_recyclerview da referencia: sem preenchimento no foco. O
-    // texto clareia (color_text_tab_title) e o sublinhado (color_main, aqui o
-    // vermelho Obaflix) marca a aba aberta — inclusive quando o foco ja desceu
-    // para o catalogo e nao ha mais nada destacado no topo.
+    // texto clareia e o sublinhado (vermelho Obaflix) marca a aba aberta. O
+    // texto e uma linha so (softWrap = false) — BUSCAR nunca quebra na vertical.
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
             .escalar(escala)
             .focavel(interacao = interacao) { Navegacao.irPara(aba) }
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = 12.dp, vertical = 2.dp),
     ) {
         Text(
             text = aba.rotulo,
@@ -280,13 +278,15 @@ private fun ItemMenu(aba: Aba, selecionada: Boolean, modifier: Modifier = Modifi
                 focado || selecionada -> Cores.Texto
                 else -> Cores.TextoFraco
             },
-            fontSize = Escala.Secao,
+            fontSize = Escala.Rotulo,
             fontWeight = if (selecionada || focado) FontWeight.Black else FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false,
         )
-        EspacoV(6.dp)
+        EspacoV(5.dp)
         Box(
             Modifier
-                .size(width = 26.dp, height = 4.dp)
+                .size(width = 22.dp, height = 3.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(
                     when {
@@ -340,5 +340,3 @@ private fun BotaoConta(aoSair: () -> Unit) {
         }
     }
 }
-
-private fun agora(): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
