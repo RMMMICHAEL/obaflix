@@ -114,6 +114,24 @@ object FontesTv {
      */
     private val BINARIOS = listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".ts", ".m4v")
 
+    /**
+     * Reconhece um master HLS pelo formato do endereco, sem tocar na rede.
+     *
+     * `.urlset/master.txt` e como StreamWish, Hide e parentes entregam o master:
+     * extensao `.txt`, conteudo de playlist. Saber disso de antemao evita a
+     * unica coisa que a conferencia nao pode fazer — gastar a URL. Varios desses
+     * links valem para uma requisicao so, ou expiram em segundos: quando a
+     * conferencia buscava o master, o player recebia um endereco ja queimado e
+     * levava 404. Era exatamente o caso do provedor `wish`.
+     */
+    private fun pareceHls(url: String): Boolean {
+        val caminho = url.substringBefore('?').lowercase()
+        return caminho.endsWith(".m3u8") ||
+            caminho.contains(".urlset/") ||
+            caminho.endsWith("/master.txt") ||
+            caminho.endsWith("/playlist.txt")
+    }
+
 
     /**
      * Teto de tempo da extracao de UMA fonte.
@@ -134,7 +152,35 @@ object FontesTv {
      * player de TV e nativo. Oferecer um "Servidor 4" que nunca abre e pior do
      * que nao oferecer.
      */
+    /**
+     * Registra o provedor de TLS em uso, uma vez por processo.
+     *
+     * A confirmacao que a instalacao do Conscrypt emite sai no `onCreate` da
+     * Application — antes de qualquer logcat anexado depois da abertura do
+     * aplicativo. Repetir aqui torna possivel conferir, num log capturado no
+     * meio da sessao, se o TLS 1.3 esta mesmo disponivel neste aparelho.
+     */
+    private var tlsRegistrado = false
+
+    private fun registrarTls() {
+        if (tlsRegistrado) return
+        tlsRegistrado = true
+        val provedor = runCatching {
+            javax.net.ssl.SSLContext.getDefault().provider.name
+        }.getOrDefault("?")
+        val protocolos = runCatching {
+            javax.net.ssl.SSLContext.getDefault().defaultSSLParameters.protocols.joinToString(",")
+        }.getOrDefault("?")
+        ObaLog.evento(
+            ObaLog.Fase.SESSAO, "tv_tls_em_uso",
+            "provedor" to provedor,
+            "protocolos" to protocolos,
+            "sdk" to android.os.Build.VERSION.SDK_INT,
+        )
+    }
+
     suspend fun abrir(pedido: Pedido): SessaoFontes? {
+        registrarTls()
         val raiz = ApiObaflix.fontes(
             conteudoId = pedido.conteudoId,
             conteudoTipo = if (pedido.ehSerie) "serie" else "filme",
@@ -218,19 +264,51 @@ object FontesTv {
             "ms" to (System.currentTimeMillis() - comeco),
         )
 
+        // Quando o endereco ja diz que e HLS, nao se toca nele: a conferencia
+        // nao acrescentaria nada (o Media3 tambem le o master, e as variantes
+        // aparecem como faixas) e poderia gastar um link de uso unico. A URL e
+        // os cabecalhos chegam ao player exatamente como sairam do extrator.
+        val hlsPeloEndereco = pareceHls(extraido.stream) || extraido.isMaster ||
+            extraido.tipo.equals("hls", ignoreCase = true)
+        if (hlsPeloEndereco) {
+            ObaLog.evento(
+                ObaLog.Fase.MANIFESTO, "tv_manifesto_pulado",
+                "servidor" to fonte.rotulo, "provedor" to provedor,
+                "motivo" to "hls_pelo_endereco",
+            )
+            return Midia(
+                ehHls = true,
+                url = extraido.stream,
+                referer = extraido.referer,
+                legendas = extraido.subtitles.distinctBy { it.file },
+                qualidades = extraido.qualities.distinct(),
+                audios = extraido.audioTracks.distinct(),
+            )
+        }
+
         val info = conferirManifesto(extraido.stream, extraido.referer)
         if (info == null) {
-            // Manifesto morto e a causa mais comum de "carregou e ficou preto".
+            // Conferencia inconclusiva nao condena mais a fonte. Quem decide se
+            // a midia presta e o Media3, que agora espera de verdade por READY;
+            // recusar aqui derrubava fonte boa por causa de um 404 que era da
+            // propria conferencia, e nao da reproducao.
             ObaLog.alerta(
-                ObaLog.Fase.MANIFESTO, "tv_manifesto_recusado",
+                ObaLog.Fase.MANIFESTO, "tv_manifesto_inconclusivo",
                 "servidor" to fonte.rotulo, "provedor" to provedor,
+                "acao" to "entregue_ao_player",
             )
-            return null
+            return Midia(
+                ehHls = false,
+                url = extraido.stream,
+                referer = extraido.referer,
+                legendas = extraido.subtitles.distinctBy { it.file },
+                qualidades = extraido.qualities.distinct(),
+                audios = extraido.audioTracks.distinct(),
+            )
         }
 
         return Midia(
-            ehHls = info.ehHls || extraido.isMaster ||
-                extraido.tipo.equals("hls", ignoreCase = true),
+            ehHls = info.ehHls,
             url = extraido.stream,
             referer = extraido.referer,
             legendas = (extraido.subtitles + info.subtitles).distinctBy { it.file },
@@ -247,6 +325,12 @@ object FontesTv {
      * a checagem e so do status, sem baixar o corpo.
      */
     private suspend fun conferirManifesto(url: String, referer: String?): HlsMediaResumo? =
+        withTimeoutOrNull(CONFERENCIA_TIMEOUT_MS) { conferirAgora(url, referer) }
+
+    /** Teto proprio da conferencia: ela e um atalho, nunca uma espera longa. */
+    private const val CONFERENCIA_TIMEOUT_MS = 8_000L
+
+    private suspend fun conferirAgora(url: String, referer: String?): HlsMediaResumo? =
         withContext(Dispatchers.IO) {
             // Range so em arquivo de midia de verdade. Playlist com Range volta
             // 404 em alguns CDN (visto no Cloudflare), e ai uma fonte boa era

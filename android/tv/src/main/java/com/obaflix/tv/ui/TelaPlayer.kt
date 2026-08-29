@@ -6,6 +6,7 @@
 package com.obaflix.tv.ui
 
 import android.net.Uri
+import android.os.SystemClock
 import android.view.ViewGroup
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -65,7 +66,10 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.mediacodec.MediaCodecDecoderException
+import androidx.media3.exoplayer.mediacodec.MediaCodecRenderer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -83,6 +87,8 @@ import com.obaflix.tv.player.GravadorProgresso
 import com.obaflix.tv.player.Pedido
 import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -131,33 +137,89 @@ private const val PRONTO_TIMEOUT_MS = 20_000L
  * publica.
  */
 /**
- * Suspende ate o player ficar pronto, falhar ou estourar o tempo.
+ * Como terminou a espera por uma fonte.
  *
- * Devolve null quando ficou pronto; caso contrario, o motivo. E aqui que
- * "reproduziu" passa a significar reproduziu, e nao "a extracao respondeu".
+ * Tipo proprio, e nao `String?`, por um motivo especifico: a versao anterior
+ * devolvia `null` para "ficou pronto" de dentro de um `withTimeoutOrNull`, que
+ * tambem devolve `null` quando estoura o tempo. Os dois casos viravam o mesmo
+ * valor, e todo sucesso era lido como timeout — a fonte boa era derrubada
+ * segundos depois de comecar, com "sem_resposta_20s" no log. Sentinela nao-nula
+ * torna a confusao impossivel de reaparecer.
  */
-private suspend fun aguardarPronto(player: ExoPlayer): String? =
-    withTimeoutOrNull(PRONTO_TIMEOUT_MS) {
-        if (player.playbackState == Player.STATE_READY) return@withTimeoutOrNull null
-        suspendCancellableCoroutine<String?> { cont ->
-            val ouvinte = object : Player.Listener {
-                override fun onPlaybackStateChanged(estado: Int) {
-                    if (estado == Player.STATE_READY && cont.isActive) {
-                        player.removeListener(this)
-                        cont.resume(null)
-                    }
-                }
+private sealed interface Preparo {
+    object Pronto : Preparo
+    data class Falhou(val motivo: String) : Preparo
+}
 
-                override fun onPlayerError(erro: PlaybackException) {
+/** Nome legivel do estado do player, para o log do watchdog. */
+private fun nomeEstado(estado: Int): String = when (estado) {
+    Player.STATE_IDLE -> "IDLE"
+    Player.STATE_BUFFERING -> "BUFFERING"
+    Player.STATE_READY -> "READY"
+    Player.STATE_ENDED -> "ENDED"
+    else -> "?" + estado
+}
+
+/**
+ * Suspende ate o player comecar de fato, falhar ou estourar o tempo.
+ *
+ * So deve ser chamada **depois** de setMediaItem + prepare + playWhenReady: o
+ * relogio vale para a preparacao daquela midia, e nao para o tempo de extracao
+ * que veio antes. A contagem usa `elapsedRealtime` (monotonico), que nao anda
+ * para tras se o relogio do aparelho for ajustado no meio.
+ */
+private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
+    val inicio = SystemClock.elapsedRealtime()
+    ObaLog.evento(
+        ObaLog.Fase.PLAYER, "tv_watchdog_inicio",
+        "servidor" to rotulo,
+        "limiteMs" to PRONTO_TIMEOUT_MS,
+        "prazoEm" to (inicio + PRONTO_TIMEOUT_MS),
+        "estado" to nomeEstado(player.playbackState),
+        "carregando" to player.isLoading,
+        "playWhenReady" to player.playWhenReady,
+    )
+
+    val fim: Preparo? = withTimeoutOrNull(PRONTO_TIMEOUT_MS) {
+        // Ja pronto antes de o ouvinte entrar: acontece com midia em cache.
+        if (player.playbackState == Player.STATE_READY) return@withTimeoutOrNull Preparo.Pronto
+        suspendCancellableCoroutine<Preparo> { cont ->
+            val ouvinte = object : Player.Listener {
+                private fun encerrar(resultado: Preparo) {
                     if (!cont.isActive) return
                     player.removeListener(this)
-                    cont.resume(motivoDe(erro))
+                    cont.resume(resultado)
                 }
+
+                override fun onPlaybackStateChanged(estado: Int) {
+                    if (estado == Player.STATE_READY) encerrar(Preparo.Pronto)
+                }
+
+                // Primeiro quadro desenhado tambem encerra: em algumas fontes o
+                // video ja esta na tela antes de o estado assentar em READY.
+                override fun onRenderedFirstFrame() = encerrar(Preparo.Pronto)
+
+                override fun onPlayerError(erro: PlaybackException) =
+                    encerrar(Preparo.Falhou(motivoDe(erro)))
             }
             player.addListener(ouvinte)
             cont.invokeOnCancellation { player.removeListener(ouvinte) }
         }
-    } ?: "sem_resposta_${PRONTO_TIMEOUT_MS / 1000}s"
+    }
+
+    val decorrido = SystemClock.elapsedRealtime() - inicio
+    val resultado = fim ?: Preparo.Falhou("sem_resposta_${PRONTO_TIMEOUT_MS / 1000}s")
+    ObaLog.evento(
+        ObaLog.Fase.PLAYER, "tv_watchdog_fim",
+        "servidor" to rotulo,
+        "decorridoMs" to decorrido,
+        "porTempo" to (fim == null),
+        "estado" to nomeEstado(player.playbackState),
+        "carregando" to player.isLoading,
+        "erroPlayer" to (player.playerError?.errorCodeName ?: "-"),
+    )
+    return resultado
+}
 
 /** Motivo legivel de uma falha do Media3, com o status HTTP quando existe. */
 private fun motivoDe(erro: PlaybackException): String {
@@ -165,11 +227,17 @@ private fun motivoDe(erro: PlaybackException): String {
     // isto usava `javaClass.simpleName` da causa, e no APK minificado o motivo
     // saia como "m" ou "n1" — nome ofuscado, diagnostico nenhum.
     val codigo = erro.errorCodeName
-    val causa = erro.cause
-    return if (causa is HttpDataSource.InvalidResponseCodeException) {
-        codigo + "/http_" + causa.responseCode
-    } else {
-        codigo
+    return when (val causa = erro.cause) {
+        is HttpDataSource.InvalidResponseCodeException -> codigo + "/http_" + causa.responseCode
+        // Falha de decodificacao nao e falha de rede, e tratar as duas igual
+        // manda trocar de servidor quando o problema e o aparelho. O mime e o
+        // codec dizem se falta suporte (HEVC, AV1) ou se o decodificador do
+        // aparelho simplesmente engasgou.
+        is MediaCodecRenderer.DecoderInitializationException ->
+            codigo + "/sem_decoder_" + (causa.mimeType ?: "?")
+        is MediaCodecDecoderException ->
+            codigo + "/decoder_" + (causa.codecInfo?.name ?: "?")
+        else -> codigo
     }
 }
 
@@ -192,6 +260,15 @@ fun TelaPlayer(pedido: Pedido) {
     // preparo. Sem esta trava, o ouvinte global avancaria de fonte ao mesmo
     // tempo e as duas trocas se atropelariam.
     var aguardandoPreparo by remember { mutableStateOf(false) }
+
+    // ── Ciclo de vida das tentativas ─────────────────────────────────────────
+    // Uma tentativa por vez, e a anterior morre inteira antes de a nova comecar.
+    // Sem isto, trocar de servidor deixava a espera antiga viva: ela estourava
+    // 20s depois e derrubava a fonte NOVA, que estava tocando bem. A epoca e o
+    // segundo cinto — se por qualquer caminho uma tentativa velha sobreviver a
+    // um ponto de suspensao, ela se descobre obsoleta e sai sem tocar em nada.
+    val jobPreparo = remember { java.util.concurrent.atomic.AtomicReference<Job?>(null) }
+    val epoca = remember { java.util.concurrent.atomic.AtomicInteger(0) }
 
     var episodioAtual by remember { mutableStateOf(pedido.episodioId) }
     var temporadaAtual by remember { mutableStateOf(pedido.temporada) }
@@ -247,8 +324,19 @@ fun TelaPlayer(pedido: Pedido) {
             .setUserAgent(CabecalhosMidia.USER_AGENT)
     }
 
+    // Decodificador com plano B. Quando o codec de hardware do aparelho recusa
+    // ou engasga com o video — comum em TV Box e em Android 9, e o que produzia
+    // ERROR_CODE_DECODING_FAILED numa fonte que baixava perfeitamente — o Media3
+    // reinicia com o proximo decodificador da lista, incluindo o de software,
+    // em vez de desistir da fonte. Sem isto, defeito do aparelho era lido como
+    // servidor ruim, e trocar de servidor nunca resolvia.
+    val fabricaRenderizadores = remember {
+        DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+    }
+
     val player = remember {
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, fabricaRenderizadores)
             .setMediaSourceFactory(DefaultMediaSourceFactory(fabricaHttp))
             .setSeekBackIncrementMs(SALTO_MS)
             .setSeekForwardIncrementMs(SALTO_MS)
@@ -291,7 +379,10 @@ fun TelaPlayer(pedido: Pedido) {
      * chamada, o que acontece com a posicao: troca de servidor e de qualidade
      * retomam onde estava; troca de episodio comeca do zero.
      */
-    suspend fun preparar(indice: Int, retomarDe: Long) {
+    suspend fun preparar(indice: Int, retomarDe: Long, minhaEpoca: Int) {
+        // Tentativa obsoleta nao mexe em nada: nem no player, nem no estado da
+        // tela. Quem manda e sempre a ultima chamada.
+        if (epoca.get() != minhaEpoca) return
         val id = sessao ?: return
         val fonte = fontes.getOrNull(indice) ?: run {
             falha = "Nenhum servidor conseguiu abrir este conteúdo."
@@ -309,12 +400,13 @@ fun TelaPlayer(pedido: Pedido) {
         player.clearMediaItems()
 
         val midia = FontesTv.resolver(id, fonte)
+        if (epoca.get() != minhaEpoca) return
         if (midia == null) {
             // Cai para a proxima. E o mesmo failover dos outros ambientes: a
             // pessoa nao precisa saber qual servidor falhou, so continuar vendo.
             if (!escolhaManual && indice + 1 < fontes.size) {
                 fonteAtual = indice + 1
-                preparar(indice + 1, retomarDe)
+                preparar(indice + 1, retomarDe, minhaEpoca)
             } else if (escolhaManual) {
                 falha = "Não foi possível abrir " + fonte.rotulo + ". Escolha outro no menu."
                 carregando = false
@@ -370,14 +462,22 @@ fun TelaPlayer(pedido: Pedido) {
         player.playWhenReady = true
         fonteAtual = indice
 
-        // Só agora se sabe se a fonte presta. Antes daqui, "carregando = false"
-        // era mentira: a extração tinha respondido, mas o vídeo podia nunca
-        // comecar — e a tela ficava parada sem erro nenhum.
+        // Só agora se sabe se a fonte presta, e só agora o relogio pode comecar:
+        // o watchdog mede a preparacao desta midia, nao a extracao que veio
+        // antes. Antes daqui, "carregando = false" era mentira — a extração
+        // tinha respondido, mas o vídeo podia nunca comecar.
         aguardandoPreparo = true
-        val motivo = aguardarPronto(player)
-        aguardandoPreparo = false
+        val resultado = try {
+            aguardarPronto(player, fonte.rotulo)
+        } finally {
+            // finally porque o cancelamento (troca de servidor no meio da
+            // espera) tambem precisa liberar a trava; senao o ouvinte global
+            // ficava mudo para sempre.
+            aguardandoPreparo = false
+        }
+        if (epoca.get() != minhaEpoca) return
 
-        if (motivo == null) {
+        if (resultado is Preparo.Pronto) {
             ObaLog.evento(
                 ObaLog.Fase.PLAYER, "tv_reproducao_iniciada",
                 "servidor" to fonte.rotulo,
@@ -388,6 +488,7 @@ fun TelaPlayer(pedido: Pedido) {
             return
         }
 
+        val motivo = (resultado as Preparo.Falhou).motivo
         ObaLog.alerta(
             ObaLog.Fase.PLAYER, "tv_fonte_nao_iniciou",
             "servidor" to fonte.rotulo, "motivo" to motivo,
@@ -398,7 +499,7 @@ fun TelaPlayer(pedido: Pedido) {
 
         if (!escolhaManual && indice + 1 < fontes.size) {
             fonteAtual = indice + 1
-            preparar(indice + 1, retomarDe)
+            preparar(indice + 1, retomarDe, minhaEpoca)
         } else if (escolhaManual) {
             falha = fonte.rotulo + " não iniciou (" + motivo + "). Escolha outro no menu."
             carregando = false
@@ -406,6 +507,26 @@ fun TelaPlayer(pedido: Pedido) {
             falha = "Nenhum servidor conseguiu abrir este conteúdo."
             carregando = false
         }
+    }
+
+    /**
+     * Ponto unico de entrada para preparar uma fonte.
+     *
+     * Cancela a tentativa anterior por inteiro — coroutine, espera, ouvinte — e
+     * so entao comeca a nova. `cancelAndJoin` e o detalhe que importa: sem o
+     * join, a tentativa velha ainda estaria correndo por alguns instantes e
+     * poderia registrar a propria falha por cima da fonte que acabou de entrar.
+     */
+    fun iniciarPreparo(indice: Int, retomarDe: Long, manual: Boolean) {
+        escolhaManual = manual
+        val minhaEpoca = epoca.incrementAndGet()
+        val anterior = jobPreparo.get()
+        val novo = escopo.launch {
+            anterior?.cancelAndJoin()
+            if (epoca.get() != minhaEpoca) return@launch
+            preparar(indice, retomarDe, minhaEpoca)
+        }
+        jobPreparo.set(novo)
     }
 
     // Abertura e troca de episodio. Roda toda vez que `episodioAtual` muda.
@@ -417,6 +538,11 @@ fun TelaPlayer(pedido: Pedido) {
     LaunchedEffect(pedido.conteudoId, episodioAtual) {
         carregando = true
         avisoProximo = false
+        // Mata a tentativa do episodio anterior antes de tudo. Sem isto, a
+        // espera dele continuava viva durante a abertura do episodio novo e
+        // podia declarar falha em cima dele.
+        epoca.incrementAndGet()
+        jobPreparo.getAndSet(null)?.cancelAndJoin()
         // Zera a midia e a posicao antes de qualquer coisa: o episodio novo nao
         // pode herdar o quadro nem o minuto do anterior.
         player.pause()
@@ -448,7 +574,7 @@ fun TelaPlayer(pedido: Pedido) {
             pedido.ehSerie -> ApiObaflix.progresso(pedido.conteudoId, episodioAtual) * 1000L
             else -> 0L
         }
-        preparar(0, alvoMs)
+        iniciarPreparo(0, alvoMs, manual = false)
     }
 
     DisposableEffect(Unit) {
@@ -502,12 +628,10 @@ fun TelaPlayer(pedido: Pedido) {
                     falha = "Este servidor não respondeu (" + detalhe + "). Escolha outro no menu."
                     carregando = false
                 } else {
-                    escopo.launch {
-                        if (fonteAtual + 1 < fontes.size) {
-                            preparar(fonteAtual + 1, posicaoMs)
-                        } else {
-                            falha = "A reprodução foi interrompida."
-                        }
+                    if (fonteAtual + 1 < fontes.size) {
+                        iniciarPreparo(fonteAtual + 1, posicaoMs, manual = false)
+                    } else {
+                        falha = "A reprodução foi interrompida."
                     }
                 }
             }
@@ -610,8 +734,7 @@ fun TelaPlayer(pedido: Pedido) {
             TipoGrupo.Servidor -> {
                 // Sem o `!=`: repetir o servidor que acabou de falhar e o gesto
                 // natural de quem tenta de novo, e antes isso nao fazia nada.
-                escolhaManual = true
-                escopo.launch { preparar(opcao, posicaoMs) }
+                iniciarPreparo(opcao, posicaoMs, manual = true)
             }
             TipoGrupo.Audio -> {
                 audioEscolhido = opcao
