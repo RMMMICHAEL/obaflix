@@ -27,7 +27,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.focusGroup
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -98,31 +97,23 @@ fun AppTv() {
         fundoAtual = fundoDesejado
     }
 
-    // Fechou a ultima camada: o cursor volta para o card de onde saiu. A
-    // rolagem ja esta preservada porque a moldura nunca foi descartada — o que
-    // se restaura aqui e so a posicao do foco.
-    LaunchedEffect(Navegacao.emCamada) {
-        if (!Navegacao.emCamada) {
-            delay(60)
-            restaurador.restaurar()
-        }
-    }
-
     CompositionLocalProvider(LocalRestaurador provides restaurador) {
         Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
-
-            FundoDinamico(fundoAtual)
-
-            Moldura(
-                bloqueado = Navegacao.emCamada,
-                aoFocarArte = { fundoDesejado = it },
-            )
-
-            Navegacao.pilha.forEach { camada ->
-                when (camada) {
-                    is Camada.Detalhe -> TelaDetalhe(camada)
-                    is Camada.Player -> TelaPlayer(camada.pedido)
+            // Renderiza SO a superficie do topo. E a correcao de raiz do crash
+            // "LayoutCoordinate operations are only valid when isAttached is
+            // true": antes a moldura ficava composta sob a ficha/player, a
+            // LazyRow reciclava o card que ainda constava focado, e a proxima
+            // seta fazia a busca de foco andar por um no desanexado. Sem a tela
+            // de baixo composta, esse no nao existe. A rolagem e o card de
+            // origem voltam pela restauracao de foco + estado saveable da lista.
+            val topo = Navegacao.pilha.lastOrNull()
+            when (topo) {
+                null -> {
+                    FundoDinamico(fundoAtual)
+                    Moldura(aoFocarArte = { fundoDesejado = it })
                 }
+                is Camada.Detalhe -> TelaDetalhe(topo)
+                is Camada.Player -> TelaPlayer(topo.pedido)
             }
         }
     }
@@ -166,16 +157,15 @@ private fun FundoDinamico(caminho: String?) {
 }
 
 @Composable
-private fun Moldura(bloqueado: Boolean, aoFocarArte: (String?) -> Unit) {
+private fun Moldura(aoFocarArte: (String?) -> Unit) {
     val margem = margemHorizontal()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .focusProperties { canFocus = !bloqueado }
             .focusGroup(),
     ) {
-        BarraTopo(margem = margem, bloqueada = bloqueado)
+        BarraTopo(margem = margem)
 
         when (Navegacao.aba) {
             Aba.Inicio -> TelaHome(aoFocarArte)
@@ -190,7 +180,7 @@ private fun Moldura(bloqueado: Boolean, aoFocarArte: (String?) -> Unit) {
     // BACK na moldura: de qualquer aba volta para o Inicio. Sair do aplicativo
     // so acontece a partir do Inicio, que e o comportamento que a televisao
     // ensina — ninguem espera fechar o app apertando BACK dentro de "Filmes".
-    BackHandler(enabled = !bloqueado && Navegacao.aba != Aba.Inicio) {
+    BackHandler(enabled = Navegacao.aba != Aba.Inicio) {
         Navegacao.irPara(Aba.Inicio)
     }
 }
@@ -203,20 +193,21 @@ private fun Moldura(bloqueado: Boolean, aoFocarArte: (String?) -> Unit) {
  * seis abas atravessadas seriam seis cargas que ninguem pediu.
  */
 @Composable
-private fun BarraTopo(margem: androidx.compose.ui.unit.Dp, bloqueada: Boolean) {
+private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
     val context = LocalContext.current
     val escopo = androidx.compose.runtime.rememberCoroutineScope()
     val primeiroItem = remember { FocusRequester() }
+    val restaurador = LocalRestaurador.current
 
-    // Foco inicial robusto — a raiz da queixa "as setas so funcionam depois de
-    // eu interagir". Um unico requestFocus dispara antes de o no estar anexado e
-    // falha em silencio; o app fica em modo toque e o D-pad nao acha alvo. Aqui
-    // insistimos algumas vezes; assim que o foco fixa, os pedidos seguintes sao
-    // no-op. Para quando alguma camada (ficha/player) assume.
-    LaunchedEffect(bloqueada) {
-        if (bloqueada) return@LaunchedEffect
+    // A barra so puxa o foco no primeiro boot — quando nenhum card foi focado
+    // ainda. Nos retornos (ficha/busca/player -> aba) quem restaura e o proprio
+    // conteudo da tela, que devolve o foco ao card de origem; se a barra tambem
+    // pedisse, disputaria com ele e o cursor pularia para o topo.
+    LaunchedEffect(Unit) {
+        if (restaurador.endereco != null) return@LaunchedEffect
         repeat(12) {
-            if (Navegacao.emCamada) return@LaunchedEffect
+            if (restaurador.endereco != null) return@LaunchedEffect
+            android.util.Log.d("ObaFoco", "barra pedindo foco inicial")
             runCatching { primeiroItem.requestFocus() }
             delay(60)
         }

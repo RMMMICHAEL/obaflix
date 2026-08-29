@@ -20,6 +20,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -39,12 +43,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import com.obaflix.tv.catalogo.ApiObaflix
+import com.obaflix.tv.catalogo.CacheTelas
 import com.obaflix.tv.catalogo.Genero
 import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.navegacao.Aba
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.componentes.CardPoster
 import com.obaflix.tv.ui.componentes.colunas
+import com.obaflix.tv.ui.componentes.EfeitoRestauraFoco
 import com.obaflix.tv.ui.componentes.enderecoDe
 import com.obaflix.tv.ui.componentes.escalaFoco
 import com.obaflix.tv.ui.componentes.escalar
@@ -83,20 +89,28 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         else -> null
     }
 
-    var ordem by remember(aba) { mutableStateOf(Ordem.Recentes) }
-    var genero by remember(aba) { mutableStateOf<Genero?>(null) }
+    // Estado inicial vem do cache: voltar de uma ficha nao refaz a consulta nem
+    // perde o filtro; a grade reaparece como estava e o foco volta ao card.
+    val cache = remember(aba) { CacheTelas.catalogo(aba.name) }
 
-    var itens by remember(aba) { mutableStateOf<List<Item>>(emptyList()) }
-    var total by remember(aba) { mutableStateOf(0) }
-    var pagina by remember(aba) { mutableStateOf(1) }
-    var paginas by remember(aba) { mutableStateOf(1) }
-    var carregando by remember(aba) { mutableStateOf(true) }
+    var ordem by remember(aba) { mutableStateOf(Ordem.values().getOrElse(cache.ordemOrdinal) { Ordem.Recentes }) }
+    var genero by remember(aba) { mutableStateOf(cache.generos.find { it.id == cache.generoId }) }
+
+    var itens by remember(aba) { mutableStateOf(cache.itens) }
+    var total by remember(aba) { mutableStateOf(cache.itens.size) }
+    var pagina by remember(aba) { mutableStateOf(cache.pagina) }
+    var paginas by remember(aba) { mutableStateOf(cache.paginas) }
+    var carregando by remember(aba) { mutableStateOf(cache.vazio) }
     var erro by remember(aba) { mutableStateOf(false) }
     var recarga by remember(aba) { mutableStateOf(0) }
+    var inicializado by remember(aba) { mutableStateOf(false) }
 
-    var generosConhecidos by remember(aba) { mutableStateOf<List<Genero>>(emptyList()) }
+    var generosConhecidos by remember(aba) { mutableStateOf(cache.generos) }
 
     val grade = rememberLazyGridState()
+    val conteinerFoco = remember { FocusRequester() }
+    var temFoco by remember(aba) { mutableStateOf(false) }
+    EfeitoRestauraFoco(pronto = itens.isNotEmpty(), primeiro = conteinerFoco, temFoco = { temFoco }, tag = "Cat-" + aba.name)
     val margem = margemHorizontal()
     val larguraGrade = larguraTelaDp() - Medidas.RailLargura.value.toInt() - margem.value.toInt() - 24
     val nColunas = colunas(larguraGrade)
@@ -128,9 +142,24 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
                 .sortedBy { it.nome }
                 .take(16)
         }
+
+        // Espelha no cache para o retorno ser instantaneo.
+        cache.itens = itens
+        cache.pagina = pagina
+        cache.paginas = paginas
+        cache.ordemOrdinal = ordem.ordinal
+        cache.generoId = genero?.id
+        cache.generos = generosConhecidos
     }
 
     LaunchedEffect(aba, ordem, genero, recarga) {
+        // Primeira composicao com cache cheio: nao busca, so aproveita. A
+        // rolagem volta pelo estado saveable da grade.
+        if (!inicializado && !cache.vazio && recarga == 0) {
+            inicializado = true
+            return@LaunchedEffect
+        }
+        inicializado = true
         carregando = true
         itens = emptyList()
         total = 0
@@ -180,7 +209,11 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
                     itens.isNotEmpty() -> LazyVerticalGrid(
                         columns = GridCells.Fixed(nColunas),
                         state = grade,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .focusRequester(conteinerFoco)
+                            .focusGroup()
+                            .onFocusChanged { temFoco = it.hasFocus },
                         contentPadding = PaddingValues(
                             start = 20.dp, end = margem, top = 6.dp, bottom = margemVertical(),
                         ),

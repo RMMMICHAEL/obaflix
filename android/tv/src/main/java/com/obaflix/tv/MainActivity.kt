@@ -108,9 +108,13 @@ private fun Raiz() {
         is EstadoApp.Autenticado -> AppTv()
     }
 
-    // Sessao caiu ou foi encerrada: a pilha de telas some junto. Sem isso, o
-    // proximo login reabriria a ficha ou o player do usuario anterior.
+    // Sessao caiu ou foi encerrada: a pilha de telas e o cache do catalogo somem
+    // junto. Sem isso, o proximo login reabriria a ficha do usuario anterior ou
+    // herdaria a Home/continuar-assistindo dele.
     LaunchedEffect(estado) {
-        if (estado is EstadoApp.NaoAutenticado) Navegacao.limpar()
+        if (estado is EstadoApp.NaoAutenticado) {
+            Navegacao.limpar()
+            com.obaflix.tv.catalogo.CacheTelas.limpar()
+        }
     }
 }

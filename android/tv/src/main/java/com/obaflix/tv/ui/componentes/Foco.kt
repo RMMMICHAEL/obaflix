@@ -1,74 +1,106 @@
 package com.obaflix.tv.ui.componentes
 
+import android.util.Log
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.delay
+
+/** Log temporario do ciclo de foco. Filtre por `adb logcat -s ObaFoco`. */
+const val TAG_FOCO = "ObaFoco"
 
 /**
  * Restauracao de foco entre telas.
  *
  * Quando a pessoa entra num conteudo e volta, a Home tem de devolver o cursor
- * ao mesmo card — nao ao primeiro da primeira fileira. As fileiras continuam
- * compostas por baixo da sobreposicao, entao a rolagem ja se preserva sozinha;
- * o que falta e dizer a qual card o foco pertence.
+ * ao mesmo card — nao ao primeiro. Guardamos o endereco do ultimo card focado
+ * ("fileira#indice") e o FocusRequester de cada card, para pedir o foco de volta
+ * ao card certo quando a tela reaparece.
  *
- * A solucao e um endereco unico ("fileira#indice") guardado enquanto se navega
- * e um unico FocusRequester circulando por composicao local. So o card que
- * corresponde ao endereco salvo o instala — os outros recebem null e nao pagam
- * nada por isso.
+ * O que mudou depois do crash "LayoutCoordinate operations are only valid when
+ * isAttached is true": a tela de baixo **nao fica mais composta** sob o overlay
+ * (ver AppTv). Antes ficava, e a LazyRow reciclava o card que ainda constava
+ * como focado; a proxima seta fazia a busca de foco andar por um no ja
+ * desanexado e derrubava o app. Sem a tela de baixo composta, nao existe no
+ * desanexado com foco — e a restauracao aqui so pede foco a card que existe.
  */
 class Restaurador {
 
-    /**
-     * Um requisitor por endereco, e nao um so que muda de dono.
-     *
-     * A diferenca importa no desempenho. Se o endereco focado fosse estado
-     * observavel lido por cada card — para o card certo instalar o requisitor —,
-     * cada toque de seta recomporia todos os cards visiveis da tela. Aqui o
-     * card pega o seu requisitor uma vez e nunca mais le nada: mover o foco
-     * deixa de custar recomposicao.
-     */
     private val requisitores = HashMap<String, FocusRequester>()
 
-    private var endereco: String? = null
+    /** Ultimo card focado, lido na restauracao. Publico so para leitura. */
+    var endereco: String? = null
+        private set
 
     fun lembrar(chave: String) {
         endereco = chave
     }
 
     fun requisitorDe(chave: String): FocusRequester {
-        // Teto de seguranca: uma sessao longa passando por muitas fileiras nao
-        // pode acumular requisitor indefinidamente. Zerar custa perder a
-        // restauracao de um retorno, o que e invisivel perto de vazar memoria.
         if (requisitores.size > 2000) requisitores.clear()
         return requisitores.getOrPut(chave) { FocusRequester() }
     }
 
-    /**
-     * Pede o foco de volta. Falha em silencio de proposito: se o card saiu da
-     * composicao (fileira reordenada, catalogo recarregado), quem assume e a
-     * primeira posicao focavel, e uma excecao aqui derrubaria a tela inteira.
-     */
-    fun restaurar() {
-        val alvo = endereco ?: return
-        runCatching { requisitores[alvo]?.requestFocus() }
-    }
+    /** Requisitor do card salvo, se ja existe um. Null quando nao ha o que restaurar. */
+    fun requisitorSalvo(): FocusRequester? = endereco?.let { requisitores[it] }
 }
 
 val LocalRestaurador = compositionLocalOf { Restaurador() }
+
+/**
+ * Restaura o foco de uma tela quando ela fica ativa e os dados chegaram.
+ *
+ * E a peca central da correcao do "so funciona depois do mouse". Regras:
+ *
+ *  - **So depois dos dados.** Pedir foco antes de os cards existirem falha
+ *    calado (o no nao esta na composicao). O gatilho e `pronto`.
+ *  - **Espera o frame.** `withFrameNanos` garante que a composicao ja mediu e
+ *    posicionou os alvos antes do requestFocus — o equivalente ao awaitFrame.
+ *  - **Insiste e verifica.** Repete ate `temFoco()` virar verdadeiro; sem esse
+ *    sinal de confirmacao, um unico pedido que falha deixa a tela sem foco.
+ *  - **Card salvo primeiro, primeiro item depois.** Nas primeiras tentativas
+ *    tenta o card de onde a pessoa saiu; se ele nao aparece (troca de aba,
+ *    catalogo diferente), cai para o primeiro focavel da tela.
+ */
+@Composable
+fun EfeitoRestauraFoco(
+    pronto: Boolean,
+    primeiro: FocusRequester,
+    temFoco: () -> Boolean,
+    tag: String,
+) {
+    val restaurador = LocalRestaurador.current
+    LaunchedEffect(pronto) {
+        if (!pronto) return@LaunchedEffect
+        Log.d(TAG_FOCO, "$tag pronto — restaurando (salvo=${restaurador.endereco})")
+        var i = 0
+        while (i < 24 && !temFoco()) {
+            withFrameNanos { }
+            val salvo = if (i < 8) restaurador.requisitorSalvo() else null
+            val alvo = salvo ?: primeiro
+            runCatching { alvo.requestFocus() }
+                .onFailure { Log.d(TAG_FOCO, "$tag requestFocus falhou i=$i: ${it.javaClass.simpleName}") }
+            delay(50)
+            i++
+        }
+        Log.d(TAG_FOCO, "$tag restauracao terminou temFoco=${temFoco()} tentativas=$i")
+    }
+}
 
 /** Endereco estavel de um card dentro de uma fileira. */
 fun enderecoDe(fileira: String, indice: Int): String = fileira + "#" + indice

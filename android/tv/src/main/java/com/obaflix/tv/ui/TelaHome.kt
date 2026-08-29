@@ -20,6 +20,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,11 +43,13 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import com.obaflix.tv.catalogo.ApiObaflix
+import com.obaflix.tv.catalogo.CacheTelas
 import com.obaflix.tv.catalogo.Home
 import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
+import com.obaflix.tv.ui.componentes.EfeitoRestauraFoco
 import com.obaflix.tv.ui.componentes.FileiraCatalogo
 import com.obaflix.tv.ui.componentes.LinhaMeta
 import com.obaflix.tv.ui.componentes.escalaFoco
@@ -64,16 +70,33 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
-    var home by remember { mutableStateOf<Home?>(null) }
+    // Comeca do cache: no retorno de uma ficha, a Home reaparece pronta, sem
+    // piscar "Carregando" nem refazer a consulta. rememberLazyListState devolve a
+    // rolagem sozinho (estado saveable), e o foco volta ao card pela restauracao.
+    var home by remember { mutableStateOf(CacheTelas.home) }
     var erro by remember { mutableStateOf(false) }
     var recarga by remember { mutableStateOf(0) }
     val rolagem = rememberLazyListState()
     val margem = margemHorizontal()
 
+    // Restauracao de foco: pedimos foco so quando os dados existem (os cards ja
+    // estao na composicao) e insistimos ate o container reportar hasFocus. Assim
+    // a Home volta com foco sozinha depois do login e de qualquer BACK, sem
+    // mouse. `pronto` distingue "ainda carregando" de "pronto para focar".
+    val conteinerFoco = remember { FocusRequester() }
+    var temFoco by remember { mutableStateOf(false) }
+    EfeitoRestauraFoco(pronto = home != null, primeiro = conteinerFoco, temFoco = { temFoco }, tag = "Home")
+
     LaunchedEffect(recarga) {
+        // So busca se ainda nao ha dado (primeira vez ou "tentar de novo"). Com
+        // cache preenchido, o retorno nao gasta requisicao nenhuma.
+        if (home != null && recarga == 0) return@LaunchedEffect
         erro = false
         val resultado = ApiObaflix.home()
-        if (resultado == null) erro = true else home = resultado
+        if (resultado == null) erro = true else {
+            home = resultado
+            CacheTelas.home = resultado
+        }
     }
 
     val dados = home
@@ -81,7 +104,11 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
         when {
             dados != null -> LazyColumn(
                 state = rolagem,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .focusRequester(conteinerFoco)
+                    .focusGroup()
+                    .onFocusChanged { temFoco = it.hasFocus },
                 contentPadding = PaddingValues(top = 8.dp, bottom = margemVertical()),
                 verticalArrangement = Arrangement.spacedBy(Medidas.EspacoFileiras),
             ) {
