@@ -142,17 +142,54 @@ object FontesTv {
      * registra, e aqui nao ha registro nenhum do endereco.
      */
     suspend fun resolver(sessao: String, fonte: Fonte): Midia? {
-        val embed = ApiObaflix.fonteNativa(sessao, fonte.id) ?: return null
+        // Trilha por servidor: com varias tentativas em sequencia, o log sem
+        // separacao vira um emaranhado onde nao da para saber qual servidor
+        // produziu qual erro.
+        ObaLog.novaTrilha("resolverFonte", "servidor" to fonte.rotulo)
 
-        val extraido = runCatching { StreamExtractor.extract(embed) }.getOrElse {
+        val embed = ApiObaflix.fonteNativa(sessao, fonte.id)
+        if (embed == null) {
             ObaLog.alerta(
-                ObaLog.Fase.EXTRACAO, "tv_fonte_falhou",
-                "fonte" to fonte.rotulo, "erro" to it.javaClass.simpleName,
+                ObaLog.Fase.EXTRACAO, "tv_fonte_sem_url",
+                "servidor" to fonte.rotulo, "fonte" to fonte.id.take(8) + "…",
             )
             return null
         }
 
-        val info = conferirManifesto(extraido.stream, extraido.referer) ?: return null
+        // O slug interno diz QUAL extrator rodou quando algo falha. Fica so no
+        // logcat; na tela o usuario continua vendo "Servidor N".
+        val provedor = PlayerExtractors.detectProvider(embed) ?: "desconhecido"
+        val comeco = System.currentTimeMillis()
+
+        val extraido = runCatching { StreamExtractor.extract(embed) }.getOrElse {
+            ObaLog.falha(
+                ObaLog.Fase.EXTRACAO, "tv_fonte_falhou", it,
+                "servidor" to fonte.rotulo, "provedor" to provedor,
+                "ms" to (System.currentTimeMillis() - comeco),
+            )
+            return null
+        }
+
+        ObaLog.evento(
+            ObaLog.Fase.EXTRACAO, "tv_fonte_extraida",
+            "servidor" to fonte.rotulo,
+            "provedor" to provedor,
+            "tipo" to (extraido.tipo ?: "-"),
+            "master" to extraido.isMaster,
+            "temReferer" to (extraido.referer != null),
+            "stream" to ObaLog.url(extraido.stream),
+            "ms" to (System.currentTimeMillis() - comeco),
+        )
+
+        val info = conferirManifesto(extraido.stream, extraido.referer)
+        if (info == null) {
+            // Manifesto morto e a causa mais comum de "carregou e ficou preto".
+            ObaLog.alerta(
+                ObaLog.Fase.MANIFESTO, "tv_manifesto_recusado",
+                "servidor" to fonte.rotulo, "provedor" to provedor,
+            )
+            return null
+        }
 
         return Midia(
             url = extraido.stream,
@@ -176,8 +213,10 @@ object FontesTv {
 
             val requisicao = Request.Builder()
                 .url(url)
-                .header("User-Agent", CabecalhosMidia.USER_AGENT)
-                .apply { referer?.let { header("Referer", it); header("Origin", origemDe(it)) } }
+                // Exatamente os mesmos cabecalhos do player. Conferir com um
+                // conjunto e reproduzir com outro daria um "manifesto vivo" que
+                // o ExoPlayer nao consegue abrir.
+                .apply { CabecalhosMidia.de(referer, url).forEach { (n, v) -> header(n, v) } }
                 .apply { if (!pedeManifesto) head() else get() }
                 .build()
 
@@ -246,14 +285,64 @@ object CabecalhosMidia {
      */
     val USER_AGENT: String = PlayerExtractors.UA_EXTRACAO
 
-    fun de(referer: String?): Map<String, String> = buildMap {
+    /**
+     * O conjunto completo, e nao so Referer.
+     *
+     * Cada linha aqui existe porque algum CDN recusou sem ela — a referencia e
+     * o `fetchCdnDirect` do aplicativo movel, que atravessa os mesmos
+     * provedores hoje. A televisao mandava um subconjunto, e o resultado em
+     * campo foi um servidor funcionando e os demais devolvendo 403.
+     *
+     * Mandar a mais nao quebra provedor nenhum; mandar a menos quebra varios, e
+     * em silencio: o ExoPlayer so diz "fonte de erro", nunca "faltou Cookie".
+     *
+     * `urlMidia` entra so para escolher o cookie certo — nada dela e logado.
+     */
+    fun de(referer: String?, urlMidia: String? = null): Map<String, String> = buildMap {
+        // O UA tambem vai no mapa, e nao apenas em setUserAgent(): a checagem de
+        // manifesto e o player precisam mandar exatamente o mesmo par.
+        put("User-Agent", USER_AGENT)
         put("Accept", "*/*")
-        if (referer != null) {
-            put("Referer", referer)
+        put("Accept-Language", "pt-BR,pt;q=0.5,en-US;q=0.3,en;q=0.2")
+        // Sem estes, CDN com deteccao de robo responde 403: a requisicao nao se
+        // parece com a de um navegador de verdade.
+        put("Sec-Fetch-Dest", "empty")
+        put("Sec-Fetch-Mode", "cors")
+        put("Sec-Fetch-Site", "cross-site")
+
+        // Quando o extrator nao devolve Referer, vale o que ele guardou no
+        // estado — e o mesmo valor que o aplicativo movel usa, e cobre os
+        // provedores cujo extrator nao preenche o campo do resultado.
+        val efetivo = referer?.takeIf { it.isNotBlank() }
+            ?: ObaflixApp.playerState.embedReferer?.takeIf { it.isNotBlank() }
+
+        if (efetivo != null) {
+            put("Referer", efetivo)
+            // Origin sai do Referer, nao da URL da midia: o provedor valida
+            // contra o site que hospeda o player, nao contra o proprio CDN.
             runCatching {
-                val u = java.net.URL(referer)
+                val u = java.net.URL(efetivo)
                 put("Origin", u.protocol + "://" + u.host)
             }
         }
+
+        // Ha provedor que assina a sessao em cookie durante a extracao. Sem
+        // repassar, o link extraido vale para uma sessao que o player nao tem.
+        if (urlMidia != null) {
+            runCatching {
+                android.webkit.CookieManager.getInstance().getCookie(urlMidia)
+            }.getOrNull()?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+        }
     }
+
+    /** Resumo para log: sem valor de cookie, sem querystring. */
+    fun resumo(cabecalhos: Map<String, String>): String =
+        cabecalhos.entries.joinToString(" ") { (nome, valor) ->
+            when (nome) {
+                "Cookie" -> "Cookie=<" + valor.length + "b>"
+                "Referer", "Origin" -> nome + "=" + ObaLog.host(valor)
+                "User-Agent" -> "UA=" + valor.take(24) + "…"
+                else -> nome + "=" + valor
+            }
+        }
 }

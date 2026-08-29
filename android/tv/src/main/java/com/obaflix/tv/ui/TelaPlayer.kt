@@ -58,6 +58,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -123,6 +124,9 @@ fun TelaPlayer(pedido: Pedido) {
     var fonteAtual by remember { mutableStateOf(0) }
     var carregando by remember { mutableStateOf(true) }
     var falha by remember { mutableStateOf<String?>(null) }
+    // Marca que o servidor da vez foi escolhido a dedo. Falha em escolha manual
+    // nao pode virar avanco silencioso: quem escolheu precisa saber o que houve.
+    var escolhaManual by remember { mutableStateOf(false) }
 
     var episodioAtual by remember { mutableStateOf(pedido.episodioId) }
     var temporadaAtual by remember { mutableStateOf(pedido.temporada) }
@@ -243,9 +247,12 @@ fun TelaPlayer(pedido: Pedido) {
         if (midia == null) {
             // Cai para a proxima. E o mesmo failover dos outros ambientes: a
             // pessoa nao precisa saber qual servidor falhou, so continuar vendo.
-            if (indice + 1 < fontes.size) {
+            if (!escolhaManual && indice + 1 < fontes.size) {
                 fonteAtual = indice + 1
                 preparar(indice + 1, retomarDe)
+            } else if (escolhaManual) {
+                falha = "Não foi possível abrir " + fonte.rotulo + ". Escolha outro no menu."
+                carregando = false
             } else {
                 falha = "Nenhum servidor conseguiu abrir este conteúdo."
                 carregando = false
@@ -253,7 +260,20 @@ fun TelaPlayer(pedido: Pedido) {
             return
         }
 
-        fabricaHttp.setDefaultRequestProperties(CabecalhosMidia.de(midia.referer))
+        // Um mapa novo por fonte. `setDefaultRequestProperties` substitui o
+        // anterior inteiro, entao nao ha risco de o Referer do servidor velho
+        // sobreviver na troca — o que daria 403 no servidor novo.
+        val cabecalhos = CabecalhosMidia.de(midia.referer, midia.url)
+        fabricaHttp.setDefaultRequestProperties(cabecalhos)
+
+        ObaLog.evento(
+            ObaLog.Fase.PLAYER, "tv_midia_preparada",
+            "servidor" to fonte.rotulo,
+            "url" to ObaLog.url(midia.url),
+            "legendas" to midia.legendas.size,
+            "cabecalhos" to CabecalhosMidia.resumo(cabecalhos),
+            "retomaMs" to retomarDe,
+        )
 
         val legendas = midia.legendas.map { legenda ->
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(legenda.file))
@@ -346,17 +366,38 @@ fun TelaPlayer(pedido: Pedido) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                ObaLog.alerta(
-                    ObaLog.Fase.EXTRACAO, "tv_player_erro",
+                // A causa real, e nao so o codigo generico: status HTTP quando e
+                // resposta do CDN, nome da excecao quando e rede ou parser. Sem
+                // isto, 403 por cabecalho faltando e "fonte quebrada" ficam
+                // indistinguiveis no log.
+                val causa = error.cause
+                val detalhe = when (causa) {
+                    is HttpDataSource.InvalidResponseCodeException -> "http_" + causa.responseCode
+                    null -> error.errorCodeName
+                    else -> causa.javaClass.simpleName
+                }
+                ObaLog.falha(
+                    ObaLog.Fase.PLAYER, "tv_player_erro", error,
+                    "servidor" to (fontes.getOrNull(fonteAtual)?.rotulo ?: "?"),
                     "codigo" to error.errorCodeName,
+                    "causa" to detalhe,
+                    "manual" to escolhaManual,
                 )
-                // Erro de rede ou de midia depois de comecar: tenta o proximo
-                // servidor a partir de onde parou, sem perguntar nada.
-                escopo.launch {
-                    if (fonteAtual + 1 < fontes.size) {
-                        preparar(fonteAtual + 1, posicaoMs)
-                    } else {
-                        falha = "A reprodução foi interrompida."
+
+                if (escolhaManual) {
+                    // Quem escolheu o servidor precisa ver o que aconteceu com a
+                    // escolha. Pular sozinho aqui era o que fazia "selecionei o
+                    // Servidor 3 e nao funciona" — ele falhava e o player ia
+                    // embora para outro sem dizer nada.
+                    falha = "Este servidor não respondeu (" + detalhe + "). Escolha outro no menu."
+                    carregando = false
+                } else {
+                    escopo.launch {
+                        if (fonteAtual + 1 < fontes.size) {
+                            preparar(fonteAtual + 1, posicaoMs)
+                        } else {
+                            falha = "A reprodução foi interrompida."
+                        }
                     }
                 }
             }
@@ -457,7 +498,10 @@ fun TelaPlayer(pedido: Pedido) {
     fun aplicarOpcao(grupo: Int, opcao: Int) {
         when (grupos.getOrNull(grupo)?.tipo) {
             TipoGrupo.Servidor -> {
-                if (opcao != fonteAtual) escopo.launch { preparar(opcao, posicaoMs) }
+                // Sem o `!=`: repetir o servidor que acabou de falhar e o gesto
+                // natural de quem tenta de novo, e antes isso nao fazia nada.
+                escolhaManual = true
+                escopo.launch { preparar(opcao, posicaoMs) }
             }
             TipoGrupo.Audio -> {
                 audioEscolhido = opcao
