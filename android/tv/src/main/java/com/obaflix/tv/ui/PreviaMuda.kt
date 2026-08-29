@@ -56,11 +56,15 @@ import kotlinx.coroutines.delay
 private const val ESPERA_ANTES_MS = 7_000L
 
 @Composable
-fun PreviaMuda(pedido: Pedido, arte: String?, modifier: Modifier = Modifier) {
+fun PreviaMuda(pedido: Pedido, arte: String?, ativo: Boolean = true, modifier: Modifier = Modifier) {
     var url by remember(pedido.conteudoId, pedido.episodioId) { mutableStateOf<String?>(null) }
     var referer by remember(pedido.conteudoId, pedido.episodioId) { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(pedido.conteudoId, pedido.episodioId) {
+    // So resolve/reproduz enquanto a ficha esta em primeiro plano. Quando o
+    // player abre por cima, `ativo` fica falso e a previa some — dois ExoPlayers
+    // decodificando ao mesmo tempo derrubam TV Box de 1 GB por falta de memoria.
+    LaunchedEffect(pedido.conteudoId, pedido.episodioId, ativo) {
+        if (!ativo) { url = null; return@LaunchedEffect }
         delay(ESPERA_ANTES_MS)
         val abertura = FontesTv.abrir(pedido) ?: return@LaunchedEffect
         val primeira = abertura.fontes.firstOrNull() ?: return@LaunchedEffect
@@ -138,6 +142,11 @@ private fun Reprodutor(url: String, referer: String?) {
             PlayerView(context).apply {
                 useController = false
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                // O PlayerView e focavel por padrao e engoliria o D-pad: dentro
+                // da ficha, a seta cairia na previa em vez de andar pelos botoes.
+                isFocusable = false
+                isFocusableInTouchMode = false
+                descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,

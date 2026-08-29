@@ -105,8 +105,16 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
         relacionados = ApiObaflix.relacionados(base)
     }
 
+    // Foco no botao Assistir assim que a ficha existe, com insistencia: nenhuma
+    // tela pode nascer sem um elemento focado, e a previa (PlayerView) ja nao
+    // disputa o D-pad. Para de tentar quando esta ficha deixa de ser o topo.
     LaunchedEffect(detalhe) {
-        if (detalhe != null) runCatching { botaoPrincipal.requestFocus() }
+        if (detalhe == null) return@LaunchedEffect
+        repeat(10) {
+            if (Navegacao.pilha.lastOrNull() !== destino) return@LaunchedEffect
+            runCatching { botaoPrincipal.requestFocus() }
+            kotlinx.coroutines.delay(60)
+        }
     }
 
     BackHandler(enabled = true) { Navegacao.voltar() }
@@ -165,6 +173,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
                 aoTrocarFavorito = { favorito = it },
                 conteudoId = destino.id,
                 conteudoTipo = destino.tipo,
+                ativo = noTopo,
             )
         }
     }
@@ -184,6 +193,7 @@ private fun Conteudo(
     aoTrocarFavorito: (Boolean) -> Unit,
     conteudoId: String,
     conteudoTipo: String,
+    ativo: Boolean,
 ) {
     val escopo = rememberCoroutineScope()
     val ehSerie = base.ehSerie
@@ -284,6 +294,7 @@ private fun Conteudo(
             PreviaMuda(
                 pedido = pedido(proximo, doComeco = true),
                 arte = base.background ?: base.poster,
+                ativo = ativo,
                 modifier = Modifier
                     .weight(1f)
                     .height(215.dp)

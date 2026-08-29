@@ -44,6 +44,21 @@ class MainActivity : ComponentActivity() {
         ApiObaflix.instalar(this)
         configurarImagens()
         setContent { TemaObaflixTv { Raiz() } }
+
+        // D-pad desde o primeiro frame — a raiz do "so funciona depois de clicar".
+        //
+        // TV Box com mouse/air-mouse costuma iniciar a janela em *touch mode*.
+        // Nesse modo, requestFocus() vira no-op e nenhuma View aceita foco ate
+        // chegar um evento que nao seja de toque — por isso as setas so passavam
+        // a responder depois de uma interacao com o mouse. requestFocusFromTouch
+        // tira a janela do touch mode ja no primeiro layout, sem depender de
+        // clique nenhum. O InputModeManager do Compose faz o mesmo por dentro
+        // (ver AppTv); os dois juntos cobrem aparelho e versao de WebView/Compose.
+        window.decorView.post {
+            val raiz = findViewById<android.view.View>(android.R.id.content)
+            raiz?.isFocusableInTouchMode = true
+            raiz?.requestFocusFromTouch()
+        }
     }
 }
 

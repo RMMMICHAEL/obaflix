@@ -31,6 +31,8 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +76,19 @@ fun AppTv() {
     val restaurador = remember { Restaurador() }
     var fundoDesejado by remember { mutableStateOf<String?>(null) }
     var fundoAtual by remember { mutableStateOf<String?>(null) }
+
+    // Coloca o app em modo de entrada por teclado/D-pad. E a API oficial do
+    // Compose para o mesmo problema que o requestFocusFromTouch resolve na
+    // Activity: sem isso, um aparelho que abriu em modo toque nao entrega foco a
+    // composable nenhum, e as setas ficam mudas ate um clique. Repetimos porque
+    // a primeira chamada pode chegar antes de a janela estar pronta.
+    val inputMode = LocalInputModeManager.current
+    LaunchedEffect(Unit) {
+        repeat(10) {
+            inputMode.requestInputMode(InputMode.Keyboard)
+            delay(80)
+        }
+    }
 
     // A arte so troca depois de o foco parar. Sem esta pausa, atravessar uma
     // fileira com a seta pressionada dispararia um download de backdrop por

@@ -150,8 +150,13 @@ object ApiObaflix {
         }
     }
 
+    // distinctBy id em toda lista de catalogo: a LazyRow/LazyGrid usa o id como
+    // key, e uma unica repeticao — comum quando a sincronizacao insere algo
+    // enquanto a pagina e montada — derruba o app com "Key was already used".
+    // Melhor filtrar aqui, uma vez, do que confiar que todas as rotas nunca
+    // repetem.
     private fun lista(raiz: JSONObject, chave: String, tipoPadrao: String): List<Item> =
-        itens(raiz.optJSONArray(chave), tipoPadrao)
+        itens(raiz.optJSONArray(chave), tipoPadrao).distinctBy { it.id }
 
     // ── Home ─────────────────────────────────────────────────────────────────
 
@@ -210,7 +215,7 @@ object ApiObaflix {
         val arr = vetor("/api/continuar-assistindo") ?: return null
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { item(it, it.optString("conteudoTipo").ifBlank { "filme" }) }
-        }
+        }.distinctBy { it.chaveProgresso }
     }
 
     // ── Catalogo filtrado ────────────────────────────────────────────────────
@@ -305,7 +310,9 @@ object ApiObaflix {
                 filmes.getOrNull(i)?.let { add(it) }
                 series.getOrNull(i)?.let { add(it) }
             }
-        }
+            // A grade de busca usa (tipo + id) como key; filme e serie com o mesmo
+            // id do TMDB coexistem, mas dois do mesmo tipo nao podem repetir.
+        }.distinctBy { it.tipo + it.id }
     }
 
     // ── Relacionados ───────────────────────────────────────────────────────────

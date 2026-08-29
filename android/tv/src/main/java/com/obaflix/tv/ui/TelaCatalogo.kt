@@ -112,7 +112,10 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
             carregando = false
             return
         }
-        itens = if (paginaAlvo == 1) resposta.itens else itens + resposta.itens
+        // Dedupe no append: a pagina 2 pode trazer um item que ja veio na 1
+        // (popularidade muda entre as consultas), e a grade quebraria com key
+        // repetida. distinctBy protege sem esconder erro nenhum.
+        itens = if (paginaAlvo == 1) resposta.itens else (itens + resposta.itens).distinctBy { it.id }
         pagina = resposta.pagina
         paginas = resposta.paginas
         total = maxOf(total, itens.size)

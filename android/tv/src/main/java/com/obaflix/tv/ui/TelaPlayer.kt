@@ -173,6 +173,11 @@ fun TelaPlayer(pedido: Pedido) {
     val vista = remember {
         PlayerView(context).apply {
             useController = false
+            // Quem comanda o player e o Box com onPreviewKeyEvent; o PlayerView
+            // nao pode receber foco, senao rouba o D-pad da maquina de camadas.
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -334,7 +339,14 @@ fun TelaPlayer(pedido: Pedido) {
         if (System.currentTimeMillis() - ultimaTecla >= ESCONDER_MS) camada = Camada.Nenhuma
     }
 
-    LaunchedEffect(Unit) { runCatching { teclado.requestFocus() } }
+    // Foco no captador de teclas com insistencia: um pedido unico pode chegar
+    // antes de o no estar anexado e, sem foco aqui, o D-pad nao comanda o player.
+    LaunchedEffect(Unit) {
+        repeat(12) {
+            runCatching { teclado.requestFocus() }
+            delay(60)
+        }
+    }
 
     // ── Acoes ────────────────────────────────────────────────────────────────
 
