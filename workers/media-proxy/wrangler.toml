@@ -1,0 +1,19 @@
+name = "obaflix-media"
+main = "src/worker.ts"
+compatibility_date = "2026-08-30"
+
+# Sem KV, sem D1, sem Durable Objects: o Worker não guarda estado. Tudo que ele
+# precisa saber vem assinado no pedido.
+
+[vars]
+# Origem única autorizada no CORS. Não use "*": seria proxy aberto para
+# qualquer site que descobrisse uma URL assinada.
+APP_ORIGIN = "https://obaflix.vercel.app"
+
+# Sufixos de host que o Worker aceita como alvo. Manter curto e revisar quando
+# um provedor trocar de CDN — host que não está aqui é recusado mesmo com
+# assinatura válida.
+CDN_ALLOWLIST = ""
+
+# ASSINATURA_SECRET NÃO vai aqui. É o mesmo valor de NEXTAUTH_SECRET no backend:
+#   npx wrangler secret put ASSINATURA_SECRET
