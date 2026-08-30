@@ -34,6 +34,30 @@ function clientUa(req: NextRequest): string {
   return req.headers.get("user-agent") || "unknown";
 }
 
+/**
+ * Sobe o esquema para https quando quem vai tocar e um navegador.
+ *
+ * Alguns provedores devolvem a URL do MP4 em http. No Electron e no Android
+ * isso toca normalmente, mas numa pagina https o navegador recusa antes de
+ * qualquer requisicao: medido em producao, um <video> com essa URL falha com
+ * "Media load rejected by URL safety check" (MEDIA_ELEMENT_ERROR code 4), por
+ * conteudo misto e pelo `media-src 'self' blob: https:` do nosso CSP. Era por
+ * isso que a mesma fonte funcionava nos aplicativos e nao no site.
+ *
+ * A troca so vale para navegador de proposito. Se algum host desses CDNs nao
+ * falar TLS, o site ja estava quebrado com ele de qualquer jeito (http nao tem
+ * como funcionar ali), enquanto Electron e Android seguem recebendo a URL
+ * exatamente como o provedor mandou e nao correm risco de regressao.
+ *
+ * Verificado no CDN em questao: o mesmo caminho responde 206 video/mp4 em
+ * https, e o redirect interno do provedor tambem e resolvido pelo navegador.
+ */
+function httpsParaNavegador(stream: string, ua: string): string {
+  const ehAppNativo = /(?:ObaflixApp\/|Electron\/)/i.test(ua);
+  if (ehAppNativo || !stream.startsWith("http://")) return stream;
+  return "https://" + stream.slice("http://".length);
+}
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MOON = "https://app.megafrixapi.com/moon.php";
 
@@ -1333,7 +1357,12 @@ export async function GET(req: NextRequest) {
       // vod01e001.fun (Voltz) bloqueia IPs de datacenter; webcinevs2 usa cnvs_token tempo-limitado
       if (url.includes("voltz.php") || url.includes("webcinevs2.com")) {
         return NextResponse.json(
-          { tipo: "mp4_direct", stream: result.stream, subtitles: result.subtitles, fontes: fontesPublicas },
+          {
+            tipo: "mp4_direct",
+            stream: httpsParaNavegador(result.stream, ua),
+            subtitles: result.subtitles,
+            fontes: fontesPublicas,
+          },
           { headers: NO_STORE },
         );
       }
