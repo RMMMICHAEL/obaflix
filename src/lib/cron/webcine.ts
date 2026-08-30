@@ -1,7 +1,11 @@
-export const dynamic = "force-dynamic";
-export const maxDuration = 300;
-
-import { NextRequest, NextResponse } from "next/server";
+/**
+ * Sync do catalogo WebCine.
+ *
+ * Vivia em src/app/api/cron/sync-webcine/route.ts com cron proprio. O plano
+ * Hobby aceita 2 cron jobs, entao a logica saiu do route handler e virou funcao:
+ * roda dentro de /api/cron/sync, na mesma cadencia diaria de antes e sem
+ * invocacao extra. O route handler continua existindo, so para disparo manual.
+ */
 import { prisma } from "@/lib/prisma";
 
 const WEBCINE_API  = "https://webcinevs2.com/api";
@@ -236,38 +240,36 @@ async function syncSeriesTipo(
   return { series: novas.length, eps: totalEps };
 }
 
-// ── Route handler ──────────────────────────────────────────────────────────────
+// ── Execucao ───────────────────────────────────────────────────────────────────
 
-export async function GET(req: NextRequest) {
-  const authHeader  = req.headers.get("authorization");
-  const cronSecret  = process.env.CRON_SECRET;
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
-  }
+export interface ResultadoWebcine {
+  totalFilmes: number;
+  totalSeries: number;
+  totalEps: number;
+  elapsed: string;
+  log: string[];
+}
 
+/**
+ * As tres coletas continuam em paralelo: sao paginas diferentes da mesma API e
+ * o gargalo e a latencia dela, nao o nosso lado. Cada uma faz uma leitura e um
+ * createMany em lote, entao o tempo tipico e de poucos segundos.
+ */
+export async function executarSyncWebcine(log: string[] = []): Promise<ResultadoWebcine> {
   const startedAt = Date.now();
-  const log: string[] = [];
-  let totalFilmes = 0, totalSeries = 0, totalEps = 0;
 
-  try {
-    const [fResult, sResult, aResult] = await Promise.all([
-      syncFilmes(log),
-      syncSeriesTipo("series", "serie", log),
-      syncSeriesTipo("animes", "anime", log),
-    ]);
-
-    totalFilmes = fResult;
-    totalSeries = sResult.series + aResult.series;
-    totalEps    = sResult.eps    + aResult.eps;
-  } catch (err: any) {
-    log.push(`❌ Erro: ${err.message}`);
-    return NextResponse.json({ ok: false, log, error: err.message }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
-  }
+  const [fResult, sResult, aResult] = await Promise.all([
+    syncFilmes(log),
+    syncSeriesTipo("series", "serie", log),
+    syncSeriesTipo("animes", "anime", log),
+  ]);
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-  log.push(`✅ ${elapsed}s — filmes: ${totalFilmes} | séries: ${totalSeries} | eps: ${totalEps}`);
-
-  return NextResponse.json({ ok: true, totalFilmes, totalSeries, totalEps, elapsed, log });
+  return {
+    totalFilmes: fResult,
+    totalSeries: sResult.series + aResult.series,
+    totalEps: sResult.eps + aResult.eps,
+    elapsed,
+    log,
+  };
 }

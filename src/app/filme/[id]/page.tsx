@@ -23,23 +23,33 @@ import { absoluteUrl, mediaMetadata } from "@/lib/seo";
  * Pagina publica e igual para todo mundo: nada de sessao entra no render. O
  * estado do usuario chega depois, via EstadoPessoal.
  *
- * O cache NAO vive mais no framework. Antes esta rota era ISR (`revalidate` +
- * `generateStaticParams` vazio), e cada URL visitada gravava uma entrada — com
- * 25 mil filmes anunciados no sitemap, quem gerava essas entradas era o crawler,
- * nao o usuario. Cada render frio custava 1 escrita de ISR mais uma de Data
- * Cache por chamada ao TMDB.
+ * ISR de novo, mas com o custo sob controle — e nao pelo motivo que parecia.
  *
- * Agora a rota e dinamica e quem guarda o HTML e o CDN da Vercel, via
- * `Cache-Control` definido em next.config.mjs para `/filme/:path*`. O Next so
- * escreve o header proprio quando a resposta ainda nao tem um (ver
- * `send-payload.js`: `!res.getHeader("Cache-Control")`), entao o valor do
- * next.config vence. Cache de CDN nao gera ISR Write: o custo de um miss e uma
- * invocacao de funcao, e o hit nao toca em compute.
+ * A tentativa anterior foi `force-dynamic` + `Cache-Control` no next.config.
+ * Funciona em `next start` (o Next so define o header proprio quando a resposta
+ * ainda nao tem um), mas NAO funciona na Vercel: medido em producao, a resposta
+ * saia `private, no-cache, no-store` e `x-vercel-cache: MISS` em toda
+ * requisicao. Ou seja, zerava ISR Write trocando por uma invocacao de funcao
+ * por acesso — inclusive de bot. Nao repetir.
  *
- * Efeito colateral aceito: `revalidatePath` deixou de purgar esta pagina — a
- * atualizacao do sync aparece quando o `s-maxage` expira.
+ * Na Vercel, ISR E o cache de CDN de uma pagina: o hit e servido pela borda sem
+ * tocar em compute. O que custava caro nao era o ISR, era a combinacao dele com
+ * 25 mil URLs anunciadas no sitemap e TTL curto. Com o teto do sitemap
+ * (@/lib/sitemap) e o TMDB em 24h, o pior caso vira ~1 escrita por titulo
+ * realmente acessado por dia, contra as varias por titulo por dia de antes.
+ *
+ * 24h: a linha so muda quando o sync escreve, e o sync roda 1x/dia as 3h.
  */
-export const dynamic = "force-dynamic";
+export const revalidate = 86400;
+
+/**
+ * Vazio de proposito: nao prerendera nada no build (sao 25 mil filmes), mas e o
+ * que faz a rota dinamica entrar no cache de rota. Sem isto o Next trata cada
+ * /filme/:id como render sob demanda e devolve `no-store`.
+ */
+export async function generateStaticParams() {
+  return [];
+}
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const filme = await prisma.filme.findUnique({

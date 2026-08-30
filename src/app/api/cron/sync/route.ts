@@ -1,8 +1,22 @@
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // Pro plan: 5 min
+
+/**
+ * 60s, nao 300s. O plano Hobby so chega perto de 300s com Fluid Compute ligado,
+ * e uma funcao encerrada no meio de um upsert e pior do que uma que termina sem
+ * fazer tudo. O ORCAMENTO abaixo garante a segunda coisa.
+ */
+export const maxDuration = 60;
+
+/**
+ * Margem para responder antes do corte. Cada etapa checa o relogio e para
+ * limpa, registrando o que ficou — nada aqui e destrutivo, e o proximo run
+ * recomeca do que faltou (as listas so contem o que ainda nao esta no banco).
+ */
+const ORCAMENTO_MS = Number(process.env.CRON_SYNC_ORCAMENTO_MS ?? 50_000);
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { executarSyncWebcine } from "@/lib/cron/webcine";
 
 const APP = "https://app.megafrixapi.com/4.6.2";
 const UA  = "okhttp/4.9.3";
@@ -142,9 +156,9 @@ async function syncFilme(id: string, log: string[]): Promise<boolean> {
     },
   });
 
-  // Sem revalidatePath: /filme/:id nao e mais ISR, e cada chamada so escrevia
-  // metadado de tag de cache que ninguem le. A ficha agora e servida pelo CDN e
-  // atualiza quando o s-maxage (6h) expira.
+  // Sem revalidatePath: uma chamada por item escrevia metadado de tag de cache a
+  // cada sync, e a ficha ja tem ISR de 24h. A atualizacao aparece na proxima
+  // revalidacao, que e o mesmo dia em que este sync rodou.
 
   log.push(`🎬 ${item.title}`);
   return true;
@@ -211,8 +225,8 @@ async function syncSerie(id: string, novosEpsAlvo: Array<{ temp: number; ep: num
     }
   }
 
-  // Mesma ideia do filme: sem ISR nao ha caminho para revalidar. O CDN solta a
-  // versao nova em ate 1h.
+  // Mesma ideia do filme. O ISR da serie e de 6h justamente por causa de
+  // episodio novo, entao nao precisa de purga explicita.
 
   log.push(`📺 ${item.title} (${jaExiste ? "atualizada" : "nova"}) — ${totalEps} eps`);
   return totalEps;
@@ -226,9 +240,15 @@ async function probeGap(
   carouselFilmes: string[],
   carouselSeries: string[],
   log: string[],
+  /** Instante em que a etapa precisa parar, venha ou vier resultado. */
+  prazoEm: number,
 ): Promise<{ filmes: number; series: number; eps: number }> {
   let filmes = 0, series = 0, eps = 0;
   for (let id = startId; id <= endId; id++) {
+    if (Date.now() > prazoEm) {
+      log.push(`🔍 Gap fill interrompido no ID ${id}: orçamento consumido`);
+      break;
+    }
     const idStr = String(id);
     // Skip IDs already handled in the carousel pass
     if (carouselFilmes.includes(idStr) || carouselSeries.includes(idStr)) continue;
@@ -318,8 +338,12 @@ export async function GET(req: NextRequest) {
 
     log.push(`📋 Novidades: ${novosFilmes.length} filmes | ${novasSeries.length} séries | ${novosEps.length} eps recentes`);
 
+    const estourou = () => Date.now() - startedAt > ORCAMENTO_MS;
+    let interrompido: string | null = null;
+
     // ── Filmes ────────────────────────────────────────────────────────────────
     for (const id of novosFilmes) {
+      if (estourou()) { interrompido = "filmes"; break; }
       await sleep(DELAY);
       const added = await syncFilme(id, log);
       if (added) totalFilmes++;
@@ -327,6 +351,7 @@ export async function GET(req: NextRequest) {
 
     // ── Séries novas ──────────────────────────────────────────────────────────
     for (const id of novasSeries) {
+      if (estourou()) { interrompido ??= "series"; break; }
       await sleep(DELAY);
       const eps = await syncSerie(id, [], log);
       totalSeries++;
@@ -344,6 +369,7 @@ export async function GET(req: NextRequest) {
     }
 
     for (const [serieId, eps] of epsPorSerie) {
+      if (estourou()) { interrompido ??= "episodios"; break; }
       await sleep(DELAY);
       const added = await syncSerie(serieId, eps, log);
       totalEps += added;
@@ -352,8 +378,26 @@ export async function GET(req: NextRequest) {
     // ── Gap fill: probe IDs beyond our DB max ─────────────────────────────────
     // viewHome only shows 15 items; new content pushed off the carousel is
     // never seen. Probe numerically sequential IDs starting from db_max + 1.
+    // ── WebCine ───────────────────────────────────────────────────────────────
+    // Antes tinha cron proprio; o Hobby aceita 2 cron jobs. Roda aqui, mesma
+    // cadencia diaria, sem invocacao extra. Vem antes do gap fill porque traz
+    // catalogo novo, enquanto o gap fill so sonda IDs que podem nem existir.
+    if (interrompido) {
+      log.push(`WebCine adiado: orcamento consumido em ${interrompido}`);
+    } else {
+      try {
+        const wc = await executarSyncWebcine(log);
+        totalFilmes += wc.totalFilmes;
+        totalSeries += wc.totalSeries;
+        totalEps    += wc.totalEps;
+      } catch (wcErr: any) {
+        log.push(`WebCine falhou: ${wcErr.message}`);
+      }
+    }
+
     const GAP_PROBE = 50; // max IDs to probe per run
     try {
+      if (estourou()) throw new Error("orcamento consumido antes do gap fill");
       const [maxFilmeRow, maxSerieRow] = await Promise.all([
         prisma.$queryRaw<{ max_id: string | null }[]>`
           SELECT MAX(id::bigint)::text AS max_id FROM "Filme" WHERE id ~ '^[0-9]+$'`,
@@ -368,7 +412,7 @@ export async function GET(req: NextRequest) {
         const probeStart = dbMax + 1;
         const probeEnd   = dbMax + GAP_PROBE;
         log.push(`🔍 Gap fill: sondando IDs ${probeStart}–${probeEnd}`);
-        const gap = await probeGap(probeStart, probeEnd, filmesIds, seriesIds, log);
+        const gap = await probeGap(probeStart, probeEnd, filmesIds, seriesIds, log, startedAt + ORCAMENTO_MS);
         totalFilmes += gap.filmes;
         totalSeries += gap.series;
         totalEps    += gap.eps;

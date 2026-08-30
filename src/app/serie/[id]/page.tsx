@@ -26,11 +26,19 @@ import { absoluteUrl, mediaMetadata } from "@/lib/seo";
  * Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
  * EstadoPessoal depois da hidratacao.
  *
- * Dinamica com cache de CDN pelo `Cache-Control` de next.config.mjs — ver a nota
- * longa em /filme/[id]. O `s-maxage` daqui e mais curto (1h) porque serie no ar
- * ganha episodio, e sem ISR o `revalidatePath` do sync nao purga mais nada.
+ * ISR com TTL longo — ver a nota longa em /filme/[id], inclusive por que
+ * `force-dynamic` + Cache-Control no next.config NAO serve na Vercel.
+ *
+ * 6h e nao 24h: serie no ar ganha episodio, e o `revalidatePath` do sync foi
+ * removido junto com a tentativa anterior. Sao no maximo 4 escritas por dia por
+ * serie efetivamente acessada.
  */
-export const dynamic = "force-dynamic";
+export const revalidate = 21600;
+
+/** Vazio de proposito — ver a nota em /filme/[id]. */
+export async function generateStaticParams() {
+  return [];
+}
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const serie = await prisma.serie.findUnique({

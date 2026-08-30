@@ -1,5 +1,10 @@
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+/**
+ * 60s: teto seguro do Hobby sem Fluid Compute. A coleta e ~50 requisicoes ao
+ * TMDB mais uma transacao, entao cabe com folga. Se estourar, o lock de 10min
+ * expira muito antes da janela do dia seguinte.
+ */
+export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
