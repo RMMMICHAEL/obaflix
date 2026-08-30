@@ -2,7 +2,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300; // Pro plan: 5 min
 
 import { NextRequest, NextResponse } from "next/server";
-import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
 const APP = "https://app.megafrixapi.com/4.6.2";
@@ -143,9 +142,9 @@ async function syncFilme(id: string, log: string[]): Promise<boolean> {
     },
   });
 
-  // A pagina de detalhe e cacheada por 6h; invalidar so o id escrito mantem a
-  // ficha fresca sem derrubar o cache do catalogo inteiro.
-  revalidatePath(`/filme/${item.id}`);
+  // Sem revalidatePath: /filme/:id nao e mais ISR, e cada chamada so escrevia
+  // metadado de tag de cache que ninguem le. A ficha agora e servida pelo CDN e
+  // atualiza quando o s-maxage (6h) expira.
 
   log.push(`🎬 ${item.title}`);
   return true;
@@ -212,8 +211,8 @@ async function syncSerie(id: string, novosEpsAlvo: Array<{ temp: number; ep: num
     }
   }
 
-  // Mesma ideia do filme: so a serie que acabou de receber episodio.
-  if (item.id) revalidatePath(`/serie/${item.id}`);
+  // Mesma ideia do filme: sem ISR nao ha caminho para revalidar. O CDN solta a
+  // versao nova em ate 1h.
 
   log.push(`📺 ${item.title} (${jaExiste ? "atualizada" : "nova"}) — ${totalEps} eps`);
   return totalEps;

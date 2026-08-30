@@ -83,9 +83,31 @@ const nextConfig = {
     //
     // Só /assistir/* monta iframe de provedor. /player usa <video> via
     // StreamPlayer e não precisa da lista — fica na regra restritiva.
+    // Fichas de filme e serie: cache no CDN, nao no framework.
+    //
+    // As duas rotas sao `force-dynamic` de proposito (ver a nota em
+    // src/app/filme/[id]/page.tsx). Sem ISR nao existe entrada de cache por
+    // titulo, e portanto nao existe ISR Write quando um crawler percorre o
+    // catalogo — o que sobra e uma invocacao de funcao no miss e nada no hit.
+    //
+    // O Next so define o proprio `Cache-Control` quando a resposta ainda nao tem
+    // um, entao este valor prevalece. `stale-while-revalidate` evita que a
+    // expiracao devolva uma espera sincrona ao visitante.
+    //
+    // 404 tambem entra no cache, e isso e desejado: id inexistente descoberto
+    // por bot para de custar uma invocacao por acesso.
+    const cacheCdn = (sMaxAge, swr) => ({
+      key: "Cache-Control",
+      value: `public, s-maxage=${sMaxAge}, stale-while-revalidate=${swr}`,
+    });
+
     return [
       { source: "/assistir/:path*", headers: [...baseHeaders, csp(frameSrc)] },
       { source: "/((?!assistir).*)", headers: [...baseHeaders, csp("'none'")] },
+      // 6h: a ficha de filme so muda quando o sync reescreve a linha.
+      { source: "/filme/:id*", headers: [cacheCdn(21600, 86400)] },
+      // 1h: serie no ar ganha episodio, e sem ISR nada purga antes da expiracao.
+      { source: "/serie/:id*", headers: [cacheCdn(3600, 86400)] },
     ];
   },
 };

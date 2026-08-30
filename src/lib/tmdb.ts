@@ -3,6 +3,29 @@ const BASE = "https://api.themoviedb.org/3";
 export const IMG = "https://image.tmdb.org/t/p";
 const TMDB_TIMEOUT_MS = 4500;
 
+/**
+ * Cada `fetch` cacheado aqui e uma escrita de Data Cache, e a Vercel cobra isso
+ * junto do ISR Write. A ficha de uma serie de 15 temporadas fazia 22 dessas
+ * escritas por render, e regravava de hora em hora — por titulo.
+ *
+ * 24h e o padrao porque quase tudo que lemos do TMDB e imutavel na pratica:
+ * elenco, imagens, trailers, certificacao, recomendacoes e detalhes de temporada
+ * de conteudo ja lancado nao mudam de um dia para o outro. Erra por no maximo um
+ * dia de defasagem em troca de 24x menos escrita.
+ */
+const TMDB_REVALIDATE_PADRAO = 86400;
+
+/**
+ * As listas vivas do TMDB, essas sim mudam ao longo do dia — e sao poucas e
+ * compartilhadas por todos os visitantes (uma entrada de cache cada, nao uma por
+ * titulo), entao manter 1h aqui custa quase nada.
+ */
+const TMDB_PATHS_VOLATEIS = /^\/(trending|movie\/now_playing|movie\/upcoming|tv\/airing_today|tv\/on_the_air|movie\/popular|tv\/popular)/;
+
+function revalidateDoPath(path: string): number {
+  return TMDB_PATHS_VOLATEIS.test(path) ? 3600 : TMDB_REVALIDATE_PADRAO;
+}
+
 async function tmdbFetch<T = any>(path: string, opts?: RequestInit): Promise<T | null> {
   if (!TMDB_KEY) return null;
 
@@ -13,7 +36,7 @@ async function tmdbFetch<T = any>(path: string, opts?: RequestInit): Promise<T |
     const url = `${BASE}${path}${path.includes("?") ? "&" : "?"}api_key=${TMDB_KEY}&language=pt-BR`;
     const res = await fetch(url, {
       ...opts,
-      next: { revalidate: 3600, ...opts?.next },
+      next: { revalidate: revalidateDoPath(path), ...opts?.next },
       signal: controller.signal,
     });
     if (!res.ok) return null;

@@ -19,21 +19,27 @@ import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
-// Pagina publica e igual para todo mundo: nada de sessao entra no render, o que
-// permite servir do cache. O estado do usuario chega depois, via EstadoPessoal.
-// 6h e folgado porque a linha so muda quando o sync escreve — e quando escreve,
-// o proprio sync revalida o caminho deste id.
-export const revalidate = 21600;
-
 /**
- * Vazio de proposito: nao prerendera nada no build (sao 25 mil filmes), mas e o
- * que faz a rota dinamica entrar no cache de rota. Sem isto o Next trata cada
- * /filme/:id como render sob demanda e devolve `no-store`, e o `revalidate`
- * acima nao vale de nada.
+ * Pagina publica e igual para todo mundo: nada de sessao entra no render. O
+ * estado do usuario chega depois, via EstadoPessoal.
+ *
+ * O cache NAO vive mais no framework. Antes esta rota era ISR (`revalidate` +
+ * `generateStaticParams` vazio), e cada URL visitada gravava uma entrada — com
+ * 25 mil filmes anunciados no sitemap, quem gerava essas entradas era o crawler,
+ * nao o usuario. Cada render frio custava 1 escrita de ISR mais uma de Data
+ * Cache por chamada ao TMDB.
+ *
+ * Agora a rota e dinamica e quem guarda o HTML e o CDN da Vercel, via
+ * `Cache-Control` definido em next.config.mjs para `/filme/:path*`. O Next so
+ * escreve o header proprio quando a resposta ainda nao tem um (ver
+ * `send-payload.js`: `!res.getHeader("Cache-Control")`), entao o valor do
+ * next.config vence. Cache de CDN nao gera ISR Write: o custo de um miss e uma
+ * invocacao de funcao, e o hit nao toca em compute.
+ *
+ * Efeito colateral aceito: `revalidatePath` deixou de purgar esta pagina — a
+ * atualizacao do sync aparece quando o `s-maxage` expira.
  */
-export async function generateStaticParams() {
-  return [];
-}
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const filme = await prisma.filme.findUnique({

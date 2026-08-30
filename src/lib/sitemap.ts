@@ -16,38 +16,63 @@ export type CatalogoTipo = "filmes" | "series";
  */
 const COM_CONTEUDO = { sinopse: { not: null } };
 
-export function contarCatalogo(tipo: CatalogoTipo) {
-  return tipo === "filmes"
-    ? prisma.filme.count({ where: COM_CONTEUDO })
-    : prisma.serie.count({ where: COM_CONTEUDO });
+/**
+ * Teto de URLs de catalogo por tipo. Medida de custo, temporaria e reversivel.
+ *
+ * Anunciar o catalogo inteiro transformava o crawler em gerador de paginas
+ * frias: cada URL nova visitada por bot custava um render e, enquanto as fichas
+ * eram ISR, tambem uma escrita de cache por titulo. Com o teto o bot rastreia o
+ * que tem chance real de trazer visita — a cauda continua acessivel e indexavel
+ * por link, so nao e mais empurrada de uma vez.
+ *
+ * SITEMAP_MAX_POR_TIPO=0 remove o teto e volta ao catalogo completo.
+ */
+const LIMITE_PADRAO = 1000;
+
+export function limiteCatalogo(): number {
+  const bruto = process.env.SITEMAP_MAX_POR_TIPO;
+  if (bruto === undefined) return LIMITE_PADRAO;
+  const n = Number(bruto);
+  if (!Number.isFinite(n) || n < 0) return LIMITE_PADRAO;
+  return n === 0 ? Number.MAX_SAFE_INTEGER : Math.floor(n);
+}
+
+export async function contarCatalogo(tipo: CatalogoTipo) {
+  const total = tipo === "filmes"
+    ? await prisma.filme.count({ where: COM_CONTEUDO })
+    : await prisma.serie.count({ where: COM_CONTEUDO });
+  return Math.min(total, limiteCatalogo());
 }
 
 /**
- * Ordena pela PK de proposito: `id` ja tem indice e `updatedAt` nao tem — e
- * ainda muda a cada escrita do sync, entao nao serve nem para ordenar nem como
- * lastmod (ver comentario de `artCheckedAt` no schema).
+ * Ordena por popularidade, e nao mais pela PK: sob teto, a ordem decide QUEM
+ * entra. `id` asc anunciaria os mil titulos mais antigos do provedor, que e o
+ * oposto do que traz visita. O desempate por `id` mantem a saida estavel entre
+ * geracoes — sitemap que muda de ordem sozinho confunde o Search Console.
+ *
+ * `popularidade` nao tem indice proprio, mas isto roda no maximo uma vez por dia
+ * por arquivo (o `s-maxage` de respostaXml cuida do resto).
+ *
+ * Segue sem `lastmod`: `updatedAt` muda a cada escrita do sync e nao serve.
  */
 export async function idsDoShard(tipo: CatalogoTipo, shard: number): Promise<string[]> {
   const skip = (shard - 1) * SHARD_SIZE;
+  const restante = limiteCatalogo() - skip;
+  if (restante <= 0) return [];
+  const take = Math.min(SHARD_SIZE, restante);
 
-  if (tipo === "filmes") {
-    const linhas = await prisma.filme.findMany({
-      where: COM_CONTEUDO,
-      select: { id: true },
-      orderBy: { id: "asc" },
-      skip,
-      take: SHARD_SIZE,
-    });
-    return linhas.map((linha) => linha.id);
-  }
-
-  const linhas = await prisma.serie.findMany({
+  const consulta = {
     where: COM_CONTEUDO,
     select: { id: true },
-    orderBy: { id: "asc" },
+    orderBy: [{ popularidade: "desc" as const }, { id: "asc" as const }],
     skip,
-    take: SHARD_SIZE,
-  });
+    take,
+  };
+
+  const linhas = tipo === "filmes"
+    ? await prisma.filme.findMany(consulta)
+    : await prisma.serie.findMany(consulta);
+
   return linhas.map((linha) => linha.id);
 }
 

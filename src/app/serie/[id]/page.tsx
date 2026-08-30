@@ -22,15 +22,15 @@ import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 
-// Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
-// EstadoPessoal depois da hidratacao. 1h e mais curto que o filme porque serie no
-// ar ganha episodio — e o sync revalida este caminho quando escreve.
-export const revalidate = 3600;
-
-/** Vazio de proposito — ver a nota em /filme/[id]. */
-export async function generateStaticParams() {
-  return [];
-}
+/**
+ * Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
+ * EstadoPessoal depois da hidratacao.
+ *
+ * Dinamica com cache de CDN pelo `Cache-Control` de next.config.mjs — ver a nota
+ * longa em /filme/[id]. O `s-maxage` daqui e mais curto (1h) porque serie no ar
+ * ganha episodio, e sem ISR o `revalidatePath` do sync nao purga mais nada.
+ */
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const serie = await prisma.serie.findUnique({

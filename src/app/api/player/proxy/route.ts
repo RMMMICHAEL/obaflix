@@ -448,3 +448,41 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Erro interno", { status: 500 });
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTREGA DE MÍDIA NO NAVEGADOR — o único fluxo que ainda passa pela Vercel
+//
+// Mapa por ambiente, para não repetir a análise errada de sempre:
+//
+//   Android / Android TV / Electron, provedor com extrator nativo
+//     → extração acontece no aparelho (bridge/IPC), o player recebe a URL do CDN
+//       e o próprio ambiente injeta Referer/Origin. NÃO passa por este arquivo.
+//       É o caminho de praticamente todo provedor em uso — ver
+//       suportaExtracaoNativa() em @/lib/fontes.
+//
+//   Navegador, e qualquer ambiente em provedor SEM extrator nativo
+//     → extração acontece na Vercel, e os segmentos vêm para cá. São dois
+//       motivos independentes, e os dois precisam cair para tirar os bytes daqui:
+//         1. o navegador não pode forjar `Referer` (medido no commit c443034:
+//            sem Referer 403, com Referer do app 403, com o do provedor 200);
+//         2. o token do CDN costuma ser atrelado ao IP de quem extraiu — quem
+//            extraiu foi a Vercel, então o aparelho do usuário toma 403 mesmo
+//            com o Referer certo. É por isso que o interceptador do Electron se
+//            recusa a redirecionar URL com `sig` (ver desktop/electron/main.js).
+//
+// Consequência: adicionar `ObaflixDesktop/` à lista de entrega direta NÃO é uma
+// economia — quebra exatamente o caso (2), que é o único em que o Electron chega
+// aqui. Já foi tentado; ficou registrado para não voltar.
+//
+// Próxima etapa (infra, ainda não feita): mover ESTE fluxo para um Cloudflare
+// Worker ou equivalente, que extraia e sirva com o Referer fora da Vercel.
+// Requisitos que ele herda daqui — não é proxy aberto:
+//   1. assinatura HMAC por segmento (signSegmentUrl/verifySegmentUrl em
+//      @/lib/playTokens), com validação de expiração, não só do hash;
+//   2. allowlist de host no alvo do fetch (assertSafeUrl) — o alvo vem da
+//      querystring, sem allowlist o Worker vira SSRF de terceiros;
+//   3. nunca ecoar a URL real do CDN em erro, log ou header de resposta.
+//
+// Alavanca de emergência enquanto isso: MEDIA_SEGMENT_DELIVERY=direct desliga o
+// proxy para todos. Corta o consumo na hora e quebra a reprodução no navegador.
+// ─────────────────────────────────────────────────────────────────────────────
