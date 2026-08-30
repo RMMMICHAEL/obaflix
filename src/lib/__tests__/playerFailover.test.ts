@@ -118,6 +118,31 @@ test("o aperto do orçamento nao vale para escolha manual", () => {
   );
 });
 
+test("manifesto invalido e URL vazia sao fatais: nao ha o que carregar", () => {
+  assert.equal(falha({ mensagem: "manifest load error" }).veredito, "FATAL");
+  assert.equal(falha({ mensagem: "playlist vazia" }).veredito, "FATAL");
+  assert.equal(falha({ mensagem: "url-vazia do extrator" }).veredito, "FATAL");
+  assert.equal(falha({ mensagem: "setupError do player" }).veredito, "FATAL");
+});
+
+test("antes do primeiro frame so cabe uma reextracao", () => {
+  const tokenExpirado = { podeReextrair: true, extracoesNaJanela: 0 };
+  assert.equal(decidirAcao("TOKEN", estado(tokenExpirado)).acao, "reextrair");
+  assert.equal(
+    decidirAcao("TOKEN", estado({ ...tokenExpirado, extracoesNaJanela: LIMITES.EXTRACOES_ANTES_FIRSTFRAME })).acao,
+    "failover",
+  );
+  // Com reproducao em curso o orcamento volta a ser o cheio.
+  assert.equal(
+    decidirAcao("TOKEN", estado({ ...tokenExpirado, houveFirstFrame: true, extracoesNaJanela: 1 })).acao,
+    "reextrair",
+  );
+});
+
+test("o prazo de primeiro frame e curto: com 10+ servidores, esperar e o custo", () => {
+  assert.ok(LIMITES.T_FIRST_FRAME_MS <= 8_000, "prazo deve ficar na faixa curta pedida");
+});
+
 test("midia recusada pelo navegador e fatal: repetir a mesma URL da o mesmo", () => {
   // http em pagina https, CSP ou container desconhecido. O navegador recusa
   // antes de emitir requisicao, entao nao ha erro de rede para retentar.

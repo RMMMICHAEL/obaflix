@@ -44,8 +44,21 @@ export const LIMITES = {
    */
   EXTRACOES_POR_JANELA: 3,
   JANELA_EXTRACAO_MS: 5 * 60 * 1000,
-  /** Sem primeiro frame nesse tempo após load(), a fonte não está entregando. */
-  T_FIRST_FRAME_MS: 25_000,
+  /**
+   * Sem primeiro frame nesse tempo após load(), a fonte não está entregando.
+   *
+   * Eram 25s, pensados para o SuperFlix, que atravessa desafio e redirects
+   * antes do primeiro frame. Só que o preço disso é pago por TODA fonte muda:
+   * com mais de dez servidores na lista, esperar 25s em cada um é o que fazia o
+   * usuário desistir antes do player. Quem está mesmo baixando se defende pelo
+   * buffer — ver a prorrogação única em `vigiarPrimeiroFrame`.
+   */
+  T_FIRST_FRAME_MS: 7_000,
+  /**
+   * Reextrações antes do primeiro frame. Um 403 com token novo é motivo real
+   * para uma tentativa; três seguidas na mesma fonte muda não são.
+   */
+  EXTRACOES_ANTES_FIRSTFRAME: 1,
   /** Posição parada com o player em buffering. */
   T_STALL_MS: 12_000,
   /** Dois stalls dentro desta janela = a fonte, não a rede. */
@@ -103,6 +116,18 @@ export function classificarFalha(e: EntradaFalha): { veredito: Veredito; motivo:
   }
   if (/midia-decode|decode error|codec/i.test(texto)) {
     return { veredito: "FATAL", motivo: "decode" };
+  }
+
+  // Manifesto HLS ausente ou ilegível, e URL vazia vinda do extrator. Nos dois
+  // casos não há o que carregar: retentar só adia a troca de servidor.
+  if (/manifest|playlist (vazia|inv[áa]lida)|m3u8 inv[áa]lido/i.test(texto)) {
+    return { veredito: "FATAL", motivo: "manifesto-invalido" };
+  }
+  if (/url-vazia|stream vazio|sem fonte/i.test(texto)) {
+    return { veredito: "FATAL", motivo: "url-vazia" };
+  }
+  if (/setuperror|extrator-fatal/i.test(texto)) {
+    return { veredito: "FATAL", motivo: "player-nao-montou" };
   }
 
   // A fonte não entregou o primeiro frame no prazo. É transitório de direito
@@ -180,12 +205,17 @@ export function decidirAcao(
         ? { acao: "erro", detalhe: "403 sem reextração possível (escolha manual)" }
         : trocar();
     }
-    if (estado.extracoesNaJanela >= LIMITES.EXTRACOES_POR_JANELA) {
+    // Mesmo recorte do retry: antes do primeiro frame, e sem escolha manual, uma
+    // reextração é motivo real; a segunda já é insistência numa fonte muda.
+    const tetoExtracao = estado.houveFirstFrame || estado.escolhaManual
+      ? LIMITES.EXTRACOES_POR_JANELA
+      : LIMITES.EXTRACOES_ANTES_FIRSTFRAME;
+    if (estado.extracoesNaJanela >= tetoExtracao) {
       return estado.escolhaManual
         ? { acao: "erro", detalhe: "orçamento de extração esgotado (escolha manual)" }
         : trocar();
     }
-    return { acao: "reextrair", detalhe: `extração ${estado.extracoesNaJanela + 1}/${LIMITES.EXTRACOES_POR_JANELA}` };
+    return { acao: "reextrair", detalhe: `extração ${estado.extracoesNaJanela + 1}/${tetoExtracao}` };
   }
 
   // TRANSITORIO: retenta no lugar. Nunca reextrai — reextrair não conserta 5xx
@@ -224,6 +254,32 @@ export function sourceIdDe(embedUrl: string): string {
     h = (Math.imul(31, h) + embedUrl.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Sequência curta e legível do failover, para acompanhar no console sem
+ * garimpar entre as linhas de diagnóstico:
+ *
+ *   fonte_iniciada     servidor=... n=2/11
+ *   fonte_falhou       servidor=... motivo=... http=404
+ *   fonte_seguinte     servidor=...
+ *   fonte_reproduzindo servidor=... apos=1 troca(s)
+ *
+ * `fonte_reproduzindo` só sai no primeiro frame — nunca em "extract respondeu
+ * 200", que não prova reprodução nenhuma.
+ */
+export function logFonte(
+  evento: "fonte_iniciada" | "fonte_falhou" | "fonte_seguinte" | "fonte_reproduzindo",
+  dados: { servidor: string; n?: number; total?: number; motivo?: string; http?: number; apos?: number },
+): void {
+  const partes = [`[fonte] ${evento}`, `servidor=${dados.servidor}`];
+  if (dados.n && dados.total) partes.push(`n=${dados.n}/${dados.total}`);
+  if (dados.motivo) partes.push(`motivo=${dados.motivo}`);
+  if (dados.http) partes.push(`http=${dados.http}`);
+  if (dados.apos !== undefined) partes.push(`apos=${dados.apos}`);
+  const linha = partes.join(" ");
+  if (evento === "fonte_falhou") console.warn(linha);
+  else console.info(linha);
 }
 
 /**

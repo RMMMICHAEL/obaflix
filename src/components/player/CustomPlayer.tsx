@@ -23,7 +23,7 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import {
-  classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, LIMITES,
+  classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
 } from "@/lib/playerFailover";
 
 const JW_CDN = "https://ssl.p.jwpcdn.com/player/v/8.19.1/jwplayer.js";
@@ -400,6 +400,13 @@ export function CustomPlayer({
   const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Solta o listener de erro do <video>; ele nasce dentro do setup do JW. */
   const soltarErroMidiaRef = useRef<null | (() => void)>(null);
+  /**
+   * Id da tentativa de carga. A época distingue FONTES; esta distingue cada
+   * `load()` dentro da mesma fonte, que a época não vê. Sem isso, o vigia
+   * armado na tentativa 1 dispara durante a tentativa 2 e derruba uma carga que
+   * ainda tinha prazo. Todo callback assíncrono compara antes de agir.
+   */
+  const tentativaIdRef = useRef(0);
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
@@ -845,6 +852,11 @@ export function CustomPlayer({
     // rebaixaria ~360 MB — mais do que toda a economia da extração nativa.
     retomarEmRef.current = Math.max(progressoRef.current, initialProgressoSegRef.current);
     sourceEpochRef.current += 1;
+    tentativaIdRef.current += 1;
+    const proxima = allFontesRef.current[idx];
+    if (proxima) {
+      logFonte("fonte_seguinte", { servidor: proxima.servidor ?? proxima.rotulo ?? "?" });
+    }
     sourceIdRef.current = sourceIdDe(allFontesRef.current[idx]?.id ?? String(idx));
     // Uma troca automatica nao herda a escolha do usuario: depois que o sistema
     // moveu a fonte, o servidor ativo nao foi mais decisao dele.
@@ -1393,6 +1405,12 @@ export function CustomPlayer({
       if (!jw) return;
       jw.key = JW_KEY;
 
+      logFonte("fonte_iniciada", {
+        servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+        n: fonteIdx + 1,
+        total: allFontes.length,
+      });
+
       const player = jw("jw-player-container").setup({
         sources,
         tracks,
@@ -1441,13 +1459,14 @@ export function CustomPlayer({
       // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
       player.on("firstFrame", () => {
         initialLoadRef.current = false;
-        // Fecha a narrativa do failover no console: depois das linhas de "fonte
-        // X falhou → escolhido Y", esta diz qual servidor de fato entregou.
-        console.warn(
-          `[diag/failover] REPRODUZINDO servidor=${fonte?.servidor ?? fonte?.rotulo ?? "?"} ` +
-          `provider=${fonte?.provider ?? "-"} fonte=${fonteIdx + 1}/${allFontes.length} ` +
-          `apos ${serverSwitchCountRef.current} troca(s)`,
-        );
+        // Fecha a sequência no console. Só aqui: primeiro frame é a única prova
+        // de reprodução — "extract respondeu 200" não prova nada.
+        logFonte("fonte_reproduzindo", {
+          servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+          n: fonteIdx + 1,
+          total: allFontes.length,
+          apos: serverSwitchCountRef.current,
+        });
         // Único ponto que prova reprodução de verdade: o primeiro frame só
         // aparece depois do init segment e dos primeiros segmentos de mídia.
         // "extract respondeu 200" não significa nada aqui.
@@ -1865,6 +1884,14 @@ export function CustomPlayer({
           escolhido: acao === "failover" ? (proxima?.servidor ?? proxima?.rotulo ?? null) : null,
         });
 
+        if (acao !== "ignorar") {
+          logFonte("fonte_falhou", {
+            servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+            motivo: `${veredito}:${motivo}`,
+            http: sinal.http,
+          });
+        }
+
         if (acao === "ignorar") return false;
 
         if (acao === "retry") {
@@ -1920,6 +1947,9 @@ export function CustomPlayer({
             if (!alvo || !playerAtual) return;
             const retomar = Math.max(progressoRef.current, retomarEmRef.current);
             try {
+              // Nova tentativa de carga: invalida o vigia e os callbacks da
+              // anterior, que a época sozinha não distingue.
+              tentativaIdRef.current += 1;
               playerAtual.load([{ file: alvo, type: streamTipo === "mp4" ? "mp4" : "hls" }]);
               suppressErrorUntilRef.current = Date.now() + 2000;
               if (retomar > 5) playerAtual.once("firstFrame", () => { playerAtual.seek(retomar); });
@@ -1956,19 +1986,21 @@ export function CustomPlayer({
       // baixando, e o prazo e estendido uma vez em vez de derrubar a fonte.
       if (firstFrameTimerRef.current) clearTimeout(firstFrameTimerRef.current);
       let prorrogado = false;
+      const tentativaNoSetup = tentativaIdRef.current;
       const vigiarPrimeiroFrame = () => {
         firstFrameTimerRef.current = null;
         if (unmountedRef.current || !initialLoadRef.current) return;
         if (sourceEpochRef.current !== epochNoSetup) return;
+        // A época não vê retry dentro da mesma fonte: sem esta comparação, o
+        // vigia armado na tentativa anterior derrubaria a carga em andamento.
+        if (tentativaIdRef.current !== tentativaNoSetup) return;
 
         let buffer = 0;
         try { buffer = Number(jwRef.current?.getBuffer?.() ?? 0); } catch { buffer = 0; }
+        // Buffer é prova de que a fonte está entregando bytes: aí o prazo curto
+        // seria injusto, e ela ganha uma prorrogação (uma só).
         if (buffer > 0 && !prorrogado) {
           prorrogado = true;
-          console.warn(
-            `[diag/failover] sem primeiro frame em ${LIMITES.T_FIRST_FRAME_MS}ms, ` +
-            `mas buffer=${buffer}% - prorrogando uma vez`,
-          );
           firstFrameTimerRef.current = setTimeout(vigiarPrimeiroFrame, LIMITES.T_FIRST_FRAME_MS);
           return;
         }
@@ -2330,14 +2362,59 @@ export function CustomPlayer({
     }
     video.play().catch(() => setAutoPlayBlocked(true));
 
-    const onNativeError = () => {
+    // No caminho nativo não há JW para reportar nada: a prova de reprodução tem
+    // de vir do próprio elemento. `playing` sozinho não basta — ele dispara
+    // antes de o tempo andar. Só currentTime avançando prova playback.
+    tentativaIdRef.current += 1;
+    const tentativaNativa = tentativaIdRef.current;
+    const partiuDe = video.currentTime;
+    let confirmado = false;
+
+    logFonte("fonte_iniciada", {
+      servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+      n: fonteIdx + 1,
+      total: allFontes.length,
+    });
+
+    const avancar = (motivo: string) => {
+      if (confirmado || tentativaIdRef.current !== tentativaNativa) return;
+      confirmado = true; // impede que erro e vigia disparem a troca duas vezes
+      logFonte("fonte_falhou", { servidor: fonte?.servidor ?? fonte?.rotulo ?? "?", motivo });
       const refUrl = streamRefererRef.current;
       if (refUrl) { setStreamTipo("iframe"); setStreamUrl(refUrl); return; }
       if (fonteIdx < allFontes.length - 1) { switchFonte(fonteIdx + 1); return; }
       setError("Erro no stream"); setStatus("error");
     };
-    video.addEventListener("error", onNativeError, { once: true });
-    return () => { video.removeEventListener("error", onNativeError); };
+
+    const onNativeError = () => {
+      const code = video.error?.code;
+      if (code === 1) return; // ABORTED: troca em curso
+      avancar(code === 4 ? "midia-recusada" : code === 3 ? "midia-decode" : "erro-midia");
+    };
+
+    // Prazo curto para playback real. Sem isso o caminho nativo ficava em
+    // carregamento indefinido quando a fonte simplesmente não respondia.
+    const vigia = setTimeout(() => avancar("sem-playback"), LIMITES.T_FIRST_FRAME_MS);
+
+    const onTimeUpdate = () => {
+      if (confirmado || video.currentTime <= partiuDe) return;
+      confirmado = true;
+      clearTimeout(vigia);
+      logFonte("fonte_reproduzindo", {
+        servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+        n: fonteIdx + 1,
+        total: allFontes.length,
+        apos: serverSwitchCountRef.current,
+      });
+    };
+
+    video.addEventListener("error", onNativeError);
+    video.addEventListener("timeupdate", onTimeUpdate);
+    return () => {
+      clearTimeout(vigia);
+      video.removeEventListener("error", onNativeError);
+      video.removeEventListener("timeupdate", onTimeUpdate);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, streamTipo]);
 
