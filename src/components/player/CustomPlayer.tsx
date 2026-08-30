@@ -398,6 +398,8 @@ export function CustomPlayer({
   const ultimoExtraidoRef = useRef<string | null>(null);
   const stallUltimoRef = useRef(0);
   const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Solta o listener de erro do <video>; ele nasce dentro do setup do JW. */
+  const soltarErroMidiaRef = useRef<null | (() => void)>(null);
   const stallTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nextUrlRef = useRef(nextUrl);
   const nextEpCountdownActiveRef = useRef(false);
@@ -1439,6 +1441,13 @@ export function CustomPlayer({
       // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
       player.on("firstFrame", () => {
         initialLoadRef.current = false;
+        // Fecha a narrativa do failover no console: depois das linhas de "fonte
+        // X falhou → escolhido Y", esta diz qual servidor de fato entregou.
+        console.warn(
+          `[diag/failover] REPRODUZINDO servidor=${fonte?.servidor ?? fonte?.rotulo ?? "?"} ` +
+          `provider=${fonte?.provider ?? "-"} fonte=${fonteIdx + 1}/${allFontes.length} ` +
+          `apos ${serverSwitchCountRef.current} troca(s)`,
+        );
         // Único ponto que prova reprodução de verdade: o primeiro frame só
         // aparece depois do init segment e dos primeiros segmentos de mídia.
         // "extract respondeu 200" não significa nada aqui.
@@ -2008,12 +2017,69 @@ export function CustomPlayer({
         });
       }, 2000);
 
+      // Erro no proprio elemento <video>, que o JW nem sempre traduz em "error".
+      //
+      // E o unico sinal quando o navegador recusa a midia sem emitir requisicao
+      // — http em pagina https, CSP — porque ai nao existe erro de rede para o
+      // JW reportar e so o vigia de 25s notava. Medido em producao: o <video>
+      // dispara MediaError code 4 na hora.
+      //
+      // Fase de captura: erro de midia nao borbulha, mas e capturavel no
+      // ancestral. Assim nao dependemos de quando o JW cria o elemento.
+      const containerJw = document.getElementById("jw-player-container");
+      const aoErroDeMidia = (ev: Event) => {
+        const alvo = ev.target;
+        if (unmountedRef.current || !(alvo instanceof HTMLMediaElement)) return;
+        const code = alvo.error?.code;
+        // ABORTED e a propria troca de fonte em curso, nao falha da fonte.
+        if (code === 1) return;
+        const rotulo = code === 4 ? "midia-recusada" : code === 3 ? "midia-decode" : "rede";
+        console.warn(`[diag/error] <video> MediaError code=${code} (${rotulo}) — msg: ${alvo.error?.message ?? ""}`);
+        avaliarFalha({
+          mensagem: `${rotulo}: MediaError ${code} ${alvo.error?.message ?? ""}`,
+          epochErro: epochNoSetup,
+          fi: fonteIdx, len: allFontes.length, fonteId: fonte?.id ?? "",
+        });
+      };
+      containerJw?.addEventListener("error", aoErroDeMidia, true);
+      soltarErroMidiaRef.current = () => containerJw?.removeEventListener("error", aoErroDeMidia, true);
+
       player.on("warning", (e: any) => {
         if (unmountedRef.current) return;
         const msSinceLoad = lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : -1;
         const srcUrl: string = e?.sourceError?.url || e?.url || "";
         const domain = diagDomain(srcUrl);
         console.warn(`[diag/warning] JW ${e?.code} (+${msSinceLoad}ms pós-load) — domínio: ${domain} — msg: ${e?.message || ""}`);
+      });
+
+      // Falha ao montar o próprio player: não há mídia nem rede no caminho, e
+      // repetir o mesmo setup dá o mesmo resultado.
+      player.on("setupError", (e: any) => {
+        if (unmountedRef.current) return;
+        console.warn(`[diag/error] JW setupError ${e?.code ?? "?"} — msg: ${e?.message || ""}`);
+        avaliarFalha({
+          mensagem: `midia-recusada: setupError ${e?.message ?? ""}`,
+          jwCode: e?.code,
+          epochErro: epochNoSetup,
+          fi: fonteIdx, len: allFontes.length, fonteId: fonte?.id ?? "",
+        });
+      });
+
+      // play() rejeitado. Quase sempre é política de autoplay, que NAO é falha
+      // de fonte — trocar de servidor ali puniria o usuário por não ter clicado.
+      // Só escala quando a recusa não é por falta de gesto.
+      player.on("playAttemptFailed", (e: any) => {
+        if (unmountedRef.current) return;
+        const msg = String(e?.message ?? "");
+        const ehAutoplay = /gesture|autoplay|not allowed|interact|user activation/i.test(msg);
+        console.warn(`[diag/error] JW playAttemptFailed autoplay=${ehAutoplay} — msg: ${msg}`);
+        if (ehAutoplay) { setAutoPlayBlocked(true); return; }
+        avaliarFalha({
+          mensagem: `playAttemptFailed ${msg}`,
+          jwCode: e?.code,
+          epochErro: epochNoSetup,
+          fi: fonteIdx, len: allFontes.length, fonteId: fonte?.id ?? "",
+        });
       });
 
       player.on("error", (e: any) => {
@@ -2236,6 +2302,7 @@ export function CustomPlayer({
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
+      if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
       if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

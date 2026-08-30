@@ -3,6 +3,12 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def diagLogs = project.hasProperty("diagLogs") ? "true" : "false"
+def allowedSigningCerts = providers.gradleProperty("obaflix.allowedSigningCerts")
+    .orElse(providers.environmentVariable("OBAFLIX_ALLOWED_SIGNING_CERTS"))
+    .orElse("")
+    .get()
+
 android {
     // Namespace proprio: e o que decide onde BuildConfig e R sao gerados.
     // Os pacotes Kotlin continuam com.obaflix / com.obaflix.bridge /
@@ -16,6 +22,11 @@ android {
         minSdk 21
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+        // Lista separada por virgula de SHA-256 dos certificados aceitos. O
+        // digest e publico; a chave privada continua exclusivamente no
+        // keystore/Play App Signing. Vazio deixa a verificacao observacional.
+        buildConfigField "String", "ALLOWED_SIGNING_CERTS_SHA256", "\"${allowedSigningCerts}\""
+        buildConfigField "boolean", "DIAG_LOGS", diagLogs
 
         consumerProguardFiles 'consumer-rules.pro'
     }

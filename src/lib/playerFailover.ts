@@ -23,6 +23,17 @@ export type Acao = "ignorar" | "retry" | "reextrair" | "failover" | "erro";
 export const LIMITES = {
   /** Tentativas de recuperação na mesma fonte antes de trocar. */
   RETRIES_POR_FONTE: 3,
+  /**
+   * Antes do primeiro frame o orçamento é bem menor.
+   *
+   * Depois que a reprodução começou, insistir na mesma fonte se paga: o buffer
+   * já foi baixado e a falha costuma ser um soluço de rede. Antes disso não há
+   * nada a preservar, e uma fonte que não entregou o primeiro frame quase nunca
+   * entrega na segunda tentativa idêntica — o que ela faz é segurar o usuário.
+   * Com 3 tentativas de 25s mais os backoffs, dava quase dois minutos preso num
+   * servidor morto antes de sequer olhar o seguinte.
+   */
+  RETRIES_ANTES_FIRSTFRAME: 1,
   /** Backoff entre tentativas. Mais espaçado que o antigo (500ms) de propósito. */
   BACKOFF_MS: [1000, 4000, 10000],
   /**
@@ -81,6 +92,24 @@ export function classificarFalha(e: EntradaFalha): { veredito: Veredito; motivo:
   // O extrator nomeia arquivo removido; o proxy marca com X-Obaflix-Falha.
   if (/n[ãa]o tem mais este arquivo|fonte-morta/i.test(texto)) {
     return { veredito: "FATAL", motivo: "arquivo-removido" };
+  }
+
+  // O navegador recusou a mídia sem nem emitir requisição: esquema http numa
+  // página https, CSP, ou container que ele não sabe tocar. Repetir a mesma URL
+  // dá exatamente o mesmo resultado, então não há o que retentar — só trocar.
+  // (MediaError code 4, e o texto que o Chrome usa nesse caso.)
+  if (/midia-recusada|not supported|URL safety check|MEDIA_ELEMENT_ERROR/i.test(texto)) {
+    return { veredito: "FATAL", motivo: "midia-recusada" };
+  }
+  if (/midia-decode|decode error|codec/i.test(texto)) {
+    return { veredito: "FATAL", motivo: "decode" };
+  }
+
+  // A fonte não entregou o primeiro frame no prazo. É transitório de direito
+  // (pode ser CDN lento), mas o orçamento de retry antes do primeiro frame é
+  // curto de propósito — ver RETRIES_ANTES_FIRSTFRAME.
+  if (/sem primeiro frame/i.test(texto)) {
+    return { veredito: "TRANSITORIO", motivo: "sem-first-frame" };
   }
 
   if (http === 404 || http === 410) {
@@ -161,10 +190,19 @@ export function decidirAcao(
 
   // TRANSITORIO: retenta no lugar. Nunca reextrai — reextrair não conserta 5xx
   // de CDN e ainda gasta um slot de stream na Vercel.
-  if (estado.retries < LIMITES.RETRIES_POR_FONTE) {
+  //
+  // O teto aperta só na seleção automática e antes do primeiro frame: é o caso
+  // em que insistir não preserva nada e ainda segura o usuário num servidor que
+  // já se mostrou mudo. Com reprodução em curso há buffer pago para defender, e
+  // numa escolha manual o usuário pediu aquele servidor — encurtar o orçamento
+  // ali seria desistir por ele. FATAL continua passando por cima dos dois.
+  const tetoRetry = estado.houveFirstFrame || estado.escolhaManual
+    ? LIMITES.RETRIES_POR_FONTE
+    : LIMITES.RETRIES_ANTES_FIRSTFRAME;
+  if (estado.retries < tetoRetry) {
     return {
       acao: "retry",
-      detalhe: `tentativa ${estado.retries + 1}/${LIMITES.RETRIES_POR_FONTE}`,
+      detalhe: `tentativa ${estado.retries + 1}/${tetoRetry}`,
     };
   }
   if (estado.escolhaManual) {

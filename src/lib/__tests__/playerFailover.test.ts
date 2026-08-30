@@ -88,13 +88,41 @@ test("FATAL troca de fonte na hora, sem gastar retry", () => {
   assert.equal(d.acao, "failover");
 });
 
-test("TRANSITORIO retenta antes de trocar", () => {
-  assert.equal(decidirAcao("TRANSITORIO", estado({ retries: 0 })).acao, "retry");
-  assert.equal(decidirAcao("TRANSITORIO", estado({ retries: 2 })).acao, "retry");
+test("TRANSITORIO com reprodução em curso retenta até o teto cheio", () => {
+  const tocando = { houveFirstFrame: true };
+  assert.equal(decidirAcao("TRANSITORIO", estado({ ...tocando, retries: 0 })).acao, "retry");
+  assert.equal(decidirAcao("TRANSITORIO", estado({ ...tocando, retries: 2 })).acao, "retry");
   assert.equal(
-    decidirAcao("TRANSITORIO", estado({ retries: LIMITES.RETRIES_POR_FONTE })).acao,
+    decidirAcao("TRANSITORIO", estado({ ...tocando, retries: LIMITES.RETRIES_POR_FONTE })).acao,
     "failover",
   );
+});
+
+test("TRANSITORIO antes do primeiro frame troca de fonte quase na hora", () => {
+  // Uma fonte que nao entregou frame nenhum raramente entrega na repeticao
+  // identica: com o teto cheio eram ~115s (3 vigias de 25s mais os backoffs)
+  // presos num servidor mudo antes de sequer olhar o proximo.
+  assert.equal(decidirAcao("TRANSITORIO", estado({ retries: 0 })).acao, "retry");
+  assert.equal(
+    decidirAcao("TRANSITORIO", estado({ retries: LIMITES.RETRIES_ANTES_FIRSTFRAME })).acao,
+    "failover",
+  );
+});
+
+test("o aperto do orçamento nao vale para escolha manual", () => {
+  // O usuario pediu aquele servidor; desistir por ele depois de uma tentativa
+  // seria desfazer uma decisao explicita.
+  assert.equal(
+    decidirAcao("TRANSITORIO", estado({ escolhaManual: true, retries: 2 })).acao,
+    "retry",
+  );
+});
+
+test("midia recusada pelo navegador e fatal: repetir a mesma URL da o mesmo", () => {
+  // http em pagina https, CSP ou container desconhecido. O navegador recusa
+  // antes de emitir requisicao, entao nao ha erro de rede para retentar.
+  assert.equal(falha({ mensagem: "midia-recusada: MediaError 4" }).veredito, "FATAL");
+  assert.equal(decidirAcao("FATAL", estado()).acao, "failover");
 });
 
 test("TRANSITORIO nunca reextrai: não conserta 5xx e gasta slot na Vercel", () => {

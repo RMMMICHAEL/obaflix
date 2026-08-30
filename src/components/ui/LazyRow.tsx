@@ -29,7 +29,19 @@ export function LazyRow({ children, height = 280 }: { children: ReactNode; heigh
 
   return (
     <div ref={ref}>
-      {visible ? children : <div style={{ height }} />}
+      {visible ? children : (
+        <div className="px-6 py-3 md:px-12" style={{ minHeight: height }} aria-hidden="true">
+          <div className="mb-3 h-6 w-40 animate-pulse rounded bg-zinc-800/70" />
+          <div className="flex gap-3 overflow-hidden">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={index}
+                className="aspect-video w-[220px] shrink-0 animate-pulse rounded-xl bg-zinc-900 md:w-[280px]"
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

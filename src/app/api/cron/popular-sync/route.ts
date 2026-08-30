@@ -71,7 +71,7 @@ function computeDiff(current: RankRow[], incoming: Map<string, number>): RankDif
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 async function applyDiff(tipo: "filme" | "serie", diff: RankDiff, db: any = prisma) {
   if (diff.updates.length > 0) {
     const rows = diff.updates.map((u) =>

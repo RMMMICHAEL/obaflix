@@ -2,6 +2,7 @@ package com.obaflix.bridge
 
 import android.os.Build
 import android.util.Log
+import com.obaflix.core.BuildConfig
 import java.util.ArrayDeque
 import java.util.Locale
 
@@ -28,6 +29,9 @@ private const val TAG = "Obaflix"
  * Nada aqui sai do aparelho — e so Log.d/Log.w/Log.e, lido via adb logcat.
  */
 object ObaLog {
+
+    /** Em release comum o R8 reduz estes ramos a no-op. */
+    private val ativo: Boolean = BuildConfig.DEBUG || BuildConfig.DIAG_LOGS
 
     /** Fases do funil, na ordem em que uma reproducao normal passa por elas. */
     object Fase {
@@ -61,6 +65,7 @@ object ObaLog {
      * o id resultante aparece em toda linha dela.
      */
     fun novaTrilha(motivo: String, vararg campos: Pair<String, Any?>): String {
+        if (!ativo) return "off"
         val id = java.lang.Long.toHexString(System.nanoTime()).takeLast(4)
         synchronized(trilha) {
             trilha.clear()
@@ -73,6 +78,7 @@ object ObaLog {
 
     /** Uma linha de progresso. campos vira "chave=valor" na ordem informada. */
     fun evento(fase: String, evento: String, vararg campos: Pair<String, Any?>) {
+        if (!ativo) return
         val linha = montar(fase, evento, campos)
         registrar(linha)
         Log.d(TAG, linha)
@@ -80,6 +86,7 @@ object ObaLog {
 
     /** Igual a evento, mas em nivel WARN: algo degradou sem interromper. */
     fun alerta(fase: String, evento: String, vararg campos: Pair<String, Any?>) {
+        if (!ativo) return
         val linha = montar(fase, evento, campos)
         registrar(linha)
         Log.w(TAG, linha)
@@ -95,6 +102,7 @@ object ObaLog {
         erro: Throwable? = null,
         vararg campos: Pair<String, Any?>,
     ) {
+        if (!ativo) return
         val extras = if (erro == null) {
             campos
         } else {
@@ -118,6 +126,7 @@ object ObaLog {
      * error) e sem isso a mesma historia sairia tres vezes seguidas.
      */
     fun dumpTrilha(motivo: String) {
+        if (!ativo) return
         val agora = System.currentTimeMillis()
         val copia = synchronized(trilha) {
             if (agora - ultimoDump < 2_000) return
@@ -132,6 +141,7 @@ object ObaLog {
 
     /** Ambiente do aparelho: primeira coisa util quando "so falha nesse celular". */
     fun ambiente(extras: Map<String, Any?> = emptyMap()) {
+        if (!ativo) return
         val campos = mutableListOf<Pair<String, Any?>>(
             "android" to Build.VERSION.RELEASE,
             "api" to Build.VERSION.SDK_INT,

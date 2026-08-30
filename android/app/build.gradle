@@ -30,7 +30,11 @@ android {
     buildTypes {
         release {
             minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            shrinkResources true
+            debuggable false
+            jniDebuggable false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                rootProject.file('hardening-rules.pro'), 'proguard-rules.pro'
         }
         debug {
             // Para dev local: alterar OBAFLIX_URL para http://10.0.2.2:3000 (emulador)

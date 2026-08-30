@@ -37,12 +37,17 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/151.0.0.0 Safari/537.36";
 
+const TOKEN = process.env.WEBCINE_ACCESS_TOKEN ?? "";
+
 const cabecalhos = (extra: Record<string, string> = {}) => ({
   Accept: "application/json",
   Origin: SITE,
   Referer: SITE + "/",
   "User-Agent": UA,
   "x-device-id": DEVICE_ID,
+  // O HAR nao mostrava este header: o Chrome 119+ remove Authorization e Cookie
+  // ao exportar. A API responde "Token nao fornecido" sem ele.
+  ...(TOKEN ? { Authorization: "Bearer " + TOKEN } : {}),
   ...extra,
 });
 

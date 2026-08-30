@@ -27,8 +27,8 @@ const PAGE_LIMIT = Number(getArg("--paginas") ?? "5"); // quantas páginas busca
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36";
 const TMDB_KEY = process.env.TMDB_API_KEY;
 
-let BASE = ADMIN_URL;
-let sessionToken = "";
+const BASE = ADMIN_URL;
+const sessionToken = "";
 let cookieJar = "";
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

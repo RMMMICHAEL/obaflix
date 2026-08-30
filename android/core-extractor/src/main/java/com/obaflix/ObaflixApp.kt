@@ -6,6 +6,8 @@ import org.conscrypt.Conscrypt
 import java.security.Security
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerState
+import com.obaflix.security.AppIntegrity
+import com.obaflix.security.AppIntegrityStatus
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -45,6 +47,10 @@ class ObaflixApp : Application() {
         var hostWebView: java.lang.ref.WeakReference<android.webkit.WebView>? = null
 
         val playerState = PlayerState()
+
+        @Volatile
+        var integrityStatus: AppIntegrityStatus = AppIntegrityStatus.NOT_CONFIGURED
+            private set
     }
 
     /**
@@ -77,6 +83,7 @@ class ObaflixApp : Application() {
         // Antes de qualquer cliente HTTP nascer: o OkHttp captura a fabrica de
         // SSL na construcao, e trocar o provedor depois nao teria efeito.
         instalarTlsModerno()
+        integrityStatus = AppIntegrity.verify(this)
         httpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -92,7 +99,12 @@ class ObaflixApp : Application() {
             .callTimeout(0, TimeUnit.MILLISECONDS)
             .build()
 
-        ObaLog.ambiente(mapOf("webview" to webViewVersion()))
+        ObaLog.ambiente(
+            mapOf(
+                "webview" to webViewVersion(),
+                "integridade" to integrityStatus.wireName,
+            ),
+        )
     }
 
     /**
