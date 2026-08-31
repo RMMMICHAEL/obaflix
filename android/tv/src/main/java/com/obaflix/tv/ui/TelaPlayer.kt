@@ -81,6 +81,7 @@ import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Episodio
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.player.CabecalhosMidia
+import com.obaflix.tv.player.DiagnosticoPlayer
 import com.obaflix.tv.player.Fonte
 import com.obaflix.tv.player.FontesTv
 import com.obaflix.tv.player.GravadorProgresso
@@ -335,6 +336,12 @@ fun TelaPlayer(pedido: Pedido) {
             .setEnableDecoderFallback(true)
     }
 
+    // Rotulo por chamada, e nao capturado: o diagnostico vive tanto quanto o
+    // player, mas precisa dizer o servidor da vez em cada linha.
+    val diagnostico = remember {
+        DiagnosticoPlayer(rotuloFonte = { fontes.getOrNull(fonteAtual)?.rotulo ?: "?" })
+    }
+
     val player = remember {
         ExoPlayer.Builder(context, fabricaRenderizadores)
             .setMediaSourceFactory(DefaultMediaSourceFactory(fabricaHttp))
@@ -457,6 +464,10 @@ fun TelaPlayer(pedido: Pedido) {
             .setSubtitleConfigurations(legendas)
             .build()
 
+        // A amostragem de segmentos recomeca do zero: os primeiros pedidos da
+        // fonte nova sao os que interessam, e sem isto eles cairiam no meio da
+        // contagem da fonte anterior e nao seriam registrados.
+        diagnostico.novaFonte()
         player.setMediaItem(item, retomarDe.coerceAtLeast(0L))
         player.prepare()
         player.playWhenReady = true
@@ -637,9 +648,11 @@ fun TelaPlayer(pedido: Pedido) {
             }
         }
         player.addListener(ouvinte)
+        player.addAnalyticsListener(diagnostico)
         onDispose {
             salvarProgresso()
             player.removeListener(ouvinte)
+            player.removeAnalyticsListener(diagnostico)
             player.release()
         }
     }
