@@ -6,9 +6,11 @@ import { imgUrl } from "@/lib/tmdb";
  * Hero. O mosaico de fundo reaproveita backdrops que a página já carregou para
  * as vitrines — nenhuma requisição extra, nenhuma query a mais.
  *
- * A moldura à direita é o espaço reservado para o print do aplicativo. Enquanto
- * a imagem não existe em `/app-mockup.png`, o `onError` some com o `<img>` e o
- * lugar continua desenhado, sem ícone quebrado.
+ * A moldura à direita é o aparelho, desenhada em CSS, e o print do app entra
+ * dentro dela por `/app-mockup.webp` — na proporção real da tela que gerou a
+ * captura (1080×2220), para nada esticar nem cortar. Vem por `background-image`
+ * de propósito: se o arquivo sumir, a falha é silenciosa e a moldura continua
+ * de pé com a marca no lugar, em vez de um ícone quebrado.
  */
 export function LandingHero({ fundos }: { fundos: (string | null)[] }) {
   const mosaico = fundos.filter(Boolean).slice(0, 6) as string[];
@@ -86,14 +88,12 @@ export function LandingHero({ fundos }: { fundos: (string | null)[] }) {
           </ul>
         </div>
 
-        {/* Área reservada ao print do app, dentro do mockup */}
-        <div className="obaflix-reveal relative isolate mx-auto w-full max-w-[400px]">
+        {/* O aparelho: moldura em CSS, print do app dentro */}
+        <div className="obaflix-reveal relative isolate mx-auto w-full max-w-[292px]">
           <div aria-hidden className="absolute -inset-8 rounded-full bg-red-600/25 blur-3xl" />
           <div className="obaflix-flutua relative rounded-[1.75rem] border border-white/12 bg-gradient-to-b from-white/10 to-white/[0.02] p-2 shadow-2xl shadow-black/70 backdrop-blur">
-            <div className="relative aspect-[4/5] overflow-hidden rounded-[1.35rem] bg-zinc-900">
-              {/* Camada de baixo: o quadro se sustenta sozinho enquanto o print
-                  não existe. A imagem vem por background justamente para que um
-                  arquivo ausente falhe em silêncio, sem ícone quebrado. */}
+            <div className="relative aspect-[1080/2220] overflow-hidden rounded-[1.35rem] bg-zinc-900">
+              {/* Camada de baixo: se o print sumir, é isto que aparece. */}
               <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(70%_50%_at_50%_0%,rgba(229,9,20,0.35),transparent_70%)]">
                 <span className="text-2xl font-black tracking-[-0.055em] text-red-600/50">
                   OBA<span className="text-white/50">FLIX</span>
@@ -101,9 +101,9 @@ export function LandingHero({ fundos }: { fundos: (string | null)[] }) {
               </div>
               <div
                 role="img"
-                aria-label="Aplicativo Obaflix"
-                className="absolute inset-0 bg-cover bg-center"
-                style={{ backgroundImage: "url(/app-mockup.png)" }}
+                aria-label="Tela inicial do aplicativo Obaflix"
+                className="absolute inset-0 bg-cover bg-top"
+                style={{ backgroundImage: "url(/app-mockup.webp)" }}
               />
             </div>
           </div>
