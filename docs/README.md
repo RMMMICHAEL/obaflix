@@ -31,6 +31,7 @@
 | [`recovery.md`](recovery.md) | Fallback, renovação de token, auto-avanço, recuperação de erros |
 | [`electron.md`](electron.md) | App desktop: IPC, bypass CDN, auto-update |
 | [`android.md`](android.md) | App Android: WebView, bridge, extração nativa, diferenças |
+| [`versoes.md`](versoes.md) | Versão corrente de cada aplicativo nativo, onde os artefatos ficam e como gerar |
 | [`auth.md`](auth.md) | Autenticação, sessões, admin, CORS |
 | [`database.md`](database.md) | Schema Prisma, modelos, índices |
 | [`api.md`](api.md) | Todas as rotas de API |
