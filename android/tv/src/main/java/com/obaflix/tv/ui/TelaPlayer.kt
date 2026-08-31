@@ -6,6 +6,8 @@
 package com.obaflix.tv.ui
 
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.ViewGroup
 import androidx.compose.animation.AnimatedVisibility
@@ -188,7 +190,9 @@ private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
             val ouvinte = object : Player.Listener {
                 private fun encerrar(resultado: Preparo) {
                     if (!cont.isActive) return
-                    player.removeListener(this)
+                    // Aqui ja se esta no looper do player (e um callback dele),
+                    // mas o caminho e o mesmo por seguranca.
+                    player.removerNaThreadDele(this)
                     cont.resume(resultado)
                 }
 
@@ -204,7 +208,15 @@ private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
                     encerrar(Preparo.Falhou(motivoDe(erro)))
             }
             player.addListener(ouvinte)
-            cont.invokeOnCancellation { player.removeListener(ouvinte) }
+            // NUNCA `player.removeListener` direto aqui. `invokeOnCancellation`
+            // roda na thread de quem cancelou, e quem cancela por tempo e o
+            // agendador do withTimeout — `kotlinx.coroutines.DefaultExecutor`.
+            // Tocar no ExoPlayer de fora da thread dele lanca
+            // IllegalStateException "Player is accessed on the wrong thread",
+            // que num handler de cancelamento vira FATAL EXCEPTION: o
+            // aplicativo fechava exatos 20s depois de o watchdog comecar,
+            // justamente na fonte que ainda estava carregando.
+            cont.invokeOnCancellation { player.removerNaThreadDele(ouvinte) }
         }
     }
 
@@ -220,6 +232,21 @@ private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
         "erroPlayer" to (player.playerError?.errorCodeName ?: "-"),
     )
     return resultado
+}
+
+/**
+ * Remove um ouvinte na thread que o ExoPlayer exige.
+ *
+ * O Media3 verifica a thread em toda chamada publica e lanca se estiver errada.
+ * Como a remocao pode partir de um cancelamento — e cancelamento chega em
+ * qualquer thread —, o caminho seguro e sempre pelo looper do proprio player.
+ */
+private fun ExoPlayer.removerNaThreadDele(ouvinte: Player.Listener) {
+    if (Looper.myLooper() == applicationLooper) {
+        removeListener(ouvinte)
+    } else {
+        Handler(applicationLooper).post { removeListener(ouvinte) }
+    }
 }
 
 /** Motivo legivel de uma falha do Media3, com o status HTTP quando existe. */

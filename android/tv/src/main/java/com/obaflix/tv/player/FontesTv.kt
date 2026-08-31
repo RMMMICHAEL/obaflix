@@ -126,11 +126,28 @@ object FontesTv {
      */
     private fun pareceHls(url: String): Boolean {
         val caminho = url.substringBefore('?').lowercase()
-        return caminho.endsWith(".m3u8") ||
-            caminho.contains(".urlset/") ||
-            caminho.endsWith("/master.txt") ||
-            caminho.endsWith("/playlist.txt")
+        return caminho.endsWith(".m3u8") || ehDaFamiliaUrlset(caminho)
     }
+
+    /**
+     * Master do tipo que a conferencia nao pode tocar.
+     *
+     * A familia `.urlset` com master em `.txt` (StreamWish, Hide e parentes)
+     * entrega links que
+     * valem para pouquissimas requisicoes: buscar o master para conferir
+     * gastava o endereco e o player recebia um 404 — foi o defeito do provedor
+     * `wish`. Nestes a conferencia e pulada.
+     *
+     * O `.m3u8` comum e o oposto: em campo, a fonte que passava pela
+     * conferencia chegava a tocar, e a mesma fonte com a conferencia pulada
+     * levou 404 em toda tentativa. Entao ele continua sendo conferido. Duas
+     * familias de link, dois comportamentos — tratar as duas igual quebrava uma
+     * delas em qualquer direcao que se escolhesse.
+     */
+    private fun ehDaFamiliaUrlset(caminhoEmMinusculas: String): Boolean =
+        caminhoEmMinusculas.contains(".urlset/") ||
+            caminhoEmMinusculas.endsWith("/master.txt") ||
+            caminhoEmMinusculas.endsWith("/playlist.txt")
 
 
     /**
@@ -270,7 +287,8 @@ object FontesTv {
         // os cabecalhos chegam ao player exatamente como sairam do extrator.
         val hlsPeloEndereco = pareceHls(extraido.stream) || extraido.isMaster ||
             extraido.tipo.equals("hls", ignoreCase = true)
-        if (hlsPeloEndereco) {
+        val usoUnico = ehDaFamiliaUrlset(extraido.stream.substringBefore('?').lowercase())
+        if (hlsPeloEndereco && usoUnico) {
             ObaLog.evento(
                 ObaLog.Fase.MANIFESTO, "tv_manifesto_pulado",
                 "servidor" to fonte.rotulo, "provedor" to provedor,
@@ -298,7 +316,7 @@ object FontesTv {
                 "acao" to "entregue_ao_player",
             )
             return Midia(
-                ehHls = false,
+                ehHls = hlsPeloEndereco,
                 url = extraido.stream,
                 referer = extraido.referer,
                 legendas = extraido.subtitles.distinctBy { it.file },
@@ -308,7 +326,9 @@ object FontesTv {
         }
 
         return Midia(
-            ehHls = info.ehHls,
+            // O corpo confirma, mas o endereco tambem vale: um `.m3u8` que a
+            // conferencia nao conseguiu ler continua sendo HLS para o Media3.
+            ehHls = info.ehHls || hlsPeloEndereco,
             url = extraido.stream,
             referer = extraido.referer,
             legendas = (extraido.subtitles + info.subtitles).distinctBy { it.file },

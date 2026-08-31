@@ -110,6 +110,9 @@ function Write-Resumo {
     $padrao = ($interessantes -join '|')
 
     foreach ($linha in $linhas) {
+        # A trilha e um replay do que ja saiu: sem pular, cada falha
+        # aparece duas vezes no resumo e a leitura dobra de tamanho.
+        if ($linha -match 'oba-trilha') { continue }
         if ($linha -notmatch "ev=($padrao)\b") { continue }
         $ev = $Matches[1]
         # Tira o cabecalho do logcat; a linha do Obaflix ja se explica sozinha.

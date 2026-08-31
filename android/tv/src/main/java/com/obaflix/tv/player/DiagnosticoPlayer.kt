@@ -94,6 +94,11 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
             "host" to ObaLog.host(loadEventInfo.uri.toString()),
             "arquivo" to ObaLog.arquivo(loadEventInfo.uri.toString()),
             "status" to status,
+            // Quem respondeu o erro. Um 404 vindo do proprio provedor e um 404
+            // vindo da borda do CDN pedem correcoes opostas, e sem estes dois
+            // cabecalhos os dois sao a mesma linha de log.
+            "servidorCdn" to cabecalho(loadEventInfo, "Server"),
+            "tipoConteudo" to cabecalho(loadEventInfo, "Content-Type"),
             "erro" to error.javaClass.simpleName,
             "causa" to ObaLog.texto(error.message),
             "cancelado" to wasCanceled,
@@ -181,7 +186,11 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
         ObaLog.evento(
             ObaLog.Fase.RENDER, "tv_primeiro_quadro",
             "servidor" to rotuloFonte(),
-            "desdeOInicioMs" to eventTime.realtimeMs,
+            // `eventTime.realtimeMs` e o elapsedRealtime do aparelho, nao um
+            // tempo relativo: saia como "desdeOInicioMs=4940143", que nao
+            // queria dizer nada. O "+NNNNms" que o ObaLog ja poe em toda linha
+            // e o tempo desta tentativa, e e esse que interessa.
+            "renderMs" to renderTimeMs,
         )
     }
 
@@ -249,8 +258,18 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
         C.TRACK_TYPE_AUDIO -> "audio"
         C.TRACK_TYPE_TEXT -> "legenda"
         C.TRACK_TYPE_DEFAULT -> "-"
+        // -1 e TRACK_TYPE_UNKNOWN, que e o que uma playlist reporta antes de
+        // haver faixa: aparecia como "t-1" e parecia defeito.
+        C.TRACK_TYPE_UNKNOWN -> "-"
         else -> "t" + trackType
     }
+
+    /** Um cabecalho da resposta, quando o Media3 chegou a receber cabecalhos. */
+    private fun cabecalho(info: LoadEventInfo, nome: String): String? =
+        info.responseHeaders[nome]?.firstOrNull()
+            ?: info.responseHeaders.entries
+                .firstOrNull { it.key.equals(nome, ignoreCase = true) }
+                ?.value?.firstOrNull()
 
     private fun ehSoftware(decoder: String): Boolean =
         decoder.startsWith("OMX.google.", ignoreCase = true) ||
