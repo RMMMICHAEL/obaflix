@@ -1,5 +1,7 @@
 import { withAuth } from "next-auth/middleware";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import type { NextFetchEvent } from "next/server";
+import { ehClienteNativo, ehPaginaFechada } from "@/config/site-mode";
 
 const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
@@ -12,7 +14,7 @@ function corsHeaders(origin: string) {
   };
 }
 
-export default withAuth(
+const adminMiddleware = withAuth(
   function middleware(req) {
     const { pathname } = req.nextUrl;
     const origin = req.headers.get("origin") ?? "";
@@ -60,7 +62,41 @@ export default withAuth(
   }
 );
 
+/**
+ * Porta de entrada única das páginas.
+ *
+ * Duas responsabilidades, nesta ordem:
+ *   1. fechamento temporário da interface pública de streaming (ver
+ *      `src/config/site-mode.ts`) — redireciona para a landing page;
+ *   2. proteção do `/admin`, que continua sendo o `withAuth` de sempre.
+ *
+ * `/api/*` nunca chega aqui: está excluído do matcher. Nenhum endpoint usado
+ * por Android, Android TV ou Electron é afetado por este arquivo.
+ */
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
+  const { pathname } = req.nextUrl;
+
+  if (pathname.startsWith("/admin")) {
+    return (adminMiddleware as unknown as (
+      r: NextRequest,
+      e: NextFetchEvent,
+    ) => ReturnType<typeof NextResponse.next>)(req, event);
+  }
+
+  // Clientes nativos passam direto: eles navegam pelas mesmas páginas dentro do
+  // WebView/Electron e não podem cair na landing.
+  if (ehPaginaFechada(pathname) && !ehClienteNativo(req.headers.get("user-agent"))) {
+    const destino = new URL("/", req.url);
+    return NextResponse.redirect(destino, 307);
+  }
+
+  return NextResponse.next();
+}
+
 export const config = {
-  // /api/admin/* tem proteção própria via x-admin-token nos route handlers
-  matcher: ["/admin/:path*"],
+  // /api/admin/* tem proteção própria via x-admin-token nos route handlers.
+  // Tudo que é asset ou API fica de fora — o middleware só olha páginas.
+  matcher: [
+    "/((?!api|_next/static|_next/image|fonts|.*\.(?:png|jpe?g|gif|svg|webp|ico|avif|txt|xml|json|webmanifest|mp4|woff2?)$).*)",
+  ],
 };

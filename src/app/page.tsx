@@ -6,6 +6,9 @@ import { Top10Band } from "@/components/ui/Top10Band";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
+import type { Metadata } from "next";
+import { LandingPage } from "@/components/landing/LandingPage";
+import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
@@ -14,6 +17,39 @@ import {
 } from "@/lib/tmdb";
 
 export const revalidate = 300;
+
+/**
+ * Com o streaming web fechado, `/` é a landing de download. A metadata muda
+ * junto: o título e a descrição precisam falar do aplicativo, não do catálogo.
+ * Favicon, `metadataBase` e imagem Open Graph continuam vindo do layout raiz.
+ */
+export function generateMetadata(): Metadata {
+  if (WEB_STREAMING_ENABLED) return {};
+  const titulo = "Obaflix | Baixe o app para Android, Android TV, TV Box e Windows";
+  const descricao =
+    "Baixe o aplicativo Obaflix e assista a filmes, séries e animes no Android, Android TV, TV Box e Windows. Pareie a sua TV em poucos segundos.";
+  return {
+    title: titulo,
+    description: descricao,
+    alternates: { canonical: "/" },
+    robots: { index: true, follow: true },
+    openGraph: {
+      type: "website",
+      locale: "pt_BR",
+      url: "/",
+      siteName: "Obaflix",
+      title: titulo,
+      description: descricao,
+      images: [{ url: "/placeholder-bg.jpg", width: 1280, height: 720, alt: "Obaflix" }],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: titulo,
+      description: descricao,
+      images: ["/placeholder-bg.jpg"],
+    },
+  };
+}
 
 // Série/filme adicionado nos últimos 3 dias → "Recém Adicionado"
 const NEW_SERIE_MS = 3 * 24 * 60 * 60 * 1000;
@@ -88,6 +124,10 @@ const selFilme = { ...selDB, urlDub: true, urlLeg: true } as const;
 const selSerie  = { ...selDB, tipo: true } as const;
 
 export default async function HomePage() {
+  // Interface pública de streaming fechada: `/` vira a landing de download.
+  // Um único flag (`WEB_STREAMING_ENABLED`) desfaz isto — ver src/config/site-mode.ts.
+  if (!WEB_STREAMING_ENABLED) return <LandingPage />;
+
   const [
     tmdbTrending,
     dbRecFilmes,
