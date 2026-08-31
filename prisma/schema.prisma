@@ -103,6 +103,9 @@ model Episodio {
   // "Novos episodios" ordena 358 mil linhas por createdAt. Sem indice a
   // query levava ~2,6s de trabalho de banco e segurava a /android inteira.
   @@index([createdAt(sort: Desc)])
+  // Deduplicacao da vitrine: encontra o episodio atual de cada serie sem
+  // revarrer a tabela inteira para cada card.
+  @@index([serieId, temporada(sort: Desc), numeroEp(sort: Desc), createdAt(sort: Desc)], map: "Episodio_vitrine_recente_idx")
 }
 
 model Genero {

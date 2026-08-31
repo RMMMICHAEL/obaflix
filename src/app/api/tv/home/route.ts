@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getImdbTop250Showcases } from "@/lib/catalog-showcases";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
  *
  * Reaproveita EXATAMENTE as regras que a home do site (src/app/page.tsx) já usa
  * — popularidade do TMDB para "em alta/populares", popularRank do sync para o
- * Top 10, nota ≥ 7 para "mais bem avaliados", createdAt para "novos". Nada de
+ * Top 10, IMDb Top 250 local para "mais bem avaliados", createdAt para "novos". Nada de
  * lógica nova nem de ordenar destaque por nota alta (que trazia clássico, não
  * tendência). É um endpoint separado do /api/home para não mexer no que o app
  * móvel já consome; a TV guarda o resultado em memória e só o pede uma vez por
@@ -72,8 +73,7 @@ export async function GET() {
     popSeries,
     top10Filmes,
     top10Series,
-    avaliadosFilmes,
-    avaliadosSeries,
+    imdbTop250,
     novosFilmes,
     novasSeries,
   ] = await Promise.all([
@@ -81,8 +81,7 @@ export async function GET() {
     serie("serie", {}, POR_POPULARIDADE, 24),
     filme({ popularRank: { not: null } }, { popularRank: "asc" }, 10),
     serie("serie", { popularRank: { not: null } }, { popularRank: "asc" }, 10),
-    filme({ nota: { gte: 7 } }, { nota: { sort: "desc", nulls: "last" } }, 24),
-    serie("serie", { nota: { gte: 7 } }, { nota: { sort: "desc", nulls: "last" } }, 24),
+    getImdbTop250Showcases(),
     filme({}, { createdAt: "desc" }, 24),
     serie("serie", {}, { createdAt: "desc" }, 24),
   ]);
@@ -112,11 +111,11 @@ export async function GET() {
     emAlta,
     popularesFilmes: popFilmes,
     top10Filmes,
-    avaliadosFilmes,
+    avaliadosFilmes: imdbTop250.filmes,
     novosFilmes,
     popularesSeries: popSeries,
     top10Series,
-    avaliadosSeries,
+    avaliadosSeries: imdbTop250.series,
     novasSeries,
     categorias,
   });

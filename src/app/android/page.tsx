@@ -9,6 +9,10 @@ import { AndroidContinueWatching } from "@/components/android/AndroidContinueWat
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getContinueWatchingItems } from "@/lib/continue-watching";
+import {
+  getImdbTop250Showcases,
+  getRecentSeriesEpisodes,
+} from "@/lib/catalog-showcases";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -78,7 +82,7 @@ const ordemPopular = [
  */
 const getCatalogoAndroid = unstable_cache(
   async () => {
-    const [featuredMovies, recentMovies, popularSeries, animes, desenhos, recentEpisodes] = await Promise.all([
+    const [featuredMovies, recentMovies, popularSeries, animes, desenhos, imdbTop250, recentEpisodes] = await Promise.all([
       prisma.filme.findMany({
         where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
         orderBy: ordemPopular,
@@ -89,45 +93,23 @@ const getCatalogoAndroid = unstable_cache(
       prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
       prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
       prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: ordemPopular, take: 18, select: seriesSelect }),
-      prisma.episodio.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 28,
-        select: {
-          id: true,
-          serieId: true,
-          titulo: true,
-          thumbnail: true,
-          temporada: true,
-          numeroEp: true,
-          createdAt: true,
-          serie: { select: { titulo: true, poster: true, createdAt: true } },
-        },
-      }),
+      getImdbTop250Showcases(),
+      getRecentSeriesEpisodes(),
     ]);
 
     const now = Date.now();
     const episodeItems: AndroidEpisode[] = recentEpisodes
-      .filter((episode, index, all) => {
-        const newSeries = now - episode.serie.createdAt.getTime() < 14 * 24 * 60 * 60 * 1000 || episode.serieId.startsWith("sf_");
-        if (!newSeries) return true;
-        return !all.some((other, otherIndex) =>
-          otherIndex < index &&
-          other.serieId === episode.serieId &&
-          (other.temporada > episode.temporada ||
-            (other.temporada === episode.temporada && other.numeroEp > episode.numeroEp)),
-        );
-      })
       .slice(0, 18)
       .map((episode) => ({
         id: episode.id,
         serieId: episode.serieId,
-        serieTitulo: episode.serie.titulo,
+        serieTitulo: episode.serieTitulo,
         titulo: episode.titulo,
         thumbnail: episode.thumbnail,
-        poster: episode.serie.poster,
+        poster: episode.seriePoster,
         temporada: episode.temporada,
         numeroEp: episode.numeroEp,
-        isNew: now - episode.createdAt.getTime() < 48 * 60 * 60 * 1000,
+        isNew: now - new Date(episode.atualizadoEm).getTime() < 48 * 60 * 60 * 1000,
       }));
 
     // urlDub/urlLeg saem da linha aqui: o catalogo so precisa saber que existe
@@ -140,6 +122,8 @@ const getCatalogoAndroid = unstable_cache(
       hero: featuredMovies[0] ? semFonte(featuredMovies[0]) : null,
       movies: recentMovies.map((item): AndroidItem => ({ ...semFonte(item), tipo: "filme" })),
       series: popularSeries.map((item): AndroidItem => ({ ...item, tipo: "serie" })),
+      topMovies: imdbTop250.filmes.map((item): AndroidItem => ({ ...item, tipo: "filme" })),
+      topSeries: imdbTop250.series.map((item): AndroidItem => ({ ...item, tipo: "serie" })),
       animeItems: animes.map((item): AndroidItem => ({ ...item, tipo: "anime" })),
       cartoonItems: desenhos.map((item): AndroidItem => ({ ...item, tipo: "desenho" })),
       episodeItems,
@@ -195,7 +179,7 @@ function EpisodeRail({ items }: { items: AndroidEpisode[] }) {
   return (
     <section className="android-rail" aria-labelledby="android-new-episodes-title">
       <div className="android-section-heading">
-        <h2 id="android-new-episodes-title">Novos episódios</h2>
+        <h2 id="android-new-episodes-title">Episódios Recentes</h2>
         <Link href="/series" aria-label="Ver todas as séries">
           Ver séries <ChevronRight size={16} />
         </Link>
@@ -236,7 +220,7 @@ export default async function AndroidHomePage() {
     getCatalogoAndroid(),
     getContinueWatchingItems(userId),
   ]);
-  const { hero, movies, series, animeItems, cartoonItems, episodeItems } = catalogo;
+  const { hero, movies, series, topMovies, topSeries, animeItems, cartoonItems, episodeItems } = catalogo;
 
   if (!hero) {
     return (
@@ -289,6 +273,8 @@ export default async function AndroidHomePage() {
         <EpisodeRail items={episodeItems} />
         <MediaRail title="Adicionados recentemente" href="/filmes" items={movies} />
         <MediaRail title="Séries para maratonar" href="/series" items={series} />
+        <MediaRail title="Filmes Mais Bem Avaliados" href="/melhores" items={topMovies} />
+        <MediaRail title="Séries Mais Bem Avaliadas" href="/melhores" items={topSeries} />
         <MediaRail title="Animes em alta" href="/animes" items={animeItems} />
         <MediaRail title="Para toda a família" href="/desenhos" items={cartoonItems} />
       </div>

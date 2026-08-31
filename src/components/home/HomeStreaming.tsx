@@ -10,6 +10,10 @@ import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
+  getImdbTop250Showcases,
+  getRecentSeriesEpisodes,
+} from "@/lib/catalog-showcases";
+import {
   getTrending,
   imgUrl, TmdbItem,
 } from "@/lib/tmdb";
@@ -69,7 +73,7 @@ function dbToCard(r: any, tipo: CardItem["tipo"]): CardItem {
     background: r.background ?? null,
     logo: r.logo ?? null,
     ano: r.ano, nota: r.nota,
-    dub: Boolean(r.urlDub), leg: Boolean(r.urlLeg),
+    dub: r.dub ?? Boolean(r.urlDub), leg: r.leg ?? Boolean(r.urlLeg),
     isNew: isRecent(r.createdAt),
   };
 }
@@ -125,9 +129,8 @@ const carregarHome = unstable_cache(
     dbPopSeries,
     dbRankFilmes,
     dbRankSeries,
-    dbTopRatedFilmes,
-    dbTopRatedSeries,
-    dbEpsRecentes,
+    imdbTop250,
+    episodiosRecentes,
   ] = await Promise.all([
     getTrending("week"),
     // Novos do banco (últimos adicionados)
@@ -146,31 +149,10 @@ const carregarHome = unstable_cache(
     // top250 (curadoria fixa do IMDb), que é outra lista e outra intenção.
     prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selFilme }),
     prisma.serie.findMany({ where: { tipo: "serie", popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selSerie }),
-    // Mais bem avaliados — nota do TMDB, distinto de popularidade (quem mais
-    // assistiu) e do top250 (curadoria fixa). Sem um mínimo de votos a lista
-    // encheria de títulos obscuros com nota 10 e um punhado de votos.
-    prisma.filme.findMany({
-      where: { nota: { gte: 7 } },
-      orderBy: { nota: { sort: "desc", nulls: "last" } },
-      take: 24,
-      select: selFilme,
-    }),
-    prisma.serie.findMany({
-      where: { tipo: "serie", nota: { gte: 7 } },
-      orderBy: { nota: { sort: "desc", nulls: "last" } },
-      take: 24,
-      select: selSerie,
-    }),
-    // Episódios recentes — últimos 24 adicionados com info da série
-    prisma.episodio.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 24,
-      select: {
-        id: true, serieId: true, titulo: true, thumbnail: true,
-        temporada: true, numeroEp: true, urlDub: true, urlLeg: true, createdAt: true,
-        serie: { select: { titulo: true, poster: true, tipo: true, createdAt: true } },
-      },
-    }),
+    // Fonte local compartilhada com Android e Android TV. Nenhuma chamada ao
+    // TMDB/IMDb acontece para montar estas vitrines.
+    getImdbTop250Showcases(),
+    getRecentSeriesEpisodes(),
     // Gêneros por banco
   ]);
 
@@ -186,7 +168,9 @@ const carregarHome = unstable_cache(
     return {
       tmdbTrending, dbRecFilmes, dbRecSeries, dbAnimes,
       dbPopFilmes, dbPopSeries, dbRankFilmes, dbRankSeries,
-      dbTopRatedFilmes, dbTopRatedSeries, dbEpsRecentes,
+      dbTopRatedFilmes: imdbTop250.filmes,
+      dbTopRatedSeries: imdbTop250.series,
+      dbEpsRecentes: episodiosRecentes,
       dbFilmesMap_raw, dbSeriesMap_raw,
     };
   },
@@ -256,31 +240,19 @@ export async function HomeStreaming() {
 
   const heroItems = tmdbHeroItems.length ? tmdbHeroItems : fallbackHeroItems;
 
-  // Para uma série recém-importada, mostra apenas seu episódio mais avançado;
-  // atualizações de séries antigas continuam aparecendo individualmente.
-  const episodiosParaVitrine = (dbEpsRecentes as any[]).filter((ep, index, all) => {
-    const serieNova = isRecent(ep.serie.createdAt) || String(ep.serieId).startsWith("sf_");
-    if (!serieNova) return true;
-    return !all.some((other) =>
-      other.serieId === ep.serieId &&
-      (other.temporada > ep.temporada ||
-        (other.temporada === ep.temporada && other.numeroEp > ep.numeroEp)),
-    );
-  }).slice(0, 24);
-
-  const epsRecentesItems = episodiosParaVitrine.map((e) => ({
+  const epsRecentesItems = dbEpsRecentes.map((e) => ({
     episodioId: e.id,
     serieId: e.serieId,
     titulo: e.titulo ?? null,
-    serieTitulo: e.serie.titulo,
-    poster: e.serie.poster ?? null,
+    serieTitulo: e.serieTitulo,
+    poster: e.seriePoster ?? null,
     thumbnail: e.thumbnail ?? null,
     temporada: e.temporada,
     numeroEp: e.numeroEp,
-    tipo: (e.serie.tipo ?? "serie") as "serie" | "anime" | "desenho",
-    isNovoEpisodio: isEpRecent(e.createdAt),
-    dub: Boolean(e.urlDub),
-    leg: Boolean(e.urlLeg),
+    tipo: (e.serieTipo ?? "serie") as "serie" | "anime" | "desenho",
+    isNovoEpisodio: isEpRecent(e.atualizadoEm),
+    dub: e.dub,
+    leg: e.leg,
   }));
 
   if (!dbRecFilmes.length && !trending.length) {

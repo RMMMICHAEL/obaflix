@@ -38,13 +38,29 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
     if (!el) return;
 
     const desktop = window.matchMedia("(min-width: 768px)");
+    let restoreFrame = 0;
 
     const onWheel = (e: WheelEvent) => {
       if (!desktop.matches) return;
-      // So o eixo horizontal e bloqueado: o gesto vertical tem de continuar
-      // rolando a pagina normalmente por cima da fileira.
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) e.preventDefault();
+
+      const horizontal = Math.abs(e.deltaX) > 0.5 || e.shiftKey;
+      const horizontalDominante = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+
+      // Um gesto realmente horizontal (trackpad ou Shift+wheel) termina aqui.
+      // O wheel vertical/diagonal dominante nao e cancelado: ele continua
+      // subindo ou descendo a pagina normalmente.
+      if (horizontal && (horizontalDominante || e.shiftKey)) e.preventDefault();
+
+      // Alguns Chromium aplicam o pequeno deltaX de um gesto diagonal mesmo
+      // com overflow-x hidden. Restauramos agora e depois do default action,
+      // sem transformar o deltaY em scroll horizontal.
       if (el.scrollLeft !== travaRef.current) el.scrollLeft = travaRef.current;
+      cancelAnimationFrame(restoreFrame);
+      restoreFrame = requestAnimationFrame(() => {
+        if (desktop.matches && el.scrollLeft !== travaRef.current) {
+          el.scrollLeft = travaRef.current;
+        }
+      });
     };
 
     // Navegar por teclado pode revelar um card fora de vista; essa e uma
@@ -55,6 +71,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
     el.addEventListener("wheel", onWheel, { passive: false });
     el.addEventListener("focusin", onFocusIn);
     return () => {
+      cancelAnimationFrame(restoreFrame);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("focusin", onFocusIn);
     };
@@ -102,7 +119,7 @@ export function RankRow({ titulo, items, verTodosHref }: Props) {
           // `auto` para preservar o swipe horizontal.
           // O respiro vertical existe porque overflow-x tambem recorta no eixo Y:
           // sem ele, o hover (elevacao + escala + sombra) seria cortado.
-          className="flex items-end gap-3 md:gap-6 overflow-x-auto md:overflow-x-hidden scrollbar-hide px-4 md:px-14 pt-8 pb-10 scroll-smooth overscroll-x-contain"
+          className="flex items-end gap-3 md:gap-6 overflow-x-auto md:overflow-x-hidden scrollbar-hide px-4 md:px-14 pt-8 pb-10 overscroll-x-none"
         >
           {items.slice(0, 10).map((item, i) => (
             <RankCard key={item.id} rank={i + 1} isNew={item.isNew} {...item} />
