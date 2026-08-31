@@ -91,6 +91,7 @@ import com.obaflix.tv.player.Pedido
 import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
 import kotlinx.coroutines.Job
+import okhttp3.Protocol
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -132,6 +133,14 @@ private const val SALVAR_A_CADA_MS = 30_000L
 private const val PRONTO_TIMEOUT_MS = 20_000L
 
 /**
+ * Teto absoluto da espera, mesmo com o CDN dando sinal de vida.
+ *
+ * Existe para o caso em que os bytes chegam mas o video nunca monta: sem ele, a
+ * regra de "so desiste sem progresso" deixaria a tela presa para sempre.
+ */
+private const val PACIENCIA_MAX_MS = 60_000L
+
+/**
  * Player de televisao.
  *
  * A extracao roda no aparelho, com o extrator compartilhado; a URL real da
@@ -171,7 +180,11 @@ private fun nomeEstado(estado: Int): String = when (estado) {
  * que veio antes. A contagem usa `elapsedRealtime` (monotonico), que nao anda
  * para tras se o relogio do aparelho for ajustado no meio.
  */
-private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
+private suspend fun aguardarPronto(
+    player: ExoPlayer,
+    rotulo: String,
+    diagnostico: DiagnosticoPlayer,
+): Preparo {
     val inicio = SystemClock.elapsedRealtime()
     ObaLog.evento(
         ObaLog.Fase.PLAYER, "tv_watchdog_inicio",
@@ -183,7 +196,48 @@ private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
         "playWhenReady" to player.playWhenReady,
     )
 
-    val fim: Preparo? = withTimeoutOrNull(PRONTO_TIMEOUT_MS) {
+    // O relogio conta desde o ultimo sinal de vida do CDN, e nao desde o
+    // comeco. Uma fonte que ainda baixa playlist e segmento esta trabalhando, e
+    // derrubar por relogio absoluto matava justamente a que ia dar certo numa
+    // conexao lenta. Sem progresso nenhum por PRONTO_TIMEOUT_MS, ai sim desiste;
+    // o teto de PACIENCIA_MAX_MS impede a espera eterna quando o CDN fica
+    // pingando bytes sem nunca montar o video.
+    var fim: Preparo? = null
+    var esperas = 0
+    while (fim == null) {
+        fim = aguardarUmaRodada(player)
+        if (fim != null) break
+        esperas++
+        val paradoMs = SystemClock.elapsedRealtime() - diagnostico.ultimoProgressoMs
+        val totalMs = SystemClock.elapsedRealtime() - inicio
+        if (paradoMs >= PRONTO_TIMEOUT_MS || totalMs >= PACIENCIA_MAX_MS) break
+        ObaLog.evento(
+            ObaLog.Fase.PLAYER, "tv_watchdog_estendido",
+            "servidor" to rotulo,
+            "semProgressoMs" to paradoMs,
+            "totalMs" to totalMs,
+            "rodada" to esperas,
+        )
+    }
+
+    val decorrido = SystemClock.elapsedRealtime() - inicio
+    val resultado = fim ?: Preparo.Falhou("sem_resposta_${decorrido / 1000}s")
+    ObaLog.evento(
+        ObaLog.Fase.PLAYER, "tv_watchdog_fim",
+        "servidor" to rotulo,
+        "decorridoMs" to decorrido,
+        "porTempo" to (fim == null),
+        "rodadas" to (esperas + 1),
+        "estado" to nomeEstado(player.playbackState),
+        "carregando" to player.isLoading,
+        "erroPlayer" to (player.playerError?.errorCodeName ?: "-"),
+    )
+    return resultado
+}
+
+/** Uma rodada de espera. Devolve null quando a rodada estourou sem desfecho. */
+private suspend fun aguardarUmaRodada(player: ExoPlayer): Preparo? =
+    withTimeoutOrNull(PRONTO_TIMEOUT_MS) {
         // Ja pronto antes de o ouvinte entrar: acontece com midia em cache.
         if (player.playbackState == Player.STATE_READY) return@withTimeoutOrNull Preparo.Pronto
         suspendCancellableCoroutine<Preparo> { cont ->
@@ -219,20 +273,6 @@ private suspend fun aguardarPronto(player: ExoPlayer, rotulo: String): Preparo {
             cont.invokeOnCancellation { player.removerNaThreadDele(ouvinte) }
         }
     }
-
-    val decorrido = SystemClock.elapsedRealtime() - inicio
-    val resultado = fim ?: Preparo.Falhou("sem_resposta_${PRONTO_TIMEOUT_MS / 1000}s")
-    ObaLog.evento(
-        ObaLog.Fase.PLAYER, "tv_watchdog_fim",
-        "servidor" to rotulo,
-        "decorridoMs" to decorrido,
-        "porTempo" to (fim == null),
-        "estado" to nomeEstado(player.playbackState),
-        "carregando" to player.isLoading,
-        "erroPlayer" to (player.playerError?.errorCodeName ?: "-"),
-    )
-    return resultado
-}
 
 /**
  * Remove um ouvinte na thread que o ExoPlayer exige.
@@ -348,7 +388,17 @@ fun TelaPlayer(pedido: Pedido) {
         // Mesmo cliente da extracao: um pool de conexoes so. O `mediaClient` tem
         // readTimeout zero, que e o que um corpo de midia consumido devagar
         // exige — com o timeout comum, o video morre assim que o buffer enche.
-        OkHttpDataSource.Factory(ObaflixApp.mediaClient)
+        OkHttpDataSource.Factory(
+            // HTTP/1.1 para a midia. Em HTTP/2 estes CDN atras de Cloudflare
+            // derrubam o fluxo no meio de um segmento grande com
+            // "stream was reset: INTERNAL_ERROR" — visto depois de 14s baixando
+            // um segmento de video/MP2T, o que travava a fonte inteira. Sem
+            // multiplexacao o segmento vem numa conexao so, que e o que o
+            // player faz mesmo. `newBuilder` mantem o pool compartilhado.
+            ObaflixApp.mediaClient.newBuilder()
+                .protocols(listOf(Protocol.HTTP_1_1))
+                .build(),
+        )
             .setUserAgent(CabecalhosMidia.USER_AGENT)
     }
 
@@ -506,7 +556,7 @@ fun TelaPlayer(pedido: Pedido) {
         // tinha respondido, mas o vídeo podia nunca comecar.
         aguardandoPreparo = true
         val resultado = try {
-            aguardarPronto(player, fonte.rotulo)
+            aguardarPronto(player, fonte.rotulo, diagnostico)
         } finally {
             // finally porque o cancelamento (troca de servidor no meio da
             // espera) tambem precisa liberar a trava; senao o ouvinte global

@@ -304,12 +304,21 @@ object FontesTv {
             )
         }
 
-        val info = conferirManifesto(extraido.stream, extraido.referer)
+        val conferencia = conferirManifesto(extraido.stream, extraido.referer)
+        if (conferencia is Conferencia.Morto) {
+            // O provedor respondeu, e respondeu que nao existe. Entregar ao
+            // player so adiaria a mesma resposta por quatro tentativas dele.
+            ObaLog.alerta(
+                ObaLog.Fase.MANIFESTO, "tv_manifesto_morto",
+                "servidor" to fonte.rotulo, "provedor" to provedor,
+                "status" to conferencia.status,
+            )
+            return null
+        }
+        val info = (conferencia as? Conferencia.Viva)?.resumo
         if (info == null) {
-            // Conferencia inconclusiva nao condena mais a fonte. Quem decide se
-            // a midia presta e o Media3, que agora espera de verdade por READY;
-            // recusar aqui derrubava fonte boa por causa de um 404 que era da
-            // propria conferencia, e nao da reproducao.
+            // Duvida nao condena: timeout ou erro de rede na conferencia pode
+            // ser da conferencia, e nao da fonte. Quem decide e o Media3.
             ObaLog.alerta(
                 ObaLog.Fase.MANIFESTO, "tv_manifesto_inconclusivo",
                 "servidor" to fonte.rotulo, "provedor" to provedor,
@@ -344,13 +353,17 @@ object FontesTv {
      * o caso mais comum de "carregou e ficou preto". Para MP4 nao ha manifesto:
      * a checagem e so do status, sem baixar o corpo.
      */
-    private suspend fun conferirManifesto(url: String, referer: String?): HlsMediaResumo? =
+    private suspend fun conferirManifesto(url: String, referer: String?): Conferencia =
         withTimeoutOrNull(CONFERENCIA_TIMEOUT_MS) { conferirAgora(url, referer) }
+            ?: Conferencia.NaoDeuParaSaber
 
     /** Teto proprio da conferencia: ela e um atalho, nunca uma espera longa. */
     private const val CONFERENCIA_TIMEOUT_MS = 8_000L
 
-    private suspend fun conferirAgora(url: String, referer: String?): HlsMediaResumo? =
+    /** Status que sao resposta do provedor, e nao acidente de percurso. */
+    private val DEFINITIVOS = setOf(403, 404, 410)
+
+    private suspend fun conferirAgora(url: String, referer: String?): Conferencia =
         withContext(Dispatchers.IO) {
             // Range so em arquivo de midia de verdade. Playlist com Range volta
             // 404 em alguns CDN (visto no Cloudflare), e ai uma fonte boa era
@@ -387,9 +400,17 @@ object FontesTv {
                             "host" to ObaLog.host(url),
                             "servidorCdn" to (r.header("Server") ?: "-"),
                         )
-                        return@use null
+                        // Status definitivo do provedor e resposta, nao duvida:
+                        // em campo, master.m3u8 que devolve 404 aqui devolve 404
+                        // para o player tambem, quatro vezes, e so entao ele
+                        // desiste. Descartar agora poupa uns 6s por fonte morta.
+                        return@use if (r.code in DEFINITIVOS) {
+                            Conferencia.Morto(r.code)
+                        } else {
+                            Conferencia.NaoDeuParaSaber
+                        }
                     }
-                    if (ehArquivoBinario) return@use HlsMediaResumo(ehHls = false)
+                    if (ehArquivoBinario) return@use Conferencia.Viva(HlsMediaResumo(ehHls = false))
 
                     // Quem decide se e HLS e o corpo, nao a extensao. Um master
                     // servido como `.txt` continua sendo um master.
@@ -402,14 +423,16 @@ object FontesTv {
                             ObaLog.Fase.MANIFESTO, "tv_corpo_nao_e_playlist",
                             "host" to ObaLog.host(url), "bytes" to texto.length,
                         )
-                        return@use HlsMediaResumo(ehHls = false)
+                        return@use Conferencia.Viva(HlsMediaResumo(ehHls = false))
                     }
                     val info = HlsManifest.parse(texto, url)
-                    HlsMediaResumo(
-                        variants = info.variants,
-                        audioTracks = info.audioTracks,
-                        subtitles = info.subtitles,
-                        ehHls = true,
+                    Conferencia.Viva(
+                        HlsMediaResumo(
+                            variants = info.variants,
+                            audioTracks = info.audioTracks,
+                            subtitles = info.subtitles,
+                            ehHls = true,
+                        ),
                     )
                 }
             }.getOrElse {
@@ -417,7 +440,7 @@ object FontesTv {
                     ObaLog.Fase.EXTRACAO, "tv_manifesto_sem_resposta",
                     "erro" to it.javaClass.simpleName,
                 )
-                null
+                Conferencia.NaoDeuParaSaber
             }
         }
 
@@ -425,6 +448,19 @@ object FontesTv {
         val u = java.net.URL(referer)
         u.protocol + "://" + u.host
     }.getOrDefault(referer)
+}
+
+/**
+ * Desfecho da conferencia.
+ *
+ * Tres estados, e nao dois, porque "o provedor disse que nao existe" e "nao
+ * consegui perguntar" pedem acoes opostas: a primeira descarta a fonte na hora,
+ * a segunda entrega ao player e deixa ele julgar.
+ */
+sealed interface Conferencia {
+    data class Viva(val resumo: HlsMediaResumo) : Conferencia
+    data class Morto(val status: Int) : Conferencia
+    object NaoDeuParaSaber : Conferencia
 }
 
 /** Recorte do que o manifesto declarou. Vazio quando a midia e MP4. */

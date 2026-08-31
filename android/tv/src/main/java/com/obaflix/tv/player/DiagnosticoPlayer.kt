@@ -5,6 +5,7 @@
 
 package com.obaflix.tv.player
 
+import android.os.SystemClock
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.PlaybackException
@@ -43,9 +44,22 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
      */
     private var segmentos = 0
 
+    /**
+     * Quando o CDN entregou alguma coisa pela ultima vez.
+     *
+     * O watchdog usa isto para separar "fonte morta" de "fonte lenta". Uma que
+     * ainda esta baixando playlist e segmento nao pode ser descartada por
+     * relogio: ela esta trabalhando, so devagar — e em TV Box com internet ruim
+     * essa e a situacao normal, nao a excecao.
+     */
+    @Volatile
+    var ultimoProgressoMs: Long = SystemClock.elapsedRealtime()
+        private set
+
     /** Zerado a cada fonte nova, para a amostragem recomecar do zero. */
     fun novaFonte() {
         segmentos = 0
+        ultimoProgressoMs = SystemClock.elapsedRealtime()
     }
 
     // ── Requisicoes que o player faz ─────────────────────────────────────────
@@ -55,6 +69,9 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
         loadEventInfo: LoadEventInfo,
         mediaLoadData: MediaLoadData,
     ) {
+        // Antes da amostragem: toda carga bem-sucedida conta como progresso,
+        // inclusive as que nao chegam a virar linha de log.
+        ultimoProgressoMs = SystemClock.elapsedRealtime()
         val tipo = nomeDoTipo(mediaLoadData.dataType)
         // Playlist e manifesto sao poucos e decidem tudo: sempre saem.
         val ehSegmento = mediaLoadData.dataType == C.DATA_TYPE_MEDIA
