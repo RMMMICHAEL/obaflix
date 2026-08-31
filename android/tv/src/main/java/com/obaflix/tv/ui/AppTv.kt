@@ -202,11 +202,27 @@ private fun Moldura(aoFocarArte: (String?) -> Unit) {
         }
     }
 
-    // BACK na moldura: de qualquer aba volta para o Inicio. Sair do aplicativo
-    // so acontece a partir do Inicio, que e o comportamento que a televisao
-    // ensina — ninguem espera fechar o app apertando BACK dentro de "Filmes".
-    BackHandler(enabled = Navegacao.aba != Aba.Inicio) {
-        Navegacao.irPara(Aba.Inicio)
+    // BACK sobe um degrau por vez, nunca dois.
+    //
+    //   conteudo  →  opcao da aba na barra de cima
+    //   barra     →  Inicio
+    //   Inicio    →  sai do aplicativo (handler desligado, o sistema trata)
+    //
+    // Antes, um BACK dentro do teclado da busca ou no meio da grade saltava
+    // direto para o Inicio: dois degraus de uma vez, e quem so queria voltar
+    // para a barra perdia a aba e a posicao. Sair do app continua acontecendo
+    // so a partir do Inicio — ninguem espera fechar apertando BACK em "Filmes".
+    BackHandler(enabled = !foco.barraComFoco || Navegacao.aba != Aba.Inicio) {
+        if (!foco.barraComFoco) {
+            runCatching { foco.requisitorAtivo.requestFocus() }
+        } else {
+            // O cursor tem de ir junto. Se ficasse na opcao antiga, ela ficaria
+            // focada sem estar selecionada — e o `LaunchedEffect(focado)` do
+            // ItemMenu, que troca a aba por foco, devolveria a aba de onde se
+            // acabou de sair 280ms depois. O BACK quicava de volta sozinho.
+            Navegacao.irPara(Aba.Inicio)
+            runCatching { foco.daAba(Aba.Inicio.name).requestFocus() }
+        }
     }
 }
 

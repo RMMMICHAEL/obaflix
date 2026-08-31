@@ -33,7 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -93,16 +95,30 @@ fun ColumnScope.TelaBusca() {
         buscando = false
     }
 
-    // Foco inicial na primeira tecla, com insistencia (mesma raiz do problema de
-    // D-pad no boot: um pedido unico dispara cedo demais).
+    val focoMoldura = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    var temFocoNaTela by remember { mutableStateOf(false) }
+
+    // Foco inicial na primeira tecla — mas so quando ninguem mais o tem.
+    //
+    // A aba troca ao mover a seta na barra de cima, entao esta tela compunha
+    // assim que "Buscar" recebia o cursor, e o laco abaixo o arrancava para a
+    // letra A. Quem so estava passando pela barra caia dentro do teclado e
+    // tinha de subir de novo. Agora a barra manda: parar em Buscar mostra a
+    // tela, e entrar nela e uma decisao (DOWN ou OK).
     LaunchedEffect(Unit) {
         repeat(12) {
+            if (focoMoldura.barraComFoco || temFocoNaTela) return@LaunchedEffect
             runCatching { primeiraTecla.requestFocus() }
             delay(60)
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            .onFocusChanged { temFocoNaTela = it.hasFocus },
+    ) {
         val larguraTotal = maxWidth
         val alturaTotal = maxHeight
 
@@ -130,7 +146,14 @@ fun ColumnScope.TelaBusca() {
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
                 CaixaTermo(termo, alturaCaixa)
-                Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                // A primeira fileira focavel do teclado sobe para a opcao
+                // "Buscar" da barra, e nao para o que a geometria escolher. So
+                // ela: nas fileiras de baixo, subir continua andando pelo
+                // teclado.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(gap),
+                    modifier = Modifier.focusProperties { up = focoMoldura.requisitorAtivo },
+                ) {
                     val w = larguraTecla * 3 + gap * 2
                     Tecla("apagar", w, alturaTecla) { termo = termo.dropLast(1) }
                     Tecla("limpar", w, alturaTecla) { termo = "" }

@@ -141,6 +141,13 @@ val LocalFocoMoldura = compositionLocalOf { FocoMoldura() }
  *    a cada volta, e nao so na entrada: os dados de uma aba podem chegar
  *    segundos depois, quando a pessoa ja seguiu para outra opcao da barra, e
  *    puxar o foco naquele instante e ainda pior do que puxar no comeco.
+ *
+ * O `permitido` de cada tela tem de cobrir **a tela inteira**, e nao so a barra
+ * de cima. Trocar de categoria ou de ano recarrega a lista: ela sai da
+ * composicao por um instante e volta — e a restauracao, que existe para dar
+ * cursor a quem nao tem nenhum, atropelava quem estava na barra lateral
+ * escolhendo o filtro. Quem ja tem o cursor manda; a restauracao so age quando
+ * ninguem tem.
  */
 @Composable
 fun EfeitoRestauraFoco(

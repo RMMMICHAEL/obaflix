@@ -23,8 +23,8 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -114,14 +114,18 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
     val conteinerFoco = remember { FocusRequester() }
     var temFoco by remember(aba) { mutableStateOf(false) }
     val focoMoldura = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
-    // Trocar de aba faz dados chegarem, e era isso que puxava o cursor para
-    // o primeiro card. Com a barra em foco, a grade espera o DOWN.
+    // Cursor em qualquer lugar DESTA tela — barra lateral, filtro de ano ou
+    // grade —, e nao so na grade. Escolher uma categoria recarrega a lista, e
+    // a lista sai e volta da composicao; a restauracao via `temFoco` (que so
+    // olha a grade) achava que ninguem tinha o cursor e o arrancava de quem
+    // estava escolhendo o filtro.
+    var temFocoNaTela by remember(aba) { mutableStateOf(false) }
     EfeitoRestauraFoco(
         pronto = itens.isNotEmpty(),
         primeiro = conteinerFoco,
         temFoco = { temFoco },
         tag = "Cat-" + aba.name,
-        permitido = { !focoMoldura.barraComFoco },
+        permitido = { !focoMoldura.barraComFoco && !temFocoNaTela },
     )
     val margem = margemHorizontal()
     val larguraGrade = larguraTelaDp() - Medidas.RailLargura.value.toInt() - margem.value.toInt() - 24
@@ -195,7 +199,12 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
         }
     }
 
-    Row(Modifier.fillMaxWidth().weight(1f)) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            .onFocusChanged { temFocoNaTela = it.hasFocus },
+    ) {
         // ── Barra lateral ────────────────────────────────────────────────────
         Rail(
             aba = aba,
@@ -397,16 +406,18 @@ private fun FiltroAno(ano: Int?, aoAno: (Int?) -> Unit) {
         contentPadding = PaddingValues(start = 20.dp, end = margemHorizontal(), top = 4.dp, bottom = 6.dp),
         modifier = Modifier.focusGroup(),
     ) {
+        // Sem `aplicaNoFoco`: atravessar 2010..2026 com a seta nao pode
+        // recarregar o catalogo dezesseis vezes nem mexer no cursor. Mover a
+        // seta muda so o destaque; o ano vale quando se aperta OK.
         item {
             Pilula(
                 "Ano: todos",
                 selecionado = ano == null,
-                aplicaNoFoco = true,
                 aoClicar = { aoAno(null) },
             )
         }
         items(anos) { a ->
-            Pilula(a.toString(), selecionado = ano == a, aplicaNoFoco = true, aoClicar = { aoAno(a) })
+            Pilula(a.toString(), selecionado = ano == a, aoClicar = { aoAno(a) })
         }
     }
 }
