@@ -85,6 +85,45 @@ class Restaurador {
 val LocalRestaurador = compositionLocalOf { Restaurador() }
 
 /**
+ * Quem manda no foco vertical da moldura.
+ *
+ * Existe para separar duas coisas que estavam grudadas: **trocar de aba** e
+ * **entrar no conteudo**. A aba troca ao mover a seta na barra de cima; o
+ * conteudo carrega sozinho; mas o cursor tinha de continuar na barra, para a
+ * pessoa poder percorrer Inicio → Filmes → Series → Kids → Animes sem ser
+ * jogada para os cards a cada passo e ter de subir de novo.
+ *
+ * Antes nao havia essa separacao: a restauracao de foco de cada tela disparava
+ * assim que os dados chegavam, e como trocar de aba faz dados chegarem, ela
+ * puxava o foco para o primeiro card toda vez. `barraComFoco` e o sinal que
+ * impede isso — enquanto a barra tem o cursor, nenhuma tela o toma.
+ */
+class FocoMoldura {
+
+    private val abas = HashMap<String, FocusRequester>()
+
+    /** A barra de cima esta com o cursor agora? */
+    var barraComFoco by mutableStateOf(false)
+
+    /** Chave da aba aberta, para o retorno do conteudo saber a quem subir. */
+    var abaAtiva by mutableStateOf("")
+
+    fun daAba(chave: String): FocusRequester = abas.getOrPut(chave) { FocusRequester() }
+
+    /**
+     * Requisitor da opcao correspondente a aba aberta.
+     *
+     * `FocusRequester.Default` quando ainda nao ha aba conhecida: pedir foco a
+     * um requisitor sem no anexado lanca excecao, e o padrao devolve a busca
+     * espacial comum — que e o comportamento certo para "nao sei ainda".
+     */
+    val requisitorAtivo: FocusRequester
+        get() = abas[abaAtiva] ?: FocusRequester.Default
+}
+
+val LocalFocoMoldura = compositionLocalOf { FocoMoldura() }
+
+/**
  * Restaura o foco de uma tela quando ela fica ativa e os dados chegaram.
  *
  * E a peca central da correcao do "so funciona depois do mouse". Regras:
@@ -98,6 +137,10 @@ val LocalRestaurador = compositionLocalOf { Restaurador() }
  *  - **Card salvo primeiro, primeiro item depois.** Nas primeiras tentativas
  *    tenta o card de onde a pessoa saiu; se ele nao aparece (troca de aba,
  *    catalogo diferente), cai para o primeiro focavel da tela.
+ *  - **Nunca contra o cursor de quem esta navegando.** `permitido` e conferido
+ *    a cada volta, e nao so na entrada: os dados de uma aba podem chegar
+ *    segundos depois, quando a pessoa ja seguiu para outra opcao da barra, e
+ *    puxar o foco naquele instante e ainda pior do que puxar no comeco.
  */
 @Composable
 fun EfeitoRestauraFoco(
@@ -105,13 +148,18 @@ fun EfeitoRestauraFoco(
     primeiro: FocusRequester,
     temFoco: () -> Boolean,
     tag: String,
+    permitido: () -> Boolean = { true },
 ) {
     val restaurador = LocalRestaurador.current
     LaunchedEffect(pronto, FocoBridge.pulso) {
         if (!pronto) return@LaunchedEffect
+        if (!permitido()) {
+            Log.d(TAG_FOCO, "$tag pronto, mas o foco esta na barra — nao puxa")
+            return@LaunchedEffect
+        }
         Log.d(TAG_FOCO, "$tag pronto — restaurando (salvo=${restaurador.endereco}, pulso=${FocoBridge.pulso})")
         var i = 0
-        while (i < 24 && !temFoco()) {
+        while (i < 24 && !temFoco() && permitido()) {
             withFrameNanos { }
             val salvo = if (i < 8) restaurador.requisitorSalvo() else null
             val alvo = salvo ?: primeiro

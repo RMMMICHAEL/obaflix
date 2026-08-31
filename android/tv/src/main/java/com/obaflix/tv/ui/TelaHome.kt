@@ -18,10 +18,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,7 +86,16 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
     // mouse. `pronto` distingue "ainda carregando" de "pronto para focar".
     val conteinerFoco = remember { FocusRequester() }
     var temFoco by remember { mutableStateOf(false) }
-    EfeitoRestauraFoco(pronto = home != null, primeiro = conteinerFoco, temFoco = { temFoco }, tag = "Home")
+    val focoMoldura = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    // Enquanto o cursor estiver na barra de abas, a Home nao o toma: quem
+    // atravessa as opcoes de cima precisa continuar em cima.
+    EfeitoRestauraFoco(
+        pronto = home != null,
+        primeiro = conteinerFoco,
+        temFoco = { temFoco },
+        tag = "Home",
+        permitido = { !focoMoldura.barraComFoco },
+    )
 
     LaunchedEffect(recarga) {
         // So busca se ainda nao ha dado (primeira vez ou "tentar de novo"). Com
@@ -112,18 +122,28 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
                 contentPadding = PaddingValues(top = 8.dp, bottom = margemVertical()),
                 verticalArrangement = Arrangement.spacedBy(Medidas.EspacoFileiras),
             ) {
+                // A seta para cima, na primeira fileira visivel, volta para a
+                // opcao da aba aberta — e nao para a opcao que estiver acima na
+                // geometria. Vale so para a primeira: nas de baixo, subir
+                // continua andando de fileira em fileira.
+                val subirParaAba = Modifier.focusProperties { up = focoMoldura.requisitorAtivo }
                 if (dados.destaques.isNotEmpty()) {
                     item(key = "destaques") {
-                        DestaqueDuplo(dados.destaques, margem, aoFocarArte)
+                        Box(subirParaAba) {
+                            DestaqueDuplo(dados.destaques, margem, aoFocarArte)
+                        }
                     }
                 }
-                items(dados.fileiras, key = { it.id }) { fileira ->
-                    FileiraCatalogo(
-                        fileira = fileira,
-                        margem = margem,
-                        aoFocar = { aoFocarArte(it.background) },
-                        aoAbrir = { Navegacao.abrirDetalhe(it) },
-                    )
+                itemsIndexed(dados.fileiras, key = { _, f -> f.id }) { indice, fileira ->
+                    val primeira = indice == 0 && dados.destaques.isEmpty()
+                    Box(if (primeira) subirParaAba else Modifier) {
+                        FileiraCatalogo(
+                            fileira = fileira,
+                            margem = margem,
+                            aoFocar = { aoFocarArte(it.background) },
+                            aoAbrir = { Navegacao.abrirDetalhe(it) },
+                        )
+                    }
                 }
             }
 

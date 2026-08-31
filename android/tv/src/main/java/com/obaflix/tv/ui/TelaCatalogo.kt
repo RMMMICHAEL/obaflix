@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.lazy.items
@@ -112,7 +113,16 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
     val grade = rememberLazyGridState()
     val conteinerFoco = remember { FocusRequester() }
     var temFoco by remember(aba) { mutableStateOf(false) }
-    EfeitoRestauraFoco(pronto = itens.isNotEmpty(), primeiro = conteinerFoco, temFoco = { temFoco }, tag = "Cat-" + aba.name)
+    val focoMoldura = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    // Trocar de aba faz dados chegarem, e era isso que puxava o cursor para
+    // o primeiro card. Com a barra em foco, a grade espera o DOWN.
+    EfeitoRestauraFoco(
+        pronto = itens.isNotEmpty(),
+        primeiro = conteinerFoco,
+        temFoco = { temFoco },
+        tag = "Cat-" + aba.name,
+        permitido = { !focoMoldura.barraComFoco },
+    )
     val margem = margemHorizontal()
     val larguraGrade = larguraTelaDp() - Medidas.RailLargura.value.toInt() - margem.value.toInt() - 24
     val nColunas = colunas(larguraGrade)
@@ -229,6 +239,16 @@ fun ColumnScope.TelaCatalogo(aba: Aba, aoFocarArte: (String?) -> Unit) {
                                 item = item,
                                 chaveFoco = enderecoDe("grade-" + aba.name, indice),
                                 aoFocar = { aoFocarArte(it.background) },
+                                // So a primeira fileira sobe para a barra, e sobe
+                                // para a opcao da aba aberta — nao para a que
+                                // calhar de estar acima na geometria. Nas demais
+                                // fileiras a seta para cima continua andando
+                                // dentro da grade, como se espera.
+                                modifier = if (indice < nColunas) {
+                                    Modifier.focusProperties { up = focoMoldura.requisitorAtivo }
+                                } else {
+                                    Modifier
+                                },
                                 aoAbrir = { Navegacao.abrirDetalhe(it) },
                             )
                         }

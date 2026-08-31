@@ -161,12 +161,13 @@ fun CardPoster(
     largura: Dp = Medidas.PosterLargura,
     altura: Dp = Medidas.PosterAltura,
     aoFocar: (Item) -> Unit = {},
+    modifier: Modifier = Modifier,
     aoAbrir: (Item) -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(largura)) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier.width(largura)) {
         MolduraArte(
             largura = largura,
             altura = altura,

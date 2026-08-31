@@ -28,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.InputMode
@@ -73,6 +74,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun AppTv() {
     val restaurador = remember { Restaurador() }
+    val focoMoldura = remember { com.obaflix.tv.ui.componentes.FocoMoldura() }
     var fundoDesejado by remember { mutableStateOf<String?>(null) }
     var fundoAtual by remember { mutableStateOf<String?>(null) }
 
@@ -110,7 +112,10 @@ fun AppTv() {
         fundoAtual = fundoDesejado
     }
 
-    CompositionLocalProvider(LocalRestaurador provides restaurador) {
+    CompositionLocalProvider(
+        LocalRestaurador provides restaurador,
+        com.obaflix.tv.ui.componentes.LocalFocoMoldura provides focoMoldura,
+    ) {
         Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
             // Renderiza SO a superficie do topo. E a correcao de raiz do crash
             // "LayoutCoordinate operations are only valid when isAttached is
@@ -173,6 +178,12 @@ private fun FundoDinamico(caminho: String?) {
 @Composable
 private fun Moldura(aoFocarArte: (String?) -> Unit) {
     val margem = margemHorizontal()
+    val foco = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    // A aba corrente e registrada depois da composicao, nao durante: e ela que
+    // diz a primeira fileira a qual opcao da barra devolver o cursor na seta
+    // para cima. Em SideEffect porque escrever estado no meio da composicao que
+    // sera lido na resolucao de foco pede recomposicao no meio do caminho.
+    androidx.compose.runtime.SideEffect { foco.abaAtiva = Navegacao.aba.name }
 
     Column(
         modifier = Modifier
@@ -223,8 +234,12 @@ private const val ATRASO_ABA_MS = 280L
 private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
     val context = LocalContext.current
     val escopo = androidx.compose.runtime.rememberCoroutineScope()
-    val primeiroItem = remember { FocusRequester() }
     val restaurador = LocalRestaurador.current
+    val foco = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    // A primeira opcao da barra e o alvo do foco inicial. E o mesmo requisitor
+    // que ela usa para receber a seta para cima vinda do conteudo — um por aba,
+    // guardado no FocoMoldura, sem um segundo requisitor paralelo.
+    val primeiroItem = foco.daAba(Aba.values().first().name)
 
     // A barra so puxa o foco no primeiro boot — quando nenhum card foi focado
     // ainda. Nos retornos (ficha/busca/player -> aba) quem restaura e o proprio
@@ -255,13 +270,19 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.weight(1f).focusGroup(),
+            modifier = Modifier
+                .weight(1f)
+                .focusGroup()
+                // O sinal que separa "trocar de aba" de "entrar no conteudo".
+                // Enquanto o cursor estiver em qualquer opcao daqui, nenhuma
+                // tela puxa o foco para si ao terminar de carregar.
+                .onFocusChanged { foco.barraComFoco = it.hasFocus },
         ) {
-            Aba.values().forEachIndexed { indice, aba ->
+            Aba.values().forEach { aba ->
                 ItemMenu(
                     aba = aba,
                     selecionada = Navegacao.aba == aba,
-                    modifier = if (indice == 0) Modifier.focusRequester(primeiroItem) else Modifier,
+                    modifier = Modifier.focusRequester(foco.daAba(aba.name)),
                 )
             }
         }
