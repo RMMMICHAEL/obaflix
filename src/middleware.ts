@@ -1,7 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse, type NextRequest } from "next/server";
 import type { NextFetchEvent } from "next/server";
-import { ehClienteNativo, ehPaginaFechada } from "@/config/site-mode";
+import { decidirRota, detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
 
 const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
@@ -66,12 +66,14 @@ const adminMiddleware = withAuth(
  * Porta de entrada única das páginas.
  *
  * Duas responsabilidades, nesta ordem:
- *   1. fechamento temporário da interface pública de streaming (ver
- *      `src/config/site-mode.ts`) — redireciona para a landing page;
+ *   1. separar navegador comum dos ambientes dos aplicativos, entregando a
+ *      cada um a sua entrada. A regra inteira vive em `src/config/site-mode.ts`
+ *      — aqui só se executa o que ela decide, para não existir uma segunda
+ *      versão da política escondida neste arquivo;
  *   2. proteção do `/admin`, que continua sendo o `withAuth` de sempre.
  *
  * `/api/*` nunca chega aqui: está excluído do matcher. Nenhum endpoint usado
- * por Android, Android TV ou Electron é afetado por este arquivo.
+ * por Android, Android TV ou Electron passa por este arquivo.
  */
 export default function middleware(req: NextRequest, event: NextFetchEvent) {
   const { pathname } = req.nextUrl;
@@ -83,11 +85,23 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
     ) => ReturnType<typeof NextResponse.next>)(req, event);
   }
 
-  // Clientes nativos passam direto: eles navegam pelas mesmas páginas dentro do
-  // WebView/Electron e não podem cair na landing.
-  if (ehPaginaFechada(pathname) && !ehClienteNativo(req.headers.get("user-agent"))) {
-    const destino = new URL("/", req.url);
-    return NextResponse.redirect(destino, 307);
+  const ambiente = detectarAmbiente(
+    req.headers.get("user-agent"),
+    req.headers.get(HEADER_CLIENTE),
+  );
+  const decisao = decidirRota(pathname, ambiente);
+
+  if (decisao.tipo === "landing") {
+    return NextResponse.redirect(new URL("/", req.url), 307);
+  }
+
+  if (decisao.tipo === "reescreve") {
+    // Reescrita, não redirect: a URL continua `/` no aplicativo. Versões já
+    // instaladas do Android e do Electron abrem a raiz e recebem a interface
+    // certa sem precisar atualizar.
+    const destino = req.nextUrl.clone();
+    destino.pathname = decisao.para;
+    return NextResponse.rewrite(destino);
   }
 
   return NextResponse.next();

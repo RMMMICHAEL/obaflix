@@ -21,6 +21,11 @@ process.on("unhandledRejection", (reason) => {
 
 const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
 const OBAFLIX_ORIGIN = new URL(OBAFLIX_URL).origin;
+// Entrada dedicada do Electron. A raiz do site passou a ser a landing de
+// download para navegador comum; `/desktop` serve a mesma interface completa de
+// sempre. Abrir `/` ainda funciona — o servidor reescreve internamente pelo
+// User-Agent —, mas apontar direto para cá evita esse salto a cada abertura.
+const OBAFLIX_ENTRADA = OBAFLIX_URL.replace(/\/+$/, "") + "/desktop";
 const LOCAL_SERVER_TOKEN = crypto.randomBytes(32).toString("base64url");
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -380,10 +385,10 @@ const windowAlive = () => Boolean(mainWindow) && !mainWindow.isDestroyed();
 
 function loadSite(reason) {
   if (!windowAlive()) { log.warn("janela", "loadSite ignorado: janela já destruída", { motivo: reason }); return; }
-  bootTimer = log.timer("boot.site", { url: OBAFLIX_URL, motivo: reason });
+  bootTimer = log.timer("boot.site", { url: OBAFLIX_ENTRADA, motivo: reason });
   siteLoaded = false;
-  log.info("janela", "carregando o site", { url: OBAFLIX_URL, motivo: reason });
-  mainWindow.loadURL(OBAFLIX_URL).catch((err) => {
+  log.info("janela", "carregando o site", { url: OBAFLIX_ENTRADA, motivo: reason });
+  mainWindow.loadURL(OBAFLIX_ENTRADA).catch((err) => {
     log.error("janela", "loadURL rejeitou", err);
   });
 }
@@ -636,6 +641,12 @@ function configureSession() {
 
     // 1. User-Agent em todos os requests
     h["User-Agent"] = UA;
+
+    // 1b. Identificacao do cliente oficial, so nas requisicoes ao Obaflix. E o
+    // sinal que o servidor usa para entregar a interface do aplicativo em vez
+    // da landing — roteamento, nao credencial: nao autentica nem libera dado
+    // nenhum, e as APIs continuam exigindo sessao como sempre exigiram.
+    if (details.url.startsWith(OBAFLIX_ORIGIN)) h["X-Obaflix-Client"] = "desktop";
 
     // 2. Requests para os embed players (extração, página do player)
     const reqHostname = (() => { try { return new URL(details.url).hostname; } catch { return ""; } })();
