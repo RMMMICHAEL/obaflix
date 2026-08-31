@@ -1,13 +1,17 @@
 /**
  * Endereços dos instaladores.
  *
- * Ponto único de alteração: os links definitivos ficarão no Cloudflare R2,
- * servidos por `app.obaflix.online`. Nada aqui é hospedado nem passa por proxy
- * na Vercel — são links diretos para fora.
+ * Ponto único de alteração. Os arquivos vivem no Cloudflare R2, servidos por
+ * `app.obaflix.online` — nada é hospedado nem passa por proxy na Vercel.
  *
- * Enquanto o R2 não estiver pronto, deixe a URL vazia: o botão aparece
- * desabilitado com "Aguardando link definitivo" em vez de apontar para um
- * destino falso.
+ * O padrão fica no código de propósito: é o link que está publicado hoje, e
+ * uma variável esquecida no painel não pode derrubar o botão de download. As
+ * variáveis de ambiente continuam vencendo quando presentes, para trocar de
+ * versão sem deploy.
+ *
+ * Ao subir uma versão nova: mude a URL, a versão e o tamanho juntos. O tamanho
+ * é o `Content-Length` real do arquivo — quem baixa em rede móvel decide por
+ * ele.
  */
 export type Instalador = {
   url: string;
@@ -15,23 +19,26 @@ export type Instalador = {
   tamanho: string;
 };
 
-const env = (valor: string | undefined) => (valor ?? "").trim();
+const ou = (valor: string | undefined, padrao: string) => (valor ?? "").trim() || padrao;
 
 export const INSTALADORES = {
   android: {
-    url: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID),
-    versao: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_VERSAO),
-    tamanho: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TAMANHO),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID, "https://app.obaflix.online/Obaflix-1.0.9.apk"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_VERSAO, "Versão 1.0.9"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TAMANHO, "10,1 MB"),
   },
   androidTv: {
-    url: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV),
-    versao: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_VERSAO),
-    tamanho: env(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_TAMANHO),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV, "https://app.obaflix.online/Obaflix-TV-0.7.6.apk"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_VERSAO, "Versão 0.7.6"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_TAMANHO, "4,8 MB"),
   },
   windows: {
-    url: env(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS),
-    versao: env(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO),
-    tamanho: env(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO),
+    url: ou(
+      process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS,
+      "https://app.obaflix.online/Obaflix%20Setup%201.0.5.exe",
+    ),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.5"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116 MB"),
   },
 } satisfies Record<string, Instalador>;
 

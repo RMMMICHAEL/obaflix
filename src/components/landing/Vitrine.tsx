@@ -75,7 +75,7 @@ export function VitrinePosters({
                 height={513}
                 loading="lazy"
                 decoding="async"
-                className="aspect-[2/3] w-full object-cover transition duration-500 will-change-transform group-hover:scale-[1.06]"
+                className="aspect-[2/3] w-full object-cover transition duration-500 group-hover:scale-[1.06]"
               />
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 to-transparent opacity-0 transition duration-300 group-hover:opacity-100" />
             </div>
@@ -121,7 +121,7 @@ export function VitrineBackdrops({
                 height={439}
                 loading={i < 2 ? "eager" : "lazy"}
                 decoding="async"
-                className="aspect-video w-full object-cover transition duration-500 will-change-transform group-hover:scale-[1.05]"
+                className="aspect-video w-full object-cover transition duration-500 group-hover:scale-[1.05]"
               />
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent" />
               <figcaption className="absolute inset-x-0 bottom-0 p-3 sm:p-4">
