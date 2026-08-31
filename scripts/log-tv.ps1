@@ -106,7 +106,8 @@ function Write-Resumo {
         'tv_decoder_video', 'tv_formato_video', 'tv_primeiro_quadro',
         'tv_reproducao_iniciada', 'tv_fonte_nao_iniciou', 'tv_erro_media3',
         'tv_quadros_perdidos', 'tls_conscrypt_ativo', 'tv_tls_em_uso',
-        'tv_manifesto_morto', 'tv_watchdog_estendido'
+        'tv_manifesto_morto', 'tv_watchdog_estendido',
+        'tv_failover', 'tv_tentativa_obsoleta'
     )
     $padrao = ($interessantes -join '|')
 

@@ -137,8 +137,12 @@ private const val PRONTO_TIMEOUT_MS = 20_000L
  *
  * Existe para o caso em que os bytes chegam mas o video nunca monta: sem ele, a
  * regra de "so desiste sem progresso" deixaria a tela presa para sempre.
+ *
+ * 40s, e nao 60s: em campo toda fonte que deu certo chegou ao primeiro quadro em
+ * menos de 8s, e a que consumiu o teto inteiro passou 56s de tela preta antes de
+ * o failover andar. Cinco vezes a pior espera boa ja e folga suficiente.
  */
-private const val PACIENCIA_MAX_MS = 60_000L
+private const val PACIENCIA_MAX_MS = 40_000L
 
 /**
  * Player de televisao.
@@ -463,6 +467,32 @@ fun TelaPlayer(pedido: Pedido) {
      * chamada, o que acontece com a posicao: troca de servidor e de qualidade
      * retomam onde estava; troca de episodio comeca do zero.
      */
+    /**
+     * Registra a decisao de failover.
+     *
+     * So o registro, sem agir: `preparar` chama a si mesma para seguir, e duas
+     * funcoes locais nao podem se chamar mutuamente em Kotlin. O que importa e
+     * que parar deixe de ser mudo — numa captura de campo, uma parada sem linha
+     * de log virou 13s de silencio que nao deu para explicar, nem para
+     * distinguir "escolha manual, respeitei" de "acabaram as fontes".
+     */
+    fun registrarFailover(indice: Int, rotulo: String, motivo: String) {
+        val temProxima = indice + 1 < fontes.size
+        ObaLog.evento(
+            ObaLog.Fase.PLAYER, "tv_failover",
+            "de" to rotulo,
+            "motivo" to motivo,
+            "indice" to indice,
+            "fontes" to fontes.size,
+            "manual" to escolhaManual,
+            "acao" to when {
+                escolhaManual -> "para_escolha_manual"
+                temProxima -> "proxima"
+                else -> "para_sem_fontes"
+            },
+        )
+    }
+
     suspend fun preparar(indice: Int, retomarDe: Long, minhaEpoca: Int) {
         // Tentativa obsoleta nao mexe em nada: nem no player, nem no estado da
         // tela. Quem manda e sempre a ultima chamada.
@@ -484,8 +514,15 @@ fun TelaPlayer(pedido: Pedido) {
         player.clearMediaItems()
 
         val midia = FontesTv.resolver(id, fonte)
-        if (epoca.get() != minhaEpoca) return
+        if (epoca.get() != minhaEpoca) {
+            ObaLog.evento(
+                ObaLog.Fase.PLAYER, "tv_tentativa_obsoleta",
+                "servidor" to fonte.rotulo, "fase" to "apos_extracao",
+            )
+            return
+        }
         if (midia == null) {
+            registrarFailover(indice, fonte.rotulo, "extracao_sem_midia")
             // Cai para a proxima. E o mesmo failover dos outros ambientes: a
             // pessoa nao precisa saber qual servidor falhou, so continuar vendo.
             if (!escolhaManual && indice + 1 < fontes.size) {
@@ -563,7 +600,13 @@ fun TelaPlayer(pedido: Pedido) {
             // ficava mudo para sempre.
             aguardandoPreparo = false
         }
-        if (epoca.get() != minhaEpoca) return
+        if (epoca.get() != minhaEpoca) {
+            ObaLog.evento(
+                ObaLog.Fase.PLAYER, "tv_tentativa_obsoleta",
+                "servidor" to fonte.rotulo, "fase" to "apos_watchdog",
+            )
+            return
+        }
 
         if (resultado is Preparo.Pronto) {
             ObaLog.evento(
@@ -581,6 +624,7 @@ fun TelaPlayer(pedido: Pedido) {
             ObaLog.Fase.PLAYER, "tv_fonte_nao_iniciou",
             "servidor" to fonte.rotulo, "motivo" to motivo,
         )
+        registrarFailover(indice, fonte.rotulo, motivo)
         player.pause()
         player.stop()
         player.clearMediaItems()

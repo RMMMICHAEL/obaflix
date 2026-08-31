@@ -64,6 +64,54 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
 
     // ── Requisicoes que o player faz ─────────────────────────────────────────
 
+    /**
+     * Pedido saindo.
+     *
+     * Sem isto, uma requisicao que trava e invisivel: o log so tinha
+     * `onLoadCompleted`, entao um segmento que nunca termina nao produzia linha
+     * nenhuma e o registro simplesmente parava. Em campo isso apareceu como 23s
+     * sem evento nenhum, sem dar para saber o que o player esperava.
+     *
+     * So playlist e os primeiros segmentos, para nao dobrar o log inteiro.
+     */
+    override fun onLoadStarted(
+        eventTime: AnalyticsListener.EventTime,
+        loadEventInfo: LoadEventInfo,
+        mediaLoadData: MediaLoadData,
+    ) {
+        val ehSegmento = mediaLoadData.dataType == C.DATA_TYPE_MEDIA
+        if (ehSegmento && segmentos >= SEGMENTOS_INTEIROS) return
+        ObaLog.evento(
+            ObaLog.Fase.CDN, "tv_carga_pedida",
+            "servidor" to rotuloFonte(),
+            "tipo" to nomeDoTipo(mediaLoadData.dataType),
+            "host" to ObaLog.host(loadEventInfo.uri.toString()),
+            "arquivo" to ObaLog.arquivo(loadEventInfo.uri.toString()),
+        )
+    }
+
+    /**
+     * Pedido abandonado antes de terminar.
+     *
+     * O Media3 cancela por conta propria quando troca de variante ou quando o
+     * buffer ja tem o suficiente. Registrar separa "cancelei porque quis" de
+     * "morreu" — sem isso, os dois somem igual do log.
+     */
+    override fun onLoadCanceled(
+        eventTime: AnalyticsListener.EventTime,
+        loadEventInfo: LoadEventInfo,
+        mediaLoadData: MediaLoadData,
+    ) {
+        ObaLog.evento(
+            ObaLog.Fase.CDN, "tv_carga_cancelada",
+            "servidor" to rotuloFonte(),
+            "tipo" to nomeDoTipo(mediaLoadData.dataType),
+            "arquivo" to ObaLog.arquivo(loadEventInfo.uri.toString()),
+            "bytes" to loadEventInfo.bytesLoaded,
+            "ms" to loadEventInfo.loadDurationMs,
+        )
+    }
+
     override fun onLoadCompleted(
         eventTime: AnalyticsListener.EventTime,
         loadEventInfo: LoadEventInfo,
@@ -89,6 +137,9 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
             "bytes" to loadEventInfo.bytesLoaded,
             "ms" to loadEventInfo.loadDurationMs,
             "n" to (if (ehSegmento) segmentos else null),
+            // Uma playlist de 24KB que leva 14s nao e "lenta", e uma fonte
+            // agonizando. Marcar deixa isso obvio na leitura do log.
+            "lento" to (loadEventInfo.loadDurationMs > LENTO_MS).takeIf { it },
         )
     }
 
@@ -295,5 +346,8 @@ class DiagnosticoPlayer(private val rotuloFonte: () -> String) : AnalyticsListen
     private companion object {
         const val SEGMENTOS_INTEIROS = 4
         const val AMOSTRAGEM = 25
+
+        /** Acima disto, uma carga deixou de ser lenta e virou sintoma. */
+        const val LENTO_MS = 5_000L
     }
 }
