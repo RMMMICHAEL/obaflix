@@ -360,8 +360,19 @@ object FontesTv {
     /** Teto proprio da conferencia: ela e um atalho, nunca uma espera longa. */
     private const val CONFERENCIA_TIMEOUT_MS = 8_000L
 
-    /** Status que sao resposta do provedor, e nao acidente de percurso. */
-    private val DEFINITIVOS = setOf(403, 404, 410)
+    /**
+     * Status que significam "este endereco nao existe", e so esses.
+     *
+     * 403 saiu da lista de proposito. 404 e 410 sao ausencia: nenhum cabecalho
+     * inventa um arquivo que nao esta la, entao descartar na hora e certo. Ja o
+     * 403 e "existe, mas voce nao pode" — e quem pode ou nao pode depende de
+     * cabecalho, cookie, IP e reuso de conexao, que sao justamente as coisas em
+     * que a conferencia e o Media3 diferem. Descartar por 403 fazia o player
+     * nunca tentar, e com isso nunca dava para saber se ele conseguiria: em
+     * campo, um provedor inteiro (dois "servidores" apontando para o mesmo CDN)
+     * sumiu assim, sem uma unica tentativa de reproducao registrada.
+     */
+    private val DEFINITIVOS = setOf(404, 410)
 
     private suspend fun conferirAgora(url: String, referer: String?): Conferencia =
         withContext(Dispatchers.IO) {
@@ -399,6 +410,10 @@ object FontesTv {
                             "metodo" to (if (ehArquivoBinario) "GET/Range" else "GET"),
                             "host" to ObaLog.host(url),
                             "servidorCdn" to (r.header("Server") ?: "-"),
+                            // Num 403 o Referer e a primeira suspeita, e ate
+                            // aqui ele nao aparecia em lugar nenhum do log.
+                            "referer" to ObaLog.url(referer),
+                            "definitivo" to (r.code in DEFINITIVOS),
                         )
                         // Status definitivo do provedor e resposta, nao duvida:
                         // em campo, master.m3u8 que devolve 404 aqui devolve 404
@@ -547,7 +562,11 @@ object CabecalhosMidia {
         cabecalhos.entries.joinToString(" ") { (nome, valor) ->
             when (nome) {
                 "Cookie" -> "Cookie=<" + valor.length + "b>"
-                "Referer", "Origin" -> nome + "=" + ObaLog.host(valor)
+                // Referer com caminho (sem query): mandar a pagina do embed e
+                // mandar so a origem sao coisas diferentes para varios CDN, e
+                // com `host` as duas apareciam identicas no log.
+                "Referer" -> nome + "=" + ObaLog.url(valor)
+                "Origin" -> nome + "=" + ObaLog.host(valor)
                 "User-Agent" -> "UA=" + valor.take(24) + "…"
                 else -> nome + "=" + valor
             }

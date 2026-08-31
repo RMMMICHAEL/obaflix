@@ -231,7 +231,7 @@ private suspend fun aguardarPronto(
         "servidor" to rotulo,
         "decorridoMs" to decorrido,
         "porTempo" to (fim == null),
-        "rodadas" to (esperas + 1),
+        "rodadasVazias" to esperas,
         "estado" to nomeEstado(player.playbackState),
         "carregando" to player.isLoading,
         "erroPlayer" to (player.playerError?.errorCodeName ?: "-"),
