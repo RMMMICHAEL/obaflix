@@ -3,6 +3,7 @@ package com.obaflix.tv.catalogo
 import android.content.Context
 import com.obaflix.ObaflixApp
 import com.obaflix.bridge.ObaLog
+import com.obaflix.bridge.SubtitleTrack
 import com.obaflix.tv.BuildConfig
 import com.obaflix.tv.sessao.PareamentoTv
 import com.obaflix.tv.sessao.SessaoTv
@@ -485,9 +486,51 @@ object ApiObaflix {
             .put("ambiente", "android"),
     )
 
-    internal suspend fun fonteNativa(sessao: String, fonteId: String): String? =
-        objeto(
+    /**
+     * O que o servidor devolve para uma fonte escolhida.
+     *
+     * Duas formas, e o aparelho trata cada uma de um jeito: `embedUrl` e uma
+     * pagina para o extrator local abrir; `streamUrl` e midia ja resolvida, que
+     * vai direto ao player. A segunda existe para provedor cuja resolucao
+     * depende de credencial de conta — credencial nao viaja para o aparelho.
+     */
+    data class FonteNativa(
+        val embedUrl: String? = null,
+        val streamUrl: String? = null,
+        val referer: String? = null,
+        val legendas: List<SubtitleTrack> = emptyList(),
+    )
+
+    internal suspend fun fonteNativa(sessao: String, fonteId: String): FonteNativa? {
+        val raiz = objeto(
             "/api/player/fonte-nativa",
             JSONObject().put("sessao", sessao).put("fonteId", fonteId),
-        )?.let { texto(it, "embedUrl") }
+        ) ?: return null
+
+        val embed = texto(raiz, "embedUrl")
+        val stream = texto(raiz, "streamUrl")
+        if (embed == null && stream == null) return null
+
+        val legendas = raiz.optJSONArray("legendas")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val arquivo = o.optString("url").takeIf { it.isNotBlank() }
+                    ?: o.optString("file").takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                SubtitleTrack(
+                    file = arquivo,
+                    label = o.optString("label").ifBlank {
+                        o.optString("language").ifBlank { "Legenda" }
+                    },
+                )
+            }
+        }.orEmpty()
+
+        return FonteNativa(
+            embedUrl = embed,
+            streamUrl = stream,
+            referer = texto(raiz, "referer"),
+            legendas = legendas,
+        )
+    }
 }

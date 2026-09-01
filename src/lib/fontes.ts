@@ -65,6 +65,14 @@ export interface FontePublica {
   iframeDesafio: boolean;
   iframeInvalido: boolean;
   semExtrator: boolean;
+  /**
+   * O servidor entrega a mídia já resolvida, em vez de um embed para extrair.
+   *
+   * Existe para um caso só: provedores cuja resolução depende de credencial de
+   * conta, que não pode viajar para o aparelho. O cliente nativo recebe a URL
+   * final e busca a mídia direto no CDN — nenhum byte de vídeo passa por nós.
+   */
+  resolvidoNoServidor: boolean;
 }
 
 /** O que o administrador autenticado recebe a mais. */
@@ -410,6 +418,19 @@ export async function acrescentarFontes(
  * Projeção pública. É a fronteira que a auditoria pediu: tudo que identifica o
  * provedor fica de fora por omissão de campo, não por ocultação na interface.
  */
+/**
+ * Provedores que o aparelho não consegue resolver sozinho, e nós sim.
+ *
+ * O webcine não é um embed que se raspa: é uma API autenticada por
+ * refresh_token de conta (ver `src/lib/cinevs.ts`). Portar isso para o
+ * aplicativo exigiria embutir a credencial no APK, que qualquer pessoa
+ * descompacta — então a resolução fica aqui e só a URL final desce. A mídia
+ * continua saindo do CDN direto para o aparelho.
+ */
+export function resolvidoNoServidor(f: Pick<FonteReal, "provider">): boolean {
+  return f.provider === "webcine";
+}
+
 export function projetarPublica(f: FonteReal): FontePublica {
   return {
     id: f.id,
@@ -418,6 +439,7 @@ export function projetarPublica(f: FonteReal): FontePublica {
     disponivel: f.disponivel,
     ...(f.motivoIndisponivel ? { motivoIndisponivel: f.motivoIndisponivel } : {}),
     nativo: f.nativo,
+    resolvidoNoServidor: resolvidoNoServidor(f),
     iframeDireto: f.iframeDireto,
     iframeDesafio: f.iframeDesafio,
     iframeInvalido: f.iframeInvalido,

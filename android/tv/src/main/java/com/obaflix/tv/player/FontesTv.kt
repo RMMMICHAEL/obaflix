@@ -226,7 +226,11 @@ object FontesTv {
                 // `nativo` falso quer dizer que nao ha extrator no aparelho para
                 // este provedor: so um navegador abriria. O player da TV e
                 // nativo, entao a fonte nao teria como tocar.
-                !f.optBoolean("nativo", false) -> "sem_extrator_nativo"
+                // `resolvidoNoServidor` cobre o provedor cuja resolucao depende
+                // de credencial de conta: o aparelho nao extrai, recebe a URL
+                // pronta e busca a midia direto no CDN.
+                !f.optBoolean("nativo", false) &&
+                    !f.optBoolean("resolvidoNoServidor", false) -> "sem_extrator_nativo"
                 // Desafio de robo exige WebView visivel; a TV nao tem uma.
                 f.optBoolean("iframeDesafio", false) -> "exige_desafio_navegador"
                 else -> null
@@ -274,11 +278,40 @@ object FontesTv {
         // produziu qual erro.
         ObaLog.novaTrilha("resolverFonte", "servidor" to fonte.rotulo)
 
-        val embed = ApiObaflix.fonteNativa(sessao, fonte.id)
-        if (embed == null) {
+        val resposta = ApiObaflix.fonteNativa(sessao, fonte.id)
+        if (resposta == null) {
             ObaLog.alerta(
                 ObaLog.Fase.EXTRACAO, "tv_fonte_sem_url",
                 "servidor" to fonte.rotulo, "fonte" to fonte.id.take(8) + "…",
+            )
+            return null
+        }
+
+        // Midia ja resolvida pelo servidor: nao ha o que extrair aqui. Continua
+        // valendo a mesma regra do resto — so conta como sucesso quando o Media3
+        // iniciar de fato; se nao iniciar, o failover segue para a proxima.
+        resposta.streamUrl?.let { pronta ->
+            ObaLog.evento(
+                ObaLog.Fase.EXTRACAO, "tv_fonte_resolvida_no_servidor",
+                "servidor" to fonte.rotulo,
+                "stream" to ObaLog.url(pronta),
+                "legendas" to resposta.legendas.size,
+                "temReferer" to (resposta.referer != null),
+            )
+            return Midia(
+                ehHls = pareceHls(pronta),
+                url = pronta,
+                referer = resposta.referer,
+                legendas = resposta.legendas.distinctBy { it.file },
+                qualidades = emptyList(),
+                audios = emptyList(),
+            )
+        }
+
+        val embed = resposta.embedUrl ?: run {
+            ObaLog.alerta(
+                ObaLog.Fase.EXTRACAO, "tv_fonte_sem_url",
+                "servidor" to fonte.rotulo, "motivo" to "resposta_sem_embed_nem_stream",
             )
             return null
         }
