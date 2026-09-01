@@ -1201,6 +1201,38 @@ object SuperflixExtractor {
         )
     }
 
+    /**
+     * A midia observada responde de verdade?
+     *
+     * Um GET com o mesmo contexto da WebView — UA do sistema, cookies do
+     * CookieManager, Referer capturado. Custa uma requisicao e evita entregar
+     * ao player uma URL que ja nasce recusada: em campo, a candidata que a
+     * pagina pedia sozinha devolvia 403 e o player repetia o 403 quatro vezes
+     * antes de o failover andar.
+     *
+     * Erro de rede nao condena: so status 4xx do proprio CDN. Sem resposta, a
+     * duvida fica para o player resolver, que e quem de fato reproduz.
+     */
+    private suspend fun midiaAceita(media: ObservedSuperflixMedia): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val requisicao = Request.Builder()
+                    .url(media.url)
+                    .get()
+                    .header("User-Agent", SuperflixChallengeOverlay.uaEmUso ?: UA)
+                    .apply {
+                        media.referer?.takeIf { it.isNotBlank() }?.let { header("Referer", it) }
+                        runCatching { CookieManager.getInstance().getCookie(media.url) }
+                            .getOrNull()?.takeIf { it.isNotBlank() }?.let { header("Cookie", it) }
+                    }
+                    .build()
+                ObaflixApp.httpClient.newCall(requisicao).execute().use { r ->
+                    log("media_conferida", "status=${r.code} url=${safeUrl(media.url)}")
+                    r.code !in 400..499
+                }
+            }.getOrElse { true }
+        }
+
     suspend fun extract(embedUrl: String): NativeExtractResult {
         // Primeiro aproveita uma validação Cloudflare já existente no WebView.
         val cookieManager = CookieManager.getInstance()
@@ -1272,6 +1304,16 @@ object SuperflixExtractor {
                 }
 
                 playerState.observedSuperflixMedia?.let { media ->
+                    // Capturar nao e o mesmo que servir. A pagina tem mais de um
+                    // player, e o que arranca sozinho pede um manifesto que o
+                    // CDN recusa — medido em campo: 403 tanto pelo contexto da
+                    // WebView quanto pelo do player. Entregar essa URL ao player
+                    // nativo so adiava o mesmo 403 e queimava a fonte.
+                    if (!midiaAceita(media)) {
+                        log("media_recusada", "kind=${media.kind} url=${safeUrl(media.url)}")
+                        playerState.rejeitarSuperflixMedia(media.url)
+                        return@let
+                    }
                     log("media", "capturada kind=${media.kind} url=${safeUrl(media.url)}")
                     return awaitObservedMedia(playerState, embedUrl, media)
                 }

@@ -41,6 +41,23 @@ class PlayerState {
     @Volatile
     private var observationToken: Long = 0L
 
+    /**
+     * Midias que ja foram testadas e recusadas pelo CDN.
+     *
+     * A pagina do provedor tem mais de um player, e o que arranca sozinho pede
+     * um manifesto que responde 403 — midia do player alternativo, nao do
+     * servidor que a pessoa escolhe. Guardar a primeira que aparece entregava
+     * justamente essa. Com a lista, uma candidata recusada nao volta a ser
+     * guardada e a observacao continua ate vir a que presta.
+     */
+    private val superflixRejeitadas = Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** Descarta a midia guardada e impede que ela seja aceita de novo. */
+    fun rejeitarSuperflixMedia(url: String) {
+        superflixRejeitadas.add(url)
+        if (observedSuperflixMedia?.url == url) observedSuperflixMedia = null
+    }
+
     private val superflixSubtitles = Collections.synchronizedList(mutableListOf<ObservedSubtitle>())
 
     private val cdnHostnames = Collections.synchronizedSet(mutableSetOf<String>())
@@ -79,6 +96,7 @@ class PlayerState {
         observationToken = token
         observedSuperflixUrl = null
         observedSuperflixMedia = null
+        superflixRejeitadas.clear()
         observedSuperflixMediaAt = 0L
         superflixSubtitles.clear()
         superflixObservationActive = true
@@ -98,6 +116,7 @@ class PlayerState {
 
     fun observeSuperflixMedia(url: String, referer: String?, kind: String) {
         if (!superflixObservationActive) return
+        if (url in superflixRejeitadas) return
         // O primeiro manifesto HLS é o mais completo (master). Requisições
         // seguintes — sub-playlists ou um MP4 de pré-roll — não o substituem.
         if (observedSuperflixMedia?.kind == "hls") {
