@@ -68,6 +68,11 @@ object Navegacao {
 
     fun irPara(destino: Aba) {
         pilha.clear()
+        // Sair de uma aba descarta o recorte dela. E aqui, e nao num
+        // `onDispose` da tela, porque a tela tambem e descartada ao abrir uma
+        // ficha ou o player — e voltar de um filme tem de cair no mesmo lugar
+        // de onde se saiu, com o filtro intacto. So a troca de aba reinicia.
+        if (destino != aba) com.obaflix.tv.catalogo.CacheTelas.esquecerFiltros(aba.name)
         aba = destino
     }
 

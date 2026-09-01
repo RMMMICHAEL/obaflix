@@ -58,6 +58,31 @@ object SessaoTv {
     val userAgent: String =
         "ObaflixTV/${BuildConfig.VERSION_NAME} (Android ${Build.VERSION.RELEASE}; ${Build.MODEL})"
 
+    /**
+     * Conta em que este aparelho esta, mascarada ("mic***@gmail.com").
+     *
+     * So a tela de perfil chama, e so ela passa `?conta=1` — a verificacao de
+     * abertura continua sem consultar o banco. Existe porque, quando a TV e o
+     * celular mostram Continuar Assistindo diferentes, a primeira coisa a
+     * descartar e estarem em contas diferentes, e ate aqui nao havia como olhar.
+     */
+    suspend fun conta(): String? = withContext(Dispatchers.IO) {
+        val token = access ?: return@withContext null
+        val requisicao = Request.Builder()
+            .url("${BuildConfig.OBAFLIX_URL}/api/tv/whoami?conta=1")
+            .header("User-Agent", userAgent)
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        runCatching {
+            ObaflixApp.httpClient.newCall(requisicao).execute().use { r ->
+                if (r.code != 200) return@use null
+                Regex("\"conta\":\"([^\"]+)\"")
+                    .find(r.body?.string().orEmpty())?.groupValues?.getOrNull(1)
+            }
+        }.getOrNull()
+    }
+
     suspend fun verificar(): EstadoSessao = withContext(Dispatchers.IO) {
         val token = access
         val requisicao = Request.Builder()

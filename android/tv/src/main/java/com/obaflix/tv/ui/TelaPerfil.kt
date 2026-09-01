@@ -83,6 +83,14 @@ fun TelaPerfil() {
 
     val primeiro = remember { FocusRequester() }
 
+    // Qual conta esta pareada aqui. Uma consulta so, ao abrir o perfil: e o
+    // que responde "a TV esta na mesma conta do celular?" quando as duas telas
+    // mostram Continuar Assistindo diferentes.
+    var conta by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        conta = com.obaflix.tv.sessao.SessaoTv.conta()
+    }
+
     LaunchedEffect(recarga) {
         continuar = ApiObaflix.continuarAssistindo().orEmpty()
         favoritos = ApiObaflix.favoritos()
@@ -126,7 +134,8 @@ fun TelaPerfil() {
                     Text("Perfil", color = Cores.Texto, fontSize = Escala.Titulo, fontWeight = FontWeight.Black)
                     EspacoV(4.dp)
                     Text(
-                        text = "Aparelho: " + PareamentoTv.modelo(),
+                        text = "Aparelho: " + PareamentoTv.modelo() +
+                            (conta?.let { "   ·   Conta: " + it } ?: ""),
                         color = Cores.TextoFraco,
                         fontSize = Escala.Rotulo,
                     )

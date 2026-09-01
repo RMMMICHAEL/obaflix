@@ -210,19 +210,52 @@ object FontesTv {
 
         val fontes = (0 until arr.length()).mapNotNull { i ->
             val f = arr.optJSONObject(i) ?: return@mapNotNull null
-            if (!f.optBoolean("disponivel", false)) return@mapNotNull null
-            if (!f.optBoolean("nativo", false)) return@mapNotNull null
-            val id = f.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val rotulo = f.optString("rotulo").ifBlank { "Servidor" }
+            val id = f.optString("id").takeIf { it.isNotBlank() }
+
+            // Por que uma fonte que o site oferece nao aparece aqui.
+            //
+            // O aplicativo mostrava 5 servidores enquanto o site mostrava mais,
+            // e nao havia como saber quais tinham sido descartados nem por que:
+            // o descarte era silencioso. Agora cada exclusao diz o motivo, com
+            // o rotulo generico que o servidor ja devolve.
+            val motivo = when {
+                id == null -> "sem_id"
+                !f.optBoolean("disponivel", false) ->
+                    "indisponivel:" + f.optString("motivoIndisponivel").ifBlank { "-" }
+                // `nativo` falso quer dizer que nao ha extrator no aparelho para
+                // este provedor: so um navegador abriria. O player da TV e
+                // nativo, entao a fonte nao teria como tocar.
+                !f.optBoolean("nativo", false) -> "sem_extrator_nativo"
+                // Desafio de robo exige WebView visivel; a TV nao tem uma.
+                f.optBoolean("iframeDesafio", false) -> "exige_desafio_navegador"
+                else -> null
+            }
+            if (motivo != null) {
+                ObaLog.alerta(
+                    ObaLog.Fase.EXTRACAO, "tv_fonte_descartada",
+                    "servidor" to rotulo,
+                    "motivo" to motivo,
+                    "nativo" to f.optBoolean("nativo", false),
+                    "desafio" to f.optBoolean("iframeDesafio", false),
+                    "iframeDireto" to f.optBoolean("iframeDireto", false),
+                    "semExtrator" to f.optBoolean("semExtrator", false),
+                )
+                return@mapNotNull null
+            }
+
             Fonte(
-                id = id,
-                rotulo = f.optString("rotulo").ifBlank { "Servidor" },
+                id = id!!,
+                rotulo = rotulo,
                 idioma = f.optString("idioma").takeIf { it == "dub" || it == "leg" },
             )
         }
 
         ObaLog.evento(
             ObaLog.Fase.EXTRACAO, "tv_fontes",
+            "oferecidas" to arr.length(),
             "quantidade" to fontes.size,
+            "descartadas" to (arr.length() - fontes.size),
             "tipo" to (if (pedido.ehSerie) "serie" else "filme"),
         )
         return SessaoFontes(sessao, fontes)

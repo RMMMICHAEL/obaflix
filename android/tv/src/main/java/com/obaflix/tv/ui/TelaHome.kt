@@ -69,6 +69,15 @@ import kotlinx.coroutines.delay
  * A carga e a mesma de antes — duas requisicoes —, entao a tela ficou muito
  * maior sem custar nada a mais na Vercel nem no Supabase.
  */
+/**
+ * Quanto tempo a Home vale antes de ser buscada de novo.
+ *
+ * Curto o bastante para "Continuar assistindo" acompanhar o que foi visto no
+ * celular; longo o bastante para atravessar as abas nao virar uma consulta por
+ * passagem pelo Inicio.
+ */
+private const val VALIDADE_HOME_MS = 60_000L
+
 @Composable
 fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
     // Comeca do cache: no retorno de uma ficha, a Home reaparece pronta, sem
@@ -98,12 +107,23 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
     )
 
     LaunchedEffect(recarga) {
-        // So busca se ainda nao ha dado (primeira vez ou "tentar de novo"). Com
-        // cache preenchido, o retorno nao gasta requisicao nenhuma.
-        if (home != null && recarga == 0) return@LaunchedEffect
+        // Mostra o que ja tem e revalida por baixo.
+        //
+        // Antes o cache era definitivo: uma vez carregada, a Home nunca mais
+        // era buscada enquanto o processo vivesse. Numa TV Box, que nao fecha o
+        // aplicativo, isso virava uma fotografia — "Continuar assistindo"
+        // mostrava o que estava sendo visto dias antes, e o celular mostrava
+        // outra coisa. Agora o cache serve para a tela aparecer na hora, nao
+        // para dispensar a consulta.
+        val precisa = recarga > 0 || CacheTelas.homeVelha(VALIDADE_HOME_MS)
+        if (!precisa) return@LaunchedEffect
         erro = false
         val resultado = ApiObaflix.home()
-        if (resultado == null) erro = true else {
+        if (resultado == null) {
+            // Falhou a revalidacao com conteudo na tela: nao troca por um erro.
+            // O que esta la e velho, mas e melhor do que uma tela vazia.
+            if (home == null) erro = true
+        } else {
             home = resultado
             CacheTelas.home = resultado
         }

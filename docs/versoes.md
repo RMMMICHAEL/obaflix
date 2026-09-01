@@ -4,13 +4,13 @@ Os três aplicativos nativos têm ciclos de versão **independentes**. Este
 arquivo diz qual é a versão corrente de cada um, onde o número é declarado,
 onde o build sai e onde a cópia distribuível é guardada.
 
-Atualizado em **2026-08-31**, no commit `f70db7a`.
+Atualizado em **2026-08-31**.
 
 ## Versão corrente
 
 | Aplicativo | Versão | Pacote / AppId | Onde o número é declarado |
 |---|---|---|---|
-| **Android TV** | `0.7.6` (versionCode 22) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
+| **Android TV** | `0.7.7` (versionCode 23) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
 | **Android celular** | `1.0.9` (versionCode 9) | `com.obaflix` | [`android/app/build.gradle`](../android/app/build.gradle) |
 | **Desktop (Windows)** | `1.0.5` | `com.obaflix.app` | [`desktop/package.json`](../desktop/package.json) |
 
@@ -72,11 +72,11 @@ tag `Obaflix`, que é a mesma nos dois APK, então serve para TV e celular.
 
 ## Duas armadilhas de numeração, abertas
 
-**`Obaflix-TV-0.7.6` existe em dois binários diferentes.** Um com log
-(`-diag`) e um sem, porque só a flag de build mudou entre eles. Se alguém
-relatar um problema dizendo "estou na 0.7.6", não dá para saber qual dos dois
-está instalado. O próximo build limpo deve subir para `0.7.7` e deixar o
-`0.7.6` como número queimado.
+**`0.7.6` ficou queimado.** Ele existe em dois binários diferentes — um com log
+(`-diag`) e um sem —, porque só a flag de build mudou entre eles. Quem
+relatasse "estou na 0.7.6" não diria qual dos dois. A TV pulou para `0.7.7` por
+causa disso, e a regra daqui em diante é nunca reaproveitar um número entre
+build de diagnóstico e build limpo.
 
 **O celular está em `1.0.9` desde o primeiro commit do módulo.** O número nunca
 subiu, e o conteúdo mudou muito: o `Obaflix-Android-1.0.9.apk` de 24/08 tem

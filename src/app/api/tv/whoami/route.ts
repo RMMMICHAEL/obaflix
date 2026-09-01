@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
+import { prisma } from "@/lib/prisma";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -24,6 +25,19 @@ const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, privat
  * abuso mais caro para nós do que para quem abusa. O caminho caro (extração,
  * proxy de mídia) continua protegido pelos limitadores que já existem lá.
  */
+/**
+ * E-mail reduzido ao que basta para reconhecer a conta.
+ *
+ * "michael@gmail.com" vira "mic***@gmail.com". Suficiente para conferir se a TV
+ * está na mesma conta do celular, e pouco o bastante para ficar numa tela de
+ * sala de estar sem entregar o endereço a quem passa.
+ */
+function mascarar(email: string): string {
+  const [nome, dominio] = email.split("@");
+  if (!dominio) return "***";
+  return nome.slice(0, 3) + "***@" + dominio;
+}
+
 export async function GET(req: NextRequest) {
   const usuario = await getUserFromRequest(req);
 
@@ -37,6 +51,18 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // A conta só é consultada quando alguém pede — `?conta=1`, que só a tela de
+  // perfil da TV usa. O caminho de abertura do aplicativo continua com zero
+  // consulta ao banco, que é a razão de esta rota não ter rate limit.
+  let conta: string | null = null;
+  if (req.nextUrl.searchParams.get("conta") === "1") {
+    const dono = await prisma.user.findUnique({
+      where: { id: usuario.userId },
+      select: { email: true },
+    });
+    conta = dono?.email ? mascarar(dono.email) : null;
+  }
+
   return NextResponse.json(
     {
       autenticado: true,
@@ -44,6 +70,10 @@ export async function GET(req: NextRequest) {
       // Serve para a TV mostrar qual aparelho ela é na tela de dispositivos.
       // Null quando a credencial veio de cookie — cookie não é de aparelho.
       dispositivo: usuario.deviceId,
+      // Mascarado, e só quando pedido. Sem isto não havia como responder "a TV
+      // está na mesma conta do celular?", que é a primeira pergunta quando as
+      // duas telas mostram listas diferentes de Continuar Assistindo.
+      ...(conta ? { conta } : {}),
     },
     { headers: NO_STORE },
   );
