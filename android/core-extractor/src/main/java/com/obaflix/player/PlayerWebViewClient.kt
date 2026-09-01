@@ -49,7 +49,24 @@ class PlayerWebViewClient(
     private val bridgeCapability: String = "",
     private val onPageReady: ((WebView) -> Unit)? = null,
     private val onRenderGone: ((WebView, Boolean) -> Unit)? = null,
+    /**
+     * Hosts que esta WebView pode navegar no frame principal, alem do nosso.
+     *
+     * Vazio por padrao: a WebView do aplicativo so navega para o proprio site, e
+     * qualquer outro destino e recusado. O overlay do desafio precisa do
+     * contrario — ele **e** a pagina do provedor, e bloquear a navegacao dela
+     * deixava a tela branca, com o log dizendo "navegacao_externa_bloqueada"
+     * para o proprio endereco que se pediu para abrir.
+     *
+     * Continua sendo lista fechada: so os hosts do provedor entram, e tudo o
+     * mais segue recusado.
+     */
+    private val hostsNavegaveis: Set<String> = emptySet(),
 ) : WebViewClient() {
+
+    /** O host pertence a lista liberada para esta WebView? */
+    private fun navegavel(host: String): Boolean =
+        hostsNavegaveis.any { host == it || host.endsWith(".$it") }
 
     /**
      * Morte do processo de renderizacao da WebView.
@@ -172,6 +189,8 @@ class PlayerWebViewClient(
             return false
         }
         if (uri.scheme == "https" && uri.host == allowedAppHost) return false
+        // Pagina do provedor no overlay do desafio: e ela que tem de carregar.
+        if (uri.scheme == "https" && navegavel(providerHost)) return false
         if (uri.scheme == "http" || uri.scheme == "https") {
             ObaLog.alerta(
                 ObaLog.Fase.PROVEDOR, "navegacao_externa_bloqueada",

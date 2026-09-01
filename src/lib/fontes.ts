@@ -111,7 +111,7 @@ export function detectarProvider(url: string): { provider: string; temExtrator: 
     "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best")) {
     return { provider: "embedplayer", temExtrator: true };
   }
-  if (hostIs(host, "superflixapi.pro", "superflixapi.sbs")) return { provider: "superflix", temExtrator: true };
+  if (hostIs(host, "superflixapi.pro", "superflixapi.sbs", "superflixapi.beer")) return { provider: "superflix", temExtrator: true };
   if (hostIs(host, "playhide.shop", "hidehide.shop", "vidhidehub.com")) return { provider: "hide", temExtrator: true };
   if (hostIs(host, "luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com")) return { provider: "lulu", temExtrator: true };
   if (hostIs(host, "streamwish.com", "playerwish.com", "hlswish.com", "wishonly.site",
@@ -160,14 +160,14 @@ export function suportaExtracaoNativa(url: string): boolean {
   if (host.includes("bolt")) return true;
   if (host.includes("bigshare") || host.includes("big")) return true;
   if (host.includes("watchplay")) return true;
-  if (/(^|\.)superflixapi\.(pro|sbs)$/i.test(host)) return true;
+  if (/(^|\.)superflixapi\.(pro|sbs|beer)$/i.test(host)) return true;
   if (host === "redecanais.capital" || host.endsWith(".redecanais.capital")) return true;
   return false;
 }
 
 export function ehSuperflix(url: string): boolean {
   try {
-    return /(^|\.)superflixapi\.(pro|sbs)$/i.test(new URL(url).hostname.toLowerCase());
+    return /(^|\.)superflixapi\.(pro|sbs|beer)$/i.test(new URL(url).hostname.toLowerCase());
   } catch {
     return false;
   }

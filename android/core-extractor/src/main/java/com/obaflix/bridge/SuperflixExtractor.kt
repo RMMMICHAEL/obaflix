@@ -18,11 +18,13 @@ import android.util.Base64
 
 
 /**
- * O provedor migrou de superflixapi.pro para superflixapi.sbs em agosto/2026. O
- * domínio antigo responde 301 para o novo e continua gravado em URLs no banco e
- * nas respostas do Playerflix, então os dois seguem reconhecidos.
+ * O provedor troca de terminação de tempos em tempos: `.pro`, depois `.sbs`, e
+ * em campo (01/09/2026) a página redirecionou para `.beer`. As antigas seguem
+ * gravadas em URLs no banco e nas respostas do Playerflix, então todas
+ * continuam reconhecidas — e o que identifica é o rótulo `superflixapi`, não a
+ * terminação, que muda sem aviso.
  */
-private val SUPERFLIX_HOSTS = listOf("superflixapi.sbs", "superflixapi.pro")
+private val SUPERFLIX_HOSTS = listOf("superflixapi.sbs", "superflixapi.pro", "superflixapi.beer")
 private const val SUPERFLIX_TIMEOUT_HOPS = 7
 
 /**

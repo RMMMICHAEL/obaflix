@@ -31,6 +31,22 @@ import com.obaflix.removerRequestedWithHeader
  */
 object SuperflixChallengeOverlay {
 
+    /**
+     * Hosts que a pagina do desafio pode navegar.
+     *
+     * O provedor troca de dominio de tempos em tempos — `.pro`, depois `.sbs`,
+     * e em campo apareceu `.beer`. Por isso a lista casa pelo prefixo do
+     * dominio, e nao por sufixo fixo: o que identifica e `superflixapi`, e a
+     * terminacao muda sem aviso. `challenges.cloudflare.com` entra porque o
+     * widget do Turnstile vive la; sem ele nao ha o que confirmar.
+     */
+    private val HOSTS_DO_DESAFIO = setOf(
+        "superflixapi.pro",
+        "superflixapi.sbs",
+        "superflixapi.beer",
+        "challenges.cloudflare.com",
+    )
+
     @Volatile
     var estaAberto: Boolean = false
         private set
@@ -147,6 +163,9 @@ object SuperflixChallengeOverlay {
             // remove o CSP do documento e trata o CDN. onPageReady fica nulo de
             // proposito — o shim da bridge nao deve entrar na pagina do provedor.
             wv.webViewClient = PlayerWebViewClient(
+                // So os hosts do provedor. Sem isto o proprio endereco pedido
+                // era recusado como "navegacao externa" e a tela ficava branca.
+                hostsNavegaveis = HOSTS_DO_DESAFIO,
                 onPageReady = null,
                 onRenderGone = { _, _ ->
                     ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")
