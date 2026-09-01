@@ -1193,6 +1193,16 @@ object SuperflixExtractor {
             "media",
             "consolidada kind=${media.kind} legendas=${subtitles.size} url=${safeUrl(media.url)}",
         )
+        // Marco final desta camada: daqui a fonte sai do provedor e vai para o
+        // player padrao. O que decide se deu certo continua sendo o player —
+        // "entregue" nao e "reproduzindo".
+        ObaLog.evento(
+            ObaLog.Fase.PROVEDOR, "midia_entregue_ao_player",
+            "tipo" to media.kind,
+            "status" to media.status,
+            "legendas" to subtitles.size,
+            "url" to ObaLog.url(media.url),
+        )
         return NativeExtractResult(
             stream = media.url,
             referer = media.referer ?: embedUrl,
@@ -1299,6 +1309,8 @@ object SuperflixExtractor {
                     log(
                         "cloudflare_espera",
                         "${segundos}s — cf_clearance=${if (viuClearance) "sim" else "nao"} " +
+                            "servidor_escolhido=${if (playerState.superflixSelecionado) "sim" else "nao"} " +
+                            "overlay=${if (SuperflixChallengeOverlay.estaAberto) "aberto" else "fechado"} " +
                             "midia_observada=nao url_validada=${if (lastObserved != null) "sim" else "nao"}",
                     )
                 }
@@ -1307,14 +1319,24 @@ object SuperflixExtractor {
                     // Capturar nao e o mesmo que servir. A pagina tem mais de um
                     // player, e o que arranca sozinho pede um manifesto que o
                     // CDN recusa — medido em campo: 403 tanto pelo contexto da
-                    // WebView quanto pelo do player. Entregar essa URL ao player
-                    // nativo so adiava o mesmo 403 e queimava a fonte.
-                    if (!midiaAceita(media)) {
+                    // WebView quanto pelo do player.
+                    //
+                    // Quando a requisicao da pagina passou pela nossa
+                    // interceptacao, o status ja veio dela — e o mesmo sinal que
+                    // o `onCompleted` da o Electron. Nesse caso nao ha o que
+                    // reconferir: refazer o pedido de uma URL assinada de uso
+                    // unico mede outra requisicao e ainda pode queima-la. A
+                    // sonda fora de banda so entra quando nao houve medida.
+                    if (media.status == 0 && !midiaAceita(media)) {
                         log("media_recusada", "kind=${media.kind} url=${safeUrl(media.url)}")
                         playerState.rejeitarSuperflixMedia(media.url)
                         return@let
                     }
-                    log("media", "capturada kind=${media.kind} url=${safeUrl(media.url)}")
+                    log(
+                        "media",
+                        "capturada kind=${media.kind} status=${media.status} " +
+                            "url=${safeUrl(media.url)}",
+                    )
                     return awaitObservedMedia(playerState, embedUrl, media)
                 }
 
@@ -1373,12 +1395,12 @@ object SuperflixExtractor {
 
             // Mensagem diz a CONDICAO que produziu o resultado, nao so "indisponivel".
             throw Exception(
-                if (!viuClearance) {
-                    "SuperFlix: desafio Turnstile do embed nao foi validado em 2 minutos " +
-                        "(cf_clearance nunca chegou) — o provedor exige resolver a verificacao"
-                } else {
-                    "SuperFlix: desafio validado (cf_clearance presente), mas nenhuma midia " +
-                        "foi observada em 2 minutos"
+                when {
+                    !playerState.superflixSelecionado ->
+                        "SuperFlix: nenhum servidor foi escolhido na tela do provedor em 2 minutos" +
+                            if (viuClearance) "" else " (o desafio tambem nao foi validado)"
+                    else ->
+                        "SuperFlix: servidor escolhido, mas nenhuma midia valida chegou em 2 minutos"
                 }
             )
         } finally {

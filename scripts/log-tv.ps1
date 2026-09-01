@@ -111,7 +111,10 @@ function Write-Resumo {
         'tv_sonda_desafio', 'midia_guardada', 'midia_candidata_ignorada',
         'overlay_tecla', 'overlay_aberto', 'overlay_fechado', 'sf_media',
         'media_recusada', 'media_conferida',
-        'sf_media_recusada', 'sf_media_conferida', 'overlay_toque'
+        'sf_media_recusada', 'sf_media_conferida', 'overlay_toque',
+        'servidor_confirmado', 'servidor_focado', 'navegacao_pos_selecao',
+        'midia_candidata', 'midia_validada', 'midia_entregue_ao_player',
+        'midia_intercepcao_falhou', 'overlay_renderer_morreu'
     )
     $padrao = ($interessantes -join '|')
 

@@ -13,6 +13,7 @@ import com.obaflix.ObaflixApp
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
+import com.obaflix.bridge.SuperflixChallengeOverlay
 import kotlinx.coroutines.runBlocking
 import okhttp3.Request
 import org.json.JSONObject
@@ -216,13 +217,20 @@ class PlayerWebViewClient(
         val path = request.url.path ?: ""
         val host = request.url.host ?: ""
 
+        marcarSelecaoSuperflix(host, path)
+
         superflixMediaKind(request)?.let { kind ->
-            val referer = header(request, "Referer")
-            ObaflixApp.playerState.observeSuperflixMedia(request.url.toString(), referer, kind)
             ObaLog.evento(
                 ObaLog.Fase.PROVEDOR, "midia_observada",
                 "tipo" to kind,
                 "url" to ObaLog.url(request.url.toString()),
+            )
+            // Assumir a requisicao e o unico jeito de saber com que status o CDN
+            // respondeu — ver passarMidiaSuperflix. Quando nao da, registra sem
+            // status e a sonda do extrator decide, como antes.
+            passarMidiaSuperflix(request, kind)?.let { return it }
+            ObaflixApp.playerState.observeSuperflixMedia(
+                request.url.toString(), header(request, "Referer"), kind, 0,
             )
         }
         observeSuperflixSubtitle(request)
@@ -334,6 +342,122 @@ class PlayerWebViewClient(
         }
 
         return null
+    }
+
+    /**
+     * Marcos da escolha de servidor, na mesma leitura que o Electron faz.
+     *
+     * `/player/source` e o POST que a pagina so dispara quando um servidor e
+     * escolhido: e ele que devolve o `video_url`. `/player/redirect` e o salto
+     * seguinte, ja a caminho do CDN. O Electron os enxerga pelo `webRequest`
+     * da sessao; aqui eles passam por `shouldInterceptRequest` como qualquer
+     * outra requisicao da pagina.
+     */
+    private fun marcarSelecaoSuperflix(host: String, path: String) {
+        if (!ObaflixApp.playerState.superflixObservationActive) return
+        if (!host.contains("superflixapi.")) return
+        val rota = path.lowercase()
+        if (rota.startsWith("/player/source")) {
+            ObaflixApp.playerState.confirmarSelecaoSuperflix("player/source")
+        } else if (rota.startsWith("/player/redirect")) {
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "navegacao_pos_selecao",
+                "rota" to "player/redirect",
+                "posSelecao" to ObaflixApp.playerState.superflixSelecionado,
+            )
+        }
+    }
+
+    /** Cabecalhos que sao da conexao, nao do pedido: repassa-los corrompe a nova. */
+    private fun ehCabecalhoDeConexao(nome: String): Boolean =
+        nome.equals("Host", ignoreCase = true) ||
+            nome.equals("Connection", ignoreCase = true) ||
+            nome.equals("Cookie", ignoreCase = true) ||
+            // OkHttp negocia gzip sozinho e ja entrega o corpo decodificado;
+            // repassar o pedido original faria o corpo chegar comprimido sem
+            // que o Content-Encoding sobrevivesse.
+            nome.equals("Accept-Encoding", ignoreCase = true)
+
+    /**
+     * Faz a requisicao de midia do provedor por nos — e devolve a resposta a
+     * pagina, que segue funcionando.
+     *
+     * Este e o equivalente Android do `webRequest.onCompleted` do Electron. La
+     * o `statusCode` chega de graca e o `capture()` recusa tudo fora de
+     * 2xx/3xx; foi assim que o Electron nunca guardou a midia do player que a
+     * pagina arranca sozinha. A WebView nao expoe status nenhum em
+     * `shouldInterceptRequest`: so ha o pedido. Refazer a requisicao por fora,
+     * como a versao anterior fazia, mede **outra** requisicao — e em URL
+     * assinada de uso unico as duas nem sao a mesma coisa.
+     *
+     * Assumindo o pedido, o status medido e o da propria requisicao da pagina,
+     * e o corpo volta para ela. Escopo estreito de proposito: so candidata a
+     * midia, so enquanto a observacao esta aberta. Qualquer falha devolve null
+     * e a WebView busca sozinha, exatamente como antes.
+     */
+    private fun passarMidiaSuperflix(
+        request: WebResourceRequest,
+        kind: String,
+    ): WebResourceResponse? = try {
+        val urlPedida = request.url.toString()
+        val construtor = Request.Builder().url(urlPedida).get()
+        var temUa = false
+        request.requestHeaders.forEach { (nome, valor) ->
+            if (ehCabecalhoDeConexao(nome)) return@forEach
+            if (nome.equals("User-Agent", ignoreCase = true)) temUa = true
+            construtor.header(nome, valor)
+        }
+        // A WebView nem sempre entrega o User-Agent no mapa, e este link nasceu
+        // dentro do overlay: quem o pediu tem de ser o mesmo UA.
+        if (!temUa) {
+            construtor.header(
+                "User-Agent",
+                SuperflixChallengeOverlay.uaEmUso ?: ObaflixApp.webViewUserAgent ?: UA,
+            )
+        }
+        CookieManager.getInstance().getCookie(urlPedida)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { construtor.header("Cookie", it) }
+
+        val resposta = ObaflixApp.mediaClient.newCall(construtor.build()).execute()
+        val urlFinal = resposta.request.url.toString()
+        if (urlFinal != urlPedida) {
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "navegacao_pos_selecao",
+                "rota" to "redirect_midia",
+                "de" to ObaLog.url(urlPedida),
+                "para" to ObaLog.url(urlFinal),
+            )
+        }
+        ObaflixApp.playerState.observeSuperflixMedia(
+            urlFinal, header(request, "Referer"), kind, resposta.code,
+        )
+
+        val tipoUpstream = resposta.header("Content-Type")?.substringBefore(';')?.trim()
+        val tipo = if (tipoUpstream.isNullOrEmpty()) {
+            if (kind == "hls") "application/vnd.apple.mpegurl" else "video/mp4"
+        } else {
+            tipoUpstream
+        }
+        val cabecalhos = mutableMapOf("Access-Control-Allow-Origin" to "*")
+        resposta.header("Content-Range")?.let { cabecalhos["Content-Range"] = it }
+        resposta.header("Content-Length")?.let { cabecalhos["Content-Length"] = it }
+        WebResourceResponse(
+            tipo,
+            if (kind == "hls") "utf-8" else null,
+            resposta.code,
+            // HTTP/2 nao tem reason phrase, e WebResourceResponse recusa vazio.
+            resposta.message.ifEmpty { "OK" },
+            cabecalhos,
+            resposta.body?.byteStream() ?: ByteArrayInputStream(ByteArray(0)),
+        )
+    } catch (e: Exception) {
+        ObaLog.alerta(
+            ObaLog.Fase.PROVEDOR, "midia_intercepcao_falhou",
+            "tipo" to kind,
+            "causa" to ObaLog.texto(e.message ?: e.javaClass.simpleName),
+        )
+        null
     }
 
     private fun fetchCdnDirect(cdnUrl: String, original: WebResourceRequest): WebResourceResponse? {

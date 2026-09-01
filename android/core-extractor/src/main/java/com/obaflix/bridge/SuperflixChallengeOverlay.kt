@@ -141,7 +141,21 @@ object SuperflixChallengeOverlay {
                 return@post
             }
 
-            val raizNova = FrameLayout(host.context).apply {
+            // A raiz trata o controle remoto, e nao a WebView.
+            //
+            // `WebView` e um `ViewGroup`: `dispatchKeyEvent` desce primeiro para
+            // o filho com foco — a view interna do renderizador — e o
+            // `OnKeyListener` da propria WebView so seria chamado se o evento
+            // voltasse sem ser consumido. Com o conteudo focado ele nunca
+            // voltava, e era por isso que as setas "nao funcionavam": o ponteiro
+            // nem chegava a ser avisado delas. A raiz ve o evento antes de
+            // qualquer descida, entao aqui a decisao e nossa.
+            val raizNova = object : FrameLayout(host.context) {
+                var aoTeclar: ((KeyEvent) -> Boolean)? = null
+
+                override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+                    aoTeclar?.invoke(event) == true || super.dispatchKeyEvent(event)
+            }.apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -184,6 +198,34 @@ object SuperflixChallengeOverlay {
                 )
             }
 
+            removerRequestedWithHeader(wv.settings, "overlay-desafio")
+
+            // O Turnstile grava cf_clearance como cookie de TERCEIRO, dentro do
+            // iframe. Sem aceitar cookie de terceiro a validacao nunca fixa e o
+            // desafio volta a cada tentativa — que e exatamente o que os logs
+            // vinham mostrando, com cf_clearance nunca aparecendo.
+            CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(wv, true)
+            }
+
+            // Reusa o cliente principal: e ele que observa a midia pelo
+            // PlayerState, marca a escolha de servidor em /player/source, mede o
+            // status da resposta do CDN e trata os hosts liberados. Sem cliente
+            // nenhum, esta WebView carregava a pagina e nao contava nada a
+            // ninguem. onPageReady fica nulo de proposito — o shim da bridge nao
+            // entra na pagina do provedor.
+            wv.webViewClient = PlayerWebViewClient(
+                // So os hosts do provedor. Sem isto o proprio endereco pedido
+                // era recusado como "navegacao externa" e a tela ficava branca.
+                hostsNavegaveis = HOSTS_DO_DESAFIO,
+                onPageReady = null,
+                onRenderGone = { _, _ ->
+                    ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")
+                    fechar()
+                },
+            )
+
             // Nenhum `addJavascriptInterface` aqui, de proposito: a ponte nativa
             // pertence ao documento do aplicativo, nunca ao do provedor.
 
@@ -193,10 +235,7 @@ object SuperflixChallengeOverlay {
             wv.isFocusable = true
             wv.isFocusableInTouchMode = true
 
-            // VOLTAR recua no historico enquanto houver para onde, e so entao
-            // fecha. E o que impede ficar preso dentro do iframe de um servidor
-            // sem caminho de saida.
-            // ── Cursor virtual ──────────────────────────────────────────
+            // ── Ponteiro virtual ──────────────────────────────────────
             //
             // O widget do desafio vive num iframe de outra origem, dentro do
             // iframe do provedor, dentro do nosso documento. A navegacao por
@@ -220,61 +259,99 @@ object SuperflixChallengeOverlay {
                 isFocusable = false
             }
 
-            wv.setOnKeyListener { _, codigo, evento ->
-                if (evento.action != KeyEvent.ACTION_DOWN) {
-                    // VOLTAR e tratado na soltura, para nao disparar duas vezes.
-                    if (codigo == KeyEvent.KEYCODE_BACK && evento.action == KeyEvent.ACTION_UP) {
-                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_tecla", "tecla" to "VOLTAR")
-                        if (wv.canGoBack()) wv.goBack() else {
-                            ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "voltar")
-                            fechar()
-                        }
-                        return@setOnKeyListener true
+            fun nomeDaTecla(codigo: Int): String? = when (codigo) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> "ESQUERDA"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "DIREITA"
+                KeyEvent.KEYCODE_DPAD_UP -> "CIMA"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "BAIXO"
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> "OK"
+                KeyEvent.KEYCODE_BACK -> "VOLTAR"
+                else -> null
+            }
+
+            // Segurar a seta anda mais: um toque ajusta, segurar atravessa a
+            // tela. Sem isso, cruzar mil pixels de 24 em 24 seria penoso.
+            fun passoDe(repeticao: Int) =
+                24f * host.context.resources.displayMetrics.density *
+                    (1 + minOf(repeticao, 12) * 0.6f)
+
+            var ultimoRelatoDoPonteiro = 0L
+
+            raizNova.aoTeclar = fun(evento: KeyEvent): Boolean {
+                val nome = nomeDaTecla(evento.keyCode) ?: return false
+
+                // VOLTAR recua no historico enquanto houver para onde, e so
+                // entao fecha. E o que impede ficar preso dentro do iframe de um
+                // servidor sem caminho de saida.
+                if (nome == "VOLTAR") {
+                    // Consome tambem o ACTION_DOWN: deixar so o UP passar faria a
+                    // Activity tratar o mesmo toque por baixo.
+                    if (evento.action != KeyEvent.ACTION_UP) return true
+                    ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_tecla", "tecla" to nome)
+                    if (wv.canGoBack()) {
+                        wv.goBack()
+                    } else {
+                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "voltar")
+                        fechar()
                     }
-                    return@setOnKeyListener codigo == KeyEvent.KEYCODE_BACK
+                    return true
                 }
 
-                // Passo cresce com a repeticao: um toque ajusta, segurar
-                // atravessa a tela. Sem isso, cruzar 1080px de 24 em 24 seria
-                // penoso no controle.
-                val passo = 24f * host.context.resources.displayMetrics.density *
-                    (1 + minOf(evento.repeatCount, 12) * 0.6f)
+                if (evento.action != KeyEvent.ACTION_DOWN) return true
 
-                when (codigo) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> ponteiro.translationX -= passo
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> ponteiro.translationX += passo
-                    KeyEvent.KEYCODE_DPAD_UP -> ponteiro.translationY -= passo
-                    KeyEvent.KEYCODE_DPAD_DOWN -> ponteiro.translationY += passo
-
-                    KeyEvent.KEYCODE_DPAD_CENTER,
-                    KeyEvent.KEYCODE_ENTER,
-                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                        val x = ponteiro.x + ponteiro.width / 2f
-                        val y = ponteiro.y + ponteiro.height / 2f
-                        ObaLog.evento(
-                            ObaLog.Fase.PROVEDOR, "overlay_toque",
-                            "x" to x.toInt(), "y" to y.toInt(),
-                        )
-                        val agora = SystemClock.uptimeMillis()
-                        listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { acao ->
-                            MotionEvent.obtain(agora, agora + 40, acao, x, y, 0).let { toque ->
-                                wv.dispatchTouchEvent(toque)
-                                toque.recycle()
-                            }
-                        }
-                        return@setOnKeyListener true
+                if (nome == "OK") {
+                    val x = ponteiro.x + ponteiro.width / 2f
+                    val y = ponteiro.y + ponteiro.height / 2f
+                    ObaLog.evento(
+                        ObaLog.Fase.PROVEDOR, "overlay_tecla",
+                        "tecla" to nome, "x" to x.toInt(), "y" to y.toInt(),
+                    )
+                    val agora = SystemClock.uptimeMillis()
+                    var aceito = true
+                    listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { acao ->
+                        val toque = MotionEvent.obtain(agora, agora + 40, acao, x, y, 0)
+                        aceito = wv.dispatchTouchEvent(toque) && aceito
+                        toque.recycle()
                     }
-
-                    KeyEvent.KEYCODE_BACK -> return@setOnKeyListener true
-                    else -> return@setOnKeyListener false
+                    // "aceito" diz se a WebView recebeu o toque sintetico. Sem
+                    // este campo nao ha como separar "o OK nao chegou" de "o OK
+                    // chegou e a pagina ignorou".
+                    ObaLog.evento(
+                        ObaLog.Fase.PROVEDOR, "overlay_toque",
+                        "x" to x.toInt(), "y" to y.toInt(), "aceito" to aceito,
+                    )
+                    return true
                 }
 
+                val passo = passoDe(evento.repeatCount)
+                when (nome) {
+                    "ESQUERDA" -> ponteiro.translationX -= passo
+                    "DIREITA" -> ponteiro.translationX += passo
+                    "CIMA" -> ponteiro.translationY -= passo
+                    "BAIXO" -> ponteiro.translationY += passo
+                }
                 // Nao deixa o ponteiro sair da tela.
                 ponteiro.translationX = ponteiro.translationX
                     .coerceIn(0f, (wv.width - ponteiro.width).toFloat())
                 ponteiro.translationY = ponteiro.translationY
                     .coerceIn(0f, (wv.height - ponteiro.height).toFloat())
-                true
+
+                // Foco de DOM dentro de iframe de outra origem nao e observavel
+                // por ninguem de fora dele; nesta camada quem faz as vezes de
+                // foco e a posicao do ponteiro. Uma linha por repeticao afogaria
+                // o log, entao sai a primeira e depois uma a cada 250 ms.
+                val agora = SystemClock.uptimeMillis()
+                if (evento.repeatCount == 0 || agora - ultimoRelatoDoPonteiro > 250L) {
+                    ultimoRelatoDoPonteiro = agora
+                    ObaLog.evento(
+                        ObaLog.Fase.PROVEDOR, "servidor_focado",
+                        "tecla" to nome,
+                        "x" to (ponteiro.x + ponteiro.width / 2f).toInt(),
+                        "y" to (ponteiro.y + ponteiro.height / 2f).toInt(),
+                    )
+                }
+                return true
             }
 
             val aviso = TextView(host.context).apply {
