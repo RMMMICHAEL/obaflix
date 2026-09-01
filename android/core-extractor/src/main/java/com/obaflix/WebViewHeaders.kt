@@ -25,6 +25,20 @@ import com.obaflix.bridge.ObaLog
 // O lint marca REQUESTED_WITH_HEADER_ALLOW_LIST como RestrictedApi somente
 // depois que este arquivo virou biblioteca: a checagem compara o groupId de
 // quem chama, e modulo de app nao tinha um. A API e a mesma de antes.
+/**
+ * Este aparelho consegue esconder o `X-Requested-With`?
+ *
+ * Existe para quem precisa **decidir antes** de tentar: uma fonte que depende de
+ * desafio "nao sou robo" so vale a pena ser oferecida quando a resposta aqui e
+ * verdadeira — abaixo da WebView 118 o header vaza o pacote do aplicativo e o
+ * provedor recusa. A checagem fica junto de quem ja usa a constante restrita,
+ * em vez de espalhar `@SuppressLint` por outros modulos.
+ */
+@SuppressLint("RestrictedApi")
+fun podeEsconderRequestedWith(): Boolean = runCatching {
+    WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)
+}.getOrDefault(false)
+
 @SuppressLint("RestrictedApi")
 fun removerRequestedWithHeader(settings: WebSettings, origem: String) {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {

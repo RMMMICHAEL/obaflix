@@ -483,7 +483,13 @@ object ApiObaflix {
             .put("conteudoTipo", if (conteudoTipo == "filme") "filme" else "serie")
             .put("temporada", temporada ?: JSONObject.NULL)
             .put("numeroEp", numeroEp ?: JSONObject.NULL)
-            .put("ambiente", "android"),
+            .put("ambiente", "android")
+            // Fontes com desafio "nao sou robo" so sao oferecidas quando este
+            // aparelho consegue conduzir o desafio — o que depende de a WebView
+            // aceitar remover o `X-Requested-With`. Sem isso o provedor recusa,
+            // e pedir a fonte so encheria a lista com um servidor que nunca
+            // abre. Quem sabe disso e o aplicativo, nao o servidor.
+            .put("desafioInterativo", desafioInterativoSuportado()),
     )
 
     /**
@@ -500,6 +506,21 @@ object ApiObaflix {
         val referer: String? = null,
         val legendas: List<SubtitleTrack> = emptyList(),
     )
+
+    /**
+     * A WebView deste aparelho consegue esconder o `X-Requested-With`?
+     *
+     * `REQUESTED_WITH_HEADER_ALLOW_LIST` chega na WebView 118. Abaixo disso o
+     * header vaza o pacote do aplicativo e o provedor do desafio responde
+     * acesso negado — foi por isso que a fonte nunca foi oferecida no Android.
+     */
+    private fun desafioInterativoSuportado(): Boolean =
+        com.obaflix.podeEsconderRequestedWith().also { suportado ->
+        ObaLog.evento(
+            ObaLog.Fase.SESSAO, "tv_desafio_suportado",
+            "suportado" to suportado,
+        )
+    }
 
     internal suspend fun fonteNativa(sessao: String, fonteId: String): FonteNativa? {
         val raiz = objeto(

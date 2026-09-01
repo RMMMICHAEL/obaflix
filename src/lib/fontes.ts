@@ -510,6 +510,14 @@ export interface EntradaMontagem {
   urlDub: string | null;
   urlLeg: string | null;
   ambiente: Ambiente;
+  /**
+   * O cliente consegue conduzir um desafio "não sou robô"?
+   *
+   * Só o aplicativo sabe: depende de a WebView dele suportar remover o header
+   * `X-Requested-With`, o que exige WebView 118+. Sem isso o provedor responde
+   * acesso negado, e oferecer a fonte só entregaria uma tela de erro.
+   */
+  desafioInterativo?: boolean;
 }
 
 /**
@@ -567,10 +575,17 @@ export function montarFontes(e: EntradaMontagem): Omit<FonteReal, "id" | "ordem"
     if (ajaxUrl) fontes.push(base(ajaxUrl, "Playerflix · Automático", null));
   }
 
-  // SuperFlix — Electron apenas. No Android a WebView envia
-  // "X-Requested-With: com.obaflix" e o provedor responde acesso negado, então
-  // oferecer lá só entregaria uma tela de erro.
-  if (!ehAndroid && ehDesktop && tmdb
+  // SuperFlix — Electron sempre; Android só quando o cliente avisa que consegue
+  // conduzir o desafio.
+  //
+  // A restrição original ("Electron apenas") continua valendo pelo mesmo motivo
+  // de sempre: a WebView do Android envia `X-Requested-With: com.obaflix` e o
+  // provedor responde acesso negado. O que mudou é que existe como remover esse
+  // header — `WebSettingsCompat.setRequestedWithHeaderOriginAllowList` —, e o
+  // aplicativo é o único que sabe se a WebView dele suporta (precisa da 118+).
+  // Por isso a decisão vem do cliente, e não de adivinhação aqui.
+  const superflixPermitido = !ehAndroid || e.desafioInterativo === true;
+  if (superflixPermitido && ehDesktop && tmdb
     && (e.conteudoTipo === "filme" || (e.conteudoTipo === "serie" && e.temporada && e.numeroEp))) {
     const url = e.conteudoTipo === "filme"
       ? `https://superflixapi.sbs/filme/${encodeURIComponent(tmdb)}`

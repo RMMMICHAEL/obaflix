@@ -152,6 +152,7 @@ interface Corpo {
   temporada?: unknown;
   numeroEp?: unknown;
   ambiente?: unknown;
+  desafioInterativo?: unknown;
   sessao?: unknown;
   alternativas?: unknown;
 }
@@ -323,6 +324,7 @@ export async function POST(req: NextRequest) {
 
   const fontes = numerar(montarFontes({
     tmdbId, titulo, conteudoTipo, temporada, numeroEp, urlDub, urlLeg, ambiente,
+    desafioInterativo: corpo.desafioInterativo === true,
   }));
 
   const sessao = await criarSessaoFontes(userId, ambiente, fontes);
