@@ -2,11 +2,15 @@ package com.obaflix.bridge
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebSettings
+import android.os.SystemClock
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -192,62 +196,89 @@ object SuperflixChallengeOverlay {
             // VOLTAR recua no historico enquanto houver para onde, e so entao
             // fecha. E o que impede ficar preso dentro do iframe de um servidor
             // sem caminho de saida.
+            // ── Cursor virtual ──────────────────────────────────────────
+            //
+            // O widget do desafio vive num iframe de outra origem, dentro do
+            // iframe do provedor, dentro do nosso documento. A navegacao por
+            // setas da WebView nao atravessa esse aninhamento: o quadradinho
+            // fica visivel e inalcancavel pelo controle.
+            //
+            // Em vez de injetar JavaScript na pagina de terceiro — que e
+            // exatamente o que a blindagem deste overlay existe para evitar —,
+            // as setas movem um ponteiro nosso e o OK entrega um toque real na
+            // coordenada. Do lado da pagina e um dedo; do nosso lado nao ha uma
+            // linha de script dentro do documento dela.
+            val ponteiro = View(host.context).apply {
+                val d = (host.context.resources.displayMetrics.density * 22).toInt()
+                layoutParams = FrameLayout.LayoutParams(d, d)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#66FFFFFF"))
+                    setStroke((host.context.resources.displayMetrics.density * 2).toInt(), Color.WHITE)
+                }
+                isClickable = false
+                isFocusable = false
+            }
+
             wv.setOnKeyListener { _, codigo, evento ->
-                // Toda tecla vira linha de log, para o momento exato de um OK
-                // poder ser cruzado com a navegacao e a captura que vierem
-                // depois. So no ACTION_UP, senao cada toque sairia duas vezes.
-                if (evento.action == KeyEvent.ACTION_UP) {
-                    val nome = when (codigo) {
-                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
-                        KeyEvent.KEYCODE_NUMPAD_ENTER -> "OK"
-                        KeyEvent.KEYCODE_DPAD_UP -> "CIMA"
-                        KeyEvent.KEYCODE_DPAD_DOWN -> "BAIXO"
-                        KeyEvent.KEYCODE_DPAD_LEFT -> "ESQUERDA"
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> "DIREITA"
-                        KeyEvent.KEYCODE_BACK -> "VOLTAR"
-                        else -> null
+                if (evento.action != KeyEvent.ACTION_DOWN) {
+                    // VOLTAR e tratado na soltura, para nao disparar duas vezes.
+                    if (codigo == KeyEvent.KEYCODE_BACK && evento.action == KeyEvent.ACTION_UP) {
+                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_tecla", "tecla" to "VOLTAR")
+                        if (wv.canGoBack()) wv.goBack() else {
+                            ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "voltar")
+                            fechar()
+                        }
+                        return@setOnKeyListener true
                     }
-                    if (nome != null) {
-                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_tecla", "tecla" to nome)
+                    return@setOnKeyListener codigo == KeyEvent.KEYCODE_BACK
+                }
+
+                // Passo cresce com a repeticao: um toque ajusta, segurar
+                // atravessa a tela. Sem isso, cruzar 1080px de 24 em 24 seria
+                // penoso no controle.
+                val passo = 24f * host.context.resources.displayMetrics.density *
+                    (1 + minOf(evento.repeatCount, 12) * 0.6f)
+
+                when (codigo) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> ponteiro.translationX -= passo
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> ponteiro.translationX += passo
+                    KeyEvent.KEYCODE_DPAD_UP -> ponteiro.translationY -= passo
+                    KeyEvent.KEYCODE_DPAD_DOWN -> ponteiro.translationY += passo
+
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                        val x = ponteiro.x + ponteiro.width / 2f
+                        val y = ponteiro.y + ponteiro.height / 2f
+                        ObaLog.evento(
+                            ObaLog.Fase.PROVEDOR, "overlay_toque",
+                            "x" to x.toInt(), "y" to y.toInt(),
+                        )
+                        val agora = SystemClock.uptimeMillis()
+                        listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { acao ->
+                            MotionEvent.obtain(agora, agora + 40, acao, x, y, 0).let { toque ->
+                                wv.dispatchTouchEvent(toque)
+                                toque.recycle()
+                            }
+                        }
+                        return@setOnKeyListener true
                     }
+
+                    KeyEvent.KEYCODE_BACK -> return@setOnKeyListener true
+                    else -> return@setOnKeyListener false
                 }
-                if (codigo != KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
-                // Consome tambem o ACTION_DOWN: deixar so o UP passar faria a
-                // Activity tratar o mesmo toque por baixo.
-                if (evento.action != KeyEvent.ACTION_UP) return@setOnKeyListener true
-                if (wv.canGoBack()) {
-                    wv.goBack()
-                } else {
-                    ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "voltar")
-                    fechar()
-                }
+
+                // Nao deixa o ponteiro sair da tela.
+                ponteiro.translationX = ponteiro.translationX
+                    .coerceIn(0f, (wv.width - ponteiro.width).toFloat())
+                ponteiro.translationY = ponteiro.translationY
+                    .coerceIn(0f, (wv.height - ponteiro.height).toFloat())
                 true
             }
 
-            removerRequestedWithHeader(wv.settings, "overlay-desafio")
-
-            // O Turnstile grava cf_clearance como cookie de terceiros dentro do iframe.
-            CookieManager.getInstance().apply {
-                setAcceptCookie(true)
-                setAcceptThirdPartyCookies(wv, true)
-            }
-
-            // Reusa o cliente principal: ele ja observa a midia via PlayerState,
-            // remove o CSP do documento e trata o CDN. onPageReady fica nulo de
-            // proposito — o shim da bridge nao deve entrar na pagina do provedor.
-            wv.webViewClient = PlayerWebViewClient(
-                // So os hosts do provedor. Sem isto o proprio endereco pedido
-                // era recusado como "navegacao externa" e a tela ficava branca.
-                hostsNavegaveis = HOSTS_DO_DESAFIO,
-                onPageReady = null,
-                onRenderGone = { _, _ ->
-                    ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")
-                    fechar()
-                },
-            )
-
             val aviso = TextView(host.context).apply {
-                text = "Conclua a verificacao e escolha um servidor para assistir."
+                text = "Setas movem o ponteiro · OK toca · VOLTAR sai"
                 setTextColor(Color.WHITE)
                 textSize = 14f
                 gravity = Gravity.CENTER
@@ -276,7 +307,13 @@ object SuperflixChallengeOverlay {
             }
 
             raizNova.addView(wv)
+            raizNova.addView(ponteiro)
             raizNova.addView(aviso)
+            // Comeca no meio da tela, onde o desafio costuma nascer.
+            wv.post {
+                ponteiro.translationX = (wv.width - ponteiro.width) / 2f
+                ponteiro.translationY = (wv.height - ponteiro.height) / 2f
+            }
             raizNova.addView(fechar)
             container.addView(raizNova)
 
