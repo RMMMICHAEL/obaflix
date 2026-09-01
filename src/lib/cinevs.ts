@@ -557,6 +557,17 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
           log("resolve_no_url", { videoId: video.id });
           continue;
         }
+        // O provedor devolve algumas URLs em http://. O Android recusa
+        // cleartext desde a API 28 ("CLEARTEXT communication not permitted"),
+        // e navegador nenhum aceita mídia http dentro de página https. Medido
+        // em 01/09/2026: o host responde igual nos dois esquemas, sem redirect
+        // de https para http — é Cloudflare na frente, que sempre serve TLS.
+        // Então subir o esquema é seguro e evita abrir exceção de cleartext no
+        // aplicativo, que valeria para todo o host.
+        if (finalUrl.startsWith("http://")) {
+          finalUrl = "https://" + finalUrl.slice("http://".length);
+          log("https_forcado", { host: mediaHost(finalUrl) });
+        }
       } catch {
         continue;
       }
