@@ -8,7 +8,9 @@ import com.obaflix.bridge.StreamExtractor
 import com.obaflix.bridge.SubtitleTrack
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Episodio
+import com.obaflix.tv.ui.PonteDesafio
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
@@ -54,6 +56,13 @@ data class Fonte(
     val id: String,
     val rotulo: String,
     val idioma: String?,
+    /**
+     * A fonte passa por um desafio "nao sou robo" antes de entregar a midia.
+     *
+     * Vem do `iframeDesafio` da projecao publica, que hoje so o SuperFlix
+     * marca. Nao e um nome de provedor — continua sendo "Servidor N" na tela.
+     */
+    val exigeDesafio: Boolean = false,
 ) {
     /** "Servidor 2 · Dublado" — o unico enfeite permitido sobre o rotulo. */
     val descricao: String
@@ -160,6 +169,9 @@ object FontesTv {
      */
     private const val EXTRACAO_TIMEOUT_MS = 25_000L
 
+    /** Quanto se espera a camada do desafio montar a WebView hospedeira. */
+    private const val ESPERA_ANCORA_MS = 4_000L
+
 
     /**
      * Fontes utilizaveis na televisao.
@@ -231,8 +243,6 @@ object FontesTv {
                 // pronta e busca a midia direto no CDN.
                 !f.optBoolean("nativo", false) &&
                     !f.optBoolean("resolvidoNoServidor", false) -> "sem_extrator_nativo"
-                // Desafio de robo exige WebView visivel; a TV nao tem uma.
-                f.optBoolean("iframeDesafio", false) -> "exige_desafio_navegador"
                 else -> null
             }
             if (motivo != null) {
@@ -252,6 +262,7 @@ object FontesTv {
                 id = id!!,
                 rotulo = rotulo,
                 idioma = f.optString("idioma").takeIf { it == "dub" || it == "leg" },
+                exigeDesafio = f.optBoolean("iframeDesafio", false),
             )
         }
 
@@ -321,12 +332,41 @@ object FontesTv {
         val provedor = PlayerExtractors.detectProvider(embed) ?: "desconhecido"
         val comeco = System.currentTimeMillis()
 
+        // Fonte com desafio precisa de uma WebView hospedeira **antes** de o
+        // extrator pedir o overlay. A camada e montada aqui e esperada; sem a
+        // ancora, o extrator registraria "WebView indisponivel" e ficaria dois
+        // minutos esperando algo que nunca viria.
+        if (fonte.exigeDesafio) {
+            PonteDesafio.ativo = true
+            val apareceu = withTimeoutOrNull(ESPERA_ANCORA_MS) {
+                while (!PonteDesafio.ancoraPronta) delay(50)
+                true
+            } == true
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "tv_desafio_preparado",
+                "servidor" to fonte.rotulo, "ancora" to apareceu,
+            )
+        }
+
         // Teto de tempo na extracao. Extrator baseado em WebView pode ficar
         // preso num desafio que nunca resolve, e sem isto a tela fica em
         // "carregando" para sempre — foi o que se viu em campo.
         val extraido = runCatching {
-            withTimeoutOrNull(EXTRACAO_TIMEOUT_MS) { StreamExtractor.extract(embed) }
-                ?: throw IllegalStateException("extracao_estourou_tempo")
+            // Sem teto de tempo quando ha desafio: quem manda no relogio e a
+            // pessoa resolvendo o Turnstile, e o proprio extrator ja estende o
+            // prazo enquanto o overlay estiver aberto e desiste quando ele e
+            // fechado sem escolha.
+            if (fonte.exigeDesafio) {
+                StreamExtractor.extract(embed)
+            } else {
+                withTimeoutOrNull(EXTRACAO_TIMEOUT_MS) { StreamExtractor.extract(embed) }
+                    ?: throw IllegalStateException("extracao_estourou_tempo")
+            }
+        }.also {
+            // Desliga a camada assim que a extracao termina — com midia ou sem.
+            // O player nativo assume dai em diante; a WebView nao fica viva por
+            // tras da reproducao.
+            if (fonte.exigeDesafio) PonteDesafio.ativo = false
         }.getOrElse {
             ObaLog.falha(
                 ObaLog.Fase.EXTRACAO, "tv_fonte_falhou", it,

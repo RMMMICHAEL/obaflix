@@ -134,6 +134,11 @@ fun AppTv() {
                 is Camada.Player -> TelaPlayer(topo.pedido)
                 is Camada.Perfil -> TelaPerfil()
             }
+
+            // Desafio "nao sou robo" por cima de tudo, inclusive do player: ele
+            // acontece durante a resolucao de uma fonte, e nao pode ficar atras
+            // da tela que esta esperando por ele.
+            if (com.obaflix.tv.ui.PonteDesafio.ativo) CamadaDesafio()
         }
     }
 }

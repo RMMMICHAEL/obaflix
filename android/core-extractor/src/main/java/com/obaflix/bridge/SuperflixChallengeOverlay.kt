@@ -6,6 +6,7 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebSettings
+import android.view.KeyEvent
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -87,6 +88,51 @@ object SuperflixChallengeOverlay {
                 useWideViewPort = true
                 loadWithOverviewMode = true
                 userAgentString = uaLimpo(wv)
+                // A pagina e de terceiro: nada de alcancar o disco do aparelho.
+                allowFileAccess = false
+                allowContentAccess = false
+                // Sem janela nova. `window.open` e `target=_blank` viram
+                // navegacao de frame principal, que o PlayerWebViewClient ja
+                // recusa — entao nao ha caminho para abrir o navegador do
+                // sistema a partir daqui.
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
+            }
+
+            // Download e sempre recusa. A pagina do provedor nao tem por que
+            // baixar arquivo nenhum, e um "salvar como" a partir dela sairia do
+            // controle do aplicativo.
+            wv.setDownloadListener { url, _, _, _, _ ->
+                ObaLog.alerta(
+                    ObaLog.Fase.PROVEDOR, "overlay_download_bloqueado",
+                    "host" to ObaLog.host(url),
+                )
+            }
+
+            // Nenhum `addJavascriptInterface` aqui, de proposito: a ponte nativa
+            // pertence ao documento do aplicativo, nunca ao do provedor.
+
+            // Controle remoto. Sem isto a WebView nao recebe foco na televisao e
+            // as setas nao andam pelo conteudo — o desafio fica visivel e
+            // inalcancavel.
+            wv.isFocusable = true
+            wv.isFocusableInTouchMode = true
+
+            // VOLTAR recua no historico enquanto houver para onde, e so entao
+            // fecha. E o que impede ficar preso dentro do iframe de um servidor
+            // sem caminho de saida.
+            wv.setOnKeyListener { _, codigo, evento ->
+                if (codigo != KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
+                // Consome tambem o ACTION_DOWN: deixar so o UP passar faria a
+                // Activity tratar o mesmo toque por baixo.
+                if (evento.action != KeyEvent.ACTION_UP) return@setOnKeyListener true
+                if (wv.canGoBack()) {
+                    wv.goBack()
+                } else {
+                    ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_fechado", "por" to "voltar")
+                    fechar()
+                }
+                true
             }
 
             removerRequestedWithHeader(wv.settings, "overlay-desafio")
@@ -147,6 +193,7 @@ object SuperflixChallengeOverlay {
             estaAberto = true
 
             ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_aberto")
+            wv.requestFocus()
             wv.loadUrl(embedUrl)
         }
     }
