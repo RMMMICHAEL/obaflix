@@ -766,7 +766,50 @@ async function extractWatchplayer(embedUrl: string): Promise<string | null> {
   if (!videoId) return null;
   const playerJson = await callApi({ action: "getPlayer", video_id: videoId });
   const streamUrl = playerJson?.data?.video_url;
-  return typeof streamUrl === "string" && /^https:\/\//i.test(streamUrl) ? streamUrl : null;
+  if (typeof streamUrl !== "string" || !/^https:\/\//i.test(streamUrl)) return null;
+  return await assinarUrlDoCdn(embedUrl, streamUrl);
+}
+
+/**
+ * Assina a URL do CDN, que a recusa sem assinatura.
+ *
+ * O `video_url` da API vem cru e o CDN responde 403. Quem assina é a própria
+ * página do embed: o JavaScript dela chama a si mesma com
+ * `action_secure_sign=1&raw_url=<url>` e recebe `{"signed_url": "…md5=…"}`.
+ * Um navegador que abre a página ganha esse passo de graça; a extração nativa
+ * pegava a URL crua e pulava a assinatura — daí o provedor falhar com 403 no
+ * Electron, no móvel nativo e na TV, sempre no mesmo CDN.
+ *
+ * Só a playlist é assinada; segmentos e init.mp4 são abertos.
+ *
+ * Falha devolve a URL crua, que é o que a própria página faz no `error` do
+ * AJAX dela — melhor entregar e o player decidir do que abortar a fonte.
+ */
+async function assinarUrlDoCdn(embedUrl: string, urlBruta: string): Promise<string> {
+  if (urlBruta.includes("md5=")) return urlBruta;
+  let host = "";
+  try { host = new URL(urlBruta).host; } catch { return urlBruta; }
+  // Mesmo alvo que o JavaScript da página confere antes de assinar.
+  if (!host.endsWith("hclod.qzz.io")) return urlBruta;
+
+  const alvo = new URL(embedUrl);
+  alvo.searchParams.set("action_secure_sign", "1");
+  alvo.searchParams.set("raw_url", urlBruta);
+  try {
+    const res = await fetch(alvo.toString(), {
+      headers: {
+        "User-Agent": UA,
+        Referer: embedUrl,
+        "X-Requested-With": "XMLHttpRequest",
+        Accept: "application/json, text/plain, */*",
+      },
+    });
+    if (!res.ok) return urlBruta;
+    const json = (await res.json()) as { signed_url?: unknown };
+    return typeof json?.signed_url === "string" && json.signed_url ? json.signed_url : urlBruta;
+  } catch {
+    return urlBruta;
+  }
 }
 
 // ── PlayerFlix: playerflix.ink → WatchPlay/EmbedPlayer ────────────────────────

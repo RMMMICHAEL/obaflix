@@ -509,7 +509,48 @@ async function extractWatchplayer(embedUrl) {
   const playerJson = await callApi(`action=getPlayer&video_id=${videoId}`);
   const src = playerJson?.data?.video_url;
   if (!src) throw new Error("stream não encontrado (WatchPlayer)");
-  return src;
+  return await assinarUrlDoCdn(embedUrl, src);
+}
+
+/**
+ * Assina a URL do CDN, que a recusa sem assinatura.
+ *
+ * O `video_url` da API vem cru e o CDN responde 403. Quem assina é a própria
+ * página do embed: o JavaScript dela chama a si mesma com
+ * `action_secure_sign=1&raw_url=<url>` e recebe `{"signed_url": "…md5=…"}`.
+ * Quem abre a página num navegador ganha esse passo de graça; a extração
+ * nativa pegava a URL crua e pulava a assinatura — daí o provedor funcionar no
+ * site e falhar com 403 aqui, no móvel nativo e na TV, sempre no mesmo CDN.
+ *
+ * Só a playlist é assinada; os segmentos e o init.mp4 são abertos.
+ *
+ * Falha devolve a URL crua, que é o que a própria página faz no `error` do
+ * AJAX dela — melhor tentar e o player decidir do que abortar a fonte.
+ */
+async function assinarUrlDoCdn(embedUrl, urlBruta) {
+  if (urlBruta.includes("md5=")) return urlBruta;
+  let host = "";
+  try { host = new URL(urlBruta).host; } catch { return urlBruta; }
+  // Mesmo alvo que o JavaScript da página confere antes de assinar.
+  if (!host.endsWith("hclod.qzz.io")) return urlBruta;
+
+  const separador = embedUrl.includes("?") ? "&" : "?";
+  const alvo = `${embedUrl}${separador}action_secure_sign=1&raw_url=${encodeURIComponent(urlBruta)}`;
+  try {
+    const res = await fetch(alvo, {
+      headers: {
+        "User-Agent": UA,
+        Referer: embedUrl,
+        "X-Requested-With": "XMLHttpRequest",
+        Accept: "application/json, text/plain, */*",
+      },
+    });
+    if (!res.ok) return urlBruta;
+    const json = await res.json();
+    return json?.signed_url || urlBruta;
+  } catch {
+    return urlBruta;
+  }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

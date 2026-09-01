@@ -598,12 +598,73 @@ object PlayerExtractors {
             )
         )
 
-        return playerJson
+        val bruta = playerJson
             .optJSONObject("data")
             ?.optString("video_url")
             ?.takeIf { it.isNotEmpty() }
             ?: throw Exception("stream nao encontrado (WatchPlay)")
+
+        return assinarUrlDoCdn(embedUrl, bruta)
     }
+
+    /**
+     * Assina a URL do CDN, que a recusa sem assinatura.
+     *
+     * O `video_url` que a API devolve vem **cru**, e o CDN responde 403 a ele.
+     * Quem assina e a propria pagina do embed: o JavaScript dela chama a si
+     * mesma com `action_secure_sign=1&raw_url=<url>` e recebe
+     * `{"signed_url": "...?md5=...&expires=..."}`. Quem abre a pagina num
+     * navegador ganha esse passo de graca; a extracao nativa pegava a URL crua
+     * e pulava a assinatura — por isso o provedor funcionava no site e falhava
+     * com 403 no Electron, no movel nativo e na TV, sempre no mesmo CDN.
+     *
+     * Comprovado em campo: a mesma playlist devolve 403 crua e 200 assinada. Os
+     * segmentos e o `init.mp4` sao abertos, entao basta assinar a playlist — o
+     * Media3 resolve os segmentos por caminho relativo e eles passam.
+     *
+     * Falhar aqui devolve a URL crua, que e o mesmo que a pagina faz no `error`
+     * do AJAX dela: melhor tentar e o player decidir do que abortar a fonte.
+     */
+    private suspend fun assinarUrlDoCdn(embedUrl: String, urlBruta: String): String =
+        withContext(Dispatchers.IO) {
+            if (urlBruta.contains("md5=")) return@withContext urlBruta
+            val host = runCatching { URL(urlBruta).host.orEmpty() }.getOrDefault("")
+            // Mesmo alvo que o JavaScript da pagina confere antes de assinar.
+            if (!host.endsWith("hclod.qzz.io")) return@withContext urlBruta
+
+            val separador = if (embedUrl.contains('?')) "&" else "?"
+            val alvo = embedUrl + separador + "action_secure_sign=1&raw_url=" +
+                java.net.URLEncoder.encode(urlBruta, "UTF-8")
+
+            runCatching {
+                val requisicao = Request.Builder()
+                    .url(alvo)
+                    .get()
+                    .addHeader("User-Agent", UA_NATIVE)
+                    .addHeader("Referer", embedUrl)
+                    .addHeader("X-Requested-With", "XMLHttpRequest")
+                    .addHeader("Accept", "application/json, text/plain, */*")
+                    .build()
+                ObaflixApp.httpClient.newCall(requisicao).execute().use { r ->
+                    if (!r.isSuccessful) return@use urlBruta
+                    val assinada = JSONObject(r.body?.string().orEmpty())
+                        .optString("signed_url")
+                        .takeIf { it.isNotBlank() }
+                        ?: return@use urlBruta
+                    ObaLog.evento(
+                        ObaLog.Fase.EXTRACAO, "cdn_url_assinada",
+                        "host" to ObaLog.host(assinada),
+                    )
+                    assinada
+                }
+            }.getOrElse {
+                ObaLog.alerta(
+                    ObaLog.Fase.EXTRACAO, "cdn_assinatura_falhou",
+                    "host" to host, "erro" to it.javaClass.simpleName,
+                )
+                urlBruta
+            }
+        }
 
     // ── Router ────────────────────────────────────────────────────────────────
 
