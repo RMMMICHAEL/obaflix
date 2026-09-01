@@ -100,9 +100,30 @@ class PlayerState {
         if (!superflixObservationActive) return
         // O primeiro manifesto HLS é o mais completo (master). Requisições
         // seguintes — sub-playlists ou um MP4 de pré-roll — não o substituem.
-        if (observedSuperflixMedia?.kind == "hls") return
+        if (observedSuperflixMedia?.kind == "hls") {
+            // Candidata ignorada por já haver um HLS guardado.
+            //
+            // Isto é diagnóstico, não decisão: se a página tiver mais de um
+            // player e o primeiro a pedir mídia não for o servidor que a pessoa
+            // escolheu, quem fica guardado é o errado — e o log passa a mostrar
+            // exatamente quantas candidatas vieram depois e como eram. Sem esta
+            // linha, tudo que viesse a seguir sumia sem deixar rastro.
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "midia_candidata_ignorada",
+                "tipo" to kind,
+                "url" to ObaLog.url(url),
+                "jaGuardada" to ObaLog.url(observedSuperflixMedia?.url),
+            )
+            return
+        }
         observedSuperflixMedia = ObservedSuperflixMedia(url, referer, kind)
         observedSuperflixMediaAt = System.currentTimeMillis()
+        ObaLog.evento(
+            ObaLog.Fase.PROVEDOR, "midia_guardada",
+            "tipo" to kind,
+            "url" to ObaLog.url(url),
+            "referer" to ObaLog.url(referer),
+        )
     }
 
     fun observeSuperflixSubtitle(url: String, referer: String?) {

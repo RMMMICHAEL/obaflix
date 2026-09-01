@@ -188,6 +188,71 @@ object FontesTv {
      * So para fonte de desafio: nas demais o UA padrao da extracao ja e o mesmo
      * que gerou o link, e troca-lo criaria o problema em vez de resolver.
      */
+    /**
+     * Pede a MESMA url de dois jeitos e registra os dois resultados.
+     *
+     * So em build de diagnostico, e so para fonte de desafio. Serve para
+     * responder uma pergunta que hipotese nenhuma resolve: a URL capturada e
+     * valida e o problema esta na requisicao do player, ou ela ja nasce
+     * recusada e estamos capturando a midia errada?
+     *
+     *   contexto=webview  UA do sistema (o mesmo da WebView) + cookies do
+     *                     CookieManager + Referer capturado
+     *   contexto=media3   exatamente os cabecalhos que o player vai mandar
+     *
+     * 403 nos dois: a fonte capturada nao presta — e midia intermediaria ou de
+     * um servidor que nao foi o escolhido, e o extrator devia seguir olhando.
+     * 200 no primeiro e 403 no segundo: a diferenca esta na requisicao, e os
+     * dois blocos de cabecalho no log dizem qual campo difere.
+     *
+     * Registra nome de cookie, nunca valor.
+     */
+    private suspend fun sondarDuasVias(url: String, referer: String?, uaWeb: String?) {
+        if (!com.obaflix.tv.BuildConfig.DIAG_LOGS) return
+        withContext(Dispatchers.IO) {
+            val doPlayer = CabecalhosMidia.de(referer, url, uaWeb)
+            val daWebView = buildMap {
+                putAll(doPlayer)
+                if (uaWeb != null) put("User-Agent", uaWeb)
+                runCatching {
+                    android.webkit.CookieManager.getInstance().getCookie(url)
+                }.getOrNull()?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+            }
+            listOf("webview" to daWebView, "media3" to doPlayer).forEach { (nome, cabecalhos) ->
+                runCatching {
+                    val req = Request.Builder().url(url).get()
+                        .apply { cabecalhos.forEach { (n, v) -> header(n, v) } }
+                        .build()
+                    ObaflixApp.httpClient.newCall(req).execute().use { r ->
+                        ObaLog.evento(
+                            ObaLog.Fase.MANIFESTO, "tv_sonda_desafio",
+                            "contexto" to nome,
+                            "status" to r.code,
+                            "bytes" to (r.body?.contentLength() ?: -1L),
+                            "metodo" to "GET",
+                            "urlFinal" to ObaLog.url(r.request.url.toString()),
+                            "redirecionou" to (r.request.url.toString() != url),
+                            "ua" to cabecalhos["User-Agent"]?.take(38),
+                            "referer" to ObaLog.url(cabecalhos["Referer"]),
+                            "origin" to ObaLog.host(cabecalhos["Origin"]),
+                            // Nomes, nunca valores.
+                            "cookies" to (cabecalhos["Cookie"]
+                                ?.split(";")
+                                ?.mapNotNull { it.substringBefore('=').trim().takeIf(String::isNotEmpty) }
+                                ?.joinToString(",") ?: "-"),
+                            "servidorCdn" to (r.header("Server") ?: "-"),
+                        )
+                    }
+                }.onFailure {
+                    ObaLog.alerta(
+                        ObaLog.Fase.MANIFESTO, "tv_sonda_desafio_erro",
+                        "contexto" to nome, "erro" to it.javaClass.simpleName,
+                    )
+                }
+            }
+        }
+    }
+
     private fun uaDoDesafio(fonte: Fonte): String? =
         if (fonte.exigeDesafio) SuperflixChallengeOverlay.uaEmUso else null
 
@@ -393,6 +458,10 @@ object FontesTv {
                 "ms" to (System.currentTimeMillis() - comeco),
             )
             return null
+        }
+
+        if (fonte.exigeDesafio) {
+            sondarDuasVias(extraido.stream, extraido.referer, uaDoDesafio(fonte))
         }
 
         ObaLog.evento(

@@ -193,6 +193,24 @@ object SuperflixChallengeOverlay {
             // fecha. E o que impede ficar preso dentro do iframe de um servidor
             // sem caminho de saida.
             wv.setOnKeyListener { _, codigo, evento ->
+                // Toda tecla vira linha de log, para o momento exato de um OK
+                // poder ser cruzado com a navegacao e a captura que vierem
+                // depois. So no ACTION_UP, senao cada toque sairia duas vezes.
+                if (evento.action == KeyEvent.ACTION_UP) {
+                    val nome = when (codigo) {
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> "OK"
+                        KeyEvent.KEYCODE_DPAD_UP -> "CIMA"
+                        KeyEvent.KEYCODE_DPAD_DOWN -> "BAIXO"
+                        KeyEvent.KEYCODE_DPAD_LEFT -> "ESQUERDA"
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> "DIREITA"
+                        KeyEvent.KEYCODE_BACK -> "VOLTAR"
+                        else -> null
+                    }
+                    if (nome != null) {
+                        ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_tecla", "tecla" to nome)
+                    }
+                }
                 if (codigo != KeyEvent.KEYCODE_BACK) return@setOnKeyListener false
                 // Consome tambem o ACTION_DOWN: deixar so o UP passar faria a
                 // Activity tratar o mesmo toque por baixo.
