@@ -28,6 +28,46 @@ residencial do usuário + CDN direto, sem proxy Vercel) para **todos os provider
 | Big (Bigshare) | `bigshare`/`big` no hostname | `extractBig` | `route.ts extractBig` |
 | WatchPlayer | `v1.watchplay.shop` | `extractWatchplayer` | `extractWatchplayer` (também usado pelo PlayerFlix atual) |
 | Voltz | `voltz.php` em `megafrixapi.com` ou `vods.faz-o-eli.online` | `extractVoltz` | `extractVoltz` |
+| Webcine | `webcinevs2.com` | **não existe** — resolvido no backend (ver abaixo) | `extractCineVs` |
+
+## Webcine: a exceção resolvida no backend
+
+O Webcine não é um embed que se raspa. `src/lib/cinevs.ts` é um **cliente de
+API autenticada**: o fluxo abre em `POST auth/refresh` com
+`CINEVS_REFRESH_TOKEN` — credencial de conta — e segue com
+`Authorization: Bearer` em cada chamada.
+
+Por isso não há extrator nativo para ele, e não deve haver: portar a lógica
+para o aplicativo exigiria embutir a credencial no APK, que qualquer pessoa
+descompacta. O próprio cabeçalho do `cinevs.ts` fixa a regra — *refresh_token,
+JWT e URL completa nunca são registrados nem embutidos*.
+
+O caminho adotado: `/api/player/fonte-nativa` reconhece o provedor por
+`resolvidoNoServidor()` e, em vez de `embedUrl`, devolve `streamUrl` +
+`referer` + `legendas`. O cliente nativo entrega a URL ao player.
+
+**O que isso é e o que não é.** Existe dependência do backend para *resolver*
+esta fonte: sem a rota no ar, ela não abre — e só ela; as outras seguem, e o
+failover cobre. O que **não** existe é proxy: a Vercel faz algumas chamadas
+JSON pequenas e devolve um endereço, e o vídeo vai do CDN **direto para o
+aparelho**, sem um byte de Transfer Out nosso. É a mesma economia dos demais
+provedores; o que muda é onde a resolução acontece.
+
+Cuidados que a rota mantém:
+
+- nenhuma URL vem do cliente — ele manda um `fonteId` opaco que precisa
+  existir numa sessão dele, e os identificadores saem do `embedUrl` que nós
+  montamos. O host da API vem de env. Não há destino escolhido de fora, então
+  a rota não vira proxy nem alcança endereço arbitrário;
+- valem a autenticação, o casamento de Origin, o bloqueio de IP e o mesmo rate
+  limit do resto do player (40 resoluções por minuto por usuário — um failover
+  completo gasta menos de dez, então reprodução normal não encosta no teto);
+- a resposta vai com `no-store`: a URL tem expiração própria e não pode
+  sobreviver em cache de borda, de CDN ou de navegador além dela. Cada seleção
+  resolve de novo; quem segura o custo é o cache do token no processo, que
+  evita repetir a autenticação;
+- os registros carregam host, formato e um booleano de expiração — nunca a URL
+  completa, o token, o JWT nem a querystring.
 | RedeCanais (Player 7) | URL de conteúdo, `watch.php` ou `player3/server.php` em `redecanais.capital` | `RedeCanaisExtractor` (WebView efêmero, Android) | não exibido no site |
 
 O site web (não-Electron/Android) continua **sempre** usando o fluxo `route.ts` +

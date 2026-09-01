@@ -424,8 +424,13 @@ export async function acrescentarFontes(
  * O webcine não é um embed que se raspa: é uma API autenticada por
  * refresh_token de conta (ver `src/lib/cinevs.ts`). Portar isso para o
  * aplicativo exigiria embutir a credencial no APK, que qualquer pessoa
- * descompacta — então a resolução fica aqui e só a URL final desce. A mídia
- * continua saindo do CDN direto para o aparelho.
+ * descompacta — então a resolução fica aqui e só a URL final desce.
+ *
+ * O que isso significa, dito sem eufemismo: para **esta** fonte existe
+ * dependência do backend na hora de resolver. O que continua não existindo é
+ * proxy — a mídia sai do CDN direto para o aparelho, e nenhum byte de vídeo
+ * passa pela Vercel. O custo por seleção são chamadas JSON pequenas, com o
+ * token em cache no processo.
  */
 export function resolvidoNoServidor(f: Pick<FonteReal, "provider">): boolean {
   return f.provider === "webcine";

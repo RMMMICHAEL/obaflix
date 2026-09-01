@@ -24,6 +24,20 @@ const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, privat
  * O ganho não é impedir isso — é que deixou de existir a lista completa em
  * claro no payload e no bundle. Aqui cada resolução exige sessão válida, passa
  * por rate limit e fica registrada.
+ *
+ * Duas formas de resposta, e a diferença importa:
+ *
+ *   `embedUrl`   — página para o extrator do aparelho abrir. É o caso comum.
+ *   `streamUrl`  — mídia já resolvida por nós. Só para provedor cuja resolução
+ *                  depende de credencial de conta, que não pode viajar para o
+ *                  aparelho (ver `resolvidoNoServidor` em lib/fontes.ts).
+ *
+ * O segundo caso cria **dependência do backend para resolver a fonte** — e é
+ * bom ser claro sobre isso. O que ele **não** cria é proxy: a Vercel faz
+ * algumas chamadas JSON pequenas e devolve um endereço; o vídeo vai do CDN
+ * direto para o aparelho, sem um byte de Transfer Out nosso. Se esta rota
+ * estiver fora do ar, essa fonte não abre — as outras continuam abrindo, e o
+ * failover cobre.
  */
 export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
@@ -100,9 +114,24 @@ export async function POST(req: NextRequest) {
   // são três chamadas JSON pequenas, com o token em cache no processo. Nenhum
   // byte de vídeo passa pela Vercel.
   if (resolvidoNoServidor(fonte)) {
+    // Nada aqui vem do cliente. O `embedUrl` foi montado por nós quando a
+    // sessão nasceu, e é dele que saem os identificadores; o cliente mandou só
+    // um `fonteId` opaco, que precisa existir numa sessão dele. Não há URL de
+    // destino recebida de fora — o host da API vem de env —, então esta rota
+    // não vira proxy nem alcança endereço escolhido por terceiro.
     const alvo = new URL(fonte.embedUrl);
+    const tmdbId = alvo.searchParams.get("id") ?? "";
+    // Guarda barata: sem id não há o que resolver, e sair para a API de fora
+    // com parâmetro vazio só gasta chamada e polui o log do provedor.
+    if (!/^\d{1,12}$/.test(tmdbId)) {
+      return NextResponse.json(
+        { error: "Fonte indisponível", codigo: "resolucao_falhou" },
+        { status: 404, headers: NO_STORE },
+      );
+    }
+
     const cv = await extractCineVs({
-      tmdbId: alvo.searchParams.get("id") ?? "",
+      tmdbId,
       type: alvo.searchParams.get("type") === "movie" ? "movie" : "tv",
       season: Number(alvo.searchParams.get("season") ?? 1),
       episode: Number(alvo.searchParams.get("episode") ?? 1),
@@ -117,6 +146,14 @@ export async function POST(req: NextRequest) {
         { status: 404, headers: NO_STORE },
       );
     }
+    // Mesmo registro das demais resoluções: quem, quando, qual fonte. Sem URL,
+    // sem token — a auditoria precisa do rastro, não do segredo.
+    audit("stream_started", { userId, ip, ua, detail: "/fonte-nativa: resolvida no servidor" });
+
+    // NO_STORE porque a URL é temporária: ela carrega expiração própria e não
+    // pode sobreviver em cache de borda, de CDN ou de navegador além dela.
+    // Cada seleção resolve de novo; quem segura o custo é o cache do token no
+    // processo, que evita repetir o passo de autenticação.
     return NextResponse.json(
       {
         streamUrl: cv.streamUrl,
