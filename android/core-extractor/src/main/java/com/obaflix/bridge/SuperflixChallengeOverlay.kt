@@ -40,6 +40,48 @@ object SuperflixChallengeOverlay {
      * terminacao muda sem aviso. `challenges.cloudflare.com` entra porque o
      * widget do Turnstile vive la; sem ele nao ha o que confirmar.
      */
+    /**
+     * Origem que a pagina do provedor enxerga como quem a esta embutindo.
+     *
+     * O documento e carregado com esta base, entao o iframe sai com Referer do
+     * nosso site — o mesmo que o navegador manda no site e no Electron.
+     */
+    private val BASE_DO_APLICATIVO = com.obaflix.core.BuildConfig.OBAFLIX_URL
+
+    /**
+     * Documento minimo que **embute** o provedor, em vez de navegar ate ele.
+     *
+     * Carregar o endereco direto fazia o provedor mostrar "Visualizacao
+     * Externa — este conteudo e protegido", com um codigo de incorporacao e
+     * nenhum desafio para resolver: aberto como documento principal, ele se
+     * recusa a servir o player. E coerente, e o site e o Electron nunca
+     * esbarraram nisso porque sempre o carregaram dentro de um `<iframe>`.
+     *
+     * Este HTML e a mesma coisa que o CustomPlayer monta: iframe em tela cheia,
+     * `referrerpolicy=origin-when-cross-origin` para o provedor ver de onde vem,
+     * a mesma lista de `allow`, e **sem sandbox** — o desafio precisa de scripts
+     * e de cookie de terceiro para rodar.
+     *
+     * O iframe e sub-frame, entao a navegacao dele nao passa pela recusa de
+     * frame principal do PlayerWebViewClient; o frame principal e a nossa
+     * propria base.
+     */
+    private fun documentoComIframe(embedUrl: String): String {
+        // Só aspas: o endereço vem do nosso backend e vai para dentro de um
+        // atributo. Escapar impede que um valor inesperado feche o atributo.
+        val src = embedUrl.replace("&", "&amp;").replace("\"", "&quot;")
+        return """
+            <!DOCTYPE html>
+            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}
+            iframe{border:0;width:100%;height:100%;display:block}</style></head>
+            <body><iframe src="$src"
+              referrerpolicy="origin-when-cross-origin"
+              allow="autoplay *; encrypted-media *; picture-in-picture *; fullscreen *; clipboard-write *; accelerometer *; gyroscope *; web-share *"
+              allowfullscreen webkitallowfullscreen></iframe></body></html>
+        """.trimIndent()
+    }
+
     private val HOSTS_DO_DESAFIO = setOf(
         "superflixapi.pro",
         "superflixapi.sbs",
@@ -213,7 +255,14 @@ object SuperflixChallengeOverlay {
 
             ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_aberto")
             wv.requestFocus()
-            wv.loadUrl(embedUrl)
+            // Enquadrado, e nao navegado direto — ver documentoComIframe.
+            wv.loadDataWithBaseURL(
+                BASE_DO_APLICATIVO,
+                documentoComIframe(embedUrl),
+                "text/html",
+                "utf-8",
+                null,
+            )
         }
     }
 
