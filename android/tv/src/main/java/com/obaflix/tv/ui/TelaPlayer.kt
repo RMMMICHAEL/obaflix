@@ -541,8 +541,13 @@ fun TelaPlayer(pedido: Pedido) {
         // Um mapa novo por fonte. `setDefaultRequestProperties` substitui o
         // anterior inteiro, entao nao ha risco de o Referer do servidor velho
         // sobreviver na troca — o que daria 403 no servidor novo.
-        val cabecalhos = CabecalhosMidia.de(midia.referer, midia.url)
+        val cabecalhos = CabecalhosMidia.de(midia.referer, midia.url, midia.userAgent)
         fabricaHttp.setDefaultRequestProperties(cabecalhos)
+        // O UA da fabrica tambem: `setUserAgent` e o que o OkHttpDataSource usa
+        // quando o mapa nao traz o cabecalho, e os dois precisam concordar. Sem
+        // isto, a midia capturada no desafio saia com o UA do aplicativo e o
+        // CDN respondia 403 — o link fora gerado com o UA da WebView.
+        fabricaHttp.setUserAgent(midia.userAgent ?: CabecalhosMidia.USER_AGENT)
 
         ObaLog.evento(
             ObaLog.Fase.PLAYER, "tv_midia_preparada",

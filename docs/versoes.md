@@ -10,7 +10,7 @@ Atualizado em **2026-08-31**.
 
 | Aplicativo | Versão | Pacote / AppId | Onde o número é declarado |
 |---|---|---|---|
-| **Android TV** | `0.7.15` (versionCode 31) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
+| **Android TV** | `0.7.16` (versionCode 32) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
 | **Android celular** | `1.0.9` (versionCode 9) | `com.obaflix` | [`android/app/build.gradle`](../android/app/build.gradle) |
 | **Desktop (Windows)** | `1.0.5` | `com.obaflix.app` | [`desktop/package.json`](../desktop/package.json) |
 

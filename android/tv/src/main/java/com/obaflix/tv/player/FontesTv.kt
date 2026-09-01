@@ -5,6 +5,7 @@ import com.obaflix.bridge.HlsManifest
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
+import com.obaflix.bridge.SuperflixChallengeOverlay
 import com.obaflix.bridge.SubtitleTrack
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Episodio
@@ -93,6 +94,15 @@ data class Midia(
      * Este campo e o que permite dizer a ele o tipo certo.
      */
     val ehHls: Boolean = false,
+    /**
+     * User-Agent obrigatorio para esta midia, quando houver.
+     *
+     * Normalmente null: vale o UA padrao da extracao. Preenchido quando a URL
+     * nasceu dentro da WebView do desafio, cujo UA e outro — e o CDN do
+     * provedor recusa a playlist quando o par UA/Referer nao e o que gerou o
+     * link.
+     */
+    val userAgent: String? = null,
 )
 
 /**
@@ -171,6 +181,15 @@ object FontesTv {
 
     /** Quanto se espera a camada do desafio montar a WebView hospedeira. */
     private const val ESPERA_ANCORA_MS = 4_000L
+
+    /**
+     * UA que a midia desta fonte exige, quando ela veio do desafio.
+     *
+     * So para fonte de desafio: nas demais o UA padrao da extracao ja e o mesmo
+     * que gerou o link, e troca-lo criaria o problema em vez de resolver.
+     */
+    private fun uaDoDesafio(fonte: Fonte): String? =
+        if (fonte.exigeDesafio) SuperflixChallengeOverlay.uaEmUso else null
 
 
     /**
@@ -401,6 +420,7 @@ object FontesTv {
                 "motivo" to "hls_pelo_endereco",
             )
             return Midia(
+                userAgent = uaDoDesafio(fonte),
                 ehHls = true,
                 url = extraido.stream,
                 referer = extraido.referer,
@@ -431,6 +451,7 @@ object FontesTv {
                 "acao" to "entregue_ao_player",
             )
             return Midia(
+                userAgent = uaDoDesafio(fonte),
                 ehHls = hlsPeloEndereco,
                 url = extraido.stream,
                 referer = extraido.referer,
@@ -441,6 +462,7 @@ object FontesTv {
         }
 
         return Midia(
+            userAgent = uaDoDesafio(fonte),
             // O corpo confirma, mas o endereco tambem vale: um `.m3u8` que a
             // conferencia nao conseguiu ler continua sendo HLS para o Media3.
             ehHls = info.ehHls || hlsPeloEndereco,
@@ -626,10 +648,21 @@ object CabecalhosMidia {
      *
      * `urlMidia` entra so para escolher o cookie certo — nada dela e logado.
      */
-    fun de(referer: String?, urlMidia: String? = null): Map<String, String> = buildMap {
+    fun de(
+        referer: String?,
+        urlMidia: String? = null,
+        /**
+         * UA obrigatorio desta midia, quando ela nasceu com outro.
+         *
+         * O padrao serve a extracao por HTTP. Midia capturada dentro da WebView
+         * do desafio nasce com o UA do sistema, e o CDN do provedor amarra o
+         * link ao UA que o gerou: pedir com o nosso devolve 403.
+         */
+        userAgent: String? = null,
+    ): Map<String, String> = buildMap {
         // O UA tambem vai no mapa, e nao apenas em setUserAgent(): a checagem de
         // manifesto e o player precisam mandar exatamente o mesmo par.
-        put("User-Agent", USER_AGENT)
+        put("User-Agent", userAgent ?: USER_AGENT)
         put("Accept", "*/*")
         put("Accept-Language", "pt-BR,pt;q=0.5,en-US;q=0.3,en;q=0.2")
         // Sem estes, CDN com deteccao de robo responde 403: a requisicao nao se

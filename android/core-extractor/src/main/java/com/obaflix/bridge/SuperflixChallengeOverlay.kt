@@ -106,6 +106,19 @@ object SuperflixChallengeOverlay {
      * automacao para o Cloudflare, entao esta WebView usa o UA padrao do sistema
      * sem os marcadores de WebView.
      */
+    /**
+     * O User-Agent com que a midia foi obtida.
+     *
+     * O CDN deste provedor amarra o link ao par User-Agent/Referer que o gerou.
+     * A WebView do desafio navega com o UA do sistema limpo; o cliente HTTP da
+     * extracao usa outro, com o marcador do aplicativo. Pedir a playlist com o
+     * segundo depois de te-la obtido com o primeiro devolve 403 — foi
+     * exatamente o que aconteceu em campo. Quem for reproduzir precisa deste.
+     */
+    @Volatile
+    var uaEmUso: String? = null
+        private set
+
     private fun uaLimpo(webView: WebView): String =
         WebSettings.getDefaultUserAgent(webView.context)
             .replace("; wv", "")
@@ -145,7 +158,7 @@ object SuperflixChallengeOverlay {
                 mediaPlaybackRequiresUserGesture = false
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                userAgentString = uaLimpo(wv)
+                userAgentString = uaLimpo(wv).also { uaEmUso = it }
                 // A pagina e de terceiro: nada de alcancar o disco do aparelho.
                 allowFileAccess = false
                 allowContentAccess = false
