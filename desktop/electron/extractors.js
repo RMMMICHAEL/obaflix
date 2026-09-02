@@ -87,7 +87,7 @@ async function postPlayer(url, id) {
 
 // Extração do rola3/rola4 (embedplayer1/2.xyz, xn--...): POST direto com IP do usuário,
 // idêntico ao que já existia como extractSecuredLink em main.js.
-async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/") {
+async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/", userAgent = UA, cookieHeader = "") {
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
@@ -99,17 +99,24 @@ async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/") {
   const res = await fetch(apiUrl, {
     method: "POST",
     headers: {
-      "User-Agent": UA,
+      "User-Agent": userAgent,
       "Content-Type": "application/x-www-form-urlencoded",
       "X-Requested-With": "XMLHttpRequest",
       "Referer": embedUrl,
       "Origin": base,
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     body: body.toString(),
     signal: AbortSignal.timeout(15000),
   });
 
   const text = await res.text();
+  if (res.status === 403 || res.status === 419) {
+    const error = new Error(`EmbedPlayer HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  if (!res.ok) throw new Error(`EmbedPlayer HTTP ${res.status}`);
   if (!text.trimStart().startsWith("{")) throw new Error("Resposta inválida do player");
   const data = JSON.parse(text);
   const stream = data.securedLink || data.videoSource || data.src;
@@ -584,7 +591,7 @@ function detectProvider(embedUrl) {
   if (hostIs("boltcdn.xyz", "upbolt.to")) return "bolt";
   if (hostIs("bigshare.link")) return "big";
   if (hostIs("v1.watchplay.shop")) return "watchplayer";
-  if (hostIs("superflixapi.pro", "superflixapi.sbs")) return "superflix";
+  if (hostIs("superflixapi.pro", "superflixapi.sbs", "superflixapi.beer")) return "superflix";
   return null;
 }
 
@@ -684,4 +691,4 @@ async function extractStream(embedUrl) {
   };
 }
 
-module.exports = { detectProvider, extractStream };
+module.exports = { detectProvider, extractStream, extractEmbedPlayer };

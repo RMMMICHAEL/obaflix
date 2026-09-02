@@ -27,6 +27,8 @@ private const val REFERER_DEFAULT = "https://megaflix.lat/"
 
 object PlayerExtractors {
 
+    internal class ProviderHttpException(val status: Int) : Exception("provider HTTP $status")
+
     /**
      * User-Agent que a extracao usa nas requisicoes aos provedores.
      *
@@ -219,6 +221,8 @@ object PlayerExtractors {
     suspend fun extractEmbedPlayer(
         embedUrl: String,
         rUrl: String = BuildConfig.OBAFLIX_URL + "/",
+        userAgent: String = UA_NATIVE,
+        cookieHeader: String? = null,
     ): String {
         val parsed = URL(embedUrl)
         val base = "${parsed.protocol}://${parsed.host}"
@@ -231,13 +235,16 @@ object PlayerExtractors {
         val request = Request.Builder()
             .url("$base/player/index.php?data=$id&do=getVideo")
             .post(body)
-            .addHeader("User-Agent", UA_NATIVE)
+            .addHeader("User-Agent", userAgent)
             .addHeader("X-Requested-With", "XMLHttpRequest")
             .addHeader("Referer", embedUrl)
             .addHeader("Origin", base)
+            .apply { cookieHeader?.takeIf { it.isNotBlank() }?.let { addHeader("Cookie", it) } }
             .build()
         val response = withContext(Dispatchers.IO) { ObaflixApp.httpClient.newCall(request).execute() }
         val text = response.body?.string() ?: throw Exception("resposta vazia")
+        if (response.code == 403 || response.code == 419) throw ProviderHttpException(response.code)
+        if (!response.isSuccessful) throw Exception("EmbedPlayer HTTP ${response.code}")
         if (!text.trimStart().startsWith("{")) throw Exception("Resposta inválida do player")
         val json = JSONObject(text)
         return json.optString("securedLink").takeIf { it.isNotEmpty() }
@@ -687,7 +694,7 @@ object PlayerExtractors {
         if (hostIs("boltcdn.xyz", "upbolt.to")) return "bolt"
         if (hostIs("bigshare.link")) return "big"
         if (hostIs("v1.watchplay.shop")) return "watchplayer"
-        if (hostIs("superflixapi.pro", "superflixapi.sbs")) return "superflix"
+        if (hostIs("superflixapi.pro", "superflixapi.sbs", "superflixapi.beer")) return "superflix"
         if (hostIs("redecanais.capital") && RedeCanaisExtractor.isSupportedUrl(embedUrl)) return "redecanais"
         return null
     }

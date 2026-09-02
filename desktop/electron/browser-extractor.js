@@ -255,12 +255,14 @@ async function extractSuperflixInBrowser(
     wrapperUrl,
     partition = "persist:obaflix",
     timeoutMs = 120000,
+    authorizationOnly = false,
+    userAgent = null,
   } = {},
 ) {
   const input = new URL(embedUrl);
 
   if (
-    !/(^|\.)superflixapi\.(pro|sbs)$/i.test(input.hostname)
+    !/(^|\.)superflixapi\.(pro|sbs|beer)$/i.test(input.hostname)
   ) {
     throw new Error(
       "URL SuperFlix inválida.",
@@ -293,6 +295,7 @@ async function extractSuperflixInBrowser(
       partition,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       autoplayPolicy:
         "no-user-gesture-required",
       backgroundThrottling: false,
@@ -301,6 +304,7 @@ async function extractSuperflixInBrowser(
 
   const webContents =
     view.webContents;
+  if (userAgent) webContents.setUserAgent(userAgent);
 
   const webContentsId =
     webContents.id;
@@ -445,6 +449,7 @@ async function extractSuperflixInBrowser(
         statusCode,
       ) => {
         if (
+          authorizationOnly ||
           settled ||
           !stream ||
           statusCode < 200 ||
@@ -703,7 +708,7 @@ async function extractSuperflixInBrowser(
           // challenges.cloudflare.com, e a troca para o host do servidor
           // escolhido, que muda de domínio.
           const ehSuperflix =
-            /(^|\.)superflixapi\.(pro|sbs)$/i.test(destino.hostname);
+            /(^|\.)superflixapi\.(pro|sbs|beer)$/i.test(destino.hostname);
 
           const parteDoPlayer =
             destino.pathname.startsWith("/player/") ||
@@ -737,6 +742,31 @@ async function extractSuperflixInBrowser(
           }
           if (!frame) return;
 
+          if (authorizationOnly) {
+            // Apenas observa se a resposta legítima já é a página autorizada.
+            // Não lê nem transfere PAGE_TOKEN/cfv para fora do frame e não toca
+            // no widget: o usuário conclui o Turnstile normalmente.
+            frame.executeJavaScript(`(() => {
+              const html = document.documentElement?.outerHTML || "";
+              return (html.includes("/player/bootstrap") || html.includes("/player/source")) &&
+                /content[_-]?id|contentid/i.test(html) &&
+                !/cf_embed_challenge|challenge-running/i.test(html);
+            })()`)
+              .then(async (authorized) => {
+                if (!authorized || settled) return;
+                const cookies = await ses.cookies.get({});
+                finish(null, {
+                  authorizedUrl: frame.url,
+                  cookies: cookies.map(({ name, value, domain, path, secure, httpOnly, sameSite, expirationDate }) => ({
+                    name, value, domain, path, secure, httpOnly, sameSite, expirationDate,
+                  })),
+                  ua: webContents.getUserAgent(),
+                });
+              })
+              .catch(() => { /* o próximo carregamento tenta novamente */ });
+            return;
+          }
+
           frame
             .executeJavaScript(LIMPEZA_PAGINA_PROVEDOR)
             .then(() => {
@@ -769,7 +799,9 @@ async function extractSuperflixInBrowser(
         () => {
           finish(
             new Error(
-              "Tempo esgotado aguardando a seleção de servidor do SuperFlix.",
+              authorizationOnly
+                ? "Tempo esgotado aguardando a verificação do SuperFlix."
+                : "Tempo esgotado aguardando a seleção de servidor do SuperFlix.",
             ),
           );
         },
@@ -814,6 +846,10 @@ async function extractSuperflixInBrowser(
                 document.getElementById(
                   "superflix-aviso"
                 );
+
+              if (aviso && ${JSON.stringify(Boolean(authorizationOnly))}) {
+                aviso.textContent = "Conclua a verificação para continuar no Obaflix.";
+              }
 
               frame.addEventListener(
                 "load",
@@ -862,4 +898,6 @@ async function extractSuperflixInBrowser(
 
 module.exports = {
   extractSuperflixInBrowser,
+  authorizeSuperflixInBrowser: (embedUrl, options = {}) =>
+    extractSuperflixInBrowser(embedUrl, { ...options, authorizationOnly: true }),
 };

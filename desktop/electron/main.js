@@ -8,8 +8,17 @@ const dns = require("dns").promises;
 const net = require("net");
 const { setupUpdater } = require("./updater");
 const log = require("./logger");
-const { detectProvider, extractStream: extractStreamNative } = require("./extractors");
-const { extractSuperflixInBrowser } = require("./browser-extractor");
+const {
+  detectProvider,
+  extractStream: extractStreamNative,
+  extractEmbedPlayer,
+} = require("./extractors");
+const {
+  prepareSuperflixSession,
+  isAuthorizationError,
+  retryAuthorizationOnce,
+} = require("./superflix-extractor");
+const { authorizeSuperflixInBrowser } = require("./browser-extractor");
 const { baixarMidia } = require("./media-download");
 
 // Qualquer exceção não tratada precisa aparecer no log — antes elas morriam em
@@ -40,7 +49,7 @@ const EMBED_HOSTNAMES = [
   "boltcdn.xyz", "bigshare.link", "luluvdo.com",
   "v1.watchplay.shop",
   "vods.faz-o-eli.online",
-  "superflixapi.pro", "superflixapi.sbs", "vizero.buzz", "vizer.forum", "warezcdn.lat",
+  "superflixapi.pro", "superflixapi.sbs", "superflixapi.beer", "vizero.buzz", "vizer.forum", "warezcdn.lat",
 ];
 
 
@@ -206,10 +215,171 @@ else {
 // ── Extração com IP do usuário (Node.js, sem CORS) ────────────────────────────
 // Dispatcher genérico (rola3/rola4, PlayHide, Lulu, Rola2, Wish, Bolt, Big) —
 // ver desktop/electron/extractors.js e docs/player-native-extraction.md.
+const superflixSessions = new Map();
+const superflixSessionByEmbed = new Map();
+
+function chromiumCookieUrl(cookie) {
+  const domain = String(cookie?.domain || "").replace(/^\./, "").toLowerCase();
+  const pathValue = String(cookie?.path || "/");
+  if (!domain || !/^[a-z0-9.-]+$/i.test(domain) || !pathValue.startsWith("/")) return null;
+  return `${cookie.secure ? "https" : "http"}://${domain}${pathValue}`;
+}
+
+async function syncSuperflixCookie(cookie) {
+  const url = chromiumCookieUrl(cookie);
+  if (!url || !cookie?.name) return;
+  const ses = session.fromPartition("persist:obaflix");
+  try {
+    if (cookie.expiresAt != null && cookie.expiresAt <= Date.now()) {
+      await ses.cookies.remove(url, cookie.name);
+      return;
+    }
+    const details = {
+      url,
+      name: cookie.name,
+      value: String(cookie.value || ""),
+      path: cookie.path || "/",
+      secure: Boolean(cookie.secure),
+      httpOnly: Boolean(cookie.httpOnly),
+    };
+    if (!cookie.hostOnly) details.domain = cookie.domain;
+    if (["lax", "strict", "none"].includes(cookie.sameSite)) details.sameSite = cookie.sameSite;
+    if (cookie.expiresAt != null) details.expirationDate = cookie.expiresAt / 1000;
+    await ses.cookies.set(details);
+  } catch {
+    // Cookie inválido para o Chromium é ignorado sem revelar nome/valor/domínio.
+    log.warn("superflix", "superflix_cookie_sync_rejected");
+  }
+}
+
+function superflixCommon() {
+  return {
+    appReferer: `${OBAFLIX_ORIGIN}/`,
+    extractEmbedPlayer: (url, referer, ua, cookies) => extractEmbedPlayer(url, referer, ua, cookies),
+    onSetCookie: syncSuperflixCookie,
+  };
+}
+
+async function prepareSuperflixAuthorized(embedUrl, previousResolver = null) {
+  const previous = previousResolver?.context?.() || {};
+  const directOptions = { ...superflixCommon(), ...previous };
+  try {
+    return await prepareSuperflixSession(embedUrl, directOptions);
+  } catch (directError) {
+    if (!isAuthorizationError(directError)) throw directError;
+    log.info("superflix", "superflix_challenge_required", {
+      fase: directError.stage || "authorization",
+      status: directError.status || "-",
+    });
+    const auth = await authorizeSuperflixInBrowser(embedUrl, {
+      parentWindow: mainWindow,
+      wrapperUrl: `http://127.0.0.1:${localPort}/superflix-wrapper?token=${LOCAL_SERVER_TOKEN}`,
+      userAgent: UA,
+    });
+    log.info("superflix", "superflix_challenge_completed");
+    return await prepareSuperflixSession(embedUrl, {
+      ...superflixCommon(),
+      jar: previous.jar,
+      authorizedUrl: auth.authorizedUrl,
+      cookies: auth.cookies,
+      ua: auth.ua,
+    });
+  }
+}
+
+function rememberSuperflixSession(embedUrl, resolver) {
+  const id = crypto.randomUUID();
+  const optionAliases = new Map();
+  for (const option of resolver.publicOptions) {
+    optionAliases.set(option.key, resolver.optionIdentity(option.key));
+  }
+  superflixSessions.set(id, { resolver, embedUrl, optionAliases, renewalPromise: null });
+  superflixSessionByEmbed.set(embedUrl, id);
+  return id;
+}
+
+function getSuperflixSession(id) {
+  const entry = superflixSessions.get(id);
+  if (!entry) throw new Error("Sessão Superflix indisponível");
+  return entry;
+}
+
+async function prepareManagedSuperflix(embedUrl) {
+  const cachedId = superflixSessionByEmbed.get(embedUrl);
+  if (cachedId) {
+    try {
+      const cached = getSuperflixSession(cachedId);
+      if (await cached.resolver.revalidate()) {
+        const description = cached.resolver.describe();
+        log.info("superflix", "superflix_session_reused", { options: description.options.length });
+        return { sessionId: cachedId, ...description };
+      }
+    } catch (error) {
+      // Uma sessão expirada/autorização recusada pode ser renovada abaixo. Erro
+      // de rede/parser é propagado e nunca abre a janela de Cloudflare.
+      if (!isAuthorizationError(error)) throw error;
+    }
+    const previous = superflixSessions.get(cachedId)?.resolver || null;
+    superflixSessions.delete(cachedId);
+    if (superflixSessionByEmbed.get(embedUrl) === cachedId) superflixSessionByEmbed.delete(embedUrl);
+    try {
+      const resolver = await prepareSuperflixAuthorized(embedUrl, previous);
+      const sessionId = rememberSuperflixSession(embedUrl, resolver);
+      return { sessionId, ...resolver.describe() };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  const resolver = await prepareSuperflixAuthorized(embedUrl);
+
+  const sessionId = rememberSuperflixSession(embedUrl, resolver);
+  const description = resolver.describe();
+  log.info("superflix", "superflix_bootstrap_ok", { options: description.options.length });
+  return { sessionId, ...description };
+}
+
+async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover = false) {
+  const entry = getSuperflixSession(sessionId);
+  const identity = entry.optionAliases.get(optionKey);
+  if (!identity) throw new Error("Servidor Superflix inválido");
+
+  const resolveOnce = async () => {
+    const currentKey = entry.resolver.findOptionKey(identity);
+    if (!currentKey) throw new Error("Servidor Superflix não existe mais após renovação");
+    return automaticFailover
+      ? await entry.resolver.resolveWithFailover(currentKey)
+      : await entry.resolver.resolve(currentKey);
+  };
+
+  const result = await retryAuthorizationOnce(resolveOnce, async () => {
+    // Uma única renovação compartilhada por sessão. A segunda falha de
+    // autorização é devolvida ao player, impedindo recursão/loop infinito.
+    if (!entry.renewalPromise) {
+      entry.renewalPromise = prepareSuperflixAuthorized(entry.embedUrl, entry.resolver)
+        .then((renewed) => { entry.resolver = renewed; })
+        .finally(() => { entry.renewalPromise = null; });
+    }
+    await entry.renewalPromise;
+  });
+  await assertPublicHttpsStream(result.stream);
+  await registerPlayerStream(result.stream, result.referer).catch(() => {});
+  log.info("superflix", "superflix_source_ok", { tipo: result.tipo || "-" });
+  return result;
+}
+
 async function extractSecuredLink(embedUrl) {
   const provider0 = detectProvider(embedUrl);
   const t = log.timer("player.extract", { provider: provider0 || "?", embed: log.safeUrl(embedUrl) });
   try {
+    if (provider0 === "superflix") {
+      const prepared = await prepareManagedSuperflix(embedUrl);
+      const first = prepared.options[0];
+      if (!first) throw new Error("Superflix sem servidores");
+      const result = await resolveManagedSuperflix(prepared.sessionId, first.key, true);
+      t.done({ provider: "superflix", tipo: result.tipo });
+      return result;
+    }
     const native = await extractStreamNative(embedUrl);
     t.step("extracao_nativa", { provider: native.provider, tipo: native.tipo, stream: log.safeUrl(native.stream) });
     const { stream, tipo, provider, referer, subtitles } = native;
@@ -227,35 +397,8 @@ async function extractSecuredLink(embedUrl) {
       expiresAt: native.expiresAt ?? null,
     };
   } catch (error) {
-    const provider = detectProvider(embedUrl);
-    const message = error?.message || String(error);
-
-    if (provider !== "superflix") {
-      t.fail(error);
-      throw error;
-    }
-
-    t.step("extracao_nativa_falhou", { erro: message.slice(0, 160) });
-    log.warn("player.extract", "SuperFlix direto falhou — caindo para o fallback Chromium", { erro: message.slice(0, 200) });
-
-    try {
-      const result = await extractSuperflixInBrowser(
-        embedUrl,
-        {
-          parentWindow: mainWindow,
-          wrapperUrl: `http://127.0.0.1:${localPort}/superflix-wrapper?token=${LOCAL_SERVER_TOKEN}`,
-        },
-      );
-      t.step("fallback_chromium", { stream: log.safeUrl(result.stream) });
-
-      await assertPublicHttpsStream(result.stream);
-      t.step("validacao_dns");
-      t.done({ provider: "superflix-browser", tipo: result.tipo });
-      return result;
-    } catch (browserError) {
-      t.fail(browserError, { fallback: "chromium" });
-      throw browserError;
-    }
+    t.fail(error);
+    throw error;
   }
 }
 
@@ -883,6 +1026,31 @@ ipcMain.handle("install-update", (event) => {
 // Cobre qualquer provider com extrator em desktop/electron/extractors.js — a decisão de
 // QUANDO chamar este caminho (em vez do fluxo web via Vercel) é feita no site por
 // supportsNativeDesktopExtraction() (src/components/player/CustomPlayer.tsx).
+ipcMain.handle("superflix-prepare", async (event, embedUrl) => {
+  try {
+    if (!isTrustedIpc(event)) throw new Error("Origem IPC não autorizada");
+    if (typeof embedUrl !== "string" || embedUrl.length > 4096 || detectProvider(embedUrl) !== "superflix") {
+      throw new Error("URL Superflix inválida");
+    }
+    return await prepareManagedSuperflix(embedUrl);
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+});
+
+ipcMain.handle("superflix-resolve", async (event, sessionId, optionKey) => {
+  try {
+    if (!isTrustedIpc(event)) throw new Error("Origem IPC não autorizada");
+    if (typeof sessionId !== "string" || sessionId.length > 128 ||
+        typeof optionKey !== "string" || optionKey.length > 128) {
+      throw new Error("Seleção Superflix inválida");
+    }
+    return await resolveManagedSuperflix(sessionId, optionKey, false);
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle("extract-stream", async (event, embedUrl) => {
   const t = log.timer("ipc.extract-stream", { embed: log.safeUrl(String(embedUrl ?? "")) });
   try {
@@ -890,13 +1058,23 @@ ipcMain.handle("extract-stream", async (event, embedUrl) => {
     if (typeof embedUrl !== "string" || embedUrl.length > 4096) throw new Error("URL inválida");
     const parsed = new URL(embedUrl);
     if (parsed.protocol !== "https:" || !detectProvider(embedUrl)) throw new Error("Provedor não autorizado");
-    const { stream, tipo, referer, subtitles } = await extractSecuredLink(embedUrl);
+    const result = await extractSecuredLink(embedUrl);
+    const { stream, tipo, referer, subtitles } = result;
     // CDN valida Referer = URL completa da página embed (não só a origem)
     try {
       await registerPlayerStream(stream, referer);
     } catch { /**/ }
     t.done({ tipo, legendas: (subtitles || []).length });
-    return { stream, tipo, referer: referer || null, subtitles: subtitles || [] };
+    return {
+      stream,
+      tipo,
+      referer: referer || null,
+      subtitles: subtitles || [],
+      isMaster: result.isMaster ?? false,
+      qualities: result.qualities ?? [],
+      audioTracks: result.audioTracks ?? [],
+      expiresAt: result.expiresAt ?? null,
+    };
   } catch (err) {
     t.fail(err);
     return { error: err?.message || String(err) };

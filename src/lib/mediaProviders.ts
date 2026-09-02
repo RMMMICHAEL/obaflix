@@ -30,6 +30,7 @@ const PROVIDER_HOSTS = [
   "bigshare.link",
   "superflixapi.pro",
   "superflixapi.sbs",
+  "superflixapi.beer",
   "v1.watchplay.shop",
   "megafrixapi.com",
   "vods.faz-o-eli.online",

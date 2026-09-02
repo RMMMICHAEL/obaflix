@@ -115,6 +115,8 @@ interface Fonte {
   host?: string;
   embedUrl?: string;
   videoId?: number;
+  /** Opção interna Superflix mantida somente no processo/app local. */
+  superflixLocal?: { sessionId: string; optionKey: string; parentId: string; isFile: boolean };
 }
 interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
 interface QualityLevel { label?: string; height?: number; width?: number; bitrate?: number; }
@@ -962,20 +964,71 @@ export function CustomPlayer({
       let tipo: string;
       let playerUrl: string;
 
-      // No Android o iframe fica visível apenas durante a validação Cloudflare. Em
-      // paralelo, o bridge aguarda cf_clearance e então troca a página do provedor
-      // pela mídia extraída localmente. Isso evita terminar no 404 do iframe.
-      if (isAndroid && alvo.iframeDesafio) {
+      // Superflix em duas etapas: o navegador aparece somente para autorização.
+      // Assim que o bootstrap legítimo responde, o overlay fecha e estes itens
+      // locais substituem o servidor externo no seletor nativo do Obaflix.
+      if (alvo.superflixLocal && desktop?.resolveSuperflix) {
+        const data = await desktop.resolveSuperflix(
+          alvo.superflixLocal.sessionId,
+          alvo.superflixLocal.optionKey,
+        );
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        streamExpiresAtRef.current = data.expiresAt ?? null;
+        tipo = data.tipo ?? "hls";
+        playerUrl = buildElectronProxyUrl(data.stream, data.referer);
+        streamRefererRef.current = data.referer ?? null;
+        directStreamRef.current = data.stream;
+        setSubtitleTracks((data.subtitles ?? []).map((track: SubtitleTrack) => ({
+          ...track,
+          file: buildElectronProxyUrl(track.file, track.referer || data.referer),
+          kind: "captions",
+        })));
+      } else if (alvo.iframeDesafio && desktop?.prepareSuperflix && desktop?.resolveSuperflix) {
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
-        setStreamTipo("iframe");
-        setStreamUrl(embedUrl);
-        // Mantém o carregamento padrão do app por cima até a página do provedor
-        // aparecer, em vez de expor o iframe cru com o carregamento dele. O
-        // iframe já está no DOM, então o desafio do Cloudflare roda por baixo.
-        setStatus("extracting");
-        if (!desktop) return;
-        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
-          await desktop.extractStream(embedUrl);
+        const prepared = await desktop.prepareSuperflix(embedUrl);
+        if (prepared.error) throw new Error(prepared.error);
+        if (!prepared.sessionId || !Array.isArray(prepared.options) || !prepared.options.length) {
+          throw new Error("Superflix não retornou servidores");
+        }
+
+        const outerIndex = allFontesRef.current.findIndex((item) => item.id === fonteId);
+        const localOptions: Fonte[] = prepared.options.map((option: {
+          key: string; label: string; isFile?: boolean;
+        }) => ({
+          ...alvo,
+          id: `sf-local:${prepared.sessionId}:${option.key}`,
+          rotulo: option.label,
+          iframeDesafio: false,
+          iframeDireto: false,
+          superflixLocal: {
+            sessionId: prepared.sessionId,
+            optionKey: option.key,
+            parentId: fonteId,
+            isFile: !!option.isFile,
+          },
+        }));
+        const updated = [...allFontesRef.current];
+        updated.splice(Math.max(0, outerIndex), 1, ...localOptions);
+        allFontesRef.current = updated;
+        setAllFontes(updated);
+
+        const selectedIndex = Math.max(0, outerIndex);
+        let chosen = 0;
+        let data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } = {};
+        for (let index = 0; index < prepared.options.length; index += 1) {
+          data = await desktop.resolveSuperflix(prepared.sessionId, prepared.options[index].key);
+          if (!data.error && data.stream) {
+            chosen = index;
+            break;
+          }
+          console.warn(`[superflix] candidato ${index + 1} rejeitado; tentando o próximo`);
+        }
+        const selected = localOptions[chosen];
+        setFonteIdx(selectedIndex + chosen);
+        fonteSelecionadaRef.current = selected.id;
+        ultimoExtraidoRef.current = selected.id;
+        sourceIdRef.current = sourceIdDe(selected.id);
+
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
@@ -983,6 +1036,22 @@ export function CustomPlayer({
         streamRefererRef.current = data.referer ?? null;
         directStreamRef.current = data.stream;
         setSubtitleTracks((data.subtitles ?? []).map((track) => ({
+          ...track,
+          file: buildElectronProxyUrl(track.file, track.referer || data.referer),
+          kind: "captions",
+        })));
+      } else if (isAndroid && alvo.iframeDesafio) {
+        // Compatibilidade com APK antigo: a versão nova nunca usa o embed para
+        // seleção, mas o site ainda pode ser aberto por uma instalação anterior.
+        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
+        const data = await desktop.extractStream(embedUrl);
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        streamExpiresAtRef.current = data.expiresAt ?? null;
+        tipo = data.tipo ?? "hls";
+        playerUrl = buildElectronProxyUrl(data.stream, data.referer);
+        streamRefererRef.current = data.referer ?? null;
+        directStreamRef.current = data.stream;
+        setSubtitleTracks((data.subtitles ?? []).map((track: SubtitleTrack) => ({
           ...track,
           file: buildElectronProxyUrl(track.file, track.referer || data.referer),
           kind: "captions",
@@ -1678,6 +1747,9 @@ export function CustomPlayer({
           ? Date.now() - lastReExtractSuccessAtRef.current
           : -1;
         const desktop = (window as any).obaflixDesktop;
+        const fonteAtual = allFontesRef.current.find((item) => item.id === fonteId)
+          ?? allFontesRef.current[fi];
+        const superflixLocal = fonteAtual?.superflixLocal;
 
         // Geração monotônica + referência ao player atual. Se o efeito for limpo durante
         // a extração (troca de fonte ou episódio), a resposta chega com geração/player
@@ -1702,17 +1774,21 @@ export function CustomPlayer({
           else { setError("Erro no stream"); setStatus("error"); }
         };
 
+        const safetyTimeoutMs = superflixLocal ? 180_000 : REEXTRACT_SAFETY_TIMEOUT_MS;
         const safetyTimer = setTimeout(() => {
           if (settled) return;
           settled = true;
           reExtractingRef.current = false;
-          fail(`extractStream excedeu ${REEXTRACT_SAFETY_TIMEOUT_MS}ms sem resposta`);
-        }, REEXTRACT_SAFETY_TIMEOUT_MS);
+          fail(`renovação excedeu ${safetyTimeoutMs}ms sem resposta`);
+        }, safetyTimeoutMs);
 
-        // A URL real é resolvida na hora (e fica em cache no ref), em vez de
-        // ter sido entregue ao navegador junto com a lista.
-        resolverUrlNativaRef.current(fonteId)
-          .then((embedUrl: string) => desktop.extractStream(embedUrl))
+        // Fonte local Superflix renova dentro da sessão opaca e retoma a mesma
+        // opção. As demais continuam usando o reextract tradicional por embed.
+        const renewal = superflixLocal && desktop?.resolveSuperflix
+          ? desktop.resolveSuperflix(superflixLocal.sessionId, superflixLocal.optionKey)
+          : resolverUrlNativaRef.current(fonteId)
+              .then((embedUrl: string) => desktop.extractStream(embedUrl));
+        renewal
           .then((data: any) => {
             if (settled) return;
             settled = true;

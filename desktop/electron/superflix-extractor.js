@@ -15,7 +15,7 @@ const DEFAULT_UA =
 //
 // Os pontos precisam de escape: sem eles "." casa qualquer caractere e um
 // domínio parecido (notsuperflixapiXpro) passaria na checagem.
-const EH_SUPERFLIX = /(^|\.)superflixapi\.(pro|sbs)$/i;
+const EH_SUPERFLIX = /(^|\.)superflixapi\.(pro|sbs|beer)$/i;
 
 // O host punycode do EmbedPlayer troca de domínio periodicamente. Manter os
 // conhecidos aqui evita caçar cada checagem por substring espalhada no arquivo.
@@ -49,6 +49,7 @@ const EXCELLENT_SCORE = 110;
 const GOOD_ENOUGH_SCORE = 76;
 
 const hlsManifest = require("./hls-manifest");
+const { randomUUID } = require("crypto");
 
 // O extrator também roda fora do Electron (scripts de diagnóstico), então o logger
 // é opcional: sem ele, cai no console como antes.
@@ -58,6 +59,40 @@ try { log = require("./logger"); } catch { /* fora do app */ }
 function slog(step, detail = "") {
   if (log) log.debug(`superflix.${step}`, detail || "-");
   else console.log(`[superflix/${step}]${detail ? ` ${detail}` : ""}`);
+}
+
+class SuperflixAuthorizationError extends Error {
+  constructor(message, { status = null, stage = "authorization" } = {}) {
+    super(message);
+    this.name = "SuperflixAuthorizationError";
+    this.status = status;
+    this.stage = stage;
+    this.code = "SUPERFLIX_AUTH_REQUIRED";
+  }
+}
+
+function isAuthorizationError(error) {
+  return error?.code === "SUPERFLIX_AUTH_REQUIRED" ||
+    error instanceof SuperflixAuthorizationError;
+}
+
+function isAuthorizationStatus(status) {
+  return status === 403 || status === 419;
+}
+
+function isCloudflareChallenge(html) {
+  return /cf_embed_challenge|cf_chl_|challenge-running|challenges\.cloudflare\.com|turnstile|just a moment/i
+    .test(String(html || ""));
+}
+
+function httpError(stage, response, url, body = "") {
+  if (isAuthorizationStatus(response.status) || isCloudflareChallenge(body)) {
+    return new SuperflixAuthorizationError(`${stage} requer nova autorização`, {
+      status: response.status,
+      stage,
+    });
+  }
+  return new Error(`${stage} HTTP ${response.status} em ${safeUrlLabel(url)}`);
 }
 
 function safeUrlLabel(raw) {
@@ -343,7 +378,10 @@ async function fetchBootstrap(fetchImpl, jar, page, pageToken, contentId, conten
   });
 
   const text = await response.text();
-  if (!response.ok) throw new Error(`player/bootstrap HTTP ${response.status}`);
+  if (!response.ok) throw httpError("player/bootstrap", response, response.url || `${origin}/player/bootstrap`, text);
+  if (isCloudflareChallenge(text)) {
+    throw new SuperflixAuthorizationError("player/bootstrap requer nova autorização", { status: response.status, stage: "player/bootstrap" });
+  }
   const json = JSON.parse(text);
   const options = json?.data?.options;
   if (!Array.isArray(options)) throw new Error("player/bootstrap sem options");
@@ -374,11 +412,12 @@ async function resolveOptions(fetchImpl, jar, page, pageToken, payload, ua) {
     const contentPath = payload?.embed_content_path || new URL(page.url).pathname;
     const bootstrap = await fetchBootstrap(fetchImpl, jar, page, pageToken, contentId, contentPath, ua)
       .catch((error) => {
+        if (isAuthorizationError(error)) throw error;
         slog("bootstrap_skip", String(error?.message || error).slice(0, 120));
         return [];
       });
     if (bootstrap.length) {
-      slog("bootstrap", "servidores=" + bootstrap.map((o) => o.label).join(", "));
+      slog("bootstrap", `servidores=${bootstrap.length} arquivos=${bootstrap.filter((o) => o.isFile).length}`);
       return bootstrap.sort((a, b) => b.orderScore - a.orderScore);
     }
   } else {
@@ -402,13 +441,31 @@ function findNativeMediaSource(html, baseUrl) {
       const sources = JSON.parse(arrayMatch[1]);
       for (const source of sources) {
         const resolved = resolveUrl(source?.src, baseUrl);
-        if (resolved?.includes("/player/native/media-source")) return resolved;
+        if (resolved && isServerProvidedNativeRoute(resolved, "nms")) return resolved;
       }
     } catch { /**/ }
   }
 
-  const match = normalized.match(/["'](https?:\/\/[^"']+\/player\/native\/media-source[^"']*)["']/i);
-  return match ? resolveUrl(match[1], baseUrl) : null;
+  const matches = normalized.matchAll(/["'](https?:\/\/[^"']+)["']/gi);
+  for (const match of matches) {
+    const resolved = resolveUrl(match[1], baseUrl);
+    if (resolved && isServerProvidedNativeRoute(resolved, "nms")) return resolved;
+  }
+  return null;
+}
+
+function isServerProvidedNativeRoute(raw, expected = null) {
+  try {
+    const parsed = new URL(raw);
+    const route = `${parsed.pathname}${parsed.search}`;
+    if (expected === "nms") {
+      return parsed.pathname.includes("/player/native/media-source") || /(?:^|[/=?&])nms_[A-Za-z0-9_-]+/i.test(route);
+    }
+    return parsed.pathname.includes("/player/native/media/") ||
+      /(?:^|[/=?&])nmp_[A-Za-z0-9_-]+/i.test(route);
+  } catch {
+    return false;
+  }
 }
 
 function findDirectMedia(html, baseUrl) {
@@ -457,8 +514,61 @@ function findSubtitleTracks(html, baseUrl) {
 function createCookieJar() {
   const cookies = new Map();
 
-  function absorb(url, headers) {
-    const host = new URL(url).hostname.toLowerCase();
+  const domainMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+
+  function parseCookie(raw, responseUrl) {
+    const parsedUrl = new URL(responseUrl);
+    const parts = String(raw).split(";").map((part) => part.trim());
+    const first = parts.shift();
+    if (!first?.includes("=")) return null;
+    const separator = first.indexOf("=");
+    const name = first.slice(0, separator).trim();
+    const value = first.slice(separator + 1);
+    if (!name) return null;
+
+    const cookie = {
+      name,
+      value,
+      domain: parsedUrl.hostname.toLowerCase(),
+      hostOnly: true,
+      path: parsedUrl.pathname.includes("/")
+        ? parsedUrl.pathname.slice(0, parsedUrl.pathname.lastIndexOf("/") + 1) || "/"
+        : "/",
+      secure: parsedUrl.protocol === "https:",
+      httpOnly: false,
+      sameSite: "unspecified",
+      expiresAt: null,
+      sourceUrl: responseUrl,
+    };
+
+    for (const attr of parts) {
+      const attrSeparator = attr.indexOf("=");
+      const key = (attrSeparator >= 0 ? attr.slice(0, attrSeparator) : attr).trim().toLowerCase();
+      const valuePart = attrSeparator >= 0 ? attr.slice(attrSeparator + 1).trim() : "";
+      if (key === "domain" && valuePart) {
+        const domain = valuePart.replace(/^\./, "").toLowerCase();
+        if (!domainMatches(parsedUrl.hostname.toLowerCase(), domain)) return null;
+        cookie.domain = domain;
+        cookie.hostOnly = false;
+      } else if (key === "path" && valuePart.startsWith("/")) cookie.path = valuePart;
+      else if (key === "secure") cookie.secure = true;
+      else if (key === "httponly") cookie.httpOnly = true;
+      else if (key === "samesite") {
+        const sameSite = valuePart.toLowerCase();
+        cookie.sameSite = sameSite === "lax" || sameSite === "strict" || sameSite === "none"
+          ? sameSite : "unspecified";
+      } else if (key === "max-age") {
+        const seconds = Number(valuePart);
+        if (Number.isFinite(seconds)) cookie.expiresAt = Date.now() + seconds * 1000;
+      } else if (key === "expires" && cookie.expiresAt == null) {
+        const expires = Date.parse(valuePart);
+        if (Number.isFinite(expires)) cookie.expiresAt = expires;
+      }
+    }
+    return cookie;
+  }
+
+  async function absorb(url, headers) {
     let values = [];
     if (typeof headers.getSetCookie === "function") values = headers.getSetCookie();
     if (!values.length) {
@@ -470,30 +580,73 @@ function createCookieJar() {
     }
 
     for (const raw of values) {
-      const parts = String(raw).split(";").map((p) => p.trim());
-      const first = parts.shift();
-      if (!first?.includes("=")) continue;
-      const [name, ...rest] = first.split("=");
-      let domain = host;
-      for (const attr of parts) {
-        const [key, ...valueParts] = attr.split("=");
-        if (key.toLowerCase() === "domain" && valueParts.length) {
-          domain = valueParts.join("=").replace(/^\./, "").toLowerCase();
-        }
-      }
-      cookies.set(`${domain}|${name}`, { domain, name, value: rest.join("=") });
+      const cookie = parseCookie(raw, url);
+      if (!cookie) continue;
+      const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+      if (cookie.expiresAt != null && cookie.expiresAt <= Date.now()) cookies.delete(key);
+      else cookies.set(key, cookie);
+      if (typeof absorb.onCookie === "function") await absorb.onCookie(cookie);
     }
   }
 
   function header(url) {
-    const host = new URL(url).hostname.toLowerCase();
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.toLowerCase();
+    const path = parsedUrl.pathname || "/";
+    const secure = parsedUrl.protocol === "https:";
+    const now = Date.now();
     return [...cookies.values()]
-      .filter((cookie) => host === cookie.domain || host.endsWith(`.${cookie.domain}`))
+      .filter((cookie) => (cookie.expiresAt == null || cookie.expiresAt > now) &&
+        domainMatches(host, cookie.domain) && path.startsWith(cookie.path || "/") &&
+        (!cookie.secure || secure))
       .map((cookie) => `${cookie.name}=${cookie.value}`)
       .join("; ");
   }
 
-  return { absorb, header };
+  /** Importa somente cookies obtidos legitimamente pelo navegador. */
+  function seed(rawCookies, fallbackUrl) {
+    if (!rawCookies) return;
+    const fallbackHost = new URL(fallbackUrl).hostname.toLowerCase();
+    const items = Array.isArray(rawCookies)
+      ? rawCookies
+      : String(rawCookies).split(";").map((part) => {
+          const separator = part.indexOf("=");
+          if (separator <= 0) return null;
+          return {
+            name: part.slice(0, separator).trim(),
+            value: part.slice(separator + 1).trim(),
+            domain: fallbackHost,
+          };
+        }).filter(Boolean);
+
+    for (const item of items) {
+      const name = String(item?.name || "").trim();
+      if (!name) continue;
+      const domain = String(item?.domain || fallbackHost).replace(/^\./, "").toLowerCase();
+      const path = String(item?.path || "/");
+      cookies.set(`${domain}|${path}|${name}`, {
+        domain,
+        name,
+        value: String(item?.value || ""),
+        hostOnly: !String(item?.domain || "").startsWith("."),
+        path,
+        secure: Boolean(item?.secure),
+        httpOnly: Boolean(item?.httpOnly),
+        sameSite: String(item?.sameSite || "unspecified").toLowerCase(),
+        expiresAt: Number.isFinite(Number(item?.expirationDate)) ? Number(item.expirationDate) * 1000 : null,
+        sourceUrl: fallbackUrl,
+      });
+    }
+  }
+
+  absorb.onCookie = null;
+  return {
+    absorb,
+    header,
+    seed,
+    setCookieSink(callback) { absorb.onCookie = callback; },
+    snapshot() { return [...cookies.values()].map((cookie) => ({ ...cookie })); },
+  };
 }
 
 function secFetchSite(url, referer) {
@@ -526,7 +679,7 @@ async function requestOnce(fetchImpl, jar, url, options) {
     redirect: "manual",
     signal: AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS),
   });
-  jar.absorb(url, response.headers);
+  await jar.absorb(url, response.headers);
   return response;
 }
 
@@ -567,7 +720,10 @@ async function fetchPage(fetchImpl, jar, startUrl, options) {
     }
 
     const text = options.readBody === false ? "" : await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status} em ${safeUrlLabel(url)}`);
+    if (!response.ok) throw httpError("navegação", response, url, text);
+    if (isCloudflareChallenge(text)) {
+      throw new SuperflixAuthorizationError("challenge Superflix detectado", { status: response.status, stage: "page" });
+    }
     return { url, response, text };
   }
   throw new Error(`redirecionamentos demais em ${safeUrlLabel(startUrl)}`);
@@ -649,7 +805,10 @@ async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, 
     body: form.toString(),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`player/source HTTP ${response.status}`);
+  if (!response.ok) throw httpError("player/source", response, endpoint, text);
+  if (isCloudflareChallenge(text)) {
+    throw new SuperflixAuthorizationError("player/source requer nova autorização", { status: response.status, stage: "player/source" });
+  }
   let json;
   try { json = JSON.parse(text); } catch { throw new Error("player/source retornou JSON inválido"); }
   const videoUrl = json?.data?.video_url || json?.video_url;
@@ -672,13 +831,13 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     resolvedUrl = resolvido ? secureTransportUrl(resolvido) : null;
     if (!resolvedUrl) throw new Error("player/redirect sem Location válido");
   } else if (!first.ok) {
-    throw new Error(`player/redirect HTTP ${first.status}`);
+    throw httpError("player/redirect", first, targetUrl);
   }
 
   const parsed = new URL(resolvedUrl);
   slog("target", safeUrlLabel(resolvedUrl));
 
-  if (parsed.pathname.includes("/player/native/media/")) {
+  if (isServerProvidedNativeRoute(resolvedUrl)) {
     const mediaPage = await fetchPage(fetchImpl, jar, resolvedUrl, {
       ua,
       referer: warezPageUrl,
@@ -710,7 +869,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     if (mediaResponse.ok && /video\/mp4|octet-stream/i.test(contentType)) {
       return { stream: mediaSource, referer: mediaPage.url, tipo: "mp4", subtitles };
     }
-    throw new Error(`media-source HTTP ${mediaResponse.status}`);
+    throw httpError("media-source", mediaResponse, mediaSource);
   }
 
   if (
@@ -723,7 +882,23 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     const subtitles = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl })
       .then((page) => findSubtitleTracks(page.text, page.url))
       .catch(() => []);
-    const raw = await extractEmbedPlayer(resolvedUrl, `${new URL(warezPageUrl).origin}/`);
+    let raw;
+    try {
+      raw = await extractEmbedPlayer(
+        resolvedUrl,
+        `${new URL(warezPageUrl).origin}/`,
+        ua,
+        jar.header(resolvedUrl),
+      );
+    } catch (error) {
+      if (isAuthorizationStatus(error?.status)) {
+        throw new SuperflixAuthorizationError("embed externo requer nova autorização", {
+          status: error.status,
+          stage: "embedplayer",
+        });
+      }
+      throw error;
+    }
     const stream = secureTransportUrl(raw);
     if (!stream) throw new Error("embedplayer sem transporte HTTPS");
     // tipo fica em aberto quando a URL não tem extensão: profileSource() resolve.
@@ -803,6 +978,10 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       readBody: false,
       timeoutMs,
     }).catch(() => null);
+    if (!head || !head.ok) {
+      if (head && isAuthorizationStatus(head.status)) throw httpError("mídia", head, url);
+      throw new Error(`mídia inacessível${head ? ` (HTTP ${head.status})` : ""}`);
+    }
     const contentType = (head?.headers.get("content-type") || "").toLowerCase();
     if (/mpegurl|m3u/.test(contentType)) {
       tipo = "hls";
@@ -826,9 +1005,27 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       mode: "cors",
       timeoutMs,
     }).catch(() => null);
-    if (manifest?.ok) {
-      const body = await manifest.text().catch(() => "");
-      if (hlsManifest.looksLikeManifest(body)) info = hlsManifest.parse(body, url);
+    if (!manifest || !manifest.ok) {
+      if (manifest && isAuthorizationStatus(manifest.status)) throw httpError("manifesto", manifest, url);
+      throw new Error(`manifesto inacessível${manifest ? ` (HTTP ${manifest.status})` : ""}`);
+    }
+    const body = await manifest.text().catch(() => "");
+    if (!hlsManifest.looksLikeManifest(body)) throw new Error("resposta não é manifesto HLS");
+    info = hlsManifest.parse(body, url);
+  } else if (tipo === "mp4") {
+    const media = await requestOnce(fetchImpl, jar, url, {
+      ua,
+      referer: candidate.referer,
+      accept: "*/*",
+      dest: "video",
+      mode: "no-cors",
+      headers: { Range: "bytes=0-0" },
+      readBody: false,
+      timeoutMs,
+    }).catch(() => null);
+    if (!media || !media.ok) {
+      if (media && isAuthorizationStatus(media.status)) throw httpError("MP4", media, url);
+      throw new Error(`MP4 inacessível${media ? ` (HTTP ${media.status})` : ""}`);
     }
   }
 
@@ -849,7 +1046,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
   const score = profileScore(tipo, info, hasSubtitles, option);
   slog(
     "profile",
-    `source=${option.label} tipo=${tipo} master=${Boolean(info?.isMaster)} ` +
+    `is_file=${Boolean(option.isFile)} tipo=${tipo} master=${Boolean(info?.isMaster)} ` +
       `qualidades=${info?.variants.length || 0} audios=${info?.audioTracks.length || 0} ` +
       `legendas=${subtitles.size} noManifesto=${info?.subtitles.length || 0} nota=${score}`,
   );
@@ -875,112 +1072,214 @@ function tokenExpiry(payload) {
   return exp < 100000000000 ? exp * 1000 : exp;
 }
 
+function publicOptionLabel(option, index) {
+  const original = String(option.label || "").replace(/\s+/g, " ").trim();
+  const text = original.toLowerCase();
+  const safeCharacters = /^[\p{L}\p{N} ._+()/-]{1,48}$/u.test(original);
+  const containsSensitiveShape = /https?:|www\.|\.[a-z]{2,}(?:\b|\/)|[?&=]|(?:token|cookie|clearance|cfv|signature|video[_-]?id)/i
+    .test(original);
+  // A projeção pública não pode revelar um provedor/host real. Preservamos
+  // nomes descritivos do próprio bootstrap apenas quando compostos por termos
+  // visuais genéricos; o valor original continua disponível somente na sessão.
+  const usefulGenericName = /^(?=.*(?:servidor|player|op[cç][aã]o|principal|alternativ|mp4|hls|hd|full hd|dublad|legendad|portugu[eê]s|original))[\p{L}\p{N} ._+()/-]+$/iu
+    .test(original);
+  if (safeCharacters && !containsSensitiveShape && usefulGenericName) return original;
+
+  const suffix = /dublad|portugu|pt-br/.test(text)
+    ? " · Dublado"
+    : /legend|subtitle|\bleg\b/.test(text)
+      ? " · Legendado"
+      : "";
+  return `Servidor ${index + 1}${suffix}`;
+}
+
+/**
+ * Estado efêmero de uma página Superflix já autorizada.
+ *
+ * PAGE_TOKEN, cfv, cookies e IDs reais nunca saem desta instância. O renderer
+ * recebe somente chaves aleatórias e rótulos públicos; ao escolher uma opção,
+ * a URL final é resolvida naquele momento para não envelhecer em cache.
+ */
+class SuperflixSession {
+  constructor(state) {
+    Object.assign(this, state);
+    this.optionByKey = new Map();
+    this.publicOptions = state.sourceOptions.map((option, index) => {
+      const key = randomUUID();
+      this.optionByKey.set(key, option);
+      return {
+        key,
+        label: publicOptionLabel(option, index),
+        isFile: Boolean(option.isFile),
+      };
+    });
+  }
+
+  static async prepare(embedUrl, options = {}) {
+    const fetchImpl = options.fetchImpl || globalThis.fetch;
+    if (typeof fetchImpl !== "function") throw new Error("fetch indisponível no Electron");
+
+    const ua = options.ua || DEFAULT_UA;
+    const appReferer = options.appReferer || "https://obaflix.vercel.app/";
+    const input = new URL(embedUrl);
+    if (!EH_SUPERFLIX.test(input.hostname)) throw new Error("URL SuperFlix inválida");
+
+    const jar = options.jar || createCookieJar();
+    if (options.onSetCookie) jar.setCookieSink(options.onSetCookie);
+    jar.seed(options.cookies, embedUrl);
+    const startUrl = options.authorizedUrl || embedUrl;
+    const warezPage = await resolveWarezPage(fetchImpl, jar, startUrl, ua, appReferer);
+    const pageToken = findPageToken(warezPage.html);
+    if (!pageToken) throw new Error("page_token não encontrado na página autorizada");
+
+    const tokenPayload = decodeTokenPayload(pageToken) || {};
+    const host = tokenPayload.embed_context_host || new URL(warezPage.url).searchParams.get("host") || "";
+    const sourceOptions = await resolveOptions(fetchImpl, jar, warezPage, pageToken, tokenPayload, ua);
+    if (!sourceOptions.length) throw new Error("nenhum servidor encontrado para o conteúdo");
+
+    const session = new SuperflixSession({
+      embedUrl,
+      fetchImpl,
+      ua,
+      jar,
+      warezPage,
+      pageToken,
+      host,
+      sourceOptions,
+      expiresAt: tokenExpiry(tokenPayload),
+      extractEmbedPlayer: options.extractEmbedPlayer,
+    });
+    slog("session_ready", `superflix_bootstrap_ok options=${sourceOptions.length}`);
+    return session;
+  }
+
+  assertFresh() {
+    if (this.expiresAt && Date.now() >= this.expiresAt - 5_000) {
+      throw new SuperflixAuthorizationError("sessão Superflix expirada", { stage: "page_token" });
+    }
+  }
+
+  async revalidate() {
+    this.assertFresh();
+    const page = await fetchPage(this.fetchImpl, this.jar, this.warezPage.url, {
+      ua: this.ua,
+      referer: this.warezPage.url,
+    });
+    const currentToken = findPageToken(page.text);
+    if (!currentToken) return false;
+    const payload = decodeTokenPayload(currentToken);
+    const expiry = tokenExpiry(payload);
+    if (expiry && Date.now() >= expiry - 5_000) return false;
+    // Token novo implica bootstrap novo; o gerenciador fará uma preparação
+    // autenticada e substituirá este contexto sem mostrar challenge.
+    return currentToken === this.pageToken;
+  }
+
+  context() {
+    return {
+      ua: this.ua,
+      authorizedUrl: this.warezPage.url,
+      jar: this.jar,
+    };
+  }
+
+  optionIdentity(optionKey) {
+    const option = this.optionByKey.get(optionKey);
+    return option ? { id: option.id, label: option.label, isFile: option.isFile } : null;
+  }
+
+  findOptionKey(identity) {
+    if (!identity) return null;
+    let fallback = null;
+    for (const [key, option] of this.optionByKey.entries()) {
+      if (option.id === identity.id) return key;
+      if (!fallback && option.label === identity.label && option.isFile === identity.isFile) fallback = key;
+    }
+    return fallback;
+  }
+
+  describe() {
+    this.assertFresh();
+    return { options: this.publicOptions, expiresAt: this.expiresAt };
+  }
+
+  async resolve(optionKey) {
+    this.assertFresh();
+    const option = this.optionByKey.get(optionKey);
+    if (!option) throw new Error("servidor Superflix inválido");
+    slog("source_selected", `is_file=${Boolean(option.isFile)}`);
+
+    const targetUrl = await postSource(
+      this.fetchImpl, this.jar, this.warezPage, this.pageToken, option.id, this.host, this.ua,
+    );
+    const candidate = await resolveSource(
+      this.fetchImpl,
+      this.jar,
+      targetUrl,
+      this.warezPage.url,
+      this.host,
+      this.ua,
+      this.extractEmbedPlayer,
+    );
+    const profile = await profileSource(
+      this.fetchImpl, this.jar, option, candidate, this.ua, PROBE_TIMEOUT_MS,
+    );
+    slog("source_ok", `superflix_source_ok is_file=${Boolean(option.isFile)} tipo=${profile.result.tipo}`);
+    return { ...profile.result, expiresAt: this.expiresAt };
+  }
+
+  async resolveWithFailover(preferredKey = null) {
+    this.assertFresh();
+    const keys = this.publicOptions.map((option) => option.key);
+    if (preferredKey && keys.includes(preferredKey)) {
+      keys.splice(keys.indexOf(preferredKey), 1);
+      keys.unshift(preferredKey);
+    }
+
+    const failures = [];
+    for (let index = 0; index < keys.length; index += 1) {
+      try {
+        return await this.resolve(keys[index]);
+      } catch (error) {
+        if (isAuthorizationError(error)) throw error;
+        const message = error?.message || String(error);
+        failures.push(message);
+        slog("candidate_rejected", `superflix_candidate_rejected index=${index + 1} erro=${message.slice(0, 100)}`);
+        if (index + 1 < keys.length) slog("failover", `superflix_failover next=${index + 2}`);
+      }
+    }
+    throw new Error(`todas as fontes Superflix falharam: ${failures.join(" | ").slice(0, 500)}`);
+  }
+}
+
+async function prepareSuperflixSession(embedUrl, options = {}) {
+  return SuperflixSession.prepare(embedUrl, options);
+}
+
+async function retryAuthorizationOnce(operation, renew) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isAuthorizationError(error)) throw error;
+    await renew(error);
+    // Deliberadamente sem nova captura: uma segunda falha de autorização
+    // encerra o ciclo em vez de abrir outro challenge.
+    return await operation();
+  }
+}
+
 async function extractSuperflix(embedUrl, options = {}) {
-  const fetchImpl = options.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("fetch indisponível no Electron");
-
-  const ua = options.ua || DEFAULT_UA;
-  const appReferer = options.appReferer || "https://obaflix.vercel.app/";
-  const jar = createCookieJar();
-
-  const input = new URL(embedUrl);
-  if (!EH_SUPERFLIX.test(input.hostname)) {
-    throw new Error("URL SuperFlix inválida");
-  }
-
-  const warezPage = await resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer);
-  const pageToken = findPageToken(warezPage.html);
-  if (!pageToken) throw new Error("page_token não encontrado na página WarezCDN");
-
-  const tokenPayload = decodeTokenPayload(pageToken) || {};
-  const host = tokenPayload.embed_context_host || new URL(warezPage.url).searchParams.get("host") || "";
-  const sourceOptions = await resolveOptions(fetchImpl, jar, warezPage, pageToken, tokenPayload, ua);
-  if (!sourceOptions.length) throw new Error("nenhum servidor encontrado para o conteúdo");
-
-  slog(
-    "sources",
-    `total=${sourceOptions.length} nativos=${sourceOptions.filter((o) => !ehServidorIncorporado(o)).length}`,
-  );
-
-  const failures = [];
-  const profiles = [];
-  const expiresAt = tokenExpiry(tokenPayload);
-  const probeDeadline = Date.now() + PROBE_BUDGET_MS;
-
-  // Inspeciona os servidores em vez de aceitar o primeiro que responde: o primeiro
-  // funcional costuma ser um MP4 de qualidade única, enquanto outro servidor entrega
-  // um master HLS com qualidades, áudio e legendas.
-  let probed = 0;
-  for (const sourceOption of sourceOptions) {
-    // O corte é avaliado ANTES de gastar mais uma rodada. Antes ele só rodava no
-    // fim da iteração e apenas quando já havia alguma fonte boa, então uma fila de
-    // servidores mortos ignorava o orçamento inteiro e estourava o tempo de espera.
-    if (probed > 0 && Date.now() > probeDeadline) {
-      slog("probe_stop", `orçamento de ${PROBE_BUDGET_MS}ms esgotado após ${probed} servidor(es), ${profiles.length} aproveitável(is)`);
-      break;
-    }
-    if (probed >= MAX_PROBED_SOURCES) {
-      slog("probe_stop", `limite de ${MAX_PROBED_SOURCES} servidores inspecionados atingido`);
-      break;
-    }
-
-    probed += 1;
-    const sourceStart = Date.now();
-    let mark = sourceStart;
-    const lap = (name) => { const d = Date.now() - mark; mark = Date.now(); return `${name}:${d}ms`; };
-    const laps = [];
-
-    try {
-      const targetUrl = await postSource(fetchImpl, jar, warezPage, pageToken, sourceOption.id, host, ua);
-      laps.push(lap("post_source"));
-      if (!targetUrl) throw new Error("video_url inválida");
-      const candidate = await resolveSource(
-        fetchImpl,
-        jar,
-        targetUrl,
-        warezPage.url,
-        host,
-        ua,
-        options.extractEmbedPlayer,
-      );
-      laps.push(lap("resolve_source"));
-      const profile = await profileSource(fetchImpl, jar, sourceOption, candidate, ua, PROBE_TIMEOUT_MS);
-      laps.push(lap("profile"));
-      profiles.push(profile);
-      slog("source_ok", `source=${sourceOption.label} nota=${profile.score} total=${Date.now() - sourceStart}ms ${laps.join(" ")}`);
-
-      if (profile.score >= EXCELLENT_SCORE) {
-        slog("probe_stop", `fonte completa encontrada em ${sourceOption.label}`);
-        break;
-      }
-      // Já dá para começar a tocar: parar aqui vale mais que achar algo 5% melhor.
-      if (profile.score >= GOOD_ENOUGH_SCORE) {
-        slog("probe_stop", `fonte boa o bastante em ${sourceOption.label} (nota=${profile.score})`);
-        break;
-      }
-    } catch (error) {
-      const message = error?.message || String(error);
-      failures.push(`${sourceOption.label}: ${message}`);
-      slog("source_skip", `source=${sourceOption.label} total=${Date.now() - sourceStart}ms ${laps.join(" ")} erro=${message.slice(0, 100)}`);
-    }
-  }
-  slog("probe_resumo", `inspecionados=${probed}/${sourceOptions.length} aproveitaveis=${profiles.length} falhas=${failures.length}`);
-
-  if (!profiles.length) {
-    throw new Error(`todas as fontes SuperFlix falharam: ${failures.join(" | ").slice(0, 500)}`);
-  }
-
-  const best = profiles.reduce((a, b) => (b.score > a.score ? b : a));
-  slog(
-    "ok",
-    `escolhida=${best.option.label} nota=${best.score} entre=${profiles.length} ` +
-      `tipo=${best.result.tipo} host=${safeUrlLabel(best.result.stream)}`,
-  );
-  return { ...best.result, expiresAt };
+  const session = await prepareSuperflixSession(embedUrl, options);
+  return session.resolveWithFailover(options.preferredOptionKey || null);
 }
 
 module.exports = {
   extractSuperflix,
+  prepareSuperflixSession,
+  SuperflixSession,
+  SuperflixAuthorizationError,
+  isAuthorizationError,
+  retryAuthorizationOnce,
   // Exportado apenas para testes locais do parser; não é usado pelo app.
   _test: {
     normalizeHtml,
@@ -988,6 +1287,7 @@ module.exports = {
     findPageToken,
     findSourceIds,
     findNativeMediaSource,
+    isServerProvidedNativeRoute,
     findDirectMedia,
     findSubtitleTracks,
     findContentId,
@@ -1000,6 +1300,9 @@ module.exports = {
     secureTransportUrl,
     profileScore,
     tokenExpiry,
+    publicOptionLabel,
+    isAuthorizationError,
+    retryAuthorizationOnce,
     looksLikeHlsUrl,
     looksLikeMp4Url,
   },

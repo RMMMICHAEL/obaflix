@@ -465,7 +465,10 @@ class PlayerWebViewClient(
             val state = ObaflixApp.playerState
             val cdnHost = try { URL(cdnUrl).host } catch (_: Exception) { "" }
             val reqBuilder = Request.Builder().url(cdnUrl).get()
-                .addHeader("User-Agent", ObaflixApp.webViewUserAgent ?: UA)
+                .addHeader(
+                    "User-Agent",
+                    state.mediaUserAgent ?: ObaflixApp.webViewUserAgent ?: UA,
+                )
                 // Headers necessários para CDNs com bot-detection — sem eles, alguns CDNs
                 // retornam 403 porque a request não parece vir de um browser real.
                 .addHeader("Accept", "*/*")

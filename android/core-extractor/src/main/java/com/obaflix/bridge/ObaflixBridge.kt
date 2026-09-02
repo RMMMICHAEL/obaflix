@@ -9,6 +9,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Exposta ao JavaScript como window._obaflixBridge.
@@ -29,8 +31,11 @@ class ObaflixBridge(
     // rodando: ela continuava competindo pela mesma sessão do provedor e podia
     // resolver depois da nova, sobrescrevendo o stream correto.
     private var activeExtraction: Job? = null
+    private val superflixSessions = ConcurrentHashMap<String, SuperflixExtractor.Session>()
 
     private fun authorized(value: String): Boolean = value == capability
+    private fun validCallbackId(value: String): Boolean =
+        value.length in 1..128 && value.all { it.isLetterOrDigit() || it == '_' || it == '-' }
 
     private companion object {
         /** Eventos do JS que significam "a reproducao parou aqui". */
@@ -116,7 +121,7 @@ class ObaflixBridge(
         callbackId: String,
         embedUrl: String
     ) {
-        if (!authorized(capability) || callbackId.length > 128 || embedUrl.length > 4096) return
+        if (!authorized(capability) || !validCallbackId(callbackId) || embedUrl.length > 4096) return
         val provider = PlayerExtractors.detectProvider(embedUrl) ?: "desconhecido"
 
         // Cada chamada e uma tentativa de reproducao: abre trilha propria. Quando
@@ -215,6 +220,83 @@ class ObaflixBridge(
                     .toString()
 
                 resolveCallback(callbackId, json)
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun prepareSuperflix(capability: String, callbackId: String, embedUrl: String) {
+        if (!authorized(capability) || !validCallbackId(callbackId) || embedUrl.length > 4096 ||
+            PlayerExtractors.detectProvider(embedUrl) != "superflix"
+        ) return
+
+        activeExtraction?.cancel()
+        activeExtraction = scope.launch {
+            try {
+                val session = SuperflixExtractor.prepare(embedUrl)
+                val sessionId = UUID.randomUUID().toString()
+                superflixSessions[sessionId] = session
+                val json = JSONObject().apply {
+                    put("sessionId", sessionId)
+                    put("expiresAt", session.expiresAt ?: JSONObject.NULL)
+                    put("options", org.json.JSONArray().apply {
+                        session.options.forEach { option ->
+                            put(JSONObject().apply {
+                                put("key", option.key)
+                                put("label", option.label)
+                                put("isFile", option.isFile)
+                            })
+                        }
+                    })
+                }
+                resolveCallback(callbackId, json.toString())
+            } catch (error: Exception) {
+                resolveCallback(callbackId, JSONObject()
+                    .put("error", error.message ?: "Falha ao preparar Superflix")
+                    .toString())
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun resolveSuperflix(
+        capability: String,
+        callbackId: String,
+        sessionId: String,
+        optionKey: String,
+    ) {
+        if (!authorized(capability) || !validCallbackId(callbackId) ||
+            sessionId.length > 128 || optionKey.length > 128
+        ) return
+        val session = superflixSessions[sessionId]
+        if (session == null) {
+            resolveCallback(callbackId, JSONObject().put("error", "Sessão Superflix indisponível").toString())
+            return
+        }
+
+        activeExtraction?.cancel()
+        activeExtraction = scope.launch {
+            try {
+                val result = StreamExtractor.acceptNativeResult(session.resolve(optionKey))
+                val json = JSONObject().apply {
+                    put("stream", result.stream)
+                    put("tipo", result.tipo ?: "hls")
+                    put("referer", result.referer ?: JSONObject.NULL)
+                    put("expiresAt", result.expiresAt ?: JSONObject.NULL)
+                    put("subtitles", org.json.JSONArray().apply {
+                        result.subtitles.forEach { track ->
+                            put(JSONObject().put("file", track.file).put("label", track.label))
+                        }
+                    })
+                    put("isMaster", result.isMaster)
+                    put("qualities", org.json.JSONArray(result.qualities))
+                    put("audioTracks", org.json.JSONArray(result.audioTracks))
+                }
+                resolveCallback(callbackId, json.toString())
+            } catch (error: Exception) {
+                resolveCallback(callbackId, JSONObject()
+                    .put("error", error.message ?: "Servidor Superflix indisponível")
+                    .toString())
             }
         }
     }

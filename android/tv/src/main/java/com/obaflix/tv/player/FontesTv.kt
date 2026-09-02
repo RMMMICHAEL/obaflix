@@ -6,6 +6,7 @@ import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerExtractors
 import com.obaflix.bridge.StreamExtractor
 import com.obaflix.bridge.SuperflixChallengeOverlay
+import com.obaflix.bridge.SuperflixExtractor
 import com.obaflix.bridge.SubtitleTrack
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Episodio
@@ -64,12 +65,16 @@ data class Fonte(
      * marca. Nao e um nome de provedor — continua sendo "Servidor N" na tela.
      */
     val exigeDesafio: Boolean = false,
+    /** Sessão/opção efêmera criada localmente após o bootstrap Superflix. */
+    val superflixSession: SuperflixExtractor.Session? = null,
+    val superflixOptionKey: String? = null,
+    val superflixIsFile: Boolean = false,
 ) {
     /** "Servidor 2 · Dublado" — o unico enfeite permitido sobre o rotulo. */
     val descricao: String
         get() = when (idioma) {
-            "dub" -> rotulo + " · Dublado"
-            "leg" -> rotulo + " · Legendado"
+            "dub" -> if (rotulo.contains("Dublado", true)) rotulo else rotulo + " · Dublado"
+            "leg" -> if (rotulo.contains("Legendado", true)) rotulo else rotulo + " · Legendado"
             else -> rotulo
         }
 }
@@ -367,11 +372,40 @@ object FontesTv {
      * nunca aparece em log: `ObaLog.url` ja reduz a host quando o extrator
      * registra, e aqui nao ha registro nenhum do endereco.
      */
-    suspend fun resolver(sessao: String, fonte: Fonte): Midia? {
+    suspend fun resolver(
+        sessao: String,
+        fonte: Fonte,
+        onSuperflixOptions: (List<Fonte>) -> Unit = {},
+    ): Midia? {
         // Trilha por servidor: com varias tentativas em sequencia, o log sem
         // separacao vira um emaranhado onde nao da para saber qual servidor
         // produziu qual erro.
         ObaLog.novaTrilha("resolverFonte", "servidor" to fonte.rotulo)
+
+        // Opção interna já listada pelo bootstrap: não volta à API do Obaflix e
+        // não abre navegador. Resolve a URL efêmera somente agora.
+        fonte.superflixSession?.let { localSession ->
+            val optionKey = fonte.superflixOptionKey ?: return null
+            val result = runCatching {
+                StreamExtractor.acceptNativeResult(localSession.resolve(optionKey))
+            }.getOrElse { error ->
+                ObaLog.falha(
+                    ObaLog.Fase.EXTRACAO, "superflix_candidate_rejected", error,
+                    "servidor" to fonte.rotulo,
+                    "is_file" to fonte.superflixIsFile,
+                )
+                return null
+            }
+            return Midia(
+                userAgent = localSession.userAgent,
+                ehHls = result.tipo.equals("hls", true) || result.isMaster || pareceHls(result.stream),
+                url = result.stream,
+                referer = result.referer,
+                legendas = result.subtitles.distinctBy { it.file },
+                qualidades = result.qualities.distinct(),
+                audios = result.audioTracks.distinct(),
+            )
+        }
 
         val resposta = ApiObaflix.fonteNativa(sessao, fonte.id)
         if (resposta == null) {
@@ -440,7 +474,32 @@ object FontesTv {
             // pessoa resolvendo o Turnstile, e o proprio extrator ja estende o
             // prazo enquanto o overlay estiver aberto e desiste quando ele e
             // fechado sem escolha.
-            if (fonte.exigeDesafio) {
+            if (fonte.exigeDesafio && provedor == "superflix") {
+                val prepared = SuperflixExtractor.prepare(embed)
+                val localOptions = prepared.options.map { option ->
+                    Fonte(
+                        id = "sf-local:${option.key}",
+                        rotulo = option.label,
+                        idioma = when {
+                            option.label.contains("Dublado", true) -> "dub"
+                            option.label.contains("Legendado", true) -> "leg"
+                            else -> null
+                        },
+                        exigeDesafio = true,
+                        superflixSession = prepared,
+                        superflixOptionKey = option.key,
+                        superflixIsFile = option.isFile,
+                    )
+                }
+                if (localOptions.isEmpty()) throw IllegalStateException("Superflix sem servidores")
+                onSuperflixOptions(localOptions)
+                // Só a primeira opção é resolvida agora. As demais continuam
+                // intactas e serão resolvidas se o usuário escolher ou o player
+                // realmente falhar e avançar.
+                StreamExtractor.acceptNativeResult(
+                    prepared.resolve(localOptions.first().superflixOptionKey!!),
+                )
+            } else if (fonte.exigeDesafio) {
                 StreamExtractor.extract(embed)
             } else {
                 withTimeoutOrNull(EXTRACAO_TIMEOUT_MS) { StreamExtractor.extract(embed) }
@@ -461,7 +520,7 @@ object FontesTv {
         }
 
         if (fonte.exigeDesafio) {
-            sondarDuasVias(extraido.stream, extraido.referer, uaDoDesafio(fonte))
+            sondarDuasVias(extraido.stream, extraido.referer, extraido.userAgent ?: uaDoDesafio(fonte))
         }
 
         ObaLog.evento(
@@ -489,7 +548,7 @@ object FontesTv {
                 "motivo" to "hls_pelo_endereco",
             )
             return Midia(
-                userAgent = uaDoDesafio(fonte),
+                userAgent = extraido.userAgent ?: uaDoDesafio(fonte),
                 ehHls = true,
                 url = extraido.stream,
                 referer = extraido.referer,
@@ -520,7 +579,7 @@ object FontesTv {
                 "acao" to "entregue_ao_player",
             )
             return Midia(
-                userAgent = uaDoDesafio(fonte),
+                userAgent = extraido.userAgent ?: uaDoDesafio(fonte),
                 ehHls = hlsPeloEndereco,
                 url = extraido.stream,
                 referer = extraido.referer,
@@ -531,7 +590,7 @@ object FontesTv {
         }
 
         return Midia(
-            userAgent = uaDoDesafio(fonte),
+            userAgent = extraido.userAgent ?: uaDoDesafio(fonte),
             // O corpo confirma, mas o endereco tambem vale: um `.m3u8` que a
             // conferencia nao conseguiu ler continua sendo HLS para o Media3.
             ehHls = info.ehHls || hlsPeloEndereco,

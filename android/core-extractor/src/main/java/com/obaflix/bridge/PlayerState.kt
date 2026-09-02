@@ -29,6 +29,10 @@ class PlayerState {
     @Volatile
     var embedReferer: String? = null
 
+    /** UA do contexto que autorizou a fonte atual; null usa o UA normal do app. */
+    @Volatile
+    var mediaUserAgent: String? = null
+
     @Volatile
     var observedSuperflixUrl: String? = null
 

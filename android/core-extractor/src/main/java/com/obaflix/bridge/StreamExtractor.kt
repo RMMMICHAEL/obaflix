@@ -15,11 +15,41 @@ data class ExtractResult(
     val qualities: List<String> = emptyList(),
     val audioTracks: List<String> = emptyList(),
     val expiresAt: Long? = null,
+    val userAgent: String? = null,
 )
 
 // Dispatcher genérico: delega a extração real para PlayerExtractors e atualiza o
 // playerState compartilhado, usado pelo PlayerWebViewClient para injetar headers no CDN.
 object StreamExtractor {
+
+    /** Valida e publica no player um resultado resolvido sob demanda. */
+    suspend fun acceptNativeResult(nativeResult: NativeExtractResult): ExtractResult {
+        val parsedStream = URL(nativeResult.stream)
+        if (parsedStream.protocol != "https") throw Exception("Stream inseguro")
+        val addresses = withContext(Dispatchers.IO) {
+            InetAddress.getAllByName(parsedStream.host)
+        }
+        if (addresses.isEmpty() || addresses.any {
+                it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
+                    it.isSiteLocalAddress || it.isMulticastAddress
+            }
+        ) throw Exception("Destino de stream bloqueado")
+
+        ObaflixApp.playerState.resetCdnHosts(parsedStream.host)
+        ObaflixApp.playerState.embedReferer = nativeResult.referer
+        ObaflixApp.playerState.mediaUserAgent = nativeResult.userAgent
+        return ExtractResult(
+            stream = nativeResult.stream,
+            referer = nativeResult.referer,
+            subtitles = nativeResult.subtitles,
+            tipo = nativeResult.tipo,
+            isMaster = nativeResult.isMaster,
+            qualities = nativeResult.qualities,
+            audioTracks = nativeResult.audioTracks,
+            expiresAt = nativeResult.expiresAt,
+            userAgent = nativeResult.userAgent,
+        )
+    }
 
     suspend fun extract(embedUrl: String): ExtractResult {
         val provedor = PlayerExtractors.detectProvider(embedUrl) ?: "desconhecido"
@@ -77,6 +107,7 @@ object StreamExtractor {
             val cdnHost = URL(stream).host
             ObaflixApp.playerState.resetCdnHosts(cdnHost)
             ObaflixApp.playerState.embedReferer = nativeResult.referer
+            ObaflixApp.playerState.mediaUserAgent = nativeResult.userAgent
             ObaLog.evento(
                 ObaLog.Fase.EXTRACAO, "cdn_liberado",
                 "host" to cdnHost,
@@ -96,6 +127,7 @@ object StreamExtractor {
             qualities = nativeResult.qualities,
             audioTracks = nativeResult.audioTracks,
             expiresAt = nativeResult.expiresAt,
+            userAgent = nativeResult.userAgent,
         )
     }
 }

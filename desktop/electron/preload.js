@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // Retorna: { stream: string, tipo: "hls"|"mp4" } | { error: string }
   extractStream: (embedUrl) => ipcRenderer.invoke("extract-stream", embedUrl),
 
+  // Superflix em duas etapas: o Chromium aparece somente se a sessão precisar
+  // de autorização; depois o seletor e a resolução pertencem ao Obaflix.
+  prepareSuperflix: (embedUrl) => ipcRenderer.invoke("superflix-prepare", embedUrl),
+  resolveSuperflix: (sessionId, optionKey) =>
+    ipcRenderer.invoke("superflix-resolve", sessionId, optionKey),
+
   // Toggle tela cheia nativa
   toggleFullscreen: () => ipcRenderer.invoke("toggle-fullscreen"),
 

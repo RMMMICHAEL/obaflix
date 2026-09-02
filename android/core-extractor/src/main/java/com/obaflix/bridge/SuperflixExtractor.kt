@@ -5,6 +5,8 @@ import com.obaflix.ObaflixApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.OkHttpClient
@@ -14,6 +16,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
 import java.net.URLDecoder
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
 
 
@@ -61,6 +65,8 @@ data class NativeExtractResult(
     val audioTracks: List<String> = emptyList(),
     /** Epoch em milissegundos em que o token da cadeia expira, quando declarado. */
     val expiresAt: Long? = null,
+    /** UA legítimo do contexto que autorizou e resolveu esta mídia. */
+    val userAgent: String? = null,
 )
 
 data class SubtitleTrack(
@@ -81,9 +87,10 @@ object SuperflixExtractor {
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"
 
-    private class CloudflareChallengeException : Exception(
-        "SuperFlix aguardando validação do Cloudflare"
-    )
+    private class AuthorizationRequiredException(
+        val status: Int? = null,
+        val stage: String = "authorization",
+    ) : Exception("SuperFlix requer nova autorização")
 
     private fun userAgent(): String = ObaflixApp.webViewUserAgent ?: UA
 
@@ -140,7 +147,7 @@ object SuperflixExtractor {
         val body: String,
     )
 
-    private data class Page(
+    internal data class Page(
         val url: String,
         val html: String,
     )
@@ -155,7 +162,7 @@ object SuperflixExtractor {
      * Um servidor oferecido para o conteúdo, venha ele de /player/bootstrap
      * (protocolo atual) ou da varredura do HTML (protocolo legado).
      */
-    private data class SourceOption(
+    internal data class SourceOption(
         val id: String,
         val label: String,
         /** null quando o caminho legado não informa; true = MP4 direto do provedor. */
@@ -178,7 +185,222 @@ object SuperflixExtractor {
         val score: Int,
     )
 
-    private class CookieStore {
+    data class ServerOption(
+        /** Chave aleatória local; nunca é o video_id real do provedor. */
+        val key: String,
+        val label: String,
+        val isFile: Boolean,
+    )
+
+    /**
+     * Contexto efêmero de uma página autorizada.
+     *
+     * Cookies, PAGE_TOKEN, cfv e IDs reais ficam apenas nesta instância em
+     * memória. A interface recebe chaves opacas e resolve somente a opção que o
+     * usuário escolheu, quando ele a escolhe.
+     */
+    class Session internal constructor(
+        internal val embedUrl: String,
+        private var client: OkHttpClient,
+        private var cookies: CookieStore,
+        private var warezPage: Page,
+        private var pageToken: String,
+        private var host: String,
+        sourceOptions: List<SourceOption>,
+        expiresAt: Long?,
+        userAgent: String,
+    ) {
+        private val optionIdentityByKey = linkedMapOf<String, SourceOption>()
+        private val optionIndexByKey = linkedMapOf<String, Int>()
+        private var currentOptions = sourceOptions
+        private val renewalMutex = Mutex()
+        private var generation = 0L
+        var expiresAt: Long? = expiresAt
+            private set
+        var userAgent: String = userAgent
+            private set
+        val options: List<ServerOption> = sourceOptions.mapIndexed { index, option ->
+            val key = UUID.randomUUID().toString()
+            optionIdentityByKey[key] = option
+            optionIndexByKey[key] = index
+            ServerOption(
+                key = key,
+                label = publicOptionLabel(option, index),
+                isFile = option.isFile == true,
+            )
+        }
+
+        fun isFresh(now: Long = System.currentTimeMillis()): Boolean {
+            val expiry = expiresAt
+            return expiry == null || now < expiry - 5_000L
+        }
+
+        internal val authorizedUrl: String get() = warezPage.url
+
+        suspend fun canReuse(): Boolean {
+            if (!isFresh()) return false
+
+            return try {
+                val page = fetchPage(
+                    client,
+                    cookies,
+                    warezPage.url,
+                    warezPage.url,
+                    ua = userAgent,
+                )
+
+                if (isCloudflareChallenge(page.html)) {
+                    return false
+                }
+
+                val refreshedToken = findPageToken(page.html) ?: return false
+                val payload = decodeTokenPayload(refreshedToken)
+
+                val refreshedOptions = resolveOptions(
+                    client = client,
+                    cookies = cookies,
+                    page = page,
+                    pageToken = refreshedToken,
+                    payload = payload,
+                    ua = userAgent,
+                )
+
+                if (refreshedOptions.isEmpty()) {
+                    return false
+                }
+
+                warezPage = page
+                pageToken = refreshedToken
+                currentOptions = refreshedOptions
+
+                val refreshedExpiry = payload
+                    ?.optLong("exp", 0L)
+                    ?.takeIf { it > 0L }
+                    ?.times(1000L)
+
+                if (refreshedExpiry != null) {
+                    expiresAt = refreshedExpiry
+                }
+
+                true
+            } catch (_: AuthorizationRequiredException) {
+                false
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        private fun currentOption(optionKey: String): SourceOption {
+            val identity = optionIdentityByKey[optionKey]
+                ?: throw Exception("servidor Superflix inválido")
+
+            currentOptions.firstOrNull { it.id == identity.id }?.let {
+                return it
+            }
+
+            currentOptions.firstOrNull {
+                it.label == identity.label && it.isFile == identity.isFile
+            }?.let {
+                return it
+            }
+
+            val originalIndex = optionIndexByKey[optionKey]
+            if (originalIndex != null) {
+                val indexed = currentOptions.getOrNull(originalIndex)
+
+                if (indexed != null && indexed.isFile == identity.isFile) {
+                    log(
+                        "source_remap",
+                        "opção remapeada após renovação por posição e tipo",
+                    )
+                    return indexed
+                }
+            }
+
+            throw Exception("servidor Superflix não existe mais após renovação")
+        }
+
+        private suspend fun resolveOnce(optionKey: String): NativeExtractResult {
+            if (!isFresh()) throw AuthorizationRequiredException(stage = "page_token")
+            val option = currentOption(optionKey)
+            log("source_selected", "is_file=${option.isFile == true}")
+            val target = postSource(client, cookies, warezPage, pageToken, option.id, host, userAgent)
+            val candidate = resolveSource(client, cookies, target, warezPage.url, userAgent)
+            val profile = profileSource(client, cookies, option, candidate, userAgent)
+            log("source_ok", "superflix_source_ok is_file=${option.isFile == true} tipo=${profile.result.tipo}")
+            return profile.result.copy(expiresAt = expiresAt, userAgent = userAgent)
+        }
+
+        private fun replaceAuthorizedContext(renewed: Session) {
+            client = renewed.client
+            cookies = renewed.cookies
+            warezPage = renewed.warezPage
+            pageToken = renewed.pageToken
+            host = renewed.host
+            currentOptions = renewed.currentOptions
+            expiresAt = renewed.expiresAt
+            userAgent = renewed.userAgent
+            generation += 1L
+        }
+
+        suspend fun resolve(optionKey: String): NativeExtractResult {
+            val observedGeneration = generation
+            try {
+                return resolveOnce(optionKey)
+            } catch (error: AuthorizationRequiredException) {
+                return renewalMutex.withLock {
+                    // Outra resolução concorrente já renovou; não inicia outra.
+                    if (generation == observedGeneration) {
+                        replaceAuthorizedContext(renewSession(this@Session))
+                    }
+                    // Segunda falha sai para o player: não há recursão nem loop.
+                    resolveOnce(optionKey)
+                }
+            }
+        }
+
+        suspend fun resolveWithFailover(preferredKey: String? = null): NativeExtractResult {
+            val keys = options.map { it.key }.toMutableList()
+            if (preferredKey != null && keys.remove(preferredKey)) keys.add(0, preferredKey)
+            val failures = mutableListOf<String>()
+            keys.forEachIndexed { index, key ->
+                try {
+                    return resolve(key)
+                } catch (error: Exception) {
+                    if (error is AuthorizationRequiredException) throw error
+                    failures += error.message ?: error.javaClass.simpleName
+                    log("candidate_rejected", "superflix_candidate_rejected index=${index + 1}")
+                    if (index + 1 < keys.size) log("failover", "superflix_failover next=${index + 2}")
+                }
+            }
+            throw Exception("todas as fontes Superflix falharam: ${failures.joinToString(" | ").take(500)}")
+        }
+    }
+
+    private fun publicOptionLabel(option: SourceOption, index: Int): String {
+        val original = option.label.replace(Regex("""\s+"""), " ").trim()
+        val text = original.lowercase()
+        val safeCharacters = Regex("""^[\p{L}\p{N} ._+()/-]{1,48}$""").matches(original)
+        val sensitiveShape = Regex(
+            """https?:|www\.|\.[a-z]{2,}(?:\b|/)|[?&=]|(?:token|cookie|clearance|cfv|signature|video[_-]?id)""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(original)
+        val usefulGenericName = Regex(
+            """^(?=.*(?:servidor|player|op[cç][aã]o|principal|alternativ|mp4|hls|hd|full hd|dublad|legendad|portugu[eê]s|original))[\p{L}\p{N} ._+()/-]+$""",
+            RegexOption.IGNORE_CASE,
+        ).matches(original)
+        if (safeCharacters && !sensitiveShape && usefulGenericName) return original
+        val suffix = when {
+            Regex("""dublad|portugu|pt-br""").containsMatchIn(text) -> " · Dublado"
+            Regex("""legend|subtitle|\bleg\b""").containsMatchIn(text) -> " · Legendado"
+            else -> ""
+        }
+        return "Servidor ${index + 1}$suffix"
+    }
+
+    private val sessionsByEmbed = ConcurrentHashMap<String, Session>()
+
+    internal class CookieStore {
         private data class Cookie(
             val domain: String,
             val name: String,
@@ -497,6 +719,7 @@ object SuperflixExtractor {
         pageToken: String,
         contentId: String,
         contentPath: String,
+        ua: String,
     ): List<SourceOption> {
         val pageUrl = URL(page.url)
         val origin = "${pageUrl.protocol}://${pageUrl.host}"
@@ -516,6 +739,7 @@ object SuperflixExtractor {
         val result = requestOnce(
             client = client,
             cookies = cookies,
+            ua = ua,
             url = "$origin/player/bootstrap",
             referer = page.url,
             method = "POST",
@@ -528,7 +752,13 @@ object SuperflixExtractor {
                 "X-Requested-With" to "XMLHttpRequest",
             ),
         )
+        if (result.status == 403 || result.status == 419) {
+            throw AuthorizationRequiredException(result.status, "player/bootstrap")
+        }
         if (result.status !in 200..299) throw Exception("player/bootstrap HTTP ${result.status}")
+        if (isCloudflareChallenge(result.body)) {
+            throw AuthorizationRequiredException(result.status, "player/bootstrap")
+        }
 
         val options = JSONObject(result.body).optJSONObject("data")?.optJSONArray("options")
             ?: throw Exception("player/bootstrap sem options")
@@ -573,19 +803,24 @@ object SuperflixExtractor {
         page: Page,
         pageToken: String,
         payload: JSONObject?,
+        ua: String,
     ): List<SourceOption> {
         val contentId = findContentId(page.html)
         if (contentId != null) {
             val contentPath = payload?.optString("embed_content_path")?.takeIf { it.isNotBlank() }
                 ?: runCatching { URL(page.url).path }.getOrDefault("")
             val bootstrap = runCatching {
-                fetchBootstrap(client, cookies, page, pageToken, contentId, contentPath)
+                fetchBootstrap(client, cookies, page, pageToken, contentId, contentPath, ua)
             }.getOrElse { error ->
+                if (error is AuthorizationRequiredException) throw error
                 log("bootstrap_skip", error.message?.take(120) ?: error.javaClass.simpleName)
                 emptyList()
             }
             if (bootstrap.isNotEmpty()) {
-                log("bootstrap", "servidores=" + bootstrap.joinToString(", ") { it.label })
+                log(
+                    "bootstrap",
+                    "servidores=${bootstrap.size} arquivos=${bootstrap.count { it.isFile == true }}",
+                )
                 return bootstrap.sortedByDescending { it.orderScore }
             }
         } else {
@@ -608,14 +843,31 @@ object SuperflixExtractor {
                 for (index in 0 until sources.length()) {
                     val source = sources.optJSONObject(index) ?: continue
                     val resolved = resolveUrl(source.optString("src"), baseUrl)
-                    if (resolved?.contains("/player/native/media-source") == true) return resolved
+                    if (resolved != null && isServerProvidedNativeRoute(resolved, "nms")) return resolved
                 }
             } catch (_: Exception) { }
         }
 
-        val direct = Regex("""["'](https?://[^"']+/player/native/media-source[^"']*)["']""", RegexOption.IGNORE_CASE)
-            .find(normalized)?.groupValues?.getOrNull(1)
-        return resolveUrl(direct, baseUrl)
+        Regex("""["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
+            .findAll(normalized).forEach { match ->
+                val resolved = resolveUrl(match.groupValues[1], baseUrl)
+                if (resolved != null && isServerProvidedNativeRoute(resolved, "nms")) return resolved
+            }
+        return null
+    }
+
+    private fun isServerProvidedNativeRoute(raw: String, expected: String? = null): Boolean = try {
+        val parsed = URL(raw)
+        val route = parsed.path + (parsed.query?.let { "?$it" } ?: "")
+        if (expected == "nms") {
+            parsed.path.contains("/player/native/media-source") ||
+                Regex("""(?:^|[/=?&])nms_[A-Za-z0-9_-]+""", RegexOption.IGNORE_CASE).containsMatchIn(route)
+        } else {
+            parsed.path.contains("/player/native/media/") ||
+                Regex("""(?:^|[/=?&])nmp_[A-Za-z0-9_-]+""", RegexOption.IGNORE_CASE).containsMatchIn(route)
+        }
+    } catch (_: Exception) {
+        false
     }
 
     private fun findDirectMedia(html: String, baseUrl: String): String? {
@@ -652,6 +904,7 @@ object SuperflixExtractor {
         client: OkHttpClient,
         cookies: CookieStore,
         url: String,
+        ua: String = userAgent(),
         referer: String? = null,
         method: String = "GET",
         body: RequestBody? = null,
@@ -663,7 +916,7 @@ object SuperflixExtractor {
     ): HttpResult = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url(url)
-            .addHeader("User-Agent", userAgent())
+            .addHeader("User-Agent", ua)
             .addHeader("Accept", accept)
             .addHeader("Accept-Language", "pt-BR,pt;q=0.7,en-US;q=0.3,en;q=0.2")
             .addHeader("Sec-Fetch-Dest", dest)
@@ -695,6 +948,7 @@ object SuperflixExtractor {
         methodStart: String = "GET",
         bodyStart: RequestBody? = null,
         extraHeadersStart: Map<String, String> = emptyMap(),
+        ua: String = userAgent(),
     ): Page {
         var url = startUrl
         var currentReferer = referer
@@ -707,6 +961,7 @@ object SuperflixExtractor {
                 client = client,
                 cookies = cookies,
                 url = url,
+                ua = ua,
                 referer = currentReferer,
                 method = method,
                 body = body,
@@ -729,7 +984,13 @@ object SuperflixExtractor {
                     extraHeaders = emptyMap()
                 }
             } else {
+                if (result.status == 403 || result.status == 419) {
+                    throw AuthorizationRequiredException(result.status, "navegação")
+                }
                 if (result.status !in 200..299) throw Exception("HTTP ${result.status} em ${safeUrl(url)}")
+                if (isCloudflareChallenge(result.body)) {
+                    throw AuthorizationRequiredException(result.status, "challenge")
+                }
                 return Page(url, result.body)
             }
         }
@@ -741,6 +1002,7 @@ object SuperflixExtractor {
         cookies: CookieStore,
         embedUrl: String,
         initialReferer: String? = com.obaflix.core.BuildConfig.OBAFLIX_URL + "/",
+        ua: String = userAgent(),
     ): Page {
         var current = embedUrl
         var referer: String? = initialReferer
@@ -748,7 +1010,7 @@ object SuperflixExtractor {
 
         repeat(SUPERFLIX_TIMEOUT_HOPS) { hop ->
             if (!visited.add(current)) throw Exception("loop na cadeia SuperFlix/Vizero/WarezCDN")
-            val page = fetchPage(client, cookies, current, referer)
+            val page = fetchPage(client, cookies, current, referer, ua = ua)
             val parsed = URL(page.url)
             log("page", "hop=$hop url=${safeUrl(page.url)} bytes=${page.html.length}")
 
@@ -759,7 +1021,7 @@ object SuperflixExtractor {
                 // submetido. Distinguir isso de um "Just a moment" comum importa,
                 // porque o segundo se resolve sozinho e o primeiro nao.
                 log("cloudflare_desafio", "tipo=${challengeKind(page.html)} url=${safeUrl(page.url)}")
-                throw CloudflareChallengeException()
+                throw AuthorizationRequiredException(stage = "challenge")
             }
 
             val delegatedProvider = PlayerExtractors.detectProvider(page.url)
@@ -797,6 +1059,7 @@ object SuperflixExtractor {
         pageToken: String,
         sourceId: String,
         host: String,
+        ua: String,
     ): String {
         val pageUrl = URL(warezPage.url)
         val origin = "${pageUrl.protocol}://${pageUrl.host}"
@@ -820,6 +1083,7 @@ object SuperflixExtractor {
             client = client,
             cookies = cookies,
             url = endpoint,
+            ua = ua,
             referer = warezPage.url,
             method = "POST",
             body = form,
@@ -831,7 +1095,13 @@ object SuperflixExtractor {
                 "X-Requested-With" to "XMLHttpRequest",
             ),
         )
+        if (result.status == 403 || result.status == 419) {
+            throw AuthorizationRequiredException(result.status, "player/source")
+        }
         if (result.status !in 200..299) throw Exception("player/source HTTP ${result.status}")
+        if (isCloudflareChallenge(result.body)) {
+            throw AuthorizationRequiredException(result.status, "player/source")
+        }
         val json = try { JSONObject(result.body) } catch (_: Exception) {
             throw Exception("player/source retornou JSON inválido")
         }
@@ -847,11 +1117,13 @@ object SuperflixExtractor {
         cookies: CookieStore,
         targetUrl: String,
         warezPageUrl: String,
+        ua: String,
     ): NativeExtractResult {
         val first = requestOnce(
             client = client,
             cookies = cookies,
             url = targetUrl,
+            ua = ua,
             referer = warezPageUrl,
             readBody = false,
         )
@@ -862,6 +1134,9 @@ object SuperflixExtractor {
             resolveUrl(first.headers["Location"], targetUrl)?.let { secureTransportUrl(it) }
                 ?: throw Exception("player/redirect sem Location válido")
         } else {
+            if (first.status == 403 || first.status == 419) {
+                throw AuthorizationRequiredException(first.status, "player/redirect")
+            }
             if (first.status !in 200..299) throw Exception("player/redirect HTTP ${first.status}")
             targetUrl
         }
@@ -869,8 +1144,8 @@ object SuperflixExtractor {
         val parsed = URL(resolvedUrl)
         log("target", safeUrl(resolvedUrl))
 
-        if (parsed.path.contains("/player/native/media/")) {
-            val mediaPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
+        if (isServerProvidedNativeRoute(resolvedUrl)) {
+            val mediaPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
             val rawMediaSource = findNativeMediaSource(mediaPage.html, mediaPage.url)
                 ?: throw Exception("media-source não encontrado no player nativo")
             val mediaSource = secureTransportUrl(rawMediaSource)
@@ -881,6 +1156,7 @@ object SuperflixExtractor {
                 client = client,
                 cookies = cookies,
                 url = mediaSource,
+                ua = ua,
                 referer = mediaPage.url,
                 accept = "*/*",
                 dest = "video",
@@ -908,6 +1184,9 @@ object SuperflixExtractor {
             ) {
                 return NativeExtractResult(mediaSource, mediaPage.url, subtitles, tipo = "mp4")
             }
+            if (mediaResponse.status == 403 || mediaResponse.status == 419) {
+                throw AuthorizationRequiredException(mediaResponse.status, "media-source")
+            }
             throw Exception("media-source HTTP ${mediaResponse.status}")
         }
 
@@ -917,10 +1196,29 @@ object SuperflixExtractor {
             val warez = URL(warezPageUrl)
             val r = "${warez.protocol}://${warez.host}/"
             val subtitles = runCatching {
-                val embedPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
+                val embedPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
                 findSubtitleTracks(embedPage.html, embedPage.url)
             }.getOrDefault(emptyList())
-            val stream = PlayerExtractors.extractEmbedPlayer(resolvedUrl, r)
+            val stream = try {
+                PlayerExtractors.extractEmbedPlayer(
+                    resolvedUrl,
+                    r,
+                    ua,
+                    cookies.header(resolvedUrl),
+                )
+            } catch (error: PlayerExtractors.ProviderHttpException) {
+                if (error.status == 403 || error.status == 419) {
+                    throw AuthorizationRequiredException(
+                        error.status,
+                        "embedplayer",
+                    )
+                }
+
+                // 404/429/5xx e demais falhas do player externo não significam
+                // perda da autorização Superflix. Elas seguem como falha normal
+                // da fonte para permitir failover sem reabrir o challenge.
+                throw error
+            }
             return NativeExtractResult(stream, resolvedUrl, subtitles)
         }
 
@@ -936,7 +1234,7 @@ object SuperflixExtractor {
             )
         }
 
-        val fallbackPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl)
+        val fallbackPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
         val direct = findDirectMedia(fallbackPage.html, fallbackPage.url)
             ?: throw Exception("mídia não encontrada em ${safeUrl(fallbackPage.url)}")
         return NativeExtractResult(
@@ -989,6 +1287,7 @@ object SuperflixExtractor {
         cookies: CookieStore,
         option: SourceOption,
         candidate: NativeExtractResult,
+        ua: String,
     ): MediaProfile {
         val url = candidate.stream
         var tipo = candidate.tipo
@@ -1009,6 +1308,7 @@ object SuperflixExtractor {
                     client = client,
                     cookies = cookies,
                     url = url,
+                    ua = ua,
                     referer = candidate.referer,
                     accept = "*/*",
                     dest = "video",
@@ -1017,7 +1317,13 @@ object SuperflixExtractor {
                     readBody = false,
                 )
             }.getOrNull()
-            val contentType = head?.headers?.get("Content-Type").orEmpty().lowercase()
+            if (head == null || head.status !in 200..299) {
+                if (head?.status == 403 || head?.status == 419) {
+                    throw AuthorizationRequiredException(head.status, "mídia")
+                }
+                throw Exception("mídia inacessível" + (head?.let { " (HTTP ${it.status})" } ?: ""))
+            }
+            val contentType = head.headers["Content-Type"].orEmpty().lowercase()
             when {
                 contentType.contains("mpegurl") || contentType.contains("m3u") -> {
                     tipo = "hls"
@@ -1037,16 +1343,43 @@ object SuperflixExtractor {
                     client = client,
                     cookies = cookies,
                     url = url,
+                    ua = ua,
                     referer = candidate.referer,
                     accept = "*/*",
                     dest = "empty",
                     mode = "cors",
                 )
             }.getOrNull()
-            if (manifest != null && manifest.status in 200..299 &&
-                HlsManifest.looksLikeManifest(manifest.body)
-            ) {
-                info = HlsManifest.parse(manifest.body, url)
+            if (manifest == null || manifest.status !in 200..299) {
+                if (manifest?.status == 403 || manifest?.status == 419) {
+                    throw AuthorizationRequiredException(manifest.status, "manifesto")
+                }
+                throw Exception("manifesto inacessível" + (manifest?.let { " (HTTP ${it.status})" } ?: ""))
+            }
+            if (!HlsManifest.looksLikeManifest(manifest.body)) {
+                throw Exception("resposta não é manifesto HLS")
+            }
+            info = HlsManifest.parse(manifest.body, url)
+        } else if (tipo == "mp4") {
+            val media = runCatching {
+                requestOnce(
+                    client = client,
+                    cookies = cookies,
+                    url = url,
+                    ua = ua,
+                    referer = candidate.referer,
+                    accept = "*/*",
+                    dest = "video",
+                    mode = "no-cors",
+                    extraHeaders = mapOf("Range" to "bytes=0-0"),
+                    readBody = false,
+                )
+            }.getOrNull()
+            if (media == null || media.status !in 200..299) {
+                if (media?.status == 403 || media?.status == 419) {
+                    throw AuthorizationRequiredException(media.status, "MP4")
+                }
+                throw Exception("MP4 inacessível" + (media?.let { " (HTTP ${it.status})" } ?: ""))
             }
         }
 
@@ -1066,7 +1399,7 @@ object SuperflixExtractor {
         val score = profileScore(tipo, info, hasSubtitles, option)
         log(
             "profile",
-            "source=${option.label} tipo=$tipo master=${info?.isMaster == true} " +
+            "is_file=${option.isFile == true} tipo=$tipo master=${info?.isMaster == true} " +
                 "qualidades=${info?.variants?.size ?: 0} audios=${info?.audioTracks?.size ?: 0} " +
                 "legendas=${subtitles.size} noManifesto=${info?.subtitles?.size ?: 0} nota=$score",
         )
@@ -1090,12 +1423,14 @@ object SuperflixExtractor {
         return if (exp < 100_000_000_000L) exp * 1000L else exp
     }
 
-    private suspend fun extractWithCookies(
-        embedUrl: String,
+    private suspend fun prepareWithCookies(
+        startUrl: String,
         initialCookieHeader: String?,
         initialReferer: String? = com.obaflix.core.BuildConfig.OBAFLIX_URL + "/",
-    ): NativeExtractResult {
-        val input = try { URL(embedUrl) } catch (_: Exception) { throw Exception("URL SuperFlix inválida") }
+        contextUa: String = userAgent(),
+        canonicalEmbedUrl: String = startUrl,
+    ): Session {
+        val input = try { URL(startUrl) } catch (_: Exception) { throw Exception("URL SuperFlix inválida") }
         if (!isChainHost(input.host)) throw Exception("URL SuperFlix inválida")
 
         val client = ObaflixApp.httpClient.newBuilder()
@@ -1103,13 +1438,12 @@ object SuperflixExtractor {
             .followSslRedirects(false)
             .build()
         val cookies = CookieStore()
-        cookies.seed(embedUrl, initialCookieHeader)
+        cookies.seed(startUrl, initialCookieHeader)
 
-        val warezPage = resolveWarezPage(client, cookies, embedUrl, initialReferer)
+        val warezPage = resolveWarezPage(client, cookies, startUrl, initialReferer, contextUa)
         val delegatedProvider = PlayerExtractors.detectProvider(warezPage.url)
         if (delegatedProvider != null && delegatedProvider != "superflix") {
-            log("delegate", "provider=$delegatedProvider url=${safeUrl(warezPage.url)}")
-            return PlayerExtractors.extractResult(warezPage.url)
+            throw Exception("página autorizada saiu da cadeia Superflix")
         }
         val pageToken = findPageToken(warezPage.html)
             ?: throw Exception("page_token não encontrado na página WarezCDN")
@@ -1121,51 +1455,28 @@ object SuperflixExtractor {
                 ?.substringAfter("host=")
                 ?.let { URLDecoder.decode(it, "UTF-8") }
             ?: ""
-        val sourceOptions = resolveOptions(client, cookies, warezPage, pageToken, payload)
+        val sourceOptions = resolveOptions(client, cookies, warezPage, pageToken, payload, contextUa)
         if (sourceOptions.isEmpty()) throw Exception("nenhum servidor encontrado para o conteúdo")
 
-        log(
-            "sources",
-            "total=${sourceOptions.size} nativos=${sourceOptions.count { !it.isEmbedServer }}",
-        )
-        val failures = mutableListOf<String>()
-        val profiles = mutableListOf<MediaProfile>()
         val expiresAt = tokenExpiry(payload)
-        val probeDeadline = System.currentTimeMillis() + SUPERFLIX_PROBE_BUDGET_MS
-
-        // Inspeciona os servidores em vez de aceitar o primeiro que responde: o
-        // primeiro funcional costuma ser um MP4 de qualidade única, enquanto outro
-        // servidor entrega um master HLS com qualidades, áudio e legendas.
-        for (option in sourceOptions) {
-            try {
-                val target = postSource(client, cookies, warezPage, pageToken, option.id, host)
-                val candidate = resolveSource(client, cookies, target, warezPage.url)
-                val profile = profileSource(client, cookies, option, candidate)
-                profiles.add(profile)
-                if (profile.score >= SUPERFLIX_EXCELLENT_SCORE) {
-                    log("probe_stop", "fonte completa encontrada em ${option.label}")
-                    break
-                }
-            } catch (e: Exception) {
-                failures.add("${option.label}: ${e.message}")
-                log("source_skip", "source=${option.label} erro=${e.message?.take(100)}")
-            }
-            if (System.currentTimeMillis() > probeDeadline && profiles.isNotEmpty()) {
-                log("probe_stop", "orçamento de inspeção esgotado com ${profiles.size} fonte(s)")
-                break
-            }
-        }
-
-        val best = profiles.maxByOrNull { it.score }
-            ?: throw Exception("todas as fontes SuperFlix falharam: ${failures.joinToString(" | ").take(500)}")
-
         log(
-            "ok",
-            "escolhida=${best.option.label} nota=${best.score} entre=${profiles.size} " +
-                "tipo=${best.result.tipo} host=${safeUrl(best.result.stream)}",
+            "bootstrap_ok",
+            "superflix_bootstrap_ok options=${sourceOptions.size} " +
+                "is_file=${sourceOptions.count { it.isFile == true }}",
         )
-        return best.result.copy(expiresAt = expiresAt)
+        return Session(
+            canonicalEmbedUrl, client, cookies, warezPage, pageToken, host,
+            sourceOptions, expiresAt, contextUa,
+        )
     }
+
+    /** Compatibilidade interna para o fluxo antigo, mantido só como referência. */
+    private suspend fun extractWithCookies(
+        embedUrl: String,
+        initialCookieHeader: String?,
+        initialReferer: String? = com.obaflix.core.BuildConfig.OBAFLIX_URL + "/",
+    ): NativeExtractResult =
+        prepareWithCookies(embedUrl, initialCookieHeader, initialReferer).resolveWithFailover()
 
     /**
      * Depois da primeira mídia, o player ainda pede as legendas. Retornar na hora
@@ -1243,7 +1554,7 @@ object SuperflixExtractor {
             }.getOrElse { true }
         }
 
-    suspend fun extract(embedUrl: String): NativeExtractResult {
+    private suspend fun extractLegacy(embedUrl: String): NativeExtractResult {
         // Primeiro aproveita uma validação Cloudflare já existente no WebView.
         val cookieManager = CookieManager.getInstance()
         val playerState = ObaflixApp.playerState
@@ -1256,7 +1567,7 @@ object SuperflixExtractor {
                 val direto = extractWithCookies(embedUrl, cookieHeader)
                 log("direto", "resolvido sem interação do usuário")
                 return direto
-            } catch (_: CloudflareChallengeException) {
+            } catch (_: AuthorizationRequiredException) {
                 log("cloudflare", "aguardando validação do WebView")
                 // O portao do SuperFlix e interativo: so uma pessoa resolve. Em vez
                 // de esperar em silencio por algo que nunca chega sozinho, mostra a
@@ -1365,7 +1676,7 @@ object SuperflixExtractor {
                     try {
                         log("cloudflare", "URL validada observada: ${safeUrl(observed)}")
                         return extractWithCookies(observed, cookieHeader, embedUrl)
-                    } catch (error: CloudflareChallengeException) {
+                    } catch (error: AuthorizationRequiredException) {
                         // O token ainda pode estar sendo finalizado; continua aguardando.
                     } catch (error: Exception) {
                         log("cloudflare_retry", error.message?.take(160) ?: error.javaClass.simpleName)
@@ -1386,7 +1697,7 @@ object SuperflixExtractor {
                         val direto = extractWithCookies(embedUrl, cookieHeader)
                         log("direto", "resolvido após o desafio, sem escolha manual")
                         return direto
-                    } catch (_: CloudflareChallengeException) {
+                    } catch (_: AuthorizationRequiredException) {
                     } catch (error: Exception) {
                         log("direto_falhou", error.message?.take(160) ?: error.javaClass.simpleName)
                     }
@@ -1410,4 +1721,143 @@ object SuperflixExtractor {
             playerState.finishSuperflixObservation(observation)
         }
     }
+
+    /**
+     * Autoriza (se necessário) e devolve a lista nativa de servidores.
+     * A WebView some assim que o bootstrap termina; ela nunca fica aberta para
+     * seleção nem para reprodução.
+     */
+    private suspend fun prepareFresh(
+        embedUrl: String,
+        preferredUrl: String = embedUrl,
+        preferredUa: String = userAgent(),
+    ): Session {
+        val cookieManager = CookieManager.getInstance()
+        val initialCookies = runCatching { cookieManager.getCookie(preferredUrl) }.getOrNull()
+        try {
+            val direct = prepareWithCookies(
+                preferredUrl, initialCookies,
+                initialReferer = if (preferredUrl == embedUrl) {
+                    com.obaflix.core.BuildConfig.OBAFLIX_URL + "/"
+                } else embedUrl,
+                contextUa = preferredUa,
+                canonicalEmbedUrl = embedUrl,
+            )
+            sessionsByEmbed[embedUrl] = direct
+            return direct
+        } catch (error: AuthorizationRequiredException) {
+            log(
+                "challenge_required",
+                "superflix_challenge_required stage=${error.stage} status=${error.status ?: 0}",
+            )
+        }
+
+        val playerState = ObaflixApp.playerState
+        val observation = playerState.beginSuperflixObservation()
+        try {
+            val host = ObaflixApp.hostWebView?.get()
+                ?: throw Exception("WebView indisponível para a verificação Superflix")
+            SuperflixChallengeOverlay.abrir(host, embedUrl)
+
+            val startedAt = System.currentTimeMillis()
+            var deadline = startedAt + 120_000L
+            var lastObserved: String? = null
+            var retryAt = 0L
+            var attempts = 0
+            while (System.currentTimeMillis() < deadline) {
+                delay(250L)
+                if (SuperflixChallengeOverlay.estaAberto) {
+                    deadline = System.currentTimeMillis() + 120_000L
+                }
+                val challengeUa = SuperflixChallengeOverlay.uaEmUso
+                    ?.takeIf { SuperflixChallengeOverlay.estaAberto && it.isNotBlank() }
+                if (challengeUa == null) {
+                    if (!SuperflixChallengeOverlay.estaAberto &&
+                        System.currentTimeMillis() - startedAt > 1_000L
+                    ) {
+                        throw Exception("verificação Superflix fechada antes da autorização")
+                    }
+                    continue
+                }
+
+                val observed = playerState.observedSuperflixUrl
+                if (!observed.isNullOrBlank() && observed != lastObserved) {
+                    lastObserved = observed
+                    val observedCookies = runCatching { cookieManager.getCookie(observed) }.getOrNull()
+                    try {
+                        val prepared = prepareWithCookies(
+                            observed, observedCookies, embedUrl,
+                            contextUa = challengeUa,
+                            canonicalEmbedUrl = embedUrl,
+                        )
+                        sessionsByEmbed[embedUrl] = prepared
+                        SuperflixChallengeOverlay.persistirCookies()
+                        log("challenge_completed", "superflix_challenge_completed")
+                        return prepared
+                    } catch (_: AuthorizationRequiredException) {
+                        // O POST/302 ainda pode estar terminando.
+                    } catch (error: Exception) {
+                        log("prepare_retry", error.javaClass.simpleName)
+                    }
+                }
+
+                // Fallback curto para WebView que não reportou a URL do frame.
+                // Não depende de cf_clearance: o fluxo atual também usa cfv e
+                // __sf_turnstile_pass, todos obtidos pelo navegador.
+                if (attempts < SUPERFLIX_DIRECT_RETRY_MAX &&
+                    System.currentTimeMillis() >= retryAt
+                ) {
+                    attempts += 1
+                    retryAt = System.currentTimeMillis() +
+                        SUPERFLIX_DIRECT_RETRY_BASE_MS * (1L shl (attempts - 1))
+                    val currentCookies = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+                    try {
+                        val prepared = prepareWithCookies(
+                            embedUrl, currentCookies,
+                            contextUa = challengeUa,
+                            canonicalEmbedUrl = embedUrl,
+                        )
+                        sessionsByEmbed[embedUrl] = prepared
+                        SuperflixChallengeOverlay.persistirCookies()
+                        log("challenge_completed", "superflix_challenge_completed")
+                        return prepared
+                    } catch (_: Exception) { /* continua aguardando o usuário */ }
+                }
+
+                if (!SuperflixChallengeOverlay.estaAberto &&
+                    System.currentTimeMillis() - startedAt > 1_000L
+                ) {
+                    throw Exception("verificação Superflix fechada antes da autorização")
+                }
+            }
+            throw Exception("tempo esgotado aguardando a verificação Superflix")
+        } finally {
+            SuperflixChallengeOverlay.fechar()
+            playerState.finishSuperflixObservation(observation)
+        }
+    }
+
+    private suspend fun renewSession(session: Session): Session {
+        sessionsByEmbed.remove(session.embedUrl, session)
+        return prepareFresh(
+            embedUrl = session.embedUrl,
+            preferredUrl = session.authorizedUrl,
+            preferredUa = session.userAgent,
+        )
+    }
+
+    suspend fun prepare(embedUrl: String): Session {
+        sessionsByEmbed[embedUrl]?.let { cached ->
+            if (cached.canReuse()) {
+                log("session_reused", "superflix_session_reused options=${cached.options.size}")
+                return cached
+            }
+            sessionsByEmbed.remove(embedUrl, cached)
+            return prepareFresh(embedUrl, cached.authorizedUrl, cached.userAgent)
+        }
+        return prepareFresh(embedUrl)
+    }
+
+    suspend fun extract(embedUrl: String): NativeExtractResult =
+        prepare(embedUrl).resolveWithFailover()
 }

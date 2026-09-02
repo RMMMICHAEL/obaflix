@@ -227,6 +227,22 @@ class MainActivity : AppCompatActivity() {
                             window._obaflixBridge.extractStream(bridgeCapability, id, embedUrl);
                         });
                     },
+                    prepareSuperflix: function(embedUrl) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            window._obaflixBridge.prepareSuperflix(bridgeCapability, id, embedUrl);
+                        });
+                    },
+                    resolveSuperflix: function(sessionId, optionKey) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            window._obaflixBridge.resolveSuperflix(
+                                bridgeCapability, id, sessionId, optionKey
+                            );
+                        });
+                    },
                     setKeepScreenOn: function(enabled) {
                         window._obaflixBridge.setKeepScreenOn(bridgeCapability, !!enabled);
                     },

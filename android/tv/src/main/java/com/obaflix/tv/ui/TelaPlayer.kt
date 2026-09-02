@@ -513,7 +513,21 @@ fun TelaPlayer(pedido: Pedido) {
         player.stop()
         player.clearMediaItems()
 
-        val midia = FontesTv.resolver(id, fonte)
+        val midia = FontesTv.resolver(id, fonte) { opcoesSuperflix ->
+            if (opcoesSuperflix.isNotEmpty() && epoca.get() == minhaEpoca) {
+                val atualizada = fontes.toMutableList()
+                val posicao = atualizada.indexOfFirst { it.id == fonte.id }
+                    .takeIf { it >= 0 } ?: indice
+                atualizada.removeAt(posicao)
+                atualizada.addAll(posicao, opcoesSuperflix)
+                fontes = atualizada
+                fonteAtual = posicao
+                ObaLog.evento(
+                    ObaLog.Fase.PROVEDOR, "superflix_bootstrap_ok",
+                    "opcoes" to opcoesSuperflix.size,
+                )
+            }
+        }
         if (epoca.get() != minhaEpoca) {
             ObaLog.evento(
                 ObaLog.Fase.PLAYER, "tv_tentativa_obsoleta",

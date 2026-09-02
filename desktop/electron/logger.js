@@ -52,9 +52,10 @@ function shortUrl(raw, max = 120) {
 function scrub(value) {
   if (typeof value !== "string") return value;
   return value
-    .replace(/([?&][\w-]*(?:token|password|secret|signature|sig|key|auth|verify|cfv|expires|hash|md5)=)[^&\s]*/gi, "$1***")
+    .replace(/([?&](?:t|pt|[\w-]*(?:token|password|secret|signature|sig|key|auth|verify|cfv|expires|hash|md5))=)[^&\s]*/gi, "$1***")
+    .replace(/\b(cf_clearance|__sf_turnstile_pass|cfv|page_token|pageToken)=([^;\s&]+)/gi, "$1=***")
     .replace(/(Authorization:\s*Bearer\s+)\S+/gi, "$1***")
-    .replace(/(Cookie:\s*)\S+/gi, "$1***");
+    .replace(/(Cookie\s*[:=]\s*)\S+/gi, "$1***");
 }
 
 /**

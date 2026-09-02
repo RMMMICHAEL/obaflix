@@ -163,9 +163,9 @@ object ObaLog {
             .append(" ev=").append(evento)
         for ((chave, valor) in campos) {
             if (valor == null) continue
-            val texto = valor.toString().trim()
-            if (texto.isEmpty()) continue
-            sb.append(' ').append(chave).append('=').append(escapar(texto))
+            val higienizado = texto(valor.toString()).trim()
+            if (higienizado.isEmpty()) continue
+            sb.append(' ').append(chave).append('=').append(escapar(higienizado))
         }
         return sb.toString()
     }

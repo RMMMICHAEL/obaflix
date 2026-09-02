@@ -10,7 +10,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { _test } = require("../superflix-extractor");
+const {
+  _test,
+  prepareSuperflixSession,
+  SuperflixAuthorizationError,
+  retryAuthorizationOnce,
+} = require("../superflix-extractor");
 const hlsManifest = require("../hls-manifest");
 
 const {
@@ -27,6 +32,9 @@ const {
   secureTransportUrl,
   profileScore,
   tokenExpiry,
+  createCookieJar,
+  isServerProvidedNativeRoute,
+  publicOptionLabel,
 } = _test;
 
 /** Opção como o /player/bootstrap devolve, para os testes de ranking. */
@@ -280,4 +288,186 @@ test("mídia e legenda em HTTP são promovidas para HTTPS", () => {
     findSubtitleTracks(comLegenda, "http://cdn.invalid/").map((t) => t.file),
     ["https://cdn.invalid/pt.vtt"],
   );
+});
+
+function response(body = "", status = 200, headers = {}) {
+  return new Response(body, { status, headers });
+}
+
+function integrationFetch({ firstSourceStatus = 200 } = {}) {
+  const calls = [];
+  const token = fakeToken({
+    embed_context_host: "contexto.invalid",
+    embed_content_path: "/filme/exemplo",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+  const page = `<input name="contentid" value="4242"><script>var page_token="${token}";</script>`;
+  let firstSourceAttempts = 0;
+
+  const fetchImpl = async (raw, init = {}) => {
+    const url = String(raw);
+    calls.push({ url, method: init.method || "GET", body: init.body || "", headers: init.headers || {} });
+    const parsed = new URL(url);
+    if (parsed.pathname === "/filme/exemplo") return response(page);
+    if (parsed.pathname === "/player/bootstrap") {
+      return response(JSON.stringify({ data: { options: [
+        { ID: "embed-1", name: "Player Principal Dublado", is_file: false },
+        { ID: "native_media_v2:fixture", name: "MP4 Alternativo", is_file: true },
+      ] } }), 200, { "content-type": "application/json" });
+    }
+    if (parsed.pathname === "/player/source") {
+      const form = new URLSearchParams(init.body);
+      if (form.get("video_id") === "embed-1") {
+        firstSourceAttempts += 1;
+        if (firstSourceAttempts === 1 && firstSourceStatus !== 200) return response("", firstSourceStatus);
+        return response(JSON.stringify({ data: { video_url: "https://superflixapi.pro/player/redirect/embed" } }));
+      }
+      return response(JSON.stringify({ data: { video_url: "https://superflixapi.pro/player/redirect/native" } }));
+    }
+    if (parsed.pathname === "/player/redirect/embed") {
+      return response("", 302, { location: "https://cdn.invalid/main.m3u8" });
+    }
+    if (parsed.pathname === "/player/redirect/native") {
+      return response("", 302, { location: "https://superflixapi.pro/player/native/media/nmp_fixture" });
+    }
+    if (parsed.pathname.endsWith("/nmp_fixture")) {
+      return response('<script>var SOURCES=[{"src":"https://superflixapi.pro/player/native/media-source/nms_fixture"}];</script>');
+    }
+    if (parsed.pathname.endsWith("/nms_fixture")) {
+      return response("", 302, { location: "https://cdn.invalid/movie.mp4?fixture=1" });
+    }
+    if (parsed.hostname === "cdn.invalid" && parsed.pathname.endsWith(".m3u8")) {
+      return response(MEDIA_MANIFEST, 200, { "content-type": "application/vnd.apple.mpegurl" });
+    }
+    if (parsed.hostname === "cdn.invalid" && parsed.pathname.endsWith(".mp4")) {
+      return response("", 206, { "content-type": "video/mp4", "content-range": "bytes 0-0/100" });
+    }
+    throw new Error(`fixture sem rota para ${parsed.pathname}`);
+  };
+  return { fetchImpl, calls };
+}
+
+test("prepare/bootstrap mantém is_file e só resolve a opção escolhida", async () => {
+  const fixture = integrationFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+  });
+
+  assert.deepEqual(session.publicOptions.map(({ label, isFile }) => ({ label, isFile })), [
+    { label: "Player Principal Dublado", isFile: false },
+    { label: "MP4 Alternativo", isFile: true },
+  ]);
+  assert.equal(fixture.calls.filter((call) => new URL(call.url).pathname === "/player/source").length, 0);
+
+  const second = session.publicOptions[1];
+  const media = await session.resolve(second.key);
+  assert.equal(media.tipo, "mp4");
+  const sourceCalls = fixture.calls.filter((call) => new URL(call.url).pathname === "/player/source");
+  assert.equal(sourceCalls.length, 1);
+  assert.equal(new URLSearchParams(sourceCalls[0].body).get("video_id"), "native_media_v2:fixture");
+});
+
+test("failover é tardio e só consulta a próxima fonte após falha", async () => {
+  const fixture = integrationFetch({ firstSourceStatus: 500 });
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+  });
+  const media = await session.resolveWithFailover(session.publicOptions[0].key);
+  assert.equal(media.tipo, "mp4");
+  const ids = fixture.calls
+    .filter((call) => new URL(call.url).pathname === "/player/source")
+    .map((call) => new URLSearchParams(call.body).get("video_id"));
+  assert.deepEqual(ids, ["embed-1", "native_media_v2:fixture"]);
+});
+
+test("403/419 faz uma única renovação e a segunda recusa não cria loop", async () => {
+  let operations = 0;
+  let renewals = 0;
+  const ok = await retryAuthorizationOnce(async () => {
+    operations += 1;
+    if (operations === 1) throw new SuperflixAuthorizationError("expirou", { status: 419 });
+    return "ok";
+  }, async () => { renewals += 1; });
+  assert.equal(ok, "ok");
+  assert.equal(renewals, 1);
+
+  operations = 0;
+  renewals = 0;
+  await assert.rejects(
+    retryAuthorizationOnce(async () => {
+      operations += 1;
+      throw new SuperflixAuthorizationError("continua recusado", { status: 403 });
+    }, async () => { renewals += 1; }),
+    (error) => error?.code === "SUPERFLIX_AUTH_REQUIRED",
+  );
+  assert.equal(operations, 2);
+  assert.equal(renewals, 1);
+});
+
+test("sessão expirada pede renovação antes de chamar player/source", async () => {
+  const fixture = integrationFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+  });
+  session.expiresAt = Date.now() - 1;
+  await assert.rejects(session.resolve(session.publicOptions[0].key),
+    (error) => error?.code === "SUPERFLIX_AUTH_REQUIRED");
+  assert.equal(fixture.calls.filter((call) => new URL(call.url).pathname === "/player/source").length, 0);
+});
+
+test("403 de player/source é classificado como autorização, não como parser/rede", async () => {
+  const fixture = integrationFetch({ firstSourceStatus: 403 });
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+  });
+  await assert.rejects(session.resolve(session.publicOptions[0].key),
+    (error) => error?.code === "SUPERFLIX_AUTH_REQUIRED" && error?.status === 403);
+});
+
+test("cache é revalidado por GET autenticado com o mesmo UA", async () => {
+  const fixture = integrationFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    cookies: [{ name: "sessao", value: "fixture", domain: ".superflixapi.pro", path: "/", secure: true }],
+  });
+  assert.equal(await session.revalidate(), true);
+  const pageCalls = fixture.calls.filter((call) => new URL(call.url).pathname === "/filme/exemplo");
+  assert.equal(pageCalls.length, 2);
+  assert.equal(pageCalls[1].headers["User-Agent"], "UA-legitimo-fixture");
+  assert.equal(pageCalls[1].headers.Cookie, "sessao=fixture");
+});
+
+test("rotas nmp/nms só são aceitas quando vieram como URL do servidor", () => {
+  assert.equal(isServerProvidedNativeRoute("https://sf.invalid/player/native/media/nmp_fixture"), true);
+  assert.equal(isServerProvidedNativeRoute("https://sf.invalid/player/native/media-source/nms_fixture", "nms"), true);
+  assert.equal(isServerProvidedNativeRoute("https://sf.invalid/player/source", "nms"), false);
+  assert.equal(isServerProvidedNativeRoute("nmp_construido_localmente"), false);
+});
+
+test("cookie jar respeita domínio, path, secure, expiry e entrega Set-Cookie ao sink", async () => {
+  const jar = createCookieJar();
+  const synced = [];
+  jar.setCookieSink(async (cookie) => { synced.push(cookie); });
+  const headers = new Headers({
+    "set-cookie": "sessao=valor-fixture; Domain=.superflixapi.pro; Path=/player; Secure; HttpOnly; SameSite=Lax; Max-Age=600",
+  });
+  await jar.absorb("https://superflixapi.pro/player/bootstrap", headers);
+  assert.equal(jar.header("https://superflixapi.pro/player/source"), "sessao=valor-fixture");
+  assert.equal(jar.header("https://superflixapi.pro/filme/exemplo"), "");
+  assert.equal(jar.header("http://superflixapi.pro/player/source"), "");
+  assert.equal(synced.length, 1);
+  assert.deepEqual(
+    { domain: synced[0].domain, path: synced[0].path, secure: synced[0].secure, httpOnly: synced[0].httpOnly, sameSite: synced[0].sameSite },
+    { domain: "superflixapi.pro", path: "/player", secure: true, httpOnly: true, sameSite: "lax" },
+  );
+});
+
+test("nome útil seguro é preservado e formato sensível continua genérico", () => {
+  assert.equal(publicOptionLabel(opcao("1", "Player Principal Dublado", false), 0), "Player Principal Dublado");
+  assert.equal(publicOptionLabel(opcao("2", "https://provider.invalid/?token=fixture", false), 1), "Servidor 2");
 });
