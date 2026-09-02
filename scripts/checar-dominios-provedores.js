@@ -2,7 +2,8 @@
 //
 // Esses provedores trocam de dominio com frequencia e a falha e SILENCIOSA: nao
 // ha erro, o detectProvider apenas deixa de reconhecer e o player cai no iframe
-// sem extracao nativa. Foi assim que superflixapi.pro -> .sbs passou despercebido.
+// sem extracao nativa. Foi assim que migracoes como superflixapi.pro -> .beer
+// passaram despercebidas.
 //
 // Uso:  node scripts/checar-dominios-provedores.js
 //
@@ -23,7 +24,7 @@ const { _test: superflix } = require(path.join(__dirname, "..", "desktop/electro
 function ehReconhecido(host) {
   if (detectProvider("https://" + host + "/x")) return "extrator";
   const html = '<a href="https://' + host + '/player/redirect?t=x"></a>';
-  const aceitos = superflix.collectChainUrls(html, "https://superflixapi.sbs/serie/1/1/1");
+  const aceitos = superflix.collectChainUrls(html, "https://superflixapi.beer/serie/1/1/1");
   return aceitos.length ? "host de cadeia" : null;
 }
 
@@ -34,6 +35,7 @@ const HOSTS = [
   "playerflix.ink",
   "superflixapi.pro",
   "superflixapi.sbs",
+  "superflixapi.beer",
   "embedplayer1.xyz",
   "embedplayer2.xyz",
   "xn--kcksk7a2bl5le7b6doc1h3f.com",

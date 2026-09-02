@@ -15,7 +15,7 @@
  */
 const FRAME_HOSTS_PADRAO = [
   "playhide.shop", "luluvdo.com", "lulu.gg", "streamwish.com", "playerwish.com",
-  "hlswish.com", "superflixapi.pro", "strmup.to", "vidnest.live",
+  "hlswish.com", "superflixapi.pro", "superflixapi.beer", "strmup.to", "vidnest.live",
 ];
 
 const frameSrc = (process.env.PLAYER_FRAME_HOSTS

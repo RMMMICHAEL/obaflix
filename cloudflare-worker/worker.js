@@ -390,7 +390,7 @@ const EMBED_HOSTS = [
   "luluvdo.com", "lulu.gg", "luluvid.com", "lulustream.com",
   "embedplayer1.xyz", "embedplayer2.xyz",
   "xn--kcksk7a2bl5le7b6doc1h3f.com", "xn--tckasiu6cvova0eb5fua2449g98vg.best", "llanfairpwllgwyngy.com",
-  "boltcdn.xyz", "upbolt.to", "bigshare.link", "superflixapi.pro", "superflixapi.sbs",
+  "boltcdn.xyz", "upbolt.to", "bigshare.link", "superflixapi.pro", "superflixapi.sbs", "superflixapi.beer",
   "v1.watchplay.shop", "megafrixapi.com", "vods.faz-o-eli.online",
 ];
 

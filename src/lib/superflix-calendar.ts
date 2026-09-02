@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getSerie, getTVImages, getTVSeasonDetails, pickBackdrop, pickLogo, type TmdbTV } from "@/lib/tmdb";
 
-const CALENDAR_URL = "https://superflixapi.sbs/calendario.php";
+const CALENDAR_URL = "https://superflixapi.beer/calendario.php";
 const IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 interface SuperflixCalendarItem {
@@ -53,7 +53,7 @@ function episodeRowsFor(
       temporada,
       numeroEp,
       titulo: item.episode || null,
-      urlDub: `https://superflixapi.sbs/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`,
+      urlDub: `https://superflixapi.beer/serie/${encodeURIComponent(tmdbId)}/${temporada}/${numeroEp}`,
     };
   });
 }
@@ -79,7 +79,7 @@ async function fullSeriesEpisodeRows(
       numeroEp: episode.episode_number,
       titulo: episode.name || `Episódio ${episode.episode_number}`,
       thumbnail: absoluteImage(episode.still_path || undefined, "w500"),
-      urlDub: `https://superflixapi.sbs/serie/${encodeURIComponent(tmdbId)}/${episode.season_number}/${episode.episode_number}`,
+      urlDub: `https://superflixapi.beer/serie/${encodeURIComponent(tmdbId)}/${episode.season_number}/${episode.episode_number}`,
       createdAt: episode.air_date ? new Date(`${episode.air_date}T12:00:00.000Z`) : new Date(),
     }));
   if (markLatestRecent && rows.length) {

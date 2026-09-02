@@ -588,8 +588,8 @@ export function montarFontes(e: EntradaMontagem): Omit<FonteReal, "id" | "ordem"
   if (superflixPermitido && ehDesktop && tmdb
     && (e.conteudoTipo === "filme" || (e.conteudoTipo === "serie" && e.temporada && e.numeroEp))) {
     const url = e.conteudoTipo === "filme"
-      ? `https://superflixapi.sbs/filme/${encodeURIComponent(tmdb)}`
-      : `https://superflixapi.sbs/serie/${encodeURIComponent(tmdb)}/${e.temporada}/${e.numeroEp}`;
+      ? `https://superflixapi.beer/filme/${encodeURIComponent(tmdb)}`
+      : `https://superflixapi.beer/serie/${encodeURIComponent(tmdb)}/${e.temporada}/${e.numeroEp}`;
     fontes.push(base(url, "SuperFlix", null));
   }
 
