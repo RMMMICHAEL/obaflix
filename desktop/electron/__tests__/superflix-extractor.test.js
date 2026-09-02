@@ -14,7 +14,11 @@ const {
   _test,
   prepareSuperflixSession,
   SuperflixAuthorizationError,
+  createResolutionAttemptTrace,
+  isNativeOptionExpiredError,
+  shareInFlightResolution,
   retryAuthorizationOnce,
+  retryNativeOptionOnce,
 } = require("../superflix-extractor");
 const hlsManifest = require("../hls-manifest");
 
@@ -354,6 +358,151 @@ function integrationFetch({ firstSourceStatus = 200, firstExternal = false, seco
   return { fetchImpl, calls };
 }
 
+function concurrentFirePlayerFetch() {
+  const calls = [];
+  const cookieUpdates = [];
+  const token = fakeToken({
+    embed_context_host: "contexto.invalid",
+    embed_content_path: "/filme/fire",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+  const page = `<input name="contentid" value="6262"><script>var page_token="${token}";</script>`;
+  let releaseSource;
+  let markSourceStarted;
+  const sourceGate = new Promise((resolve) => { releaseSource = resolve; });
+  const sourceStarted = new Promise((resolve) => { markSourceStarted = resolve; });
+  let fireCookieUsed = false;
+
+  const fetchImpl = async (raw, init = {}) => {
+    const url = String(raw);
+    const parsed = new URL(url);
+    calls.push({ url, method: init.method || "GET", headers: init.headers || {}, body: init.body || "" });
+    if (parsed.pathname === "/filme/fire") return response(page);
+    if (parsed.pathname === "/player/bootstrap") {
+      return response(JSON.stringify({ data: { options: [
+        { ID: "fire-option", name: "Fire Player", is_file: false },
+      ] } }), 200, { "content-type": "application/json" });
+    }
+    if (parsed.pathname === "/player/source") {
+      markSourceStarted();
+      await sourceGate;
+      return response(JSON.stringify({ data: {
+        video_url: "https://superflixapi.pro/player/redirect/fire",
+      } }));
+    }
+    if (parsed.pathname === "/player/redirect/fire") {
+      return response("", 302, {
+        location: "https://embedplayer.invalid/video/abcdef0123456789",
+      });
+    }
+    if (parsed.hostname === "embedplayer.invalid" && parsed.pathname.startsWith("/video/")) {
+      return response("<html><body>Fire Player fixture</body></html>", 200, {
+        "content-type": "text/html",
+        "set-cookie": "fireplayer_player=fixture-session; Path=/; Secure; HttpOnly; SameSite=Lax",
+      });
+    }
+    if (parsed.hostname === "embedplayer.invalid" && parsed.pathname === "/player/index.php") {
+      const cookie = init.headers?.Cookie || init.headers?.cookie || "";
+      fireCookieUsed = cookie.includes("fireplayer_player=fixture-session");
+      if (!fireCookieUsed) return response("sessão ausente", 403);
+      return response(JSON.stringify({ securedLink: "https://cdn.invalid/fire.mp4" }), 200, {
+        "content-type": "application/json",
+      });
+    }
+    if (parsed.hostname === "cdn.invalid" && parsed.pathname === "/fire.mp4") {
+      return response("", 206, { "content-type": "video/mp4", "content-range": "bytes 0-0/100" });
+    }
+    throw new Error(`fixture sem rota para ${parsed.pathname}`);
+  };
+
+  const extractEmbedPlayer = async (embedUrl, _referer, _ua, cookieHeader, trace) => {
+    const parsed = new URL(embedUrl);
+    const id = parsed.pathname.split("/").filter(Boolean).at(-1);
+    const apiUrl = `${parsed.origin}/player/index.php?data=${id}&do=getVideo`;
+    const result = await fetchImpl(apiUrl, {
+      method: "POST",
+      headers: { Cookie: cookieHeader },
+    });
+    trace?.record(apiUrl, result.status, false);
+    if (!result.ok) throw new Error(`Fire Player HTTP ${result.status}`);
+    return (await result.json()).securedLink;
+  };
+
+  return {
+    fetchImpl,
+    extractEmbedPlayer,
+    calls,
+    cookieUpdates,
+    sourceStarted,
+    releaseSource,
+    get fireCookieUsed() { return fireCookieUsed; },
+  };
+}
+
+function nativeExpiryFetch({ expirations = 1, expireAt = "nmp" } = {}) {
+  const calls = [];
+  const token = fakeToken({
+    embed_context_host: "contexto.invalid",
+    embed_content_path: "/filme/nativo-expirado",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+  const page = `<input name="contentid" value="5252"><script>var page_token="${token}";</script>`;
+  let bootstrapCount = 0;
+
+  const fetchImpl = async (raw, init = {}) => {
+    const url = String(raw);
+    const parsed = new URL(url);
+    calls.push({ url, method: init.method || "GET", body: init.body || "", headers: init.headers || {} });
+    if (parsed.pathname === "/filme/nativo-expirado") return response(page);
+    if (parsed.pathname === "/player/bootstrap") {
+      bootstrapCount += 1;
+      return response(JSON.stringify({ data: { options: [
+        { ID: `native-option-${bootstrapCount}`, name: "Fonte de Canais", is_file: true },
+      ] } }), 200, { "content-type": "application/json" });
+    }
+    if (parsed.pathname === "/player/source") {
+      const generation = String(new URLSearchParams(init.body).get("video_id") || "").split("-").at(-1);
+      return response(JSON.stringify({ data: {
+        video_url: `https://superflixapi.pro/player/native/media/nmp_expiry_${generation}`,
+      } }));
+    }
+    if (parsed.pathname.includes("/player/native/media/nmp_expiry_")) {
+      const generation = Number(parsed.pathname.split("_").at(-1));
+      if (expireAt === "nmp" && generation <= expirations) {
+        return response("Expired native media option", 200, { "content-type": "text/plain" });
+      }
+      return response(`<script>var SOURCES=[{"src":"https://superflixapi.pro/player/native/media-source/nms_expiry_${generation}"}];</script>`);
+    }
+    if (parsed.pathname.includes("/player/native/media-source/nms_expiry_")) {
+      const generation = Number(parsed.pathname.split("_").at(-1));
+      if (expireAt === "nms" && generation <= expirations) {
+        return response(JSON.stringify({ error: "Expired native media option" }), 410, {
+          "content-type": "application/json",
+        });
+      }
+      return response("", 302, { location: `https://cdn.invalid/native-${generation}.mp4` });
+    }
+    if (parsed.hostname === "cdn.invalid" && parsed.pathname.endsWith(".mp4")) {
+      return response("", 206, { "content-type": "video/mp4", "content-range": "bytes 0-0/100" });
+    }
+    throw new Error(`fixture sem rota para ${parsed.pathname}`);
+  };
+
+  return {
+    fetchImpl,
+    calls,
+    get bootstrapCount() { return bootstrapCount; },
+  };
+}
+
+async function prepareNativeExpirySession(fixture, previous = null) {
+  return prepareSuperflixSession("https://superflixapi.pro/filme/nativo-expirado", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    ...(previous?.context?.() || {}),
+  });
+}
+
 test("prepare/bootstrap mantém is_file e só resolve a opção escolhida", async () => {
   const fixture = integrationFetch();
   const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
@@ -417,6 +566,106 @@ test("403 do player externo faz failover sem renovar e informa a fonte efetiva",
   assert.equal(media.effectiveOptionKey, session.publicOptions[1].key);
   assert.equal(media.effectiveOptionLabel, "Fonte de Canais");
   assert.equal(media.effectiveOptionIsFile, true);
+});
+
+test("duas resoluções concorrentes compartilham uma cadeia Fire Player e o mesmo cookie jar", async () => {
+  const fixture = concurrentFirePlayerFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/fire", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    extractEmbedPlayer: fixture.extractEmbedPlayer,
+    onSetCookie: async (cookie) => { fixture.cookieUpdates.push(cookie.name); },
+  });
+  const optionKey = session.publicOptions[0].key;
+  const trace = createResolutionAttemptTrace(optionKey, "attempt-fixture-opaco");
+  const inFlight = new Map();
+  let reused = 0;
+  const operation = () => session.resolve(optionKey, { trace });
+
+  const firstPromise = shareInFlightResolution(inFlight, optionKey, operation);
+  await fixture.sourceStarted;
+  const secondPromise = shareInFlightResolution(inFlight, optionKey, operation, () => { reused += 1; });
+  fixture.releaseSource();
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  trace.finish("ok");
+
+  assert.strictEqual(first, second);
+  assert.equal(reused, 1);
+  assert.equal(fixture.fireCookieUsed, true);
+  assert.deepEqual(fixture.cookieUpdates, ["fireplayer_player"]);
+  const routeCounts = fixture.calls.reduce((counts, call) => {
+    const pathname = new URL(call.url).pathname;
+    if (pathname === "/player/source") counts.source += 1;
+    else if (pathname.startsWith("/player/redirect")) counts.redirect += 1;
+    else if (pathname.startsWith("/video/")) counts.video += 1;
+    else if (pathname === "/player/index.php") counts.index += 1;
+    return counts;
+  }, { source: 0, redirect: 0, video: 0, index: 0 });
+  assert.deepEqual(routeCounts, { source: 1, redirect: 1, video: 1, index: 1 });
+  assert.deepEqual(trace.snapshot().counts, routeCounts);
+  assert.equal(trace.snapshot().cookieJarUpdated, true);
+});
+
+test("opção nmp expirada refaz bootstrap, remapeia a opção e resolve uma única vez", async () => {
+  const fixture = nativeExpiryFetch({ expirations: 1, expireAt: "nmp" });
+  let session = await prepareNativeExpirySession(fixture);
+  const originalKey = session.publicOptions[0].key;
+  const originalIdentity = session.optionIdentity(originalKey);
+  let renewals = 0;
+
+  const resolveSelected = async () => {
+    const currentKey = session.findOptionKey(originalIdentity);
+    assert.ok(currentKey, "a opção original deve ser remapeada após o bootstrap");
+    return session.resolve(currentKey);
+  };
+
+  const media = await retryNativeOptionOnce(resolveSelected, async () => {
+    renewals += 1;
+    assert.equal(await session.revalidate(), true);
+    const previous = session;
+    session = await prepareNativeExpirySession(fixture, previous);
+  });
+
+  assert.equal(renewals, 1);
+  assert.equal(fixture.bootstrapCount, 2);
+  assert.notEqual(media.effectiveOptionKey, originalKey);
+  assert.equal(media.effectiveOptionLabel, "Fonte de Canais");
+  assert.equal(media.tipo, "mp4");
+  const sourceIds = fixture.calls
+    .filter((call) => new URL(call.url).pathname === "/player/source")
+    .map((call) => new URLSearchParams(call.body).get("video_id"));
+  assert.deepEqual(sourceIds, ["native-option-1", "native-option-2"]);
+  const nativeRoutes = fixture.calls
+    .map((call) => new URL(call.url).pathname)
+    .filter((pathname) => pathname.includes("/player/native/media/nmp_expiry_"));
+  assert.deepEqual(nativeRoutes, [
+    "/player/native/media/nmp_expiry_1",
+    "/player/native/media/nmp_expiry_2",
+  ]);
+});
+
+test("segunda expiração nms encerra a renovação sem loop", async () => {
+  const fixture = nativeExpiryFetch({ expirations: 2, expireAt: "nms" });
+  let session = await prepareNativeExpirySession(fixture);
+  const originalIdentity = session.optionIdentity(session.publicOptions[0].key);
+  let renewals = 0;
+
+  const resolveSelected = () => session.resolve(session.findOptionKey(originalIdentity));
+  await assert.rejects(
+    retryNativeOptionOnce(resolveSelected, async () => {
+      renewals += 1;
+      const previous = session;
+      session = await prepareNativeExpirySession(fixture, previous);
+    }),
+    isNativeOptionExpiredError,
+  );
+
+  assert.equal(renewals, 1);
+  assert.equal(fixture.bootstrapCount, 2);
+  assert.equal(
+    fixture.calls.filter((call) => new URL(call.url).pathname === "/player/source").length,
+    2,
+  );
 });
 
 test("403/419 faz uma única renovação e a segunda recusa não cria loop", async () => {

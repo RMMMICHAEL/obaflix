@@ -87,7 +87,13 @@ async function postPlayer(url, id) {
 
 // Extração do rola3/rola4 (embedplayer1/2.xyz, xn--...): POST direto com IP do usuário,
 // idêntico ao que já existia como extractSecuredLink em main.js.
-async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/", userAgent = UA, cookieHeader = "") {
+async function extractEmbedPlayer(
+  embedUrl,
+  rUrl = OBAFLIX_URL + "/",
+  userAgent = UA,
+  cookieHeader = "",
+  trace = null,
+) {
   const parsed = new URL(embedUrl);
   const base = `${parsed.protocol}//${parsed.hostname}`;
   const id = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
@@ -109,6 +115,7 @@ async function extractEmbedPlayer(embedUrl, rUrl = OBAFLIX_URL + "/", userAgent 
     body: body.toString(),
     signal: AbortSignal.timeout(15000),
   });
+  if (trace?.record) trace.record(apiUrl, res.status, false);
 
   const text = await res.text();
   if (res.status === 403 || res.status === 419) {

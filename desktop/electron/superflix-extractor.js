@@ -71,9 +71,27 @@ class SuperflixAuthorizationError extends Error {
   }
 }
 
+class SuperflixNativeOptionExpiredError extends Error {
+  constructor(stage = "native-media") {
+    super("opção nativa Superflix expirada");
+    this.name = "SuperflixNativeOptionExpiredError";
+    this.stage = stage;
+    this.code = "SUPERFLIX_NATIVE_OPTION_EXPIRED";
+  }
+}
+
 function isAuthorizationError(error) {
   return error?.code === "SUPERFLIX_AUTH_REQUIRED" ||
     error instanceof SuperflixAuthorizationError;
+}
+
+function isNativeOptionExpiredError(error) {
+  return error?.code === "SUPERFLIX_NATIVE_OPTION_EXPIRED" ||
+    error instanceof SuperflixNativeOptionExpiredError;
+}
+
+function hasExpiredNativeOption(body) {
+  return /Expired native media option/i.test(String(body || ""));
 }
 
 function isAuthorizationStatus(status) {
@@ -102,6 +120,73 @@ function safeUrlLabel(raw) {
   } catch {
     return String(raw).split("?")[0].slice(0, 120);
   }
+}
+
+function resolutionRouteKind(raw) {
+  try {
+    const pathname = new URL(raw).pathname;
+    if (pathname === "/player/source") return "source";
+    if (pathname.startsWith("/player/redirect")) return "redirect";
+    if (pathname.startsWith("/video/")) return "video";
+    if (pathname === "/player/index.php") return "index";
+  } catch { /**/ }
+  return null;
+}
+
+/** Instrumentação temporária sem URL, query, cookie ou identidade interna. */
+function createResolutionAttemptTrace(optionKey, resolutionAttemptId = randomUUID()) {
+  const counts = { source: 0, redirect: 0, video: 0, index: 0 };
+  const statuses = [];
+  let cookieJarUpdated = false;
+  let finished = false;
+  const safeOptionKey = String(optionKey || "-").slice(0, 128);
+
+  slog("resolution_start", `attempt=${resolutionAttemptId} option=${safeOptionKey}`);
+  return {
+    id: resolutionAttemptId,
+    optionKey: safeOptionKey,
+    record(rawUrl, status, jarUpdated = false) {
+      const route = resolutionRouteKind(rawUrl);
+      if (!route) return;
+      counts[route] += 1;
+      cookieJarUpdated ||= Boolean(jarUpdated);
+      statuses.push({ route, status: Number(status) || 0, cookieJarUpdated: Boolean(jarUpdated) });
+      slog(
+        "resolution_http",
+        `attempt=${resolutionAttemptId} option=${safeOptionKey} route=${route} count=${counts[route]} ` +
+          `status=${Number(status) || 0} cookie_jar_updated=${Boolean(jarUpdated)}`,
+      );
+    },
+    finish(outcome) {
+      if (finished) return;
+      finished = true;
+      slog(
+        "resolution_end",
+        `attempt=${resolutionAttemptId} option=${safeOptionKey} outcome=${outcome} ` +
+          `source=${counts.source} redirect=${counts.redirect} video=${counts.video} index=${counts.index} ` +
+          `cookie_jar_updated=${cookieJarUpdated}`,
+      );
+    },
+    snapshot() {
+      return { counts: { ...counts }, statuses: [...statuses], cookieJarUpdated };
+    },
+  };
+}
+
+function shareInFlightResolution(inFlight, key, operation, onReuse) {
+  const existing = inFlight.get(key);
+  if (existing) {
+    if (typeof onReuse === "function") onReuse(existing);
+    return existing;
+  }
+  let shared;
+  shared = Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      if (inFlight.get(key) === shared) inFlight.delete(key);
+    });
+  inFlight.set(key, shared);
+  return shared;
 }
 
 function normalizeHtml(text) {
@@ -579,14 +664,20 @@ function createCookieJar() {
       }
     }
 
+    let updated = false;
     for (const raw of values) {
       const cookie = parseCookie(raw, url);
       if (!cookie) continue;
       const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
-      if (cookie.expiresAt != null && cookie.expiresAt <= Date.now()) cookies.delete(key);
-      else cookies.set(key, cookie);
+      if (cookie.expiresAt != null && cookie.expiresAt <= Date.now()) {
+        updated = cookies.delete(key) || updated;
+      } else {
+        cookies.set(key, cookie);
+        updated = true;
+      }
       if (typeof absorb.onCookie === "function") await absorb.onCookie(cookie);
     }
+    return updated;
   }
 
   function header(url) {
@@ -679,7 +770,8 @@ async function requestOnce(fetchImpl, jar, url, options) {
     redirect: "manual",
     signal: AbortSignal.timeout(options.timeoutMs || DEFAULT_TIMEOUT_MS),
   });
-  await jar.absorb(url, response.headers);
+  const cookieJarUpdated = await jar.absorb(url, response.headers);
+  if (options.trace?.record) options.trace.record(url, response.status, cookieJarUpdated);
   return response;
 }
 
@@ -720,6 +812,9 @@ async function fetchPage(fetchImpl, jar, startUrl, options) {
     }
 
     const text = options.readBody === false ? "" : await response.text();
+    if (isServerProvidedNativeRoute(url) && hasExpiredNativeOption(text)) {
+      throw new SuperflixNativeOptionExpiredError("native-media");
+    }
     if (!response.ok) throw httpError("navegação", response, url, text);
     if (isCloudflareChallenge(text)) {
       throw new SuperflixAuthorizationError("challenge Superflix detectado", { status: response.status, stage: "page" });
@@ -774,7 +869,7 @@ async function resolveWarezPage(fetchImpl, jar, embedUrl, ua, appReferer) {
   throw new Error("cadeia SuperFlix excedeu o limite de páginas");
 }
 
-async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua) {
+async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, ua, trace = null) {
   const origin = new URL(warezPage.url).origin;
   // Sem Vizero/WarezCDN na cadeia, host e site vão vazios e o endpoint perde a
   // query. Mandar "vizero.buzz" (o antigo padrão) descrevia um salto que não
@@ -803,6 +898,7 @@ async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, 
       "X-Requested-With": "XMLHttpRequest",
     },
     body: form.toString(),
+    trace,
   });
   const text = await response.text();
   if (!response.ok) throw httpError("player/source", response, endpoint, text);
@@ -816,20 +912,29 @@ async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, 
   return resolveUrl(videoUrl, endpoint);
 }
 
-async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, extractEmbedPlayer) {
+async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, extractEmbedPlayer, trace = null) {
   const first = await requestOnce(fetchImpl, jar, targetUrl, {
     ua,
     referer: warezPageUrl,
     readBody: false,
+    trace,
   });
 
   let resolvedUrl = targetUrl;
+  let firstNativePage = null;
   if (first.status >= 300 && first.status < 400) {
     const location = first.headers.get("location");
     // Mesmo motivo do fetchPage: o destino do player/redirect pode vir em HTTP.
     const resolvido = resolveUrl(location, targetUrl);
     resolvedUrl = resolvido ? secureTransportUrl(resolvido) : null;
     if (!resolvedUrl) throw new Error("player/redirect sem Location válido");
+  } else if (isServerProvidedNativeRoute(targetUrl)) {
+    const text = await first.text();
+    if (hasExpiredNativeOption(text)) {
+      throw new SuperflixNativeOptionExpiredError("native-media");
+    }
+    if (!first.ok) throw httpError("native-media", first, targetUrl, text);
+    firstNativePage = { url: targetUrl, response: first, text };
   } else if (!first.ok) {
     throw httpError("player/redirect", first, targetUrl);
   }
@@ -838,10 +943,11 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
   slog("target", safeUrlLabel(resolvedUrl));
 
   if (isServerProvidedNativeRoute(resolvedUrl)) {
-    const mediaPage = await fetchPage(fetchImpl, jar, resolvedUrl, {
-      ua,
-      referer: warezPageUrl,
-    });
+    const mediaPage = firstNativePage || await fetchPage(fetchImpl, jar, resolvedUrl, {
+        ua,
+        referer: warezPageUrl,
+        trace,
+      });
     const rawMediaSource = findNativeMediaSource(mediaPage.text, mediaPage.url);
     const subtitles = findSubtitleTracks(mediaPage.text, mediaPage.url);
     if (!rawMediaSource) throw new Error("media-source não encontrado no player nativo");
@@ -856,6 +962,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       accept: "*/*",
       headers: { Range: "bytes=0-0" },
       readBody: false,
+      trace,
     });
 
     if (mediaResponse.status >= 300 && mediaResponse.status < 400) {
@@ -866,10 +973,18 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     }
 
     const contentType = mediaResponse.headers.get("content-type") || "";
+    const contentLength = Number(mediaResponse.headers.get("content-length"));
+    const shouldInspectBody = !mediaResponse.ok ||
+      /text|json|xml|html/i.test(contentType) ||
+      (Number.isFinite(contentLength) && contentLength >= 0 && contentLength <= 1024);
+    const mediaBody = shouldInspectBody ? await mediaResponse.text() : "";
+    if (hasExpiredNativeOption(mediaBody)) {
+      throw new SuperflixNativeOptionExpiredError("native-media-source");
+    }
     if (mediaResponse.ok && /video\/mp4|octet-stream/i.test(contentType)) {
       return { stream: mediaSource, referer: mediaPage.url, tipo: "mp4", subtitles };
     }
-    throw httpError("media-source", mediaResponse, mediaSource);
+    throw httpError("media-source", mediaResponse, mediaSource, mediaBody);
   }
 
   if (
@@ -879,7 +994,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
   ) {
     if (typeof extractEmbedPlayer !== "function") throw new Error("extrator embedplayer indisponível");
     // Legendas ficam no HTML do embed; sem elas o player abre só com o áudio.
-    const subtitles = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl })
+    const subtitles = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl, trace })
       .then((page) => findSubtitleTracks(page.text, page.url))
       .catch(() => []);
     // Uma recusa do player externo pertence a esta fonte, não à autorização
@@ -889,6 +1004,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       `${new URL(warezPageUrl).origin}/`,
       ua,
       jar.header(resolvedUrl),
+      trace,
     );
     const stream = secureTransportUrl(raw);
     if (!stream) throw new Error("embedplayer sem transporte HTTPS");
@@ -907,7 +1023,7 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     };
   }
 
-  const fallbackPage = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl });
+  const fallbackPage = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl, trace });
   const direct = findDirectMedia(fallbackPage.text, fallbackPage.url);
   if (!direct) throw new Error(`mídia não encontrada em ${safeUrlLabel(fallbackPage.url)}`);
   return {
@@ -949,7 +1065,7 @@ function profileScore(tipo, info, hasSubtitles, option) {
  * o formato, um Range de 1 byte revela o Content-Type; o corpo só é lido quando o
  * alvo é mesmo um manifesto.
  */
-async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = DEFAULT_TIMEOUT_MS) {
+async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = DEFAULT_TIMEOUT_MS, trace = null) {
   const url = candidate.stream;
   let tipo = candidate.tipo || (looksLikeHlsUrl(url) ? "hls" : looksLikeMp4Url(url) ? "mp4" : null);
 
@@ -968,6 +1084,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       headers: { Range: "bytes=0-0" },
       readBody: false,
       timeoutMs,
+      trace,
     }).catch(() => null);
     if (!head || !head.ok) {
       if (head && isAuthorizationStatus(head.status)) throw httpError("mídia", head, url);
@@ -995,6 +1112,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       dest: "empty",
       mode: "cors",
       timeoutMs,
+      trace,
     }).catch(() => null);
     if (!manifest || !manifest.ok) {
       if (manifest && isAuthorizationStatus(manifest.status)) throw httpError("manifesto", manifest, url);
@@ -1013,6 +1131,7 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       headers: { Range: "bytes=0-0" },
       readBody: false,
       timeoutMs,
+      trace,
     }).catch(() => null);
     if (!media || !media.ok) {
       if (media && isAuthorizationStatus(media.status)) throw httpError("MP4", media, url);
@@ -1194,14 +1313,14 @@ class SuperflixSession {
     return { options: this.publicOptions, expiresAt: this.expiresAt };
   }
 
-  async resolve(optionKey) {
+  async resolve(optionKey, { trace = null } = {}) {
     this.assertFresh();
     const option = this.optionByKey.get(optionKey);
     if (!option) throw new Error("servidor Superflix inválido");
     slog("source_selected", `is_file=${Boolean(option.isFile)}`);
 
     const targetUrl = await postSource(
-      this.fetchImpl, this.jar, this.warezPage, this.pageToken, option.id, this.host, this.ua,
+      this.fetchImpl, this.jar, this.warezPage, this.pageToken, option.id, this.host, this.ua, trace,
     );
     const candidate = await resolveSource(
       this.fetchImpl,
@@ -1211,9 +1330,10 @@ class SuperflixSession {
       this.host,
       this.ua,
       this.extractEmbedPlayer,
+      trace,
     );
     const profile = await profileSource(
-      this.fetchImpl, this.jar, option, candidate, this.ua, PROBE_TIMEOUT_MS,
+      this.fetchImpl, this.jar, option, candidate, this.ua, PROBE_TIMEOUT_MS, trace,
     );
     slog("source_ok", `superflix_source_ok is_file=${Boolean(option.isFile)} tipo=${profile.result.tipo}`);
     const publicOption = this.publicOptions.find((item) => item.key === optionKey);
@@ -1226,7 +1346,7 @@ class SuperflixSession {
     };
   }
 
-  async resolveWithFailover(preferredKey = null) {
+  async resolveWithFailover(preferredKey = null, { bubbleNativeExpiry = false, trace = null } = {}) {
     this.assertFresh();
     const keys = this.publicOptions.map((option) => option.key);
     if (preferredKey && keys.includes(preferredKey)) {
@@ -1237,9 +1357,9 @@ class SuperflixSession {
     const failures = [];
     for (let index = 0; index < keys.length; index += 1) {
       try {
-        return await this.resolve(keys[index]);
+        return await this.resolve(keys[index], { trace });
       } catch (error) {
-        if (isAuthorizationError(error)) throw error;
+        if (isAuthorizationError(error) || (bubbleNativeExpiry && isNativeOptionExpiredError(error))) throw error;
         const message = error?.message || String(error);
         failures.push(message);
         slog("candidate_rejected", `superflix_candidate_rejected index=${index + 1} erro=${message.slice(0, 100)}`);
@@ -1266,6 +1386,17 @@ async function retryAuthorizationOnce(operation, renew) {
   }
 }
 
+async function retryNativeOptionOnce(operation, renew, retryOperation = operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isNativeOptionExpiredError(error)) throw error;
+    await renew(error);
+    // Sem nova captura: uma segunda expiração nunca inicia outra reconstrução.
+    return await retryOperation();
+  }
+}
+
 async function extractSuperflix(embedUrl, options = {}) {
   const session = await prepareSuperflixSession(embedUrl, options);
   return session.resolveWithFailover(options.preferredOptionKey || null);
@@ -1276,8 +1407,13 @@ module.exports = {
   prepareSuperflixSession,
   SuperflixSession,
   SuperflixAuthorizationError,
+  SuperflixNativeOptionExpiredError,
+  createResolutionAttemptTrace,
   isAuthorizationError,
+  isNativeOptionExpiredError,
+  shareInFlightResolution,
   retryAuthorizationOnce,
+  retryNativeOptionOnce,
   // Exportado apenas para testes locais do parser; não é usado pelo app.
   _test: {
     normalizeHtml,
@@ -1299,8 +1435,12 @@ module.exports = {
     profileScore,
     tokenExpiry,
     publicOptionLabel,
+    createResolutionAttemptTrace,
     isAuthorizationError,
+    isNativeOptionExpiredError,
+    shareInFlightResolution,
     retryAuthorizationOnce,
+    retryNativeOptionOnce,
     looksLikeHlsUrl,
     looksLikeMp4Url,
   },

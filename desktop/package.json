@@ -1,6 +1,6 @@
 {
   "name": "obaflix",
-  "version": "1.0.6",
+  "version": "1.0.10",
   "description": "Obaflix - Aplicativo Desktop",
   "main": "electron/main.js",
   "author": "Obaflix",
@@ -30,6 +30,9 @@
     },
     "files": [
       "electron/**/*",
+      "!electron/**/*.backup",
+      "!electron/**/*.backup-*",
+      "!electron/**/*.bak",
       "assets/**/*",
       "node_modules/**/*",
       "!node_modules/ffmpeg-static/**"

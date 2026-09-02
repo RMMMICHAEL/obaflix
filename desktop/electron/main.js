@@ -15,8 +15,11 @@ const {
 } = require("./extractors");
 const {
   prepareSuperflixSession,
+  createResolutionAttemptTrace,
   isAuthorizationError,
+  shareInFlightResolution,
   retryAuthorizationOnce,
+  retryNativeOptionOnce,
 } = require("./superflix-extractor");
 const { authorizeSuperflixInBrowser } = require("./browser-extractor");
 const { baixarMidia } = require("./media-download");
@@ -255,7 +258,8 @@ async function syncSuperflixCookie(cookie) {
 function superflixCommon() {
   return {
     appReferer: `${OBAFLIX_ORIGIN}/`,
-    extractEmbedPlayer: (url, referer, ua, cookies) => extractEmbedPlayer(url, referer, ua, cookies),
+    extractEmbedPlayer: (url, referer, ua, cookies, trace) =>
+      extractEmbedPlayer(url, referer, ua, cookies, trace),
     onSetCookie: syncSuperflixCookie,
   };
 }
@@ -301,6 +305,7 @@ function rememberSuperflixSession(embedUrl, resolver) {
     optionAliases,
     publicOptionsByKey,
     renewalPromise: null,
+    inFlightResolutions: new Map(),
   });
   superflixSessionByEmbed.set(embedUrl, id);
   return id;
@@ -393,20 +398,19 @@ async function prepareManagedSuperflix(embedUrl) {
   return { sessionId, ...description };
 }
 
-async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover = false) {
-  const entry = getSuperflixSession(sessionId);
+async function executeManagedSuperflixResolution(entry, optionKey, automaticFailover, trace) {
   const identity = entry.optionAliases.get(optionKey);
   if (!identity) throw new Error("Servidor Superflix inválido");
 
-  const resolveOnce = async () => {
+  const resolveOnce = async (bubbleNativeExpiry = false) => {
     const currentKey = entry.resolver.findOptionKey(identity);
     if (!currentKey) throw new Error("Servidor Superflix não existe mais após renovação");
     return automaticFailover
-      ? await entry.resolver.resolveWithFailover(currentKey)
-      : await entry.resolver.resolve(currentKey);
+      ? await entry.resolver.resolveWithFailover(currentKey, { bubbleNativeExpiry, trace })
+      : await entry.resolver.resolve(currentKey, { trace });
   };
 
-  const resolved = await retryAuthorizationOnce(resolveOnce, async () => {
+  const renewAuthorization = async () => {
     // Uma única renovação compartilhada por sessão. A segunda falha de
     // autorização é devolvida ao player, impedindo recursão/loop infinito.
     if (!entry.renewalPromise) {
@@ -415,12 +419,70 @@ async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover =
         .finally(() => { entry.renewalPromise = null; });
     }
     await entry.renewalPromise;
-  });
+  };
+
+  const resolveAuthorized = (bubbleNativeExpiry) => retryAuthorizationOnce(
+    () => resolveOnce(bubbleNativeExpiry),
+    renewAuthorization,
+  );
+
+  const resolved = await retryNativeOptionOnce(
+    () => resolveAuthorized(true),
+    async () => {
+      // A mensagem de expiração do nmp/nms não implica challenge. Primeiro
+      // revalidamos o contexto atual e sempre refazemos prepare/bootstrap; só
+      // uma falha de autorização real mantém o fluxo existente de browser.
+      if (!entry.renewalPromise) {
+        const previous = entry.resolver;
+        entry.renewalPromise = (async () => {
+          try {
+            await previous.revalidate();
+          } catch (error) {
+            if (!isAuthorizationError(error)) throw error;
+          }
+          const renewed = await prepareSuperflixAuthorized(entry.embedUrl, previous);
+          entry.resolver = renewed;
+        })().finally(() => { entry.renewalPromise = null; });
+      }
+      await entry.renewalPromise;
+    },
+    // Na segunda expiração não há nova reconstrução. No modo automático ela
+    // vira uma rejeição normal da candidata e o failover segue para a próxima.
+    () => resolveAuthorized(false),
+  );
   const result = projectEffectiveSuperflixOption(entry, resolved, optionKey);
   await assertPublicHttpsStream(result.stream);
   await registerPlayerStream(result.stream, result.referer).catch(() => {});
   log.info("superflix", "superflix_source_ok", { tipo: result.tipo || "-" });
   return result;
+}
+
+async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover = false) {
+  const entry = getSuperflixSession(sessionId);
+  const resolutionAttemptId = crypto.randomUUID();
+  const shared = shareInFlightResolution(
+    entry.inFlightResolutions,
+    optionKey,
+    async () => {
+      const trace = createResolutionAttemptTrace(optionKey, resolutionAttemptId);
+      try {
+        const result = await executeManagedSuperflixResolution(entry, optionKey, automaticFailover, trace);
+        trace.finish("ok");
+        return result;
+      } catch (error) {
+        trace.finish("error");
+        throw error;
+      }
+    },
+    (existing) => {
+      log.info("superflix", "superflix_resolution_deduplicated", {
+        attempt: existing.resolutionAttemptId || "-",
+        option: optionKey,
+      });
+    },
+  );
+  if (!shared.resolutionAttemptId) shared.resolutionAttemptId = resolutionAttemptId;
+  return await shared;
 }
 
 async function extractSecuredLink(embedUrl) {
