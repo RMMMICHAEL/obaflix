@@ -439,6 +439,92 @@ function concurrentFirePlayerFetch() {
   };
 }
 
+/**
+ * Reproduz o caso real: a API legada do embedplayer (POST /player/index.php?
+ * do=getVideo) devolve 403 para esta variante — como no HAR capturado do
+ * próprio Obaflix —, mas uma sessão de navegador comum, no mesmo host,
+ * continua normalmente e entrega a mídia por outro caminho (challenge JS
+ * automático, depois o player carregando o manifesto), como o HAR de
+ * referência (youcinehd.lat, via Fire Player) mostrou.
+ *
+ * Só uma opção de servidor — de propósito: prova que o 403 não encerra a
+ * resolução mesmo sem outro candidato para o failover tentar.
+ */
+function embedPlayerLegacyBlockedFetch() {
+  const calls = [];
+  const token = fakeToken({
+    embed_context_host: "contexto.invalid",
+    embed_content_path: "/filme/fire-legado",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+  const page = `<input name="contentid" value="7373"><script>var page_token="${token}";</script>`;
+  let legacyAttempts = 0;
+  let fallbackCalls = 0;
+
+  const fetchImpl = async (raw, init = {}) => {
+    const url = String(raw);
+    const parsed = new URL(url);
+    calls.push({ url, method: init.method || "GET", headers: init.headers || {}, body: init.body || "" });
+    if (parsed.pathname === "/filme/fire-legado") return response(page);
+    if (parsed.pathname === "/player/bootstrap") {
+      return response(JSON.stringify({ data: { options: [
+        { ID: "fire-legado", name: "Fire Player", is_file: false },
+      ] } }), 200, { "content-type": "application/json" });
+    }
+    if (parsed.pathname === "/player/source") {
+      return response(JSON.stringify({ data: {
+        video_url: "https://superflixapi.pro/player/redirect/fire-legado",
+      } }));
+    }
+    if (parsed.pathname === "/player/redirect/fire-legado") {
+      return response("", 302, { location: "https://embedplayer.invalid/video/7373737373737373" });
+    }
+    if (parsed.hostname === "embedplayer.invalid" && parsed.pathname.startsWith("/video/")) {
+      // GET /video/<id> 200 — igual ao HAR: a página em si sempre carrega.
+      return response("<html><body>Fire Player fixture</body></html>", 200, {
+        "content-type": "text/html",
+      });
+    }
+    // Nenhuma outra rota nativa (player/index.php, master.txt, m3/...) é
+    // servida por este fetchImpl de propósito: se profileSource() tentar
+    // revalidar a mídia observada pela rede nativa, a fixture não tem para
+    // onde ir e o teste falha alto, em vez de mascarar uma regressão.
+    throw new Error(`fixture sem rota para ${parsed.pathname}`);
+  };
+
+  // extractEmbedPlayer real (extractors.js) lança Error com .status ao ver
+  // 403/419 — reproduzido aqui fielmente, sem tocar na rede.
+  const extractEmbedPlayer = async () => {
+    legacyAttempts += 1;
+    const error = new Error("EmbedPlayer HTTP 403");
+    error.status = 403;
+    throw error;
+  };
+
+  // O observador real roda uma sessão Electron; aqui simula o que ela
+  // devolveria depois de ver a página continuar e o player carregar o
+  // manifesto — sem nenhuma tentativa de contornar challenge nenhum.
+  const observeEmbedFallback = async (embedUrl) => {
+    fallbackCalls += 1;
+    return {
+      stream: "https://cdn-observado.invalid/rum-fixture/master.txt",
+      referer: embedUrl,
+      tipo: "hls",
+      manifestBody: MASTER_MANIFEST,
+      subtitles: [],
+    };
+  };
+
+  return {
+    fetchImpl,
+    extractEmbedPlayer,
+    observeEmbedFallback,
+    calls,
+    get legacyAttempts() { return legacyAttempts; },
+    get fallbackCalls() { return fallbackCalls; },
+  };
+}
+
 function nativeExpiryFetch({ expirations = 1, expireAt = "nmp" } = {}) {
   const calls = [];
   const token = fakeToken({
@@ -604,6 +690,56 @@ test("duas resoluções concorrentes compartilham uma cadeia Fire Player e o mes
   assert.deepEqual(routeCounts, { source: 1, redirect: 1, video: 1, index: 1 });
   assert.deepEqual(trace.snapshot().counts, routeCounts);
   assert.equal(trace.snapshot().cookieJarUpdated, true);
+});
+
+// Regressão do caso real: /video 200 → rota legada 403 → página continua →
+// mídia HLS observada → resolução termina com sucesso, mesmo com um único
+// candidato (sem outro servidor para o failover tentar).
+test("403 do POST legado do embedplayer não encerra a resolução quando a observação do navegador encontra HLS", async () => {
+  const fixture = embedPlayerLegacyBlockedFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/fire-legado", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    extractEmbedPlayer: fixture.extractEmbedPlayer,
+    observeEmbedFallback: fixture.observeEmbedFallback,
+  });
+
+  const media = await session.resolve(session.publicOptions[0].key);
+
+  assert.equal(fixture.legacyAttempts, 1, "a API legada continua sendo tentada primeiro, como compatibilidade");
+  assert.equal(fixture.fallbackCalls, 1, "a observação só entra em jogo depois do 403");
+  assert.equal(media.tipo, "hls");
+  assert.equal(media.stream, "https://cdn-observado.invalid/rum-fixture/master.txt");
+  assert.equal(media.isMaster, true, "o manifesto observado precisa ser interpretado, não só aceito no nome");
+  assert.equal(media.qualities.length, 2);
+  assert.equal(media.audioTracks.length, 2);
+
+  // A prova central: nada além do que a fixture programou foi tocado pela
+  // rede nativa. Em especial, o manifesto observado NUNCA é refeito por ela —
+  // é exatamente o host que o challenge protege, e um refetch nu reproduziria
+  // o mesmo bloqueio que motivou a observação em primeiro lugar.
+  const hosts = fixture.calls.map((call) => new URL(call.url).hostname);
+  assert.ok(!hosts.includes("cdn-observado.invalid"), "o manifesto observado não pode ser buscado de novo pela rede nativa");
+});
+
+test("sem observador injetado, o 403 do embedplayer continua um erro normal de candidata", async () => {
+  // O flag do fallback é totalmente opcional: quem não o injeta (testes,
+  // outras variantes do embedplayer que já funcionam) mantém o comportamento
+  // de antes desta mudança — o erro sobe e o failover decide o resto.
+  const fixture = embedPlayerLegacyBlockedFetch();
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/fire-legado", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    extractEmbedPlayer: fixture.extractEmbedPlayer,
+    // observeEmbedFallback ausente de propósito.
+  });
+
+  await assert.rejects(
+    () => session.resolve(session.publicOptions[0].key),
+    /EmbedPlayer HTTP 403/,
+  );
+  assert.equal(fixture.legacyAttempts, 1);
+  assert.equal(fixture.fallbackCalls, 0);
 });
 
 test("opção nmp expirada refaz bootstrap, remapeia a opção e resolve uma única vez", async () => {

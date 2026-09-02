@@ -21,7 +21,7 @@ const {
   retryAuthorizationOnce,
   retryNativeOptionOnce,
 } = require("./superflix-extractor");
-const { authorizeSuperflixInBrowser } = require("./browser-extractor");
+const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./browser-extractor");
 const { baixarMidia } = require("./media-download");
 
 // Qualquer exceção não tratada precisa aparecer no log — antes elas morriam em
@@ -260,6 +260,11 @@ function superflixCommon() {
     appReferer: `${OBAFLIX_ORIGIN}/`,
     extractEmbedPlayer: (url, referer, ua, cookies, trace) =>
       extractEmbedPlayer(url, referer, ua, cookies, trace),
+    // Só entra em jogo quando o POST legado do embedplayer devolve 403/419:
+    // deixa uma sessão Electron comum carregar a página de verdade e observa
+    // a mídia que ela mesma obtiver, em vez de encerrar a resolução ali.
+    observeEmbedFallback: (url, { referer, ua } = {}) =>
+      observeEmbedMediaInBrowser(url, { referer, ua: ua || UA }),
     onSetCookie: syncSuperflixCookie,
   };
 }

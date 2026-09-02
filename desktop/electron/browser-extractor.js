@@ -1,6 +1,7 @@
 ﻿"use strict";
 
-const { WebContentsView, webFrameMain } = require("electron");
+const { WebContentsView, webFrameMain, BrowserWindow, net } = require("electron");
+const { shareInFlightResolution } = require("./superflix-extractor");
 
 /** Destinos de compartilhamento do provedor — o botão do Telegram e afins. */
 function ehHostDeCompartilhamento(hostname) {
@@ -896,8 +897,277 @@ async function extractSuperflixInBrowser(
   );
 }
 
+// ── Observação do fluxo legítimo de embeds sem API nativa conhecida ─────────
+//
+// Algumas variantes do EmbedPlayer (ex.: Fire Player) nunca expuseram o POST
+// legado /player/index.php?do=getVideo que extractEmbedPlayer() usa — só
+// entregam mídia pelo fluxo real da própria página: challenge JS automático,
+// depois o player carrega o manifesto por conta própria. Reproduzir esse
+// challenge nós mesmos está fora de cogitação; em vez disso, deixamos uma
+// sessão Electron comum carregar a página de verdade e observamos qual mídia
+// ela mesma obtém — sem tentar contornar Cloudflare, gerar token ou adivinhar
+// nomes de rota ofuscados.
+//
+// Sessão dedicada (persist:obaflix-embed), separada da usada pelo overlay
+// interativo de escolha de servidor: as duas registram os próprios listeners
+// em session.webRequest, e webRequest permite só UM listener por evento por
+// sessão — registros concorrentes se substituiriam silenciosamente.
+
+const EMBED_OBSERVER_PARTITION = "persist:obaflix-embed";
+const EMBED_OBSERVER_TIMEOUT_MS = 20000;
+
+// Mesma ideia do overlay: uma media isolada não trava a escolha — se um
+// manifesto master aparecer dentro da janela, ele traz qualidades e áudios.
+const EMBED_MEDIA_SETTLE_MS = 1500;
+
+const activeEmbedObservations = new Map();
+
+function bufferLooksLikeM3u8(buf) {
+  if (!buf || buf.length < 7) return false;
+  const head = buf.slice(0, 32).toString("utf8").replace(/^﻿/, "").trimStart();
+  return head.startsWith("#EXTM3U");
+}
+
+function bufferLooksLikeMp4(buf) {
+  if (!buf || buf.length < 12) return false;
+  const brand = buf.slice(4, 8).toString("ascii");
+  return brand === "ftyp" || brand === "styp" || brand === "moof";
+}
+
+function m3u8Kind(text) {
+  if (/#EXT-X-STREAM-INF/i.test(text)) return "master";
+  if (/#EXTINF/i.test(text)) return "media";
+  return "unknown";
+}
+
+/** Range curto: barato mesmo quando o candidato acaba sendo um segmento binário grande. */
+function sniffCandidate(ses, url, { referer, ua, rangeBytes = 4096 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      const req = net.request({ method: "GET", url, session: ses });
+      req.setHeader("Accept", "*/*");
+      if (ua) req.setHeader("User-Agent", ua);
+      if (referer) req.setHeader("Referer", referer);
+      req.setHeader("Range", `bytes=0-${rangeBytes - 1}`);
+      const chunks = [];
+      let total = 0;
+      req.on("response", (res) => {
+        res.on("data", (chunk) => {
+          if (total >= rangeBytes) return;
+          chunks.push(chunk);
+          total += chunk.length;
+        });
+        res.on("end", () => finish({ status: res.statusCode, body: Buffer.concat(chunks) }));
+        res.on("error", () => finish(null));
+      });
+      req.on("error", () => finish(null));
+      req.end();
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/** Corpo completo — só chamado depois que sniffCandidate() já confirmou um manifesto de texto pequeno. */
+function fetchFullText(ses, url, { referer, ua, maxBytes = 2 * 1024 * 1024 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      const req = net.request({ method: "GET", url, session: ses });
+      req.setHeader("Accept", "*/*");
+      if (ua) req.setHeader("User-Agent", ua);
+      if (referer) req.setHeader("Referer", referer);
+      const chunks = [];
+      let total = 0;
+      req.on("response", (res) => {
+        res.on("data", (chunk) => {
+          if (total > maxBytes) return;
+          chunks.push(chunk);
+          total += chunk.length;
+        });
+        res.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", () => finish(null));
+      });
+      req.on("error", () => finish(null));
+      req.end();
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/** Classe grosseira da rota, só para diagnóstico — nunca a URL/path completos. */
+function embedRouteClass(pathname) {
+  if (pathname === "/" || /^\/video\//i.test(pathname)) return "page";
+  if (pathname.startsWith("/layer/")) return "layer";
+  if (pathname.startsWith("/cdn-cgi/")) return "challenge";
+  return "asset";
+}
+
+async function runEmbedObservation(embedUrl, { referer, ua, partition, timeoutMs }) {
+  let win = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      partition,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      autoplayPolicy: "no-user-gesture-required",
+    },
+  });
+
+  const webContents = win.webContents;
+  if (ua) webContents.setUserAgent(ua);
+  const webContentsId = webContents.id;
+  const ses = webContents.session;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout = null;
+    let settleTimer = null;
+    let pendingMedia = null;
+    const subtitleTracks = new Map();
+    const checked = new Set();
+
+    const cleanup = () => {
+      if (timeout) { clearTimeout(timeout); timeout = null; }
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+      try { ses.webRequest.onCompleted(null); } catch { /* sessão já pode ter sumido */ }
+      try { if (win && !win.isDestroyed()) win.destroy(); } catch { /* já destruída */ }
+      win = null;
+    };
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const armSettle = () => {
+      if (settleTimer || settled) return;
+      settleTimer = setTimeout(() => {
+        if (!settled && pendingMedia) {
+          finish({ ...pendingMedia, referer: embedUrl, subtitles: [...subtitleTracks.values()] });
+        }
+      }, EMBED_MEDIA_SETTLE_MS);
+    };
+
+    ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
+      if (settled || details.webContentsId !== webContentsId) return;
+
+      let parsed;
+      try { parsed = new URL(details.url); } catch { return; }
+
+      if (
+        /\.(?:vtt|srt|ass|ssa)(?:$|\?)/i.test(details.url) &&
+        details.statusCode >= 200 && details.statusCode < 400
+      ) {
+        subtitleTracks.set(details.url, {
+          file: details.url,
+          label: "Português",
+          kind: "captions",
+          default: subtitleTracks.size === 0,
+          referer: embedUrl,
+        });
+      }
+
+      if (details.statusCode < 200 || details.statusCode >= 400) return;
+      // xhr/fetch/other cobre como hls.js e o player buscam manifesto e
+      // segmentos; scripts, folhas de estilo e imagens nunca são a mídia.
+      if (!["xhr", "fetch", "other"].includes(details.resourceType)) return;
+
+      const contentType = headerValue(details.responseHeaders || {}, "content-type").toLowerCase();
+      // Filtro por Content-Type é só economia de uma checagem — a confirmação
+      // real é sempre pelo corpo, porque este provedor já disfarça segmento
+      // como text/plain em outras rotas conhecidas do mesmo ecossistema.
+      if (/^(image|font|text\/css|text\/html|(?:application|text)\/javascript)/i.test(contentType)) return;
+      if (checked.has(details.url)) return;
+      checked.add(details.url);
+
+      const routeClass = embedRouteClass(parsed.pathname);
+      console.log(`[embed-observe/net] host=${parsed.hostname} classe=${routeClass} status=${details.statusCode}`);
+
+      sniffCandidate(ses, details.url, { referer: embedUrl, ua })
+        .then(async (sniffed) => {
+          if (settled || !sniffed?.body?.length) return;
+
+          if (bufferLooksLikeM3u8(sniffed.body)) {
+            const head = sniffed.body.toString("utf8");
+            const kind = m3u8Kind(head);
+            console.log(`[embed-observe] media=hls host=${parsed.hostname} classe=${kind}`);
+
+            if (kind === "master") {
+              const full = await fetchFullText(ses, details.url, { referer: embedUrl, ua });
+              if (settled) return;
+              finish({
+                stream: details.url,
+                referer: embedUrl,
+                tipo: "hls",
+                manifestBody: full || head,
+                subtitles: [...subtitleTracks.values()],
+              });
+              return;
+            }
+
+            if (kind === "media" && !pendingMedia) {
+              const full = await fetchFullText(ses, details.url, { referer: embedUrl, ua });
+              if (settled || pendingMedia) return;
+              pendingMedia = { stream: details.url, tipo: "hls", manifestBody: full || head };
+              armSettle();
+            }
+            return;
+          }
+
+          if (bufferLooksLikeMp4(sniffed.body)) {
+            console.log(`[embed-observe] media=mp4 host=${parsed.hostname}`);
+            finish({
+              stream: details.url,
+              referer: embedUrl,
+              tipo: "mp4",
+              subtitles: [...subtitleTracks.values()],
+            });
+          }
+        })
+        .catch(() => { /* candidato não confirmado — segue observando */ });
+    });
+
+    webContents.once("render-process-gone", () => finish(null));
+
+    timeout = setTimeout(() => finish(null), timeoutMs);
+
+    webContents
+      .loadURL(embedUrl, referer ? { httpReferrer: referer } : undefined)
+      .catch(() => finish(null));
+  });
+}
+
+/**
+ * Observa uma sessão Electron comum carregando `embedUrl` e devolve a mídia
+ * que a própria página obtiver (HLS ou MP4, confirmada pelo conteúdo — nunca
+ * pelo nome da rota). `null` quando nada é observado dentro do prazo.
+ *
+ * Uma navegação ativa por vez por URL: uma segunda chamada para a mesma fonte
+ * enquanto a primeira ainda está em andamento reaproveita a mesma Promise em
+ * vez de abrir outra janela/navegação paralela.
+ */
+function observeEmbedMediaInBrowser(embedUrl, {
+  referer = null,
+  ua = null,
+  partition = EMBED_OBSERVER_PARTITION,
+  timeoutMs = EMBED_OBSERVER_TIMEOUT_MS,
+} = {}) {
+  return shareInFlightResolution(activeEmbedObservations, embedUrl, () =>
+    runEmbedObservation(embedUrl, { referer, ua, partition, timeoutMs }));
+}
+
 module.exports = {
   extractSuperflixInBrowser,
   authorizeSuperflixInBrowser: (embedUrl, options = {}) =>
     extractSuperflixInBrowser(embedUrl, { ...options, authorizationOnly: true }),
+  observeEmbedMediaInBrowser,
 };

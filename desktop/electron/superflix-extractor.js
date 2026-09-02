@@ -912,7 +912,9 @@ async function postSource(fetchImpl, jar, warezPage, pageToken, sourceId, host, 
   return resolveUrl(videoUrl, endpoint);
 }
 
-async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, extractEmbedPlayer, trace = null) {
+async function resolveSource(
+  fetchImpl, jar, targetUrl, warezPageUrl, host, ua, extractEmbedPlayer, trace = null, observeEmbedFallback = null,
+) {
   const first = await requestOnce(fetchImpl, jar, targetUrl, {
     ua,
     referer: warezPageUrl,
@@ -999,17 +1001,47 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
       .catch(() => []);
     // Uma recusa do player externo pertence a esta fonte, não à autorização
     // Superflix. Ela deve cair no failover normal sem reabrir o challenge.
-    const raw = await extractEmbedPlayer(
-      resolvedUrl,
-      `${new URL(warezPageUrl).origin}/`,
-      ua,
-      jar.header(resolvedUrl),
-      trace,
-    );
-    const stream = secureTransportUrl(raw);
-    if (!stream) throw new Error("embedplayer sem transporte HTTPS");
-    // tipo fica em aberto quando a URL não tem extensão: profileSource() resolve.
-    return { stream, referer: resolvedUrl, tipo: looksLikeMp4Url(stream) ? "mp4" : null, subtitles };
+    try {
+      const raw = await extractEmbedPlayer(
+        resolvedUrl,
+        `${new URL(warezPageUrl).origin}/`,
+        ua,
+        jar.header(resolvedUrl),
+        trace,
+      );
+      const stream = secureTransportUrl(raw);
+      if (!stream) throw new Error("embedplayer sem transporte HTTPS");
+      // tipo fica em aberto quando a URL não tem extensão: profileSource() resolve.
+      return { stream, referer: resolvedUrl, tipo: looksLikeMp4Url(stream) ? "mp4" : null, subtitles };
+    } catch (error) {
+      // player/index.php?do=getVideo não é universal: algumas variantes deste
+      // player (ex.: Fire Player) nunca expuseram essa API e só entregam mídia
+      // pelo fluxo real da própria página (a mesma que um navegador comum
+      // segue — challenge JS automático, depois o player carrega o manifesto).
+      // Um 403/419 aqui não encerra a resolução: só descarta o caminho rápido
+      // para esta fonte específica, e só quando existe onde observar o fluxo
+      // real. Qualquer outro erro (rede, parser, etc.) continua subindo como
+      // antes — comportamento inalterado para quem já funciona hoje.
+      if (!isAuthorizationStatus(error?.status) || typeof observeEmbedFallback !== "function") throw error;
+      slog("embedplayer_fallback", `http=${error.status} host=${parsed.hostname}`);
+      const observed = await observeEmbedFallback(resolvedUrl, { referer: warezPageUrl, ua }).catch(() => null);
+      if (!observed?.stream) throw error; // fallback também não achou nada: o erro original é mais informativo
+      const stream = secureTransportUrl(observed.stream);
+      if (!stream) throw error;
+      slog("embedplayer_fallback_ok", `tipo=${observed.tipo || "?"}`);
+      return {
+        stream,
+        referer: observed.referer || resolvedUrl,
+        tipo: observed.tipo || (looksLikeMp4Url(stream) ? "mp4" : "hls"),
+        subtitles: observed.subtitles?.length ? observed.subtitles : subtitles,
+        // A página real já provou que este manifesto é válido — profileSource()
+        // não precisa (e não deve) tentar buscá-lo de novo pela rede nativa:
+        // é justamente o que o site protege atrás do challenge/sessão do
+        // navegador, e um fetch nu repetiria o mesmo 403.
+        manifestBody: observed.manifestBody || undefined,
+        verified: true,
+      };
+    }
   }
 
   if (/\.(?:mp4|m3u8)(?:$|\?)/i.test(resolvedUrl) || /\/master\.txt(?:$|\?)/i.test(resolvedUrl)) {
@@ -1105,23 +1137,31 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
 
   let info = null;
   if (readsManifest) {
-    const manifest = await requestOnce(fetchImpl, jar, url, {
-      ua,
-      referer: candidate.referer,
-      accept: "*/*",
-      dest: "empty",
-      mode: "cors",
-      timeoutMs,
-      trace,
-    }).catch(() => null);
-    if (!manifest || !manifest.ok) {
-      if (manifest && isAuthorizationStatus(manifest.status)) throw httpError("manifesto", manifest, url);
-      throw new Error(`manifesto inacessível${manifest ? ` (HTTP ${manifest.status})` : ""}`);
+    let body;
+    if (candidate.verified && typeof candidate.manifestBody === "string") {
+      // Já confirmado por quem obteve a mídia (ex.: observação em navegador
+      // real por trás de um challenge): repetir pela rede nativa reproduziria
+      // o mesmo bloqueio que motivou a observação em primeiro lugar.
+      body = candidate.manifestBody;
+    } else {
+      const manifest = await requestOnce(fetchImpl, jar, url, {
+        ua,
+        referer: candidate.referer,
+        accept: "*/*",
+        dest: "empty",
+        mode: "cors",
+        timeoutMs,
+        trace,
+      }).catch(() => null);
+      if (!manifest || !manifest.ok) {
+        if (manifest && isAuthorizationStatus(manifest.status)) throw httpError("manifesto", manifest, url);
+        throw new Error(`manifesto inacessível${manifest ? ` (HTTP ${manifest.status})` : ""}`);
+      }
+      body = await manifest.text().catch(() => "");
     }
-    const body = await manifest.text().catch(() => "");
     if (!hlsManifest.looksLikeManifest(body)) throw new Error("resposta não é manifesto HLS");
     info = hlsManifest.parse(body, url);
-  } else if (tipo === "mp4") {
+  } else if (tipo === "mp4" && !candidate.verified) {
     const media = await requestOnce(fetchImpl, jar, url, {
       ua,
       referer: candidate.referer,
@@ -1161,11 +1201,18 @@ async function profileSource(fetchImpl, jar, option, candidate, ua, timeoutMs = 
       `legendas=${subtitles.size} noManifesto=${info?.subtitles.length || 0} nota=${score}`,
   );
 
+  // manifestBody/verified são internos deste módulo (evitam refetch redundante
+  // acima); o resultado final não precisa carregar dezenas de KB de manifesto
+  // até o renderer.
+  const { manifestBody, verified, ...cleanCandidate } = candidate;
+  void manifestBody;
+  void verified;
+
   return {
     option,
     score,
     result: {
-      ...candidate,
+      ...cleanCandidate,
       tipo,
       subtitles: [...subtitles.values()],
       isMaster: Boolean(info?.isMaster),
@@ -1258,6 +1305,7 @@ class SuperflixSession {
       sourceOptions,
       expiresAt: tokenExpiry(tokenPayload),
       extractEmbedPlayer: options.extractEmbedPlayer,
+      observeEmbedFallback: options.observeEmbedFallback,
     });
     slog("session_ready", `superflix_bootstrap_ok options=${sourceOptions.length}`);
     return session;
@@ -1331,6 +1379,7 @@ class SuperflixSession {
       this.ua,
       this.extractEmbedPlayer,
       trace,
+      this.observeEmbedFallback,
     );
     const profile = await profileSource(
       this.fetchImpl, this.jar, option, candidate, this.ua, PROBE_TIMEOUT_MS, trace,
