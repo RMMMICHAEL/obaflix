@@ -9,6 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { performance } = require("node:perf_hooks");
 
 const {
   _test,
@@ -740,6 +741,61 @@ test("sem observador injetado, o 403 do embedplayer continua um erro normal de c
   );
   assert.equal(fixture.legacyAttempts, 1);
   assert.equal(fixture.fallbackCalls, 0);
+});
+
+// Regressão de latência: a resolução observada em navegador não pode esperar
+// o resto da página (scripts, anúncios, requests posteriores) depois que a
+// mídia já foi vista. O contrato de observeEmbedFallback() é resolver assim
+// que a própria observação decide isso — este teste prova que resolveSource()
+// não adiciona nenhuma espera por cima disso; o comportamento de resolver no
+// instante exato de first_media_seen, dentro da observação em si, é do
+// runEmbedObservation() real (Electron), verificável pelos timestamps de fase
+// que ele agora registra ([embed-observe/fase]) e não é testável fora do
+// Electron — mesma limitação de todo o restante deste arquivo.
+test("a resolução conclui no momento em que a mídia é observada, não quando o resto da página termina", async () => {
+  const MEDIA_FOUND_MS = 15;
+  const PAGE_WOULD_FINISH_MS = 400; // "resto da página" — nunca aguardado por quem chama
+
+  const fixture = embedPlayerLegacyBlockedFetch();
+  let pageStillRunningWhenMediaResolved = null;
+  let pageFinished = false;
+  const pageTimer = setTimeout(() => { pageFinished = true; }, PAGE_WOULD_FINISH_MS);
+
+  const observeEmbedFallback = () => new Promise((resolve) => {
+    setTimeout(() => {
+      pageStillRunningWhenMediaResolved = !pageFinished;
+      resolve({
+        stream: "https://cdn-observado.invalid/rum-fixture/master.txt",
+        referer: "https://embedplayer.invalid/video/7373737373737373",
+        tipo: "hls",
+        manifestBody: MASTER_MANIFEST,
+        subtitles: [],
+      });
+    }, MEDIA_FOUND_MS);
+  });
+
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/fire-legado", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    extractEmbedPlayer: fixture.extractEmbedPlayer,
+    observeEmbedFallback,
+  });
+
+  const start = performance.now();
+  const media = await session.resolve(session.publicOptions[0].key);
+  const elapsedMs = performance.now() - start;
+  clearTimeout(pageTimer);
+
+  assert.equal(media.tipo, "hls");
+  assert.equal(
+    pageStillRunningWhenMediaResolved, true,
+    "a mídia precisa ter sido observada antes do resto da página terminar",
+  );
+  assert.ok(
+    elapsedMs < PAGE_WOULD_FINISH_MS,
+    `resolve() levou ${elapsedMs.toFixed(1)}ms — não pode se aproximar dos ` +
+    `${PAGE_WOULD_FINISH_MS}ms que o resto da página levaria`,
+  );
 });
 
 test("opção nmp expirada refaz bootstrap, remapeia a opção e resolve uma única vez", async () => {
