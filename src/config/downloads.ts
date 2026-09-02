@@ -23,22 +23,22 @@ const ou = (valor: string | undefined, padrao: string) => (valor ?? "").trim() |
 
 export const INSTALADORES = {
   android: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID, "https://app.obaflix.online/Obaflix-1.0.9.apk"),
-    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_VERSAO, "Versão 1.0.9"),
-    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TAMANHO, "10,1 MB"),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID, "https://app.obaflix.online/Obaflix-1.0.10.apk"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_VERSAO, "Versão 1.0.10"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TAMANHO, "10,7 MB"),
   },
   androidTv: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV, "https://app.obaflix.online/Obaflix-TV-0.7.6.apk"),
-    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_VERSAO, "Versão 0.7.6"),
-    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_TAMANHO, "4,8 MB"),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV, "https://app.obaflix.online/Obaflix-TV-0.7.21.apk"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_VERSAO, "Versão 0.7.21"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_TAMANHO, "5,2 MB"),
   },
   windows: {
     url: ou(
       process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS,
-      "https://app.obaflix.online/Obaflix%20Setup%201.0.5.exe",
+      "https://app.obaflix.online/Obaflix-Setup-1.0.10.exe",
     ),
-    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.5"),
-    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116 MB"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.10"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116,3 MB"),
   },
 } satisfies Record<string, Instalador>;
 
