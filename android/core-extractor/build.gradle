@@ -22,6 +22,7 @@ android {
         minSdk 21
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+        buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""
         // Lista separada por virgula de SHA-256 dos certificados aceitos. O
         // digest e publico; a chave privada continua exclusivamente no
         // keystore/Play App Signing. Vazio deixa a verificacao observacional.
@@ -60,4 +61,14 @@ dependencies {
     // o BoringSSL junto, entao passa a nao depender do que o aparelho oferece.
     api 'org.conscrypt:conscrypt-android:2.5.2'
     implementation 'androidx.core:core-ktx:1.12.0'
+
+    // JVM puro, sem Robolectric: cobre so a parte sem Android framework
+    // (parser do manifesto, comparacao de versionCode, checksum). O que
+    // depende de DownloadManager/FileProvider/Context continua validado por
+    // build real + instalacao manual — ver docs/auto-atualizacao.md.
+    testImplementation 'junit:junit:4.13.2'
+    // org.json no classpath de teste unitario: o android.jar de unit test
+    // so tem stubs que lancam RuntimeException. Sem esta dependencia,
+    // UpdateManifestParser (que usa org.json.JSONObject) nao roda em teste.
+    testImplementation 'org.json:json:20240303'
 }

@@ -100,6 +100,38 @@ class ObaflixBridge(
     }
 
     /**
+     * Instala a atualização já baixada e conferida por [com.obaflix.update.Atualizador].
+     *
+     * Só chega aqui depois que o JS já recebeu `window.__obaflixShowUpdate` —
+     * ou seja, só depois que `Atualizador.estado` já é `Pronta`. Se por
+     * algum motivo o estado mudou nesse meio-tempo (ex.: uma versão mais
+     * nova apareceu e substituiu o arquivo), simplesmente não faz nada: o
+     * próximo `Pronta` dispara um novo aviso ao JS.
+     *
+     * Não instala nada sozinha: [com.obaflix.update.UpdateInstaller.instalar]
+     * só abre o instalador do sistema, que sempre pede confirmação explícita.
+     */
+    @JavascriptInterface
+    fun installUpdate(capability: String) {
+        if (!authorized(capability)) return
+        val estado = com.obaflix.update.Atualizador.estado.value
+        if (estado !is com.obaflix.update.EstadoAtualizacao.Pronta) {
+            ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "instalar_sem_pronta")
+            return
+        }
+        ObaLog.evento(ObaLog.Fase.ATUALIZACAO, "instalar_solicitado", "versionCode" to estado.info.versionCode)
+        webView.post {
+            val context = webView.context
+            if (!com.obaflix.update.UpdateInstaller.podeInstalar(context)) {
+                ObaLog.evento(ObaLog.Fase.ATUALIZACAO, "permissao_instalacao_ausente")
+                com.obaflix.update.UpdateInstaller.abrirPermissaoDeInstalacao(context)
+                return@post
+            }
+            com.obaflix.update.UpdateInstaller.instalar(context, estado.arquivo)
+        }
+    }
+
+    /**
      * Mantém a tela do Android ligada enquanto o player
      * estiver aberto.
      *

@@ -20,6 +20,7 @@ android {
         versionName "0.7.20"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
+        buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""
         // ABIs que existem no parque de TV: ARM nos aparelhos, x86_64 para o
         // emulador. Deixar de fora o x86 de 32 bits — que praticamente nao
         // existe em TV Box — devolve quase um megabyte do que o Conscrypt

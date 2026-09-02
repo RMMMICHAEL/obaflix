@@ -44,6 +44,7 @@ object ObaLog {
         const val DOCUMENTO = "documento"
         const val PLAYER = "player"
         const val RENDER = "render"
+        const val ATUALIZACAO = "atualizacao"
     }
 
     private const val LIMITE_TRILHA = 240

@@ -5,4 +5,28 @@
          garante que movel e TV nunca fiquem sem a permissao por descuido. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Especial, nao "perigosa": so declarar aqui nao concede nada sozinho.
+         O usuario ainda precisa liberar explicitamente em Configuracoes
+         (UpdateInstaller.abrirPermissaoDeInstalacao) antes do instalador do
+         sistema aceitar o APK baixado — nunca instala sem essa tela. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- FileProvider da atualizacao. android:authorities usa o placeholder
+             ${applicationId}: o merge de manifest resolve para com.obaflix ou
+             com.obaflix.tv conforme quem consome esta biblioteca, entao :app e
+             :tv nunca colidem na mesma autoridade. Expoe so a pasta de
+             downloads do proprio app (ver res/xml/file_paths.xml) — nao a
+             arvore inteira de arquivos. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
 </manifest>

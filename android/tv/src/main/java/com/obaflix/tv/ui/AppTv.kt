@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import com.obaflix.tv.BuildConfig
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.navegacao.Aba
 import com.obaflix.tv.navegacao.Camada
@@ -77,6 +78,32 @@ fun AppTv() {
     val focoMoldura = remember { com.obaflix.tv.ui.componentes.FocoMoldura() }
     var fundoDesejado by remember { mutableStateOf<String?>(null) }
     var fundoAtual by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+
+    // Checagem de atualizacao — mesma logica do :app e do Electron (checar,
+    // baixar em segundo plano, so avisar quando estiver pronta para
+    // instalar). "Roda uma vez por processo": Atualizador.iniciar() e
+    // idempotente, entao uma recomposicao desta tela (troca de aba, volta do
+    // player) nao reabre um segundo laco de checagem.
+    LaunchedEffect(Unit) {
+        com.obaflix.update.Atualizador.iniciar(
+            context,
+            BuildConfig.UPDATE_MANIFEST_URL,
+            com.obaflix.update.Plataforma.ANDROID_TV,
+            BuildConfig.VERSION_CODE,
+        )
+        com.obaflix.update.Atualizador.estado.collect { estado ->
+            if (estado !is com.obaflix.update.EstadoAtualizacao.Pronta) return@collect
+            PonteAtualizacao.pronta = estado.info
+            PonteAtualizacao.aoInstalar = {
+                if (com.obaflix.update.UpdateInstaller.podeInstalar(context)) {
+                    com.obaflix.update.UpdateInstaller.instalar(context, estado.arquivo)
+                } else {
+                    com.obaflix.update.UpdateInstaller.abrirPermissaoDeInstalacao(context)
+                }
+            }
+        }
+    }
 
     // Coloca o app em modo de entrada por teclado/D-pad. E a API oficial do
     // Compose para o mesmo problema que o requestFocusFromTouch resolve na
@@ -134,6 +161,12 @@ fun AppTv() {
                 is Camada.Player -> TelaPlayer(topo.pedido)
                 is Camada.Perfil -> TelaPerfil()
             }
+
+            // Atualizacao pronta: dispensavel (BACK ou "Agora nao"), por isso
+            // vem ANTES do desafio na ordem de desenho — se os dois
+            // coincidirem, o desafio (que exige acao) cobre o aviso de
+            // atualizacao (que pode esperar).
+            if (com.obaflix.tv.ui.PonteAtualizacao.pronta != null) CamadaAtualizacao()
 
             // Desafio "nao sou robo" por cima de tudo, inclusive do player: ele
             // acontece durante a resolucao de uma fonte, e nao pode ficar atras

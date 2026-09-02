@@ -4,7 +4,11 @@ Os três aplicativos nativos têm ciclos de versão **independentes**. Este
 arquivo diz qual é a versão corrente de cada um, onde o número é declarado,
 onde o build sai e onde a cópia distribuível é guardada.
 
-Atualizado em **2026-08-31**.
+> Cada release nova (Android/TV) precisa também regenerar e republicar o
+> manifesto de atualização no R2, senão o app não vai saber que ela existe.
+> Ver [`docs/auto-atualizacao.md`](auto-atualizacao.md).
+
+Atualizado em **2026-09-02**.
 
 ## Versão corrente
 

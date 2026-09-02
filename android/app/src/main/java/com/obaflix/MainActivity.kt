@@ -17,6 +17,10 @@ import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.ObaflixBridge
 import com.obaflix.bridge.SuperflixChallengeOverlay
 import com.obaflix.player.PlayerWebViewClient
+import com.obaflix.update.Atualizador
+import com.obaflix.update.EstadoAtualizacao
+import com.obaflix.update.Plataforma
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 private const val TAG = "Obaflix"
@@ -49,6 +53,49 @@ class MainActivity : AppCompatActivity() {
         // O aplicativo sempre começa na experiência Android. Essa rota valida a
         // sessão no servidor e redireciona para /login antes de mostrar o catálogo.
         webView.loadUrl(BuildConfig.OBAFLIX_URL + "/android")
+
+        iniciarChecagemDeAtualizacao()
+    }
+
+    /**
+     * Checa, baixa e avisa o site quando a atualização está pronta.
+     *
+     * Mesmo mecanismo do Electron: `Atualizador` roda em segundo plano e só
+     * publica [EstadoAtualizacao.Pronta] depois de a atualização estar
+     * baixada e conferida. Daí em diante o fluxo é idêntico ao do Electron —
+     * `window.__obaflixShowUpdate(versao)` aciona o MESMO banner web
+     * (`DesktopUpdateBanner.tsx`), sem nenhuma mudança no site: ele já lê
+     * `window.obaflixDesktop` sem saber (nem precisar saber) qual plataforma
+     * o está implementando.
+     */
+    private fun iniciarChecagemDeAtualizacao() {
+        Atualizador.iniciar(
+            applicationContext,
+            BuildConfig.UPDATE_MANIFEST_URL,
+            Plataforma.ANDROID,
+            BuildConfig.VERSION_CODE,
+        )
+        lifecycleScope.launch {
+            Atualizador.estado.collect { estado ->
+                if (estado is EstadoAtualizacao.Pronta) {
+                    notificarAtualizacaoPronta(estado.info.versionName)
+                }
+            }
+        }
+    }
+
+    private fun notificarAtualizacaoPronta(versao: String) {
+        // Aspas simples escapadas: versionName vem do manifesto remoto, e
+        // mesmo sendo um valor que o próprio backend publica, nada que chega
+        // pela rede entra cru dentro de um literal JS.
+        val seguro = versao.replace("\\", "\\\\").replace("'", "\\'")
+        webView.post {
+            webView.evaluateJavascript(
+                "if (typeof window.__obaflixShowUpdate === 'function') " +
+                    "window.__obaflixShowUpdate('$seguro');",
+                null,
+            )
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -246,8 +293,14 @@ class MainActivity : AppCompatActivity() {
                     setKeepScreenOn: function(enabled) {
                         window._obaflixBridge.setKeepScreenOn(bridgeCapability, !!enabled);
                     },
-                    onUpdateReady: function(cb) { /* no-op: atualizações Android chegam via Play Store */ },
-                    installUpdate: function() { /* no-op */ }
+                    // Igual ao preload.js do Electron: so registra o callback.
+                    // Quem chama e o lado nativo (MainActivity.notificarAtualizacaoPronta),
+                    // via window.__obaflixShowUpdate, quando a atualização já
+                    // estiver baixada e conferida — nunca antes disso.
+                    onUpdateReady: function(cb) { window.__obaflixShowUpdate = cb; },
+                    installUpdate: function() {
+                        window._obaflixBridge.installUpdate(bridgeCapability);
+                    }
                 };
                 window.__OBAFLIX_DESKTOP__ = true;
             })();

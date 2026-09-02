@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Caminho que o FileProvider expõe para o instalador do sistema.
+
+  Casa exatamente com Environment.DIRECTORY_DOWNLOADS dentro de
+  getExternalFilesDir — onde UpdateDownloader grava o APK. Nenhum outro
+  diretório do app é exposto: o instalador só pode enxergar o arquivo da
+  atualização, nada mais.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="updates" path="Download/" />
+</paths>
