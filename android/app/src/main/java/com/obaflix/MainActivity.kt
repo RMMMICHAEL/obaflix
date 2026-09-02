@@ -13,6 +13,8 @@ import android.webkit.WebView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.ObaflixBridge
 import com.obaflix.bridge.SuperflixChallengeOverlay
@@ -140,6 +142,8 @@ class MainActivity : AppCompatActivity() {
             onRenderGone = { dead, crashed -> rebuildWebViewAposCrash(dead, crashed) },
         )
 
+        registrarShimPrecoceDeAtualizacao()
+
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
                 val texto = msg.message()
@@ -253,12 +257,72 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(destino)
     }
 
+    /**
+     * Registra `onUpdateReady`/`installUpdate` ANTES de qualquer script da
+     * própria página rodar — não só depois que ela termina de carregar.
+     *
+     * `injectBridgeShim` roda em `onPageFinished`, que dispara só depois do
+     * evento `load` do documento — bem depois de o React já ter montado e
+     * corrido os `useEffect` do primeiro render. `DesktopUpdateBanner.tsx`
+     * registra o callback uma vez só, em `useEffect(() => {...}, [])`, sem
+     * repetir: se `window.obaflixDesktop` ainda não existisse nesse instante,
+     * o registro nunca aconteceria, e nenhum aviso chegaria nunca no Android
+     * (o Electron não tem esse problema — o preload.js roda antes de
+     * qualquer script da própria página, por construção).
+     *
+     * `addDocumentStartJavaScript` é o equivalente Android disso: corre no
+     * início do parse do documento, antes do bundle do Next.js. Só faz o
+     * mínimo — os dois métodos que o banner web já usa —, restrito à origem
+     * do próprio site. `injectBridgeShim`, mais tarde, substitui este objeto
+     * pela versão completa (extractStream, prepareSuperflix…); o sinalizador
+     * `__obaflixEarly` é o que diferencia "só o esboço" de "já é o shim
+     * inteiro" nesse meio-tempo.
+     */
+    private fun registrarShimPrecoceDeAtualizacao() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            // WebView antiga (abaixo da 106): sem alternativa segura aqui.
+            // injectBridgeShim ainda cobre tudo que não depende de estar
+            // pronto antes do primeiro useEffect.
+            ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "document_start_script_indisponivel")
+            return
+        }
+        val script = """
+            (function() {
+                if (window.obaflixDesktop) return;
+                window.obaflixDesktop = {
+                    platform: 'android',
+                    isAndroid: true,
+                    __obaflixEarly: true,
+                    onUpdateReady: function(cb) { window.__obaflixShowUpdate = cb; },
+                    installUpdate: function() {
+                        if (window._obaflixBridge) {
+                            window._obaflixBridge.installUpdate('$bridgeCapability');
+                        }
+                    }
+                };
+            })();
+        """.trimIndent()
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(
+                webView, script, setOf("${BuildConfig.OBAFLIX_URL}/*"),
+            )
+        }.onFailure { e ->
+            ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "document_start_script_falhou", "excecao" to e.javaClass.simpleName)
+        }
+    }
+
     private fun injectBridgeShim(view: WebView) {
         val script = """
             (function() {
                 document.documentElement.classList.add('obaflix-android-app');
                 window.__OBAFLIX_ANDROID__ = true;
-                if (window.obaflixDesktop) {
+                // window.obaflixDesktop já pode existir aqui — vindo do shim
+                // precoce (registrarShimPrecoceDeAtualizacao). __obaflixEarly
+                // é só o esboço com onUpdateReady/installUpdate; substitui
+                // por este objeto completo. Numa segunda chamada (raro: mais
+                // de um onPageFinished para o mesmo documento) o objeto
+                // completo já não tem essa marca, e aí sim só atualiza platform.
+                if (window.obaflixDesktop && !window.obaflixDesktop.__obaflixEarly) {
                     window.obaflixDesktop.platform = 'android';
                     return;
                 }

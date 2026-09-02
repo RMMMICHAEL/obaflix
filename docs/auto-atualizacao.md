@@ -9,6 +9,29 @@ própria plataforma. Nenhum reimplementa o outro.
 | **Android (celular)** | `Atualizador` (novo, compartilhado com a TV) | Manifesto no R2 |
 | **Android TV** | `Atualizador` (novo, compartilhado com o celular) | Manifesto no R2 |
 
+## Bootstrap: a última atualização manual
+
+O mecanismo só existe **dentro** do binário que o traz. Quem já tem instalado
+`1.0.9`/`0.7.20` — ou qualquer versão anterior — não tem `Atualizador`, não
+consulta manifesto nenhum e não vai saber que existe algo novo, porque o
+próprio código que checaria isso é o que está faltando.
+
+Por isso esta versão (`1.0.10` no celular, `0.7.21` na TV) **tem que chegar
+por fora do próprio mecanismo** — o mesmo caminho manual de sempre (baixar o
+APK do R2, ou repassar o arquivo direto), pelo menos uma última vez. Só a
+partir dela em diante o app passa a se checar sozinho; quem instala esta
+versão manualmente já sai apto a receber a próxima automaticamente.
+
+Não há solução no código para isso: nenhum aplicativo consegue se auto-atualizar
+antes de ter o próprio código de auto-atualização instalado. É a mesma
+lacuna que qualquer updater tem na primeira vez — o Electron atravessou a
+mesma barreira quando `electron-updater` foi adicionado, só que antes deste
+trabalho, então não ficou registrada aqui.
+
+**Ação necessária, fora deste repositório:** publicar `1.0.10`/`0.7.21` no R2
+(substituindo os arquivos que `src/config/downloads.ts` aponta) e avisar quem
+já tem o app instalado a atualizar manualmente uma última vez.
+
 ## Electron: nada mudou
 
 `desktop/electron/updater.js` já chama `autoUpdater.checkForUpdatesAndNotify()`
@@ -58,6 +81,71 @@ O que muda entre celular e TV é só a apresentação:
 - **`:tv`** — `CamadaAtualizacao.kt` desenha um cartão navegável por D-pad
   ("Atualizar agora" / "Agora não"), mesmo padrão de camada que
   `CamadaDesafio.kt` já usa para o desafio do Superflix.
+
+### O caminho ponta a ponta no `:app` — e a corrida que ele tinha
+
+`DesktopUpdateBanner.tsx` só usa `window.obaflixDesktop.onUpdateReady(cb)` e
+`window.obaflixDesktop.installUpdate()` — nenhuma API exclusiva do Electron
+(sem `ipcRenderer`, sem `require`, sem `process`). Isso já bastava para
+funcionar no Android **se** o objeto existisse a tempo. E não existia.
+
+Cadeia completa, do toque em "Instalar" até o instalador do sistema abrir:
+
+```
+usuário toca "Instalar" no banner
+  → window.obaflixDesktop.installUpdate()               (DesktopUpdateBanner.tsx)
+  → window._obaflixBridge.installUpdate(bridgeCapability) (shim JS)
+  → ObaflixBridge.installUpdate(capability)               (@JavascriptInterface)
+      confere authorized(capability)
+      confere Atualizador.estado.value is Pronta
+  → UpdateInstaller.podeInstalar(context)?
+      não → UpdateInstaller.abrirPermissaoDeInstalacao (Settings do sistema)
+      sim → UpdateInstaller.instalar(context, arquivo)   (Intent + FileProvider)
+```
+
+Essa metade — do toque em diante — sempre esteve correta e foi validada por
+leitura de código: `installUpdate` chama exatamente o `@JavascriptInterface`
+que existe, com o mesmo `bridgeCapability` que autoriza as outras chamadas da
+ponte, e abre o instalador do Android da mesma forma que qualquer instalação
+manual.
+
+**O problema estava antes**, no registro do callback:
+
+```
+window.__obaflixShowUpdate(versão)                      (MainActivity, quando Pronta)
+  → invoca o cb registrado por…
+  → window.obaflixDesktop.onUpdateReady(cb)              (DesktopUpdateBanner.tsx, useEffect)
+```
+
+`DesktopUpdateBanner.tsx` registra o callback **uma vez só**, em
+`useEffect(() => {...}, [])`, sem repetir e sem esperar. Antes desta correção,
+`window.obaflixDesktop` só nascia em `injectBridgeShim`, chamado por
+`onPageFinished` — que dispara bem depois do evento `load` do documento,
+tipicamente **depois** que o React já montou a página e já rodou esse
+`useEffect`. Resultado: `desktop` chegava `undefined` no banner, o
+`if (!desktop) return;` saía cedo, `onUpdateReady` nunca era chamado, e
+`window.__obaflixShowUpdate` nunca existia — o aviso não tinha como chegar,
+mesmo com tudo o resto funcionando. O Electron nunca teve esse problema
+porque `preload.js` roda antes de qualquer script da própria página, por
+construção do `contextBridge`; a WebView do Android não tem equivalente
+via `onPageFinished`.
+
+**Correção:** `MainActivity.registrarShimPrecoceDeAtualizacao()` usa
+`WebViewCompat.addDocumentStartJavaScript` (`androidx.webkit`, já era
+dependência) para registrar uma versão mínima de `window.obaflixDesktop` —
+só `onUpdateReady`/`installUpdate` — no **início do parse do documento**,
+antes de qualquer script da página, inclusive antes do bundle do Next.js.
+`injectBridgeShim`, mais tarde, substitui esse esboço pelo objeto completo
+(`extractStream`, `prepareSuperflix`…); o campo `__obaflixEarly` é o que
+diferencia as duas fases, para a substituição não pisar em uma segunda
+chamada acidental de `onPageFinished` nem perder as demais funções da ponte.
+Sem `DOCUMENT_START_SCRIPT` suportado (WebView abaixo da 106), cai de volta
+no comportamento anterior — sujeito à mesma corrida, sem alternativa segura
+conhecida nessas versões.
+
+Nenhuma mudança em `DesktopUpdateBanner.tsx` nem no Electron: o ajuste é
+inteiramente do lado nativo Android, para a WebView oferecer a MESMA garantia
+de disponibilidade antecipada que o Electron já tinha.
 
 ### O manifesto
 

@@ -6,7 +6,9 @@ onde o build sai e onde a cópia distribuível é guardada.
 
 > Cada release nova (Android/TV) precisa também regenerar e republicar o
 > manifesto de atualização no R2, senão o app não vai saber que ela existe.
-> Ver [`docs/auto-atualizacao.md`](auto-atualizacao.md).
+> Ver [`docs/auto-atualizacao.md`](auto-atualizacao.md) — em especial a seção
+> "Bootstrap: a última atualização manual", que explica por que **esta**
+> versão específica não pode chegar aos usuários por auto-update.
 
 Atualizado em **2026-09-02**.
 
@@ -14,8 +16,8 @@ Atualizado em **2026-09-02**.
 
 | Aplicativo | Versão | Pacote / AppId | Onde o número é declarado |
 |---|---|---|---|
-| **Android TV** | `0.7.20` (versionCode 36) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
-| **Android celular** | `1.0.9` (versionCode 9) | `com.obaflix` | [`android/app/build.gradle`](../android/app/build.gradle) |
+| **Android TV** | `0.7.21` (versionCode 37) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
+| **Android celular** | `1.0.10` (versionCode 10) | `com.obaflix` | [`android/app/build.gradle`](../android/app/build.gradle) |
 | **Desktop (Windows)** | `1.0.5` | `com.obaflix.app` | [`desktop/package.json`](../desktop/package.json) |
 
 Os dois APK são pacotes diferentes: **instalam lado a lado**, um não substitui
@@ -82,8 +84,9 @@ relatasse "estou na 0.7.6" não diria qual dos dois. A TV pulou para `0.7.7` por
 causa disso, e a regra daqui em diante é nunca reaproveitar um número entre
 build de diagnóstico e build limpo.
 
-**O celular está em `1.0.9` desde o primeiro commit do módulo.** O número nunca
-subiu, e o conteúdo mudou muito: o `Obaflix-Android-1.0.9.apk` de 24/08 tem
-2,4 MB e o `Obaflix-1.0.9.apk` de 31/08 tem 10,1 MB — o segundo já inclui o
-Conscrypt e o `AppIntegrity`. São aplicativos bem diferentes com o mesmo
-rótulo. Vale subir o `versionCode` e o `versionName` no próximo build.
+**O celular ficou em `1.0.9` de 24/08 a 02/09.** O número não subiu por três
+commits seguidos enquanto o conteúdo mudou muito: o `Obaflix-Android-1.0.9.apk`
+de 24/08 tem 2,4 MB e o `Obaflix-1.0.9.apk` de 31/08 tem 10,1 MB — o segundo já
+inclui o Conscrypt e o `AppIntegrity`. Corrigido em 02/09, junto da chegada do
+auto-update: `1.0.10` (versionCode 10) é a primeira versão que sobe o número
+desde então.
