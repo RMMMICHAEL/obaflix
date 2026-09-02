@@ -290,12 +290,66 @@ async function prepareSuperflixAuthorized(embedUrl, previousResolver = null) {
 function rememberSuperflixSession(embedUrl, resolver) {
   const id = crypto.randomUUID();
   const optionAliases = new Map();
+  const publicOptionsByKey = new Map();
   for (const option of resolver.publicOptions) {
     optionAliases.set(option.key, resolver.optionIdentity(option.key));
+    publicOptionsByKey.set(option.key, { ...option });
   }
-  superflixSessions.set(id, { resolver, embedUrl, optionAliases, renewalPromise: null });
+  superflixSessions.set(id, {
+    resolver,
+    embedUrl,
+    optionAliases,
+    publicOptionsByKey,
+    renewalPromise: null,
+  });
   superflixSessionByEmbed.set(embedUrl, id);
   return id;
+}
+
+function sameSuperflixOption(left, right) {
+  if (!left || !right) return false;
+  return left.id === right.id || (
+    left.label === right.label && Boolean(left.isFile) === Boolean(right.isFile)
+  );
+}
+
+/**
+ * Converte a chave efêmera do resolver atual para a identidade opaca que o
+ * renderer já recebeu no prepare. IDs internos do bootstrap nunca atravessam IPC.
+ */
+function projectEffectiveSuperflixOption(entry, result, requestedAlias) {
+  const resolverKey = result?.effectiveOptionKey;
+  const identity = resolverKey ? entry.resolver.optionIdentity(resolverKey) : null;
+  let aliasKey = null;
+
+  if (identity) {
+    for (const [candidateKey, candidateIdentity] of entry.optionAliases.entries()) {
+      if (sameSuperflixOption(candidateIdentity, identity)) {
+        aliasKey = candidateKey;
+        break;
+      }
+    }
+  }
+
+  // Um bootstrap renovado pode legitimamente trocar a lista. Nesse caso a
+  // própria chave aleatória do novo resolver passa a ser um alias aceito.
+  if (!aliasKey && identity && resolverKey) {
+    aliasKey = resolverKey;
+    entry.optionAliases.set(aliasKey, identity);
+  }
+
+  const currentPublic = resolverKey
+    ? entry.resolver.publicOptions.find((option) => option.key === resolverKey)
+    : null;
+  if (aliasKey && currentPublic) entry.publicOptionsByKey.set(aliasKey, { ...currentPublic, key: aliasKey });
+  const publicOption = entry.publicOptionsByKey.get(aliasKey || requestedAlias);
+
+  return {
+    ...result,
+    effectiveOptionKey: aliasKey || requestedAlias,
+    effectiveOptionLabel: publicOption?.label || result?.effectiveOptionLabel || "Servidor",
+    effectiveOptionIsFile: Boolean(publicOption?.isFile ?? result?.effectiveOptionIsFile),
+  };
 }
 
 function getSuperflixSession(id) {
@@ -352,7 +406,7 @@ async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover =
       : await entry.resolver.resolve(currentKey);
   };
 
-  const result = await retryAuthorizationOnce(resolveOnce, async () => {
+  const resolved = await retryAuthorizationOnce(resolveOnce, async () => {
     // Uma única renovação compartilhada por sessão. A segunda falha de
     // autorização é devolvida ao player, impedindo recursão/loop infinito.
     if (!entry.renewalPromise) {
@@ -362,6 +416,7 @@ async function resolveManagedSuperflix(sessionId, optionKey, automaticFailover =
     }
     await entry.renewalPromise;
   });
+  const result = projectEffectiveSuperflixOption(entry, resolved, optionKey);
   await assertPublicHttpsStream(result.stream);
   await registerPlayerStream(result.stream, result.referer).catch(() => {});
   log.info("superflix", "superflix_source_ok", { tipo: result.tipo || "-" });

@@ -942,6 +942,69 @@ export function CustomPlayer({
 
   resolverUrlNativaRef.current = resolverUrlNativa;
 
+  const applyEffectiveSuperflixOption = useCallback((
+    sessionId: string,
+    requestedOptionKey: string,
+    result: {
+      effectiveOptionKey?: string;
+      effectiveOptionLabel?: string;
+      effectiveOptionIsFile?: boolean;
+    },
+  ) => {
+    const effectiveKey = result.effectiveOptionKey || requestedOptionKey;
+    let updated = allFontesRef.current;
+    let effectiveIndex = updated.findIndex((item) =>
+      item.superflixLocal?.sessionId === sessionId &&
+      item.superflixLocal.optionKey === effectiveKey,
+    );
+
+    if (effectiveIndex < 0) {
+      // Após um bootstrap renovado a opção pode ganhar uma nova chave opaca.
+      // Atualizamos a entrada solicitada sem criar ou inferir qualquer ID real.
+      const requestedIndex = updated.findIndex((item) =>
+        item.superflixLocal?.sessionId === sessionId &&
+        item.superflixLocal.optionKey === requestedOptionKey,
+      );
+      if (requestedIndex < 0) return null;
+      const previous = updated[requestedIndex];
+      const replacement: Fonte = {
+        ...previous,
+        id: `sf-local:${sessionId}:${effectiveKey}`,
+        rotulo: result.effectiveOptionLabel || previous.rotulo,
+        superflixLocal: {
+          ...previous.superflixLocal!,
+          optionKey: effectiveKey,
+          isFile: result.effectiveOptionIsFile ?? previous.superflixLocal!.isFile,
+        },
+      };
+      updated = [...updated];
+      updated[requestedIndex] = replacement;
+      effectiveIndex = requestedIndex;
+    } else if (
+      result.effectiveOptionLabel &&
+      updated[effectiveIndex].rotulo !== result.effectiveOptionLabel
+    ) {
+      updated = [...updated];
+      updated[effectiveIndex] = {
+        ...updated[effectiveIndex],
+        rotulo: result.effectiveOptionLabel,
+      };
+    }
+
+    if (updated !== allFontesRef.current) {
+      allFontesRef.current = updated;
+      setAllFontes(updated);
+    }
+
+    const effective = updated[effectiveIndex];
+    fonteSelecionadaRef.current = effective.id;
+    ultimoExtraidoRef.current = effective.id;
+    sourceIdRef.current = sourceIdDe(effective.id);
+    escolhaManualRef.current = false;
+    setFonteIdx((current) => current === effectiveIndex ? current : effectiveIndex);
+    return effective;
+  }, []);
+
   // ── Extract ──────────────────────────────────────────────────────────────────
   const extract = useCallback(async (fonteId: string) => {
     extractAbortRef.current?.abort();
@@ -973,6 +1036,11 @@ export function CustomPlayer({
           alvo.superflixLocal.optionKey,
         );
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        applyEffectiveSuperflixOption(
+          alvo.superflixLocal.sessionId,
+          alvo.superflixLocal.optionKey,
+          data,
+        );
         streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
         playerUrl = buildElectronProxyUrl(data.stream, data.referer);
@@ -1014,7 +1082,17 @@ export function CustomPlayer({
 
         const selectedIndex = Math.max(0, outerIndex);
         let chosen = 0;
-        let data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } = {};
+        let data: {
+          stream?: string;
+          tipo?: string;
+          referer?: string;
+          subtitles?: SubtitleTrack[];
+          expiresAt?: number | null;
+          effectiveOptionKey?: string;
+          effectiveOptionLabel?: string;
+          effectiveOptionIsFile?: boolean;
+          error?: string;
+        } = {};
         for (let index = 0; index < prepared.options.length; index += 1) {
           data = await desktop.resolveSuperflix(prepared.sessionId, prepared.options[index].key);
           if (!data.error && data.stream) {
@@ -1023,13 +1101,21 @@ export function CustomPlayer({
           }
           console.warn(`[superflix] candidato ${index + 1} rejeitado; tentando o próximo`);
         }
-        const selected = localOptions[chosen];
+        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        const effectiveKey = data.effectiveOptionKey || prepared.options[chosen].key;
+        const effectiveOffset = localOptions.findIndex((item) =>
+          item.superflixLocal?.optionKey === effectiveKey,
+        );
+        if (effectiveOffset >= 0) chosen = effectiveOffset;
+        const selected = applyEffectiveSuperflixOption(
+          prepared.sessionId,
+          prepared.options[chosen].key,
+          data,
+        ) || localOptions[chosen];
         setFonteIdx(selectedIndex + chosen);
         fonteSelecionadaRef.current = selected.id;
         ultimoExtraidoRef.current = selected.id;
         sourceIdRef.current = sourceIdDe(selected.id);
-
-        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
         playerUrl = buildElectronProxyUrl(data.stream, data.referer);
@@ -1217,7 +1303,7 @@ export function CustomPlayer({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa]);
+  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa, applyEffectiveSuperflixOption]);
 
   extractRef.current = extract;
 
@@ -1807,6 +1893,14 @@ export function CustomPlayer({
             if (!data?.stream) {
               fail(data?.error || "stream vazio");
               return;
+            }
+
+            if (superflixLocal) {
+              applyEffectiveSuperflixOption(
+                superflixLocal.sessionId,
+                superflixLocal.optionKey,
+                data,
+              );
             }
 
             const newUrl = buildElectronProxyUrl(data.stream, data.referer);

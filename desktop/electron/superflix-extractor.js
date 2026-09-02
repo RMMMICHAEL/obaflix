@@ -882,23 +882,14 @@ async function resolveSource(fetchImpl, jar, targetUrl, warezPageUrl, host, ua, 
     const subtitles = await fetchPage(fetchImpl, jar, resolvedUrl, { ua, referer: warezPageUrl })
       .then((page) => findSubtitleTracks(page.text, page.url))
       .catch(() => []);
-    let raw;
-    try {
-      raw = await extractEmbedPlayer(
-        resolvedUrl,
-        `${new URL(warezPageUrl).origin}/`,
-        ua,
-        jar.header(resolvedUrl),
-      );
-    } catch (error) {
-      if (isAuthorizationStatus(error?.status)) {
-        throw new SuperflixAuthorizationError("embed externo requer nova autorização", {
-          status: error.status,
-          stage: "embedplayer",
-        });
-      }
-      throw error;
-    }
+    // Uma recusa do player externo pertence a esta fonte, não à autorização
+    // Superflix. Ela deve cair no failover normal sem reabrir o challenge.
+    const raw = await extractEmbedPlayer(
+      resolvedUrl,
+      `${new URL(warezPageUrl).origin}/`,
+      ua,
+      jar.header(resolvedUrl),
+    );
     const stream = secureTransportUrl(raw);
     if (!stream) throw new Error("embedplayer sem transporte HTTPS");
     // tipo fica em aberto quando a URL não tem extensão: profileSource() resolve.
@@ -1081,7 +1072,7 @@ function publicOptionLabel(option, index) {
   // A projeção pública não pode revelar um provedor/host real. Preservamos
   // nomes descritivos do próprio bootstrap apenas quando compostos por termos
   // visuais genéricos; o valor original continua disponível somente na sessão.
-  const usefulGenericName = /^(?=.*(?:servidor|player|op[cç][aã]o|principal|alternativ|mp4|hls|hd|full hd|dublad|legendad|portugu[eê]s|original))[\p{L}\p{N} ._+()/-]+$/iu
+  const usefulGenericName = /^(?=.*(?:servidor|player|fonte|canais?|op[cç][aã]o|principal|alternativ|mp4|hls|hd|full hd|dublad|legendad|portugu[eê]s|original))[\p{L}\p{N} ._+()/-]+$/iu
     .test(original);
   if (safeCharacters && !containsSensitiveShape && usefulGenericName) return original;
 
@@ -1225,7 +1216,14 @@ class SuperflixSession {
       this.fetchImpl, this.jar, option, candidate, this.ua, PROBE_TIMEOUT_MS,
     );
     slog("source_ok", `superflix_source_ok is_file=${Boolean(option.isFile)} tipo=${profile.result.tipo}`);
-    return { ...profile.result, expiresAt: this.expiresAt };
+    const publicOption = this.publicOptions.find((item) => item.key === optionKey);
+    return {
+      ...profile.result,
+      expiresAt: this.expiresAt,
+      effectiveOptionKey: optionKey,
+      effectiveOptionLabel: publicOption?.label || "Servidor",
+      effectiveOptionIsFile: Boolean(publicOption?.isFile),
+    };
   }
 
   async resolveWithFailover(preferredKey = null) {

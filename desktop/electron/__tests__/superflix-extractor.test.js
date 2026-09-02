@@ -294,7 +294,7 @@ function response(body = "", status = 200, headers = {}) {
   return new Response(body, { status, headers });
 }
 
-function integrationFetch({ firstSourceStatus = 200 } = {}) {
+function integrationFetch({ firstSourceStatus = 200, firstExternal = false, secondLabel = "MP4 Alternativo" } = {}) {
   const calls = [];
   const token = fakeToken({
     embed_context_host: "contexto.invalid",
@@ -312,7 +312,7 @@ function integrationFetch({ firstSourceStatus = 200 } = {}) {
     if (parsed.pathname === "/player/bootstrap") {
       return response(JSON.stringify({ data: { options: [
         { ID: "embed-1", name: "Player Principal Dublado", is_file: false },
-        { ID: "native_media_v2:fixture", name: "MP4 Alternativo", is_file: true },
+        { ID: "native_media_v2:fixture", name: secondLabel, is_file: true },
       ] } }), 200, { "content-type": "application/json" });
     }
     if (parsed.pathname === "/player/source") {
@@ -325,7 +325,11 @@ function integrationFetch({ firstSourceStatus = 200 } = {}) {
       return response(JSON.stringify({ data: { video_url: "https://superflixapi.pro/player/redirect/native" } }));
     }
     if (parsed.pathname === "/player/redirect/embed") {
-      return response("", 302, { location: "https://cdn.invalid/main.m3u8" });
+      return response("", 302, {
+        location: firstExternal
+          ? "https://embedplayer.invalid/video/abcdef0123456789"
+          : "https://cdn.invalid/main.m3u8",
+      });
     }
     if (parsed.pathname === "/player/redirect/native") {
       return response("", 302, { location: "https://superflixapi.pro/player/native/media/nmp_fixture" });
@@ -341,6 +345,9 @@ function integrationFetch({ firstSourceStatus = 200 } = {}) {
     }
     if (parsed.hostname === "cdn.invalid" && parsed.pathname.endsWith(".mp4")) {
       return response("", 206, { "content-type": "video/mp4", "content-range": "bytes 0-0/100" });
+    }
+    if (parsed.hostname === "embedplayer.invalid") {
+      return response("<html><body>fixture do player externo</body></html>");
     }
     throw new Error(`fixture sem rota para ${parsed.pathname}`);
   };
@@ -376,10 +383,40 @@ test("failover é tardio e só consulta a próxima fonte após falha", async () 
   });
   const media = await session.resolveWithFailover(session.publicOptions[0].key);
   assert.equal(media.tipo, "mp4");
+  assert.equal(media.effectiveOptionKey, session.publicOptions[1].key);
+  assert.equal(media.effectiveOptionLabel, "MP4 Alternativo");
   const ids = fixture.calls
     .filter((call) => new URL(call.url).pathname === "/player/source")
     .map((call) => new URLSearchParams(call.body).get("video_id"));
   assert.deepEqual(ids, ["embed-1", "native_media_v2:fixture"]);
+});
+
+test("403 do player externo faz failover sem renovar e informa a fonte efetiva", async () => {
+  const fixture = integrationFetch({ firstExternal: true, secondLabel: "Fonte de Canais" });
+  let externalAttempts = 0;
+  let renewals = 0;
+  const session = await prepareSuperflixSession("https://superflixapi.pro/filme/exemplo", {
+    fetchImpl: fixture.fetchImpl,
+    ua: "UA-legitimo-fixture",
+    extractEmbedPlayer: async () => {
+      externalAttempts += 1;
+      const error = new Error("player externo recusou a fonte");
+      error.status = 403;
+      throw error;
+    },
+  });
+
+  const media = await retryAuthorizationOnce(
+    () => session.resolveWithFailover(session.publicOptions[0].key),
+    async () => { renewals += 1; },
+  );
+
+  assert.equal(externalAttempts, 1);
+  assert.equal(renewals, 0);
+  assert.equal(media.tipo, "mp4");
+  assert.equal(media.effectiveOptionKey, session.publicOptions[1].key);
+  assert.equal(media.effectiveOptionLabel, "Fonte de Canais");
+  assert.equal(media.effectiveOptionIsFile, true);
 });
 
 test("403/419 faz uma única renovação e a segunda recusa não cria loop", async () => {
@@ -469,5 +506,6 @@ test("cookie jar respeita domínio, path, secure, expiry e entrega Set-Cookie ao
 
 test("nome útil seguro é preservado e formato sensível continua genérico", () => {
   assert.equal(publicOptionLabel(opcao("1", "Player Principal Dublado", false), 0), "Player Principal Dublado");
+  assert.equal(publicOptionLabel(opcao("2", "Fonte de Canais", true), 1), "Fonte de Canais");
   assert.equal(publicOptionLabel(opcao("2", "https://provider.invalid/?token=fixture", false), 1), "Servidor 2");
 });
