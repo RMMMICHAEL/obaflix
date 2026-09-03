@@ -38,6 +38,27 @@ import com.obaflix.removerRequestedWithHeader
 object SuperflixChallengeOverlay {
 
     /**
+     * Quantas vezes a pagina ja tentou `/player/bootstrap`.
+     *
+     * Contador monotonico, e nao um sinal de liga-desliga: um booleano
+     * consumido transformava a revalidacao em tentativa unica por abertura, e
+     * um bootstrap cedo demais gastava a oportunidade para sempre — mesmo que
+     * a pagina fizesse outro, ja autorizado, segundos depois. Com um contador,
+     * quem espera guarda a geracao que ja tratou: cada NOVA ocorrencia rende no
+     * maximo uma tentativa, a mesma ocorrencia nunca rende duas, e nenhuma se
+     * perde numa corrida entre a thread da WebView e a da extracao.
+     *
+     * Isto nao prova autorizacao nenhuma — so diz que vale a pena perguntar.
+     * Quem responde continua sendo `prepareWithCookies`.
+     */
+    private val bootstrapObservacoes =
+        java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Geracao atual do sinal de bootstrap. */
+    val geracaoBootstrap: Int
+        get() = bootstrapObservacoes.get()
+
+    /**
      * Hosts que a pagina do desafio pode navegar.
      *
      * O provedor troca de dominio de tempos em tempos — `.pro`, depois `.sbs`,
@@ -251,6 +272,14 @@ object SuperflixChallengeOverlay {
                 interceptadorLocal = SuperflixWrapperHost::interceptar,
                 onRequestDiagnostic = { host, path, method, principal, temReferer, temOrigin, temXrw ->
                     val h = host.lowercase()
+
+                    if (
+                        h.contains("superflixapi.") &&
+                        path.startsWith("/player/bootstrap") &&
+                        method.equals("POST", ignoreCase = true)
+                    ) {
+                        bootstrapObservacoes.incrementAndGet()
+                    }
 
                     val relevante =
                         h.contains("superflixapi.") ||

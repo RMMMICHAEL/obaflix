@@ -1853,6 +1853,9 @@ object SuperflixExtractor {
         try {
             val host = ObaflixApp.hostWebView?.get()
                 ?: throw Exception("WebView indisponível para a verificação Superflix")
+            // Fotografia da geração ANTES de abrir: bootstrap de uma sessão
+            // anterior não conta como evento desta espera.
+            var geracaoBootstrapTratada = SuperflixChallengeOverlay.geracaoBootstrap
             SuperflixChallengeOverlay.abrir(host, embedUrl)
 
             val startedAt = System.currentTimeMillis()
@@ -1929,6 +1932,71 @@ object SuperflixExtractor {
                         log(
                             "prepare_retry",
                             "${error.javaClass.simpleName}: ${error.message?.take(160) ?: "-"}",
+                        )
+                    }
+                }
+
+                // Segundo caminho legítimo, e tão comum quanto o primeiro: a
+                // página já estava autorizada, então ela chama
+                // `/player/bootstrap` sozinha, sem mostrar Turnstile novo e sem
+                // rotacionar `__sf_turnstile_pass`. Nenhum dos dois sinais
+                // acima aparece, e a espera ficava até o fim do prazo olhando
+                // para uma sessão que já estava pronta.
+                //
+                // O gatilho é o evento, nunca o relógio: cada NOVA geração do
+                // contador rende no máximo uma tentativa, e a mesma geração
+                // nunca rende duas. Se a tentativa voltar não autorizada, não
+                // há repique — só um bootstrap novo, a rotação do cookie ou a
+                // URL autorizada voltam a acordar alguém.
+                val geracaoBootstrap = SuperflixChallengeOverlay.geracaoBootstrap
+                if (geracaoBootstrap != geracaoBootstrapTratada) {
+                    geracaoBootstrapTratada = geracaoBootstrap
+
+                    val bootstrapCookies = runCatching {
+                        cookieManager.getCookie(embedUrl)
+                    }.getOrNull()
+
+                    log(
+                        "auth_bootstrap_revalidation_start",
+                        "geracao=$geracaoBootstrap",
+                    )
+
+                    try {
+                        val prepared = prepareWithCookies(
+                            embedUrl,
+                            bootstrapCookies,
+                            contextUa = challengeUa,
+                            canonicalEmbedUrl = embedUrl,
+                        )
+
+                        sessionsByEmbed[embedUrl] = prepared
+                        SuperflixChallengeOverlay.persistirCookies()
+
+                        log(
+                            "auth_bootstrap_revalidation_ok",
+                            "geracao=$geracaoBootstrap bootstrap_confirmado=true",
+                        )
+                        log(
+                            "challenge_completed",
+                            "superflix_challenge_completed",
+                        )
+
+                        return prepared
+                    } catch (error: AuthorizationRequiredException) {
+                        // Ainda não: a página pode ter chamado bootstrap antes
+                        // de o servidor liberar. Fica esperando o PRÓXIMO
+                        // evento, e não um relógio.
+                        log(
+                            "auth_bootstrap_revalidation_pending",
+                            "geracao=$geracaoBootstrap " +
+                                "fase=${error.stage} status=${error.status ?: 0}",
+                        )
+                    } catch (error: Exception) {
+                        log(
+                            "auth_bootstrap_revalidation_failed",
+                            "geracao=$geracaoBootstrap " +
+                                "${error.javaClass.simpleName}: " +
+                                (error.message?.take(160) ?: "-"),
                         )
                     }
                 }
