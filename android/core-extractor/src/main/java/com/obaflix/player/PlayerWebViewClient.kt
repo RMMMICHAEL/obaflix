@@ -63,6 +63,15 @@ class PlayerWebViewClient(
      * mais segue recusado.
      */
     private val hostsNavegaveis: Set<String> = emptySet(),
+    /**
+     * Recursos servidos pelo proprio aplicativo, antes de qualquer rede.
+     *
+     * Hoje so o overlay do desafio usa: e por aqui que o documento que embute o
+     * provedor sai de uma origem https local e estavel, em vez de um `data:`
+     * disfarcado por `loadDataWithBaseURL`. Nulo em todo o resto do aplicativo,
+     * entao o caminho normal fica exatamente como estava.
+     */
+    private val interceptadorLocal: ((Uri) -> WebResourceResponse?)? = null,
 ) : WebViewClient() {
 
     /** O host pertence a lista liberada para esta WebView? */
@@ -252,6 +261,11 @@ class PlayerWebViewClient(
     ): WebResourceResponse? {
         val path = request.url.path ?: ""
         val host = request.url.host ?: ""
+
+        // Antes de tudo: o recurso pode ser nosso, servido de dentro do
+        // aplicativo. Nao ha host de provedor nem de CDN envolvido, entao
+        // nenhuma das etapas abaixo teria o que fazer com ele.
+        interceptadorLocal?.invoke(request.url)?.let { return it }
 
         marcarSelecaoSuperflix(host, path)
 

@@ -47,53 +47,31 @@ object SuperflixChallengeOverlay {
      * widget do Turnstile vive la; sem ele nao ha o que confirmar.
      */
     /**
-     * Origem que a pagina do provedor enxerga como quem a esta embutindo.
+     * O documento que **embute** o provedor nao e mais montado em memoria.
      *
-     * O documento e carregado com esta base, entao o iframe sai com Referer do
-     * nosso site — o mesmo que o navegador manda no site e no Electron.
+     * Carregar o endereco do provedor direto no frame principal continua fora
+     * de questao — ele responde "Visualizacao Externa — este conteudo e
+     * protegido". O iframe segue sendo iframe; o que mudou e de onde vem o
+     * documento que o contem: `SuperflixWrapperHost` o serve por uma origem
+     * https local e estavel, em vez de `loadDataWithBaseURL`, que por baixo e
+     * uma navegacao `data:` e por isso nao e contexto seguro. Ver a
+     * documentacao de SuperflixWrapperHost para o porque de isso derrubar o
+     * desafio.
      */
-    private val BASE_DO_APLICATIVO = com.obaflix.core.BuildConfig.OBAFLIX_URL
-
-    /**
-     * Documento minimo que **embute** o provedor, em vez de navegar ate ele.
-     *
-     * Carregar o endereco direto fazia o provedor mostrar "Visualizacao
-     * Externa — este conteudo e protegido", com um codigo de incorporacao e
-     * nenhum desafio para resolver: aberto como documento principal, ele se
-     * recusa a servir o player. E coerente, e o site e o Electron nunca
-     * esbarraram nisso porque sempre o carregaram dentro de um `<iframe>`.
-     *
-     * Este HTML e a mesma coisa que o CustomPlayer monta: iframe em tela cheia,
-     * `referrerpolicy=origin-when-cross-origin` para o provedor ver de onde vem,
-     * a mesma lista de `allow`, e **sem sandbox** — o desafio precisa de scripts
-     * e de cookie de terceiro para rodar.
-     *
-     * O iframe e sub-frame, entao a navegacao dele nao passa pela recusa de
-     * frame principal do PlayerWebViewClient; o frame principal e a nossa
-     * propria base.
-     */
-    private fun documentoComIframe(embedUrl: String): String {
-        // Só aspas: o endereço vem do nosso backend e vai para dentro de um
-        // atributo. Escapar impede que um valor inesperado feche o atributo.
-        val src = embedUrl.replace("&", "&amp;").replace("\"", "&quot;")
-        return """
-            <!DOCTYPE html>
-            <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-            <style>html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}
-            iframe{border:0;width:100%;height:100%;display:block}</style></head>
-            <body><iframe src="$src"
-              referrerpolicy="origin-when-cross-origin"
-              allow="autoplay *; encrypted-media *; picture-in-picture *; fullscreen *; clipboard-write *; accelerometer *; gyroscope *; web-share *"
-              allowfullscreen webkitallowfullscreen></iframe></body></html>
-        """.trimIndent()
-    }
-
     private val HOSTS_DO_DESAFIO = setOf(
         "superflixapi.pro",
         "superflixapi.sbs",
         "superflixapi.beer",
         "challenges.cloudflare.com",
     )
+
+    /**
+     * Hosts que esta WebView pode navegar no frame principal.
+     *
+     * Alem do provedor, a origem local do wrapper — que e quem o frame
+     * principal de fato carrega. Nao resolve em DNS e nunca sai do aparelho.
+     */
+    private val HOSTS_NAVEGAVEIS = HOSTS_DO_DESAFIO + SuperflixWrapperHost.HOST
 
     @Volatile
     var estaAberto: Boolean = false
@@ -265,9 +243,12 @@ object SuperflixChallengeOverlay {
             // ninguem. onPageReady fica nulo de proposito — o shim da bridge nao
             // entra na pagina do provedor.
             wv.webViewClient = PlayerWebViewClient(
-                // So os hosts do provedor. Sem isto o proprio endereco pedido
-                // era recusado como "navegacao externa" e a tela ficava branca.
-                hostsNavegaveis = HOSTS_DO_DESAFIO,
+                // So os hosts do provedor e a origem local do wrapper. Sem isto
+                // o proprio endereco pedido era recusado como "navegacao
+                // externa" e a tela ficava branca.
+                hostsNavegaveis = HOSTS_NAVEGAVEIS,
+                // Quem serve o documento que embute o provedor.
+                interceptadorLocal = SuperflixWrapperHost::interceptar,
                 onPageReady = null,
                 onRenderGone = { _, _ ->
                     ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")
@@ -449,15 +430,39 @@ object SuperflixChallengeOverlay {
 
             ObaLog.evento(ObaLog.Fase.PROVEDOR, "overlay_aberto")
             wv.requestFocus()
-            // Enquadrado, e nao navegado direto — ver documentoComIframe.
-            wv.loadDataWithBaseURL(
-                BASE_DO_APLICATIVO,
-                documentoComIframe(embedUrl),
-                "text/html",
-                "utf-8",
-                null,
+            // Enquadrado, e nao navegado direto — e servido por origem https
+            // local, e nao montado em memoria. Ver SuperflixWrapperHost.
+            val wrapper = SuperflixWrapperHost.preparar(embedUrl)
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "overlay_wrapper",
+                "origem" to ObaLog.host(wrapper),
             )
+            wv.loadUrl(wrapper)
         }
+    }
+
+    private fun nomesCookiesDiagnostico(raw: String?): String {
+        if (raw.isNullOrBlank()) return "nenhum"
+        return raw.split(";")
+            .mapNotNull {
+                it.substringBefore("=").trim().takeIf(String::isNotEmpty)
+            }
+            .distinct()
+            .joinToString(",")
+            .take(200)
+    }
+
+    fun diagnosticarCookies(embedUrl: String) {
+        val cookies = runCatching {
+            CookieManager.getInstance().getCookie(embedUrl)
+        }.getOrNull()
+
+        ObaLog.evento(
+            ObaLog.Fase.PROVEDOR,
+            "overlay_cookie_jar",
+            "host" to ObaLog.host(embedUrl),
+            "nomes" to nomesCookiesDiagnostico(cookies),
+        )
     }
 
     /** Persiste cf_clearance no disco para o desafio nao se repetir a cada episodio. */
@@ -476,6 +481,8 @@ object SuperflixChallengeOverlay {
         // post na propria view garante a thread de UI sem depender de Activity.
         (r ?: wv)?.post {
             persistirCookies()
+            // Invalida o endereco do wrapper: fora desta sessao ele nao existe.
+            SuperflixWrapperHost.encerrar()
             runCatching {
                 (r?.parent as? ViewGroup)?.removeView(r)
                 wv?.stopLoading()
