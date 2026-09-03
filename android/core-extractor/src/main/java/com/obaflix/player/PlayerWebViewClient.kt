@@ -72,6 +72,15 @@ class PlayerWebViewClient(
      * entao o caminho normal fica exatamente como estava.
      */
     private val interceptadorLocal: ((Uri) -> WebResourceResponse?)? = null,
+    private val onRequestDiagnostic: ((
+        String,
+        String,
+        String,
+        Boolean,
+        Boolean,
+        Boolean,
+        Boolean,
+    ) -> Unit)? = null,
 ) : WebViewClient() {
 
     /** O host pertence a lista liberada para esta WebView? */
@@ -261,6 +270,16 @@ class PlayerWebViewClient(
     ): WebResourceResponse? {
         val path = request.url.path ?: ""
         val host = request.url.host ?: ""
+
+        onRequestDiagnostic?.invoke(
+            host,
+            path,
+            request.method,
+            request.isForMainFrame,
+            header(request, "Referer") != null,
+            header(request, "Origin") != null,
+            header(request, "X-Requested-With") != null,
+        )
 
         // Antes de tudo: o recurso pode ser nosso, servido de dentro do
         // aplicativo. Nao ha host de provedor nem de CDN envolvido, entao

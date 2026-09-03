@@ -249,6 +249,57 @@ object SuperflixChallengeOverlay {
                 hostsNavegaveis = HOSTS_NAVEGAVEIS,
                 // Quem serve o documento que embute o provedor.
                 interceptadorLocal = SuperflixWrapperHost::interceptar,
+                onRequestDiagnostic = { host, path, method, principal, temReferer, temOrigin, temXrw ->
+                    val h = host.lowercase()
+
+                    val relevante =
+                        h.contains("superflixapi.") ||
+                            h == "challenges.cloudflare.com" ||
+                            h.endsWith(".challenges.cloudflare.com")
+
+                    if (relevante) {
+                        val rota = when {
+                            path.startsWith("/cdn-cgi/challenge-platform") ->
+                                "/cdn-cgi/challenge-platform/*"
+
+                            path.startsWith("/cdn-cgi/") ->
+                                "/cdn-cgi/*"
+
+                            path.startsWith("/player/bootstrap") ->
+                                "/player/bootstrap"
+
+                            path.startsWith("/player/source") ->
+                                "/player/source"
+
+                            path.startsWith("/player/redirect") ->
+                                "/player/redirect"
+
+                            path.startsWith("/serie/") ->
+                                "/serie/*"
+
+                            path.startsWith("/filme/") ->
+                                "/filme/*"
+
+                            h.contains("challenges.cloudflare.com") ->
+                                "/cloudflare/*"
+
+                            else ->
+                                "/outro"
+                        }
+
+                        ObaLog.evento(
+                            ObaLog.Fase.PROVEDOR,
+                            "overlay_request",
+                            "host" to h,
+                            "rota" to rota,
+                            "metodo" to method,
+                            "principal" to principal,
+                            "referer" to temReferer,
+                            "origin" to temOrigin,
+                            "xrw" to temXrw,
+                        )
+                    }
+                },
                 onPageReady = null,
                 onRenderGone = { _, _ ->
                     ObaLog.alerta(ObaLog.Fase.PROVEDOR, "overlay_renderer_morreu")

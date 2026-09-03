@@ -44,14 +44,15 @@ private const val SUPERFLIX_EXCELLENT_SCORE = 110
 /** Espera depois da primeira mídia observada, para o player pedir as legendas. */
 private const val SUPERFLIX_SUBTITLE_GRACE_MS = 1_800L
 
+private const val SUPERFLIX_DIRECT_RETRY_BASE_MS = 3_000L
+private const val SUPERFLIX_DIRECT_RETRY_MAX = 3
+
 /**
  * A cadeia direta é caríssima: percorre páginas, bootstrap e player/source. Um
  * intervalo fixo curto virava ~48 tentativas em 2 minutos, o que derruba a sessão
  * e provoca novo desafio. Poucas tentativas com espera crescente, e depois o fluxo
  * apenas aguarda a escolha do usuário.
  */
-private const val SUPERFLIX_DIRECT_RETRY_BASE_MS = 3_000L
-private const val SUPERFLIX_DIRECT_RETRY_MAX = 3
 
 /**
  * Prazo para a página do player externo pedir o manifesto sozinha.
@@ -60,7 +61,6 @@ private const val SUPERFLIX_DIRECT_RETRY_MAX = 3
  * observação encerra. Se estourar, a fonte cai no failover como qualquer outra —
  * o servidor alternativo continua a um passo de distância.
  */
-private const val EMBED_OBSERVER_TIMEOUT_MS = 20_000L
 
 /** Resultado nativo com Referer opcional para o CDN final. */
 data class NativeExtractResult(
@@ -1856,10 +1856,23 @@ object SuperflixExtractor {
             SuperflixChallengeOverlay.abrir(host, embedUrl)
 
             val startedAt = System.currentTimeMillis()
-            var deadline = startedAt + 120_000L
+            val deadline = startedAt + 120_000L
+            fun turnstilePass(raw: String?): String? =
+                raw
+                    ?.split(';')
+                    ?.firstOrNull { cookie ->
+                        cookie.substringBefore('=')
+                            .trim()
+                            .equals("__sf_turnstile_pass", ignoreCase = true)
+                    }
+                    ?.substringAfter('=', "")
+                    ?.takeIf { it.isNotBlank() }
+
             var lastObserved: String? = null
-            var retryAt = 0L
-            var attempts = 0
+            val initialTurnstilePass = turnstilePass(
+                runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+            )
+            var authCookieRevalidationAttempted = false
             // Sem isto a espera é muda: o log mostrava "challenge_required" e
             // nada mais até o timeout de 2 min, sem dizer se o overlay abriu, se
             // o navegador criou algum cookie de autorização ou se a URL
@@ -1867,9 +1880,6 @@ object SuperflixExtractor {
             var proximoRelatorio = startedAt + 5_000L
             while (System.currentTimeMillis() < deadline) {
                 delay(250L)
-                if (SuperflixChallengeOverlay.estaAberto) {
-                    deadline = System.currentTimeMillis() + 120_000L
-                }
                 val challengeUa = SuperflixChallengeOverlay.uaEmUso
                     ?.takeIf { SuperflixChallengeOverlay.estaAberto && it.isNotBlank() }
 
@@ -1882,7 +1892,7 @@ object SuperflixExtractor {
                             "overlay=${if (SuperflixChallengeOverlay.estaAberto) "aberto" else "fechado"} " +
                             "ua_desafio=${if (challengeUa != null) "sim" else "nao"} " +
                             "url_autorizada=${if (lastObserved != null) "sim" else "nao"} " +
-                            "tentativas=$attempts cookies=${nomesDeCookies(cookiesAgora)}",
+                            "cookies=${nomesDeCookies(cookiesAgora)}",
                     )
                 }
                 if (challengeUa == null) {
@@ -1923,35 +1933,58 @@ object SuperflixExtractor {
                     }
                 }
 
-                // Fallback curto para WebView que não reportou a URL do frame.
-                // Não depende de cf_clearance: o fluxo atual também usa cfv e
-                // __sf_turnstile_pass, todos obtidos pelo navegador.
-                if (attempts < SUPERFLIX_DIRECT_RETRY_MAX &&
-                    System.currentTimeMillis() >= retryAt
-                ) {
-                    attempts += 1
-                    retryAt = System.currentTimeMillis() +
-                        SUPERFLIX_DIRECT_RETRY_BASE_MS * (1L shl (attempts - 1))
-                    val currentCookies = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+                val authCookies = runCatching {
+                    cookieManager.getCookie(embedUrl)
+                }.getOrNull()
+
+                val currentTurnstilePass = turnstilePass(authCookies)
+
+                // Cookie existente antes do overlay pode ser de uma autorização
+                // anterior. Só uma criação/rotação ocorrida nesta tentativa
+                // dispara a revalidação.
+                val authCookieChanged =
+                    currentTurnstilePass != null &&
+                    currentTurnstilePass != initialTurnstilePass
+
+                if (authCookieChanged && !authCookieRevalidationAttempted) {
+                    authCookieRevalidationAttempted = true
+
+                    log(
+                        "auth_cookie_revalidation_start",
+                        "cookie=__sf_turnstile_pass alterado=true",
+                    )
+
                     try {
                         val prepared = prepareWithCookies(
-                            embedUrl, currentCookies,
+                            embedUrl,
+                            authCookies,
                             contextUa = challengeUa,
                             canonicalEmbedUrl = embedUrl,
                         )
+
                         sessionsByEmbed[embedUrl] = prepared
                         SuperflixChallengeOverlay.persistirCookies()
-                        log("challenge_completed", "superflix_challenge_completed")
-                        return prepared
-                    } catch (error: Exception) {
-                        // Continua aguardando o usuário, mas agora dizendo por
-                        // quê: era esta tentativa cega que fazia a espera inteira
-                        // parecer "nada acontece".
+
                         log(
-                            "tentativa_direta_falhou",
-                            "n=$attempts ${error.javaClass.simpleName}: " +
-                                (error.message?.take(160) ?: "-") +
-                                " cookies=${nomesDeCookies(currentCookies)}",
+                            "auth_cookie_revalidation_ok",
+                            "bootstrap_confirmado=true",
+                        )
+                        log(
+                            "challenge_completed",
+                            "superflix_challenge_completed",
+                        )
+
+                        return prepared
+                    } catch (error: AuthorizationRequiredException) {
+                        log(
+                            "auth_cookie_revalidation_pending",
+                            "fase=${error.stage} status=${error.status ?: 0}",
+                        )
+                    } catch (error: Exception) {
+                        log(
+                            "auth_cookie_revalidation_failed",
+                            "${error.javaClass.simpleName}: " +
+                                (error.message?.take(160) ?: "-"),
                         )
                     }
                 }
