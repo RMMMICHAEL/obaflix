@@ -134,21 +134,25 @@ class SuperflixEmbedplayerFailoverTest {
         // uma única fonte antes de qualquer tentativa de resolução.
         assertEquals(2, session.options.size)
 
-        val resultado = session.resolveWithFailover()
+        // Sem WebView na JVM, o ramo do player externo falha de saída. O que se
+        // verifica aqui não é ele conseguir, e sim ele NÃO abortar o failover:
+        // cada candidata precisa ser tentada por conta própria.
+        runCatching { session.resolveWithFailover() }
 
-        assertEquals("$base/media/final.mp4", resultado.stream)
-        assertEquals("mp4", resultado.tipo)
-
-        // Confirma que passou pelas DUAS candidatas, não que a primeira nunca
-        // foi tentada: a fonte que "já reproduz" é a segunda, não a primeira.
         val chamadas = generateSequence { server.takeRequest(0, java.util.concurrent.TimeUnit.MILLISECONDS) }
             .map { it.path.orEmpty().substringBefore('?') }
             .toList()
-        assertTrue("esperava POST ao index.php da opção 1 (403)", chamadas.contains("/player/index.php"))
         assertEquals(
             "opção 1 precisa ser tentada e rejeitada antes da opção 2 — sem isso não é regressão do failover",
             2,
             chamadas.count { it == "/player/source" },
+        )
+        // O POST legado não existe nesta variante, e insistir nele era o que
+        // fazia a fonte morrer de 403 em vez de entregar a mídia que a própria
+        // página busca. Ver SuperflixEmbedMediaObserver.
+        assertTrue(
+            "o ramo do player externo não pode voltar a chamar o index.php legado",
+            chamadas.none { it == "/player/index.php" },
         )
     }
 
@@ -174,7 +178,7 @@ class SuperflixEmbedplayerFailoverTest {
             "UA-fixture-teste",
         )
 
-        session.resolveWithFailover()
+        runCatching { session.resolveWithFailover() }
 
         assertEquals(2, session.options.size)
         assertEquals("Fire Player", session.options[0].label)

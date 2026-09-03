@@ -1281,13 +1281,31 @@ object SuperflixExtractor {
             // Uma recusa do player externo pertence a esta fonte, não à
             // autorização Superflix. 403/419 aqui também segue para o failover;
             // reabrir o challenge não altera a sessão do servidor externo.
-            val stream = PlayerExtractors.extractEmbedPlayer(
-                resolvedUrl,
-                r,
-                ua,
-                cookies.header(resolvedUrl),
+            //
+            // O POST legado `/player/index.php?do=getVideo` que
+            // `extractEmbedPlayer` usa não existe mais nesta variante do
+            // provedor: em campo ela só entrega mídia pelo fluxo real da
+            // própria página. É o mesmo diagnóstico que levou o Electron a
+            // observar o embed em vez de forçar o POST (ver
+            // `runEmbedObservation` em browser-extractor.js), então aqui a
+            // página é carregada de verdade e a mídia que ela mesma pede é
+            // observada. O observador é independente da máquina de autorização
+            // — ver SuperflixEmbedMediaObserver.
+            val parentWebView = ObaflixApp.hostWebView?.get()
+                ?: throw Exception("WebView principal indisponível para o player externo")
+
+            val observed = SuperflixEmbedMediaObserver.observe(
+                parentWebView = parentWebView,
+                embedUrl = resolvedUrl,
+                userAgent = ua,
+                referer = r,
             )
-            return NativeExtractResult(stream, resolvedUrl, subtitles)
+
+            return observed.copy(
+                // As legendas da página do embed, quando houve como lê-las, não
+                // se perdem só porque o observador olha a mídia.
+                subtitles = observed.subtitles.ifEmpty { subtitles },
+            )
         }
 
         if (Regex("""\.(?:mp4|m3u8)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(resolvedUrl) ||

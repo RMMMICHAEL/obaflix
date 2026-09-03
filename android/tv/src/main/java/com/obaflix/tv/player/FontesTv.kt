@@ -387,11 +387,41 @@ object FontesTv {
         ObaLog.novaTrilha("resolverFonte", "servidor" to fonte.rotulo)
 
         // Opção interna já listada pelo bootstrap: não volta à API do Obaflix e
-        // não abre navegador. Resolve a URL efêmera somente agora.
+        // não abre navegador — exceto quando a opção é o player externo, que
+        // só entrega mídia pela própria página.
         fonte.superflixSession?.let { localSession ->
             val optionKey = fonte.superflixOptionKey ?: return null
+
+            // A opção não-arquivo é o player externo, e resolvê-lo passa pelo
+            // SuperflixEmbedMediaObserver, que precisa de uma âncora para
+            // pendurar a WebView efêmera. A âncora existia só durante o
+            // desafio: quando ele terminava, `PonteDesafio.ativo` voltava a
+            // false e este ramo — que é por onde passam a segunda opção do
+            // failover automático e toda escolha manual — resolvia sem
+            // hospedeira nenhuma. O sintoma em campo era "WebView principal
+            // indisponivel para o player externo", seguido de
+            // `extracao_sem_midia` sem nem um `embed_navigation_start` no log.
+            //
+            // A opção `is_file` continua sem tocar em WebView: é HTTP puro, e
+            // acender a camada nela só piscaria preto na tela à toa.
+            val precisaDeAncora = !fonte.superflixIsFile
+            if (precisaDeAncora) {
+                PonteDesafio.ativo = true
+                val apareceu = withTimeoutOrNull(ESPERA_ANCORA_MS) {
+                    while (!PonteDesafio.ancoraPronta) delay(50)
+                    true
+                } == true
+                ObaLog.evento(
+                    ObaLog.Fase.PROVEDOR, "tv_ancora_opcao_interna",
+                    "servidor" to fonte.rotulo, "ancora" to apareceu,
+                )
+            }
+
             val result = runCatching {
                 StreamExtractor.acceptNativeResult(localSession.resolve(optionKey))
+            }.also {
+                // Sempre: a câmara não sobrevive à resolução, com mídia ou sem.
+                if (precisaDeAncora) PonteDesafio.ativo = false
             }.getOrElse { error ->
                 ObaLog.falha(
                     ObaLog.Fase.EXTRACAO, "superflix_candidate_rejected", error,
