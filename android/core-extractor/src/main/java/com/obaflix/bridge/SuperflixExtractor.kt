@@ -88,6 +88,20 @@ data class NativeExtractResult(
      * para contornar. Espelha o `verified` do Electron.
      */
     val verified: Boolean = false,
+    /**
+     * Manifesto HLS que o contexto do navegador já obteve autorizado.
+     *
+     * Só é preenchido pelo observador do player externo, e só quando o próprio
+     * Chromium consumiu a resposta com 2xx — a mídia daquele player está presa
+     * à sessão dele, e uma requisição nossa à mesma URL responde 403 mesmo no
+     * instante em que a página a pede (medido em aparelho). Entregar o texto já
+     * pronto é o que evita repetir a requisição protegida.
+     *
+     * Efêmero por definição: vale para a reprodução em curso e não é gravado em
+     * lugar nenhum. As URIs relativas continuam sendo resolvidas contra
+     * `stream`, que segue sendo a URL real do master.
+     */
+    val manifest: String? = null,
 )
 
 data class SubtitleTrack(

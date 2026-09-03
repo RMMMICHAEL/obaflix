@@ -87,6 +87,7 @@ import com.obaflix.tv.player.DiagnosticoPlayer
 import com.obaflix.tv.player.Fonte
 import com.obaflix.tv.player.FontesTv
 import com.obaflix.tv.player.GravadorProgresso
+import com.obaflix.tv.player.ManifestoEmMemoria
 import com.obaflix.tv.player.Pedido
 import com.obaflix.tv.ui.componentes.EspacoH
 import com.obaflix.tv.ui.componentes.EspacoV
@@ -419,6 +420,11 @@ fun TelaPlayer(pedido: Pedido) {
             .setUserAgent(CabecalhosMidia.USER_AGENT)
     }
 
+    // Ponte para o único caso em que o Media3 não consegue buscar sozinho: o
+    // master do player externo do Superflix, que só o navegador obtém
+    // autorizado. Fora dele esta fábrica é transparente. Ver ManifestoEmMemoria.
+    val fabricaMidia = remember { ManifestoEmMemoria(fabricaHttp) }
+
     // Decodificador com plano B. Quando o codec de hardware do aparelho recusa
     // ou engasga com o video — comum em TV Box e em Android 9, e o que produzia
     // ERROR_CODE_DECODING_FAILED numa fonte que baixava perfeitamente — o Media3
@@ -438,7 +444,7 @@ fun TelaPlayer(pedido: Pedido) {
 
     val player = remember {
         ExoPlayer.Builder(context, fabricaRenderizadores)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(fabricaHttp))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(fabricaMidia))
             .setSeekBackIncrementMs(SALTO_MS)
             .setSeekForwardIncrementMs(SALTO_MS)
             .build()
@@ -629,12 +635,17 @@ fun TelaPlayer(pedido: Pedido) {
         // CDN respondia 403 — o link fora gerado com o UA da WebView.
         fabricaHttp.setUserAgent(midia.userAgent ?: CabecalhosMidia.USER_AGENT)
 
+        // Uma fonte por vez: o manifesto da anterior nunca sobrevive à troca.
+        fabricaMidia.limpar()
+        midia.manifesto?.let { fabricaMidia.armar(midia.url, it) }
+
         ObaLog.evento(
             ObaLog.Fase.PLAYER, "tv_midia_preparada",
             "servidor" to fonteEfetiva.rotulo,
             "url" to ObaLog.url(midia.url),
             "legendas" to midia.legendas.size,
             "hls" to midia.ehHls,
+            "manifesto_em_memoria" to (midia.manifesto != null),
             "cabecalhos" to CabecalhosMidia.resumo(cabecalhos),
             "retomaMs" to retomarDe,
         )
@@ -782,6 +793,8 @@ fun TelaPlayer(pedido: Pedido) {
         }
         sessao = abertura.sessao
         fontes = abertura.fontes
+        // Episodio novo, manifesto velho nao vale.
+        fabricaMidia.limpar()
         // Lista nova, janela velha nao vale: o indice guardado apontava para
         // opcoes que nao existem mais.
         ultimaAlternativaDoBootstrap = -1
@@ -864,6 +877,8 @@ fun TelaPlayer(pedido: Pedido) {
             player.removeListener(ouvinte)
             player.removeAnalyticsListener(diagnostico)
             player.release()
+            // O manifesto em memoria nao sobrevive a tela.
+            fabricaMidia.limpar()
         }
     }
 

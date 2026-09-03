@@ -19,6 +19,15 @@ data class ExtractResult(
     val effectiveOptionKey: String? = null,
     val effectiveOptionLabel: String? = null,
     val effectiveOptionIsFile: Boolean? = null,
+    /** A midia ja foi consumida com sucesso por quem a obteve. */
+    val verified: Boolean = false,
+    /**
+     * Manifesto master ja autorizado, quando o navegador o obteve.
+     *
+     * Efemero: atravessa so ate o player desta reproducao. Ver
+     * NativeExtractResult.manifest e ManifestoEmMemoria.
+     */
+    val manifest: String? = null,
 )
 
 // Dispatcher genérico: delega a extração real para PlayerExtractors e atualiza o
@@ -54,6 +63,8 @@ object StreamExtractor {
             effectiveOptionKey = nativeResult.effectiveOptionKey,
             effectiveOptionLabel = nativeResult.effectiveOptionLabel,
             effectiveOptionIsFile = nativeResult.effectiveOptionIsFile,
+            verified = nativeResult.verified,
+            manifest = nativeResult.manifest,
         )
     }
 
@@ -137,6 +148,8 @@ object StreamExtractor {
             effectiveOptionKey = nativeResult.effectiveOptionKey,
             effectiveOptionLabel = nativeResult.effectiveOptionLabel,
             effectiveOptionIsFile = nativeResult.effectiveOptionIsFile,
+            verified = nativeResult.verified,
+            manifest = nativeResult.manifest,
         )
     }
 }

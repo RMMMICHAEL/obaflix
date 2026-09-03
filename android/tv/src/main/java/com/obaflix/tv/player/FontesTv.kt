@@ -112,6 +112,14 @@ data class Midia(
     val effectiveOptionKey: String? = null,
     val effectiveOptionLabel: String? = null,
     val effectiveOptionIsFile: Boolean? = null,
+    /**
+     * Manifesto master ja obtido autorizado pelo contexto do navegador.
+     *
+     * So o player externo do Superflix preenche. Quando vem, o Media3 recebe
+     * este texto em memoria em vez de repetir a requisicao protegida — que
+     * responde 403 fora da sessao do Chromium. Vale so para esta reproducao.
+     */
+    val manifesto: String? = null,
 )
 
 /**
@@ -441,6 +449,7 @@ object FontesTv {
                 effectiveOptionKey = result.effectiveOptionKey ?: optionKey,
                 effectiveOptionLabel = result.effectiveOptionLabel ?: fonte.rotulo,
                 effectiveOptionIsFile = result.effectiveOptionIsFile ?: fonte.superflixIsFile,
+                manifesto = result.manifest,
             )
         }
 
@@ -556,7 +565,11 @@ object FontesTv {
             return null
         }
 
-        if (fonte.exigeDesafio) {
+        // `verified` quer dizer que o contexto que obteve a midia ja a consumiu
+        // com sucesso. Sondar de novo mediria outra coisa: no player externo do
+        // Superflix a mesma URL responde 403 fora da sessao do Chromium, e a
+        // sonda so gastaria tempo para registrar um numero que ja conhecemos.
+        if (fonte.exigeDesafio && !extraido.verified) {
             sondarDuasVias(extraido.stream, extraido.referer, extraido.userAgent ?: uaDoDesafio(fonte))
         }
 
@@ -570,6 +583,32 @@ object FontesTv {
             "stream" to ObaLog.url(extraido.stream),
             "ms" to (System.currentTimeMillis() - comeco),
         )
+
+        // Midia ja provada por quem a obteve: a conferencia nao acrescentaria
+        // nada e, quando o manifesto veio junto, ela nem teria como acontecer —
+        // o link e da sessao do navegador. Segue direto para o player.
+        if (extraido.verified) {
+            ObaLog.evento(
+                ObaLog.Fase.MANIFESTO, "tv_manifesto_pulado",
+                "servidor" to fonte.rotulo, "provedor" to provedor,
+                "motivo" to "verificado_no_navegador",
+                "manifesto" to (extraido.manifest != null),
+            )
+            return Midia(
+                userAgent = extraido.userAgent ?: uaDoDesafio(fonte),
+                ehHls = extraido.tipo.equals("hls", ignoreCase = true) ||
+                    extraido.isMaster || pareceHls(extraido.stream),
+                url = extraido.stream,
+                referer = extraido.referer,
+                legendas = extraido.subtitles.distinctBy { it.file },
+                qualidades = extraido.qualities.distinct(),
+                audios = extraido.audioTracks.distinct(),
+                effectiveOptionKey = extraido.effectiveOptionKey,
+                effectiveOptionLabel = extraido.effectiveOptionLabel,
+                effectiveOptionIsFile = extraido.effectiveOptionIsFile,
+                manifesto = extraido.manifest,
+            )
+        }
 
         // Quando o endereco ja diz que e HLS, nao se toca nele: a conferencia
         // nao acrescentaria nada (o Media3 tambem le o master, e as variantes

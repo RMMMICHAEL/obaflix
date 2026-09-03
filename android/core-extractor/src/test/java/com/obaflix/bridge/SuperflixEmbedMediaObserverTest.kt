@@ -8,106 +8,144 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Classificação do observador do player externo.
+ * Tradução da prova que vem do contexto do navegador.
  *
- * Só as partes puras: quem depende de WebView continua sendo validado em
- * aparelho. O que estes testes protegem é a regra que já custou caro — nada
- * vira mídia por o caminho "parecer aleatório"; ou a extensão diz, ou o corpo
- * diz.
+ * Só as partes puras; o que depende de WebView continua sendo validado em
+ * aparelho. O que estes testes protegem é a regra que já custou caro: nada vira
+ * mídia por o caminho "parecer aleatório", e nada vira mídia sem a página ter
+ * de fato consumido a resposta com 2xx.
  */
 class SuperflixEmbedMediaObserverTest {
 
-    private fun bytes(texto: String) = texto.toByteArray(Charsets.ISO_8859_1)
+    private fun mensagem(
+        url: String,
+        status: Int,
+        corpo: String? = null,
+    ): String = buildString {
+        append("{\"u\":\"").append(url).append("\",\"s\":").append(status)
+        if (corpo != null) {
+            append(",\"b\":\"").append(corpo.replace("\n", "\\n")).append("\"")
+        }
+        append("}")
+    }
 
-    /** Caixa MP4: 4 bytes de tamanho e o tipo logo em seguida. */
-    private fun caixaMp4(tipo: String): ByteArray =
-        byteArrayOf(0, 0, 0, 0x20) + tipo.toByteArray(Charsets.ISO_8859_1) +
-            "isomiso2avc1mp41".toByteArray(Charsets.ISO_8859_1)
+    private val master =
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360/index.m3u8\n"
+    private val playlist =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.ts\n"
 
-    // ── Extensão ───────────────────────────────────────────────────────────
+    // ── Status ─────────────────────────────────────────────────────────────
 
     @Test
-    fun `extensao reconhece hls e mp4`() {
-        assertEquals("hls", SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/a/b.m3u8"))
-        assertEquals("hls", SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/cdn/hls/x/master.txt"))
-        assertEquals("mp4", SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/v/f.mp4?t=1"))
+    fun `resposta que nao foi 2xx nunca vira midia`() {
+        // É o resultado medido em aparelho: 403 é o que uma requisição fora da
+        // sessão do Chromium recebe. Nada disso pode virar candidata.
+        assertNull(
+            SuperflixEmbedMediaObserver.candidataDaMensagem(
+                mensagem("https://h.tld/cdn/hls/x/master.txt", 403, master),
+            ),
+        )
+        assertNull(
+            SuperflixEmbedMediaObserver.candidataDaMensagem(
+                mensagem("https://h.tld/a.m3u8", 302),
+            ),
+        )
+        assertNull(
+            SuperflixEmbedMediaObserver.candidataDaMensagem(
+                mensagem("https://h.tld/a.m3u8", 0),
+            ),
+        )
     }
+
+    @Test
+    fun `2xx com master traz o manifesto junto`() {
+        val c = SuperflixEmbedMediaObserver.candidataDaMensagem(
+            mensagem("https://h.tld/cdn/hls/x/master.txt", 200, master),
+        )
+        assertEquals(Conteudo.HLS_MASTER, c?.conteudo)
+        assertEquals("hls", c?.tipo)
+        assertTrue(c!!.ehMaster)
+        assertTrue(c.manifesto!!.contains("#EXT-X-STREAM-INF"))
+        assertEquals(200, c.status)
+    }
+
+    @Test
+    fun `playlist de midia e reconhecida mas nao e master`() {
+        val c = SuperflixEmbedMediaObserver.candidataDaMensagem(
+            mensagem("https://h.tld/x/index.m3u8", 206, playlist),
+        )
+        assertEquals(Conteudo.HLS_MEDIA, c?.conteudo)
+        assertFalse(c!!.ehMaster)
+    }
+
+    @Test
+    fun `mp4 e aceito pela extensao e nunca carrega corpo`() {
+        val c = SuperflixEmbedMediaObserver.candidataDaMensagem(
+            mensagem("https://h.tld/v/filme.mp4?t=1", 200),
+        )
+        assertEquals(Conteudo.MP4, c?.conteudo)
+        assertEquals("mp4", c?.tipo)
+        assertNull("MP4 nunca pode atravessar a ponte em memória", c?.manifesto)
+    }
+
+    // ── Mensagem malformada ────────────────────────────────────────────────
+
+    @Test
+    fun `mensagem de pagina de terceiro e dado, e dado ruim nao vira midia`() {
+        assertNull(SuperflixEmbedMediaObserver.candidataDaMensagem(null))
+        assertNull(SuperflixEmbedMediaObserver.candidataDaMensagem(""))
+        assertNull(SuperflixEmbedMediaObserver.candidataDaMensagem("nao e json"))
+        assertNull(SuperflixEmbedMediaObserver.candidataDaMensagem("{\"s\":200}"))
+        // 2xx, mas nem o corpo nem a extensão dizem que é mídia.
+        assertNull(
+            SuperflixEmbedMediaObserver.candidataDaMensagem(
+                mensagem("https://h.tld/api/ping", 200, "{\\\"ok\\\":true}"),
+            ),
+        )
+    }
+
+    // ── Classificação do manifesto ─────────────────────────────────────────
+
+    @Test
+    fun `master se distingue de playlist de midia`() {
+        assertEquals(Conteudo.HLS_MASTER, SuperflixEmbedMediaObserver.classificarManifesto(master))
+        assertEquals(Conteudo.HLS_MEDIA, SuperflixEmbedMediaObserver.classificarManifesto(playlist))
+        assertNull(SuperflixEmbedMediaObserver.classificarManifesto(null))
+        assertNull(SuperflixEmbedMediaObserver.classificarManifesto(""))
+        assertNull(SuperflixEmbedMediaObserver.classificarManifesto("<!DOCTYPE html>"))
+    }
+
+    @Test
+    fun `manifesto com BOM e espaco a frente ainda e reconhecido`() {
+        assertEquals(
+            Conteudo.HLS_MEDIA,
+            SuperflixEmbedMediaObserver.classificarManifesto("\uFEFF\n  " + playlist),
+        )
+    }
+
+    // ── Extensão ───────────────────────────────────────────────────────────
 
     @Test
     fun `caminho opaco nao vira midia pela aparencia`() {
         assertNull(SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/video/9f3a1c8e2b7d4506"))
         assertNull(SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/m3/aBcD1234"))
+        assertEquals("hls", SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/a/b.m3u8"))
+        assertEquals("mp4", SuperflixEmbedMediaObserver.tipoPorExtensao("https://h.tld/v/f.mp4?t=1"))
     }
 
-    // ── Corpo ──────────────────────────────────────────────────────────────
+    // ── Script injetado ────────────────────────────────────────────────────
 
     @Test
-    fun `master se distingue de playlist de midia`() {
-        val master = bytes(
-            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360/index.m3u8\n",
+    fun `script nao usa cifrao, para nao virar interpolacao Kotlin`() {
+        val script = SuperflixEmbedMediaObserver.scriptDeInstrumentacao()
+        assertFalse(
+            "um cifrao solto no script viraria template Kotlin e o JS sairia quebrado",
+            script.contains("$"),
         )
-        assertEquals(Conteudo.HLS_MASTER, SuperflixEmbedMediaObserver.classificar(master))
-
-        val midia = bytes(
-            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.ts\n",
-        )
-        assertEquals(Conteudo.HLS_MEDIA, SuperflixEmbedMediaObserver.classificar(midia))
-    }
-
-    @Test
-    fun `manifesto com BOM e espaco a frente ainda e reconhecido`() {
-        val comBom = "﻿\n  #EXTM3U\n#EXTINF:4.0,\na.ts\n".toByteArray(Charsets.UTF_8)
-        assertEquals(Conteudo.HLS_MEDIA, SuperflixEmbedMediaObserver.classificar(comBom))
-    }
-
-    @Test
-    fun `assinaturas de mp4 sao reconhecidas`() {
-        assertEquals(Conteudo.MP4, SuperflixEmbedMediaObserver.classificar(caixaMp4("ftyp")))
-        assertEquals(Conteudo.MP4, SuperflixEmbedMediaObserver.classificar(caixaMp4("styp")))
-        assertEquals(Conteudo.MP4, SuperflixEmbedMediaObserver.classificar(caixaMp4("moof")))
-    }
-
-    @Test
-    fun `corpo que nao e midia nao classifica`() {
-        assertNull(SuperflixEmbedMediaObserver.classificar(bytes("")))
-        assertNull(SuperflixEmbedMediaObserver.classificar(bytes("<!DOCTYPE html><html>")))
-        assertNull(SuperflixEmbedMediaObserver.classificar(bytes("{\"ok\":true}")))
-        // "ftyp" tarde demais para ser a primeira caixa.
-        assertNull(
-            SuperflixEmbedMediaObserver.classificar(
-                bytes("x".repeat(40) + "ftyp"),
-            ),
-        )
-    }
-
-    // ── Candidata ──────────────────────────────────────────────────────────
-
-    @Test
-    fun `tipo e master saem da classificacao do corpo`() {
-        val master = SuperflixEmbedMediaObserver.Candidata("https://h.tld/a", Conteudo.HLS_MASTER)
-        assertEquals("hls", master.tipo)
-        assertTrue(master.ehMaster)
-
-        val midia = SuperflixEmbedMediaObserver.Candidata("https://h.tld/a", Conteudo.HLS_MEDIA)
-        assertEquals("hls", midia.tipo)
-        assertFalse(midia.ehMaster)
-
-        val mp4 = SuperflixEmbedMediaObserver.Candidata("https://h.tld/a", Conteudo.MP4)
-        assertEquals("mp4", mp4.tipo)
-        assertFalse(mp4.ehMaster)
-    }
-
-    // ── Ruído ──────────────────────────────────────────────────────────────
-
-    @Test
-    fun `ruido conhecido e descartado antes de qualquer requisicao`() {
-        assertTrue(SuperflixEmbedMediaObserver.ehRuido("https://www.google-analytics.com/collect"))
-        assertTrue(SuperflixEmbedMediaObserver.ehRuido("https://h.tld/ads/banner"))
-        assertTrue(SuperflixEmbedMediaObserver.ehRuido("https://h.tld/player/hls.js"))
-        assertTrue(SuperflixEmbedMediaObserver.ehRuido("https://h.tld/logo.png"))
-        assertTrue(SuperflixEmbedMediaObserver.ehRuido("nao-e-url"))
-
-        assertFalse(SuperflixEmbedMediaObserver.ehRuido("https://h.tld/cdn/hls/x/master.txt"))
-        assertFalse(SuperflixEmbedMediaObserver.ehRuido("https://h.tld/video/9f3a1c8e2b7d4506"))
+        // Só embrulha; não lê cookie, não lê storage, não toca em token.
+        assertTrue(script.contains("window.fetch"))
+        assertTrue(script.contains("XMLHttpRequest"))
+        assertFalse(script.contains("document.cookie"))
+        assertFalse(script.contains("localStorage"))
     }
 }
