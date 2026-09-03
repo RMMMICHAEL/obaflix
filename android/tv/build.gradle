@@ -72,6 +72,13 @@ android {
         ]
     }
 
+    // O android.jar de teste unitario so tem stubs que lancam RuntimeException.
+    // Os testes desta pasta exercitam classes do Media3 que nao dependem do
+    // framework; sem isto, esbarrariam num stub em vez de no que verificam.
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     def keystorePropsFile = rootProject.file("key.properties")
     if (keystorePropsFile.exists()) {
         def keystoreProps = new Properties()
@@ -126,4 +133,11 @@ dependencies {
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    // JVM puro, sem Robolectric: cobre so o que nao depende do framework —
+    // hoje, o contrato do DataSource que serve o manifesto do player externo.
+    // Foi a quebra desse contrato, invisivel em tempo de compilacao, que
+    // derrubou TODA a reproducao da TV numa unica linha. Ver
+    // ManifestoEmMemoriaTest.
+    testImplementation 'junit:junit:4.13.2'
 }

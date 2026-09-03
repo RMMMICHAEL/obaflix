@@ -263,8 +263,18 @@ private suspend fun aguardarUmaRodada(player: ExoPlayer): Preparo? =
                 // video ja esta na tela antes de o estado assentar em READY.
                 override fun onRenderedFirstFrame() = encerrar(Preparo.Pronto)
 
-                override fun onPlayerError(erro: PlaybackException) =
+                override fun onPlayerError(erro: PlaybackException) {
+                    // A falha durante o preparo e a que menos aparecia: o
+                    // ouvinte global se cala enquanto `aguardandoPreparo`, e
+                    // sobrava so o codigo generico do Media3. A cadeia diz qual
+                    // excecao realmente subiu.
+                    ObaLog.falha(
+                        ObaLog.Fase.PLAYER, "tv_preparo_erro", erro,
+                        "codigo" to erro.errorCodeName,
+                        "cadeia" to cadeiaDeCausas(erro.cause ?: erro),
+                    )
                     encerrar(Preparo.Falhou(motivoDe(erro)))
+                }
             }
             player.addListener(ouvinte)
             // NUNCA `player.removeListener` direto aqui. `invokeOnCancellation`
@@ -292,6 +302,36 @@ private fun ExoPlayer.removerNaThreadDele(ouvinte: Player.Listener) {
     } else {
         Handler(applicationLooper).post { removeListener(ouvinte) }
     }
+}
+
+/**
+ * Cadeia de causas de uma falha, em nomes de classe e mensagens curtas.
+ *
+ * Existe por causa de um caso concreto: um `ERROR_CODE_FAILED_RUNTIME_CHECK`
+ * derrubou toda a reproducao da TV e o log nao dizia mais nada — o codigo do
+ * Media3 e generico, e a excecao real (um `IllegalArgumentException` vindo da
+ * montagem do DataSource) nunca aparecia. Sem isto, a unica saida era adivinhar.
+ *
+ * So classe e mensagem, cortadas curtas: nenhuma URL, query, cookie ou token
+ * atravessa daqui. Nomes de classe do Media3 e da plataforma sobrevivem ao R8;
+ * os nossos podem sair ofuscados, e ainda assim a forma da cadeia identifica o
+ * ponto.
+ */
+private fun cadeiaDeCausas(erro: Throwable?): String {
+    val partes = mutableListOf<String>()
+    var atual: Throwable? = erro
+    var restantes = 6
+    while (atual != null && restantes-- > 0) {
+        val mensagem = atual.message?.take(80)?.substringBefore('\n')
+        partes += if (mensagem.isNullOrBlank()) {
+            atual.javaClass.name
+        } else {
+            atual.javaClass.name + ": " + mensagem
+        }
+        val proxima = atual.cause
+        atual = if (proxima === atual) null else proxima
+    }
+    return partes.joinToString(" <- ").ifEmpty { "-" }
 }
 
 /** Motivo legivel de uma falha do Media3, com o status HTTP quando existe. */
@@ -850,6 +890,10 @@ fun TelaPlayer(pedido: Pedido) {
                     "servidor" to (fontes.getOrNull(fonteAtual)?.rotulo ?: "?"),
                     "codigo" to error.errorCodeName,
                     "causa" to detalhe,
+                    // A excecao real por tras do codigo generico. Sem ela, um
+                    // ERROR_CODE_FAILED_RUNTIME_CHECK nao diz nada sobre onde
+                    // quebrou.
+                    "cadeia" to cadeiaDeCausas(error.cause ?: error),
                     "manual" to presoNaEscolhaManual(fonteAtual),
                     "escolha_usuario" to escolhaManual,
                 )
