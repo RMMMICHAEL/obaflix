@@ -1281,40 +1281,12 @@ object SuperflixExtractor {
             // Uma recusa do player externo pertence a esta fonte, não à
             // autorização Superflix. 403/419 aqui também segue para o failover;
             // reabrir o challenge não altera a sessão do servidor externo.
-            val stream = try {
-                PlayerExtractors.extractEmbedPlayer(
-                    resolvedUrl,
-                    r,
-                    ua,
-                    cookies.header(resolvedUrl),
-                )
-            } catch (error: PlayerExtractors.ProviderHttpException) {
-                // O atalho legado morreu para esta variante, mas a página em si
-                // continua viva: carregada por um navegador de verdade, ela pede
-                // o manifesto sozinha. É o mesmo caminho que o Electron toma
-                // desde abd2859 — 403 aqui descarta o atalho, não a fonte.
-                if (error.status != 403 && error.status != 419) throw error
-                log("embedplayer_fallback", "http=${error.status} host=${parsed.host}")
-                val observada = EmbedMediaObserver.observar(
-                    url = resolvedUrl,
-                    referer = warezPageUrl,
-                    ua = ua,
-                    timeoutMs = EMBED_OBSERVER_TIMEOUT_MS,
-                ) ?: throw error // nada observado: o erro original é mais informativo
-                val seguro = secureTransportUrl(observada.url) ?: throw error
-                log("embedplayer_fallback_ok", "tipo=${observada.kind}")
-                return NativeExtractResult(
-                    stream = seguro,
-                    referer = observada.referer ?: resolvedUrl,
-                    subtitles = subtitles,
-                    tipo = observada.kind,
-                    // A página real já provou que este manifesto responde. Sondá-lo
-                    // de novo pela rede nativa repetiria exatamente o 403 que nos
-                    // trouxe até aqui — é o que o provedor protege atrás da sessão
-                    // do navegador.
-                    verified = true,
-                )
-            }
+            val stream = PlayerExtractors.extractEmbedPlayer(
+                resolvedUrl,
+                r,
+                ua,
+                cookies.header(resolvedUrl),
+            )
             return NativeExtractResult(stream, resolvedUrl, subtitles)
         }
 
