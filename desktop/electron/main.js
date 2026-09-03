@@ -269,9 +269,30 @@ function superflixCommon() {
   };
 }
 
+/**
+ * Última autorização Superflix obtida nesta execução.
+ *
+ * Sem isto, a autorização morria junto com o resolver do título anterior:
+ * `previousResolver` só existe para o MESMO embed, então cada filme ou episódio
+ * novo começava sem cookie nenhum, tomava 403 na primeira requisição e abria a
+ * janela de verificação de novo. Medido no log: desafio em 10 de 10
+ * reproduções, várias "concluídas" em 1–2s — rápido demais para alguém resolver
+ * um Turnstile, ou seja, a autorização já era válida e estava sendo descartada.
+ *
+ * Guardado só em memória, de propósito: se o clearance expirar, a tentativa
+ * direta falha e o fluxo cai na janela exatamente como antes.
+ */
+let ultimaAutorizacaoSuperflix = null;
+
 async function prepareSuperflixAuthorized(embedUrl, previousResolver = null) {
   const previous = previousResolver?.context?.() || {};
-  const directOptions = { ...superflixCommon(), ...previous };
+  // A autorização do título anterior vale para o próximo: é o mesmo domínio e o
+  // mesmo cookie de clearance. `previous` continua tendo precedência.
+  const directOptions = {
+    ...superflixCommon(),
+    ...(ultimaAutorizacaoSuperflix || {}),
+    ...previous,
+  };
   try {
     return await prepareSuperflixSession(embedUrl, directOptions);
   } catch (directError) {
@@ -286,13 +307,20 @@ async function prepareSuperflixAuthorized(embedUrl, previousResolver = null) {
       userAgent: UA,
     });
     log.info("superflix", "superflix_challenge_completed");
-    return await prepareSuperflixSession(embedUrl, {
-      ...superflixCommon(),
-      jar: previous.jar,
+    const autorizado = {
       authorizedUrl: auth.authorizedUrl,
       cookies: auth.cookies,
       ua: auth.ua,
+    };
+    // Só depois de a sessão montar: guardar antes gravaria uma autorização que
+    // ainda pode não servir, e a próxima reprodução começaria com cookie ruim.
+    const sessao = await prepareSuperflixSession(embedUrl, {
+      ...superflixCommon(),
+      jar: previous.jar,
+      ...autorizado,
     });
+    ultimaAutorizacaoSuperflix = autorizado;
+    return sessao;
   }
 }
 

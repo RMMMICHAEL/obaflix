@@ -206,6 +206,42 @@ class PlayerWebViewClient(
         onPageReady?.invoke(view)
     }
 
+    /**
+     * Falha de rede num recurso da pagina — hoje invisivel.
+     *
+     * O widget do desafio vive num iframe de terceiro: quando ele nao carrega, o
+     * sintoma que chega ate nos e "o desafio nunca conclui", sem nenhuma pista
+     * de que a causa foi um recurso recusado. Registra host e codigo; a URL sai
+     * por ObaLog.host, entao nenhum caminho, query ou token e gravado.
+     */
+    override fun onReceivedError(
+        view: WebView,
+        request: WebResourceRequest,
+        error: android.webkit.WebResourceError,
+    ) {
+        super.onReceivedError(view, request, error)
+        ObaLog.alerta(
+            ObaLog.Fase.PROVEDOR, "recurso_falhou",
+            "host" to ObaLog.host(request.url.toString()),
+            "principal" to request.isForMainFrame,
+            "codigo" to error.errorCode,
+        )
+    }
+
+    override fun onReceivedHttpError(
+        view: WebView,
+        request: WebResourceRequest,
+        errorResponse: android.webkit.WebResourceResponse,
+    ) {
+        super.onReceivedHttpError(view, request, errorResponse)
+        ObaLog.alerta(
+            ObaLog.Fase.PROVEDOR, "recurso_http_erro",
+            "host" to ObaLog.host(request.url.toString()),
+            "principal" to request.isForMainFrame,
+            "status" to errorResponse.statusCode,
+        )
+    }
+
     private val UA =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/122.0.0.0 Mobile Safari/537.36 ObaflixApp/1.0"

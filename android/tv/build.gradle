@@ -16,8 +16,8 @@ android {
         // Nada aqui depende de Play Services — muitos TV Box AOSP nao os tem.
         minSdk 21
         targetSdk 34
-        versionCode 38
-        versionName "0.7.22"
+        versionCode 40
+        versionName "0.7.24"
 
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""

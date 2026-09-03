@@ -53,6 +53,15 @@ private const val SUPERFLIX_SUBTITLE_GRACE_MS = 1_800L
 private const val SUPERFLIX_DIRECT_RETRY_BASE_MS = 3_000L
 private const val SUPERFLIX_DIRECT_RETRY_MAX = 3
 
+/**
+ * Prazo para a página do player externo pedir o manifesto sozinha.
+ *
+ * Mesmo valor do Electron. É teto, não espera fixa: assim que a mídia aparece a
+ * observação encerra. Se estourar, a fonte cai no failover como qualquer outra —
+ * o servidor alternativo continua a um passo de distância.
+ */
+private const val EMBED_OBSERVER_TIMEOUT_MS = 20_000L
+
 /** Resultado nativo com Referer opcional para o CDN final. */
 data class NativeExtractResult(
     val stream: String,
@@ -71,6 +80,14 @@ data class NativeExtractResult(
     val effectiveOptionKey: String? = null,
     val effectiveOptionLabel: String? = null,
     val effectiveOptionIsFile: Boolean? = null,
+    /**
+     * A mídia já foi provada pela página real que a pediu.
+     *
+     * Vale só para o que vem da observação em WebView: refazer a requisição pela
+     * rede nativa mediria outra coisa e repetiria o 403 que a observação existe
+     * para contornar. Espelha o `verified` do Electron.
+     */
+    val verified: Boolean = false,
 )
 
 data class SubtitleTrack(
@@ -1264,12 +1281,40 @@ object SuperflixExtractor {
             // Uma recusa do player externo pertence a esta fonte, não à
             // autorização Superflix. 403/419 aqui também segue para o failover;
             // reabrir o challenge não altera a sessão do servidor externo.
-            val stream = PlayerExtractors.extractEmbedPlayer(
-                resolvedUrl,
-                r,
-                ua,
-                cookies.header(resolvedUrl),
-            )
+            val stream = try {
+                PlayerExtractors.extractEmbedPlayer(
+                    resolvedUrl,
+                    r,
+                    ua,
+                    cookies.header(resolvedUrl),
+                )
+            } catch (error: PlayerExtractors.ProviderHttpException) {
+                // O atalho legado morreu para esta variante, mas a página em si
+                // continua viva: carregada por um navegador de verdade, ela pede
+                // o manifesto sozinha. É o mesmo caminho que o Electron toma
+                // desde abd2859 — 403 aqui descarta o atalho, não a fonte.
+                if (error.status != 403 && error.status != 419) throw error
+                log("embedplayer_fallback", "http=${error.status} host=${parsed.host}")
+                val observada = EmbedMediaObserver.observar(
+                    url = resolvedUrl,
+                    referer = warezPageUrl,
+                    ua = ua,
+                    timeoutMs = EMBED_OBSERVER_TIMEOUT_MS,
+                ) ?: throw error // nada observado: o erro original é mais informativo
+                val seguro = secureTransportUrl(observada.url) ?: throw error
+                log("embedplayer_fallback_ok", "tipo=${observada.kind}")
+                return NativeExtractResult(
+                    stream = seguro,
+                    referer = observada.referer ?: resolvedUrl,
+                    subtitles = subtitles,
+                    tipo = observada.kind,
+                    // A página real já provou que este manifesto responde. Sondá-lo
+                    // de novo pela rede nativa repetiria exatamente o 403 que nos
+                    // trouxe até aqui — é o que o provedor protege atrás da sessão
+                    // do navegador.
+                    verified = true,
+                )
+            }
             return NativeExtractResult(stream, resolvedUrl, subtitles)
         }
 
@@ -1388,7 +1433,11 @@ object SuperflixExtractor {
         }
 
         var info: HlsMediaInfo? = null
-        if (readsManifest) {
+        // Candidata observada pela própria página não é re-sondada: a prova de
+        // que responde já existe, e o pedido nativo repetiria o 403. Sem as
+        // qualidades do master a fonte apenas entra sem esse detalhe — o player
+        // lê o master sozinho.
+        if (readsManifest && !candidate.verified) {
             val manifest = runCatching {
                 requestOnce(
                     client = client,
@@ -1411,7 +1460,7 @@ object SuperflixExtractor {
                 throw Exception("resposta não é manifesto HLS")
             }
             info = HlsManifest.parse(manifest.body, url)
-        } else if (tipo == "mp4") {
+        } else if (tipo == "mp4" && !candidate.verified) {
             val media = runCatching {
                 requestOnce(
                     client = client,
@@ -1778,10 +1827,34 @@ object SuperflixExtractor {
      * A WebView some assim que o bootstrap termina; ela nunca fica aberta para
      * seleção nem para reprodução.
      */
+    /**
+     * Só os NOMES dos cookies, nunca os valores.
+     *
+     * Diagnóstico do desafio precisa saber *quais* cookies o navegador criou
+     * (cf_clearance, cfv, __sf_turnstile_pass…) para separar "o Turnstile não
+     * rodou" de "rodou e o cookie não fixou". O valor não acrescenta nada a essa
+     * pergunta e é exatamente o que não pode aparecer em log.
+     */
+    private fun nomesDeCookies(raw: String?): String {
+        if (raw.isNullOrBlank()) return "nenhum"
+        return raw.split(";")
+            .mapNotNull { it.substringBefore("=").trim().takeIf(String::isNotEmpty) }
+            .distinct()
+            .joinToString(",")
+            .take(200)
+    }
+
     private suspend fun prepareFresh(
         embedUrl: String,
         preferredUrl: String = embedUrl,
-        preferredUa: String = userAgent(),
+        // O UA do desafio, quando já houve um: o Cloudflare amarra o clearance ao
+        // par UA/cookie que o emitiu. A tentativa direta usava `userAgent()` — o
+        // UA do cliente HTTP, com o marcador do aplicativo — enquanto o cookie
+        // tinha sido obtido pela WebView do overlay, com o UA limpo do sistema.
+        // Cookie válido apresentado com o UA errado é recusado, e o desafio
+        // reabria a cada título mesmo já estando autorizado. `uaEmUso` sobrevive
+        // ao fechamento do overlay justamente para isto.
+        preferredUa: String = SuperflixChallengeOverlay.uaEmUso ?: userAgent(),
     ): Session {
         val cookieManager = CookieManager.getInstance()
         val initialCookies = runCatching { cookieManager.getCookie(preferredUrl) }.getOrNull()
@@ -1815,6 +1888,11 @@ object SuperflixExtractor {
             var lastObserved: String? = null
             var retryAt = 0L
             var attempts = 0
+            // Sem isto a espera é muda: o log mostrava "challenge_required" e
+            // nada mais até o timeout de 2 min, sem dizer se o overlay abriu, se
+            // o navegador criou algum cookie de autorização ou se a URL
+            // autorizada chegou a ser observada. Só nomes de cookie, nunca valor.
+            var proximoRelatorio = startedAt + 5_000L
             while (System.currentTimeMillis() < deadline) {
                 delay(250L)
                 if (SuperflixChallengeOverlay.estaAberto) {
@@ -1822,6 +1900,19 @@ object SuperflixExtractor {
                 }
                 val challengeUa = SuperflixChallengeOverlay.uaEmUso
                     ?.takeIf { SuperflixChallengeOverlay.estaAberto && it.isNotBlank() }
+
+                if (System.currentTimeMillis() >= proximoRelatorio) {
+                    proximoRelatorio += 5_000L
+                    val cookiesAgora = runCatching { cookieManager.getCookie(embedUrl) }.getOrNull()
+                    log(
+                        "espera",
+                        "${(System.currentTimeMillis() - startedAt) / 1000}s " +
+                            "overlay=${if (SuperflixChallengeOverlay.estaAberto) "aberto" else "fechado"} " +
+                            "ua_desafio=${if (challengeUa != null) "sim" else "nao"} " +
+                            "url_autorizada=${if (lastObserved != null) "sim" else "nao"} " +
+                            "tentativas=$attempts cookies=${nomesDeCookies(cookiesAgora)}",
+                    )
+                }
                 if (challengeUa == null) {
                     if (!SuperflixChallengeOverlay.estaAberto &&
                         System.currentTimeMillis() - startedAt > 1_000L
@@ -1845,10 +1936,18 @@ object SuperflixExtractor {
                         SuperflixChallengeOverlay.persistirCookies()
                         log("challenge_completed", "superflix_challenge_completed")
                         return prepared
-                    } catch (_: AuthorizationRequiredException) {
+                    } catch (error: AuthorizationRequiredException) {
                         // O POST/302 ainda pode estar terminando.
+                        log(
+                            "prepare_nao_autorizado",
+                            "fase=${error.stage} status=${error.status ?: 0} " +
+                                "cookies=${nomesDeCookies(observedCookies)}",
+                        )
                     } catch (error: Exception) {
-                        log("prepare_retry", error.javaClass.simpleName)
+                        log(
+                            "prepare_retry",
+                            "${error.javaClass.simpleName}: ${error.message?.take(160) ?: "-"}",
+                        )
                     }
                 }
 
@@ -1872,7 +1971,17 @@ object SuperflixExtractor {
                         SuperflixChallengeOverlay.persistirCookies()
                         log("challenge_completed", "superflix_challenge_completed")
                         return prepared
-                    } catch (_: Exception) { /* continua aguardando o usuário */ }
+                    } catch (error: Exception) {
+                        // Continua aguardando o usuário, mas agora dizendo por
+                        // quê: era esta tentativa cega que fazia a espera inteira
+                        // parecer "nada acontece".
+                        log(
+                            "tentativa_direta_falhou",
+                            "n=$attempts ${error.javaClass.simpleName}: " +
+                                (error.message?.take(160) ?: "-") +
+                                " cookies=${nomesDeCookies(currentCookies)}",
+                        )
+                    }
                 }
 
                 if (!SuperflixChallengeOverlay.estaAberto &&

@@ -5,7 +5,9 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.os.SystemClock
 import android.view.KeyEvent
@@ -123,6 +125,19 @@ object SuperflixChallengeOverlay {
     var uaEmUso: String? = null
         private set
 
+    /**
+     * Versão do pacote da Android System WebView deste aparelho.
+     *
+     * `getCurrentWebViewPackage` só existe da API 26 em diante; abaixo disso não
+     * há como perguntar, e o log diz isso em vez de estourar.
+     */
+    private fun versaoWebView(): String {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return "indisponivel"
+        return runCatching {
+            WebView.getCurrentWebViewPackage()?.versionName ?: "desconhecida"
+        }.getOrDefault("indisponivel")
+    }
+
     private fun uaLimpo(webView: WebView): String =
         WebSettings.getDefaultUserAgent(webView.context)
             .replace("; wv", "")
@@ -207,6 +222,40 @@ object SuperflixChallengeOverlay {
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
                 setAcceptThirdPartyCookies(wv, true)
+            }
+
+            // Capacidades reais deste aparelho, registradas no momento em que o
+            // desafio abre. É a diferença entre "o Turnstile foi recusado" e "o
+            // Turnstile nunca teve como rodar aqui": a versão do pacote da
+            // WebView decide quais primitivas o widget encontra.
+            ObaLog.evento(
+                ObaLog.Fase.PROVEDOR, "overlay_capacidades",
+                "webview" to versaoWebView(),
+                "js" to wv.settings.javaScriptEnabled,
+                "dom_storage" to wv.settings.domStorageEnabled,
+                "cookies" to CookieManager.getInstance().acceptCookie(),
+                "cookies_terceiros" to CookieManager.getInstance().acceptThirdPartyCookies(wv),
+                "ua_termina_em" to (uaEmUso?.takeLast(28) ?: "-"),
+            )
+
+            // Erro de JavaScript dentro do widget não aparece em lugar nenhum
+            // sem isto — e é o sinal mais direto de que o desafio não conseguiu
+            // executar. Só nível, origem por host e um trecho curto da mensagem;
+            // nenhum argumento de console é registrado por inteiro.
+            wv.webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(cm: ConsoleMessage): Boolean {
+                    if (cm.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
+                        cm.messageLevel() == ConsoleMessage.MessageLevel.WARNING
+                    ) {
+                        ObaLog.alerta(
+                            ObaLog.Fase.PROVEDOR, "overlay_console",
+                            "nivel" to cm.messageLevel().name,
+                            "origem" to ObaLog.host(cm.sourceId()),
+                            "msg" to cm.message().take(140),
+                        )
+                    }
+                    return true
+                }
             }
 
             // Reusa o cliente principal: e ele que observa a midia pelo
