@@ -16,6 +16,9 @@ data class ExtractResult(
     val audioTracks: List<String> = emptyList(),
     val expiresAt: Long? = null,
     val userAgent: String? = null,
+    val effectiveOptionKey: String? = null,
+    val effectiveOptionLabel: String? = null,
+    val effectiveOptionIsFile: Boolean? = null,
 )
 
 // Dispatcher genérico: delega a extração real para PlayerExtractors e atualiza o
@@ -48,6 +51,9 @@ object StreamExtractor {
             audioTracks = nativeResult.audioTracks,
             expiresAt = nativeResult.expiresAt,
             userAgent = nativeResult.userAgent,
+            effectiveOptionKey = nativeResult.effectiveOptionKey,
+            effectiveOptionLabel = nativeResult.effectiveOptionLabel,
+            effectiveOptionIsFile = nativeResult.effectiveOptionIsFile,
         )
     }
 
@@ -128,6 +134,9 @@ object StreamExtractor {
             audioTracks = nativeResult.audioTracks,
             expiresAt = nativeResult.expiresAt,
             userAgent = nativeResult.userAgent,
+            effectiveOptionKey = nativeResult.effectiveOptionKey,
+            effectiveOptionLabel = nativeResult.effectiveOptionLabel,
+            effectiveOptionIsFile = nativeResult.effectiveOptionIsFile,
         )
     }
 }

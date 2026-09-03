@@ -44,6 +44,15 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
+
+    // O android.jar de teste unitário só tem stubs que lançam RuntimeException
+    // por padrão. SuperflixEmbedplayerFailoverTest exercita código de produção
+    // que loga por android.util.Log (via ObaLog) — sem isto, o teste crasha em
+    // "Method d in android.util.Log not mocked", não no que ele está de fato
+    // verificando.
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -71,4 +80,8 @@ dependencies {
     // so tem stubs que lancam RuntimeException. Sem esta dependencia,
     // UpdateManifestParser (que usa org.json.JSONObject) nao roda em teste.
     testImplementation 'org.json:json:20240303'
+    // Servidor HTTP local para testar SuperflixExtractor ponta a ponta (POST
+    // /player/source, GET /video/<id>, POST /player/index.php) sem tocar rede
+    // real nem exigir Robolectric — mesma versao do OkHttp ja usado acima.
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
 }

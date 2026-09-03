@@ -552,6 +552,39 @@ fun TelaPlayer(pedido: Pedido) {
             return
         }
 
+        // O bootstrap/renovação pode remapear a opção solicitada. Propaga a
+        // identidade pública efetiva antes de configurar o Media3, para que
+        // diagnóstico, seleção visível e próximo failover partam da mesma fonte
+        // que realmente produziu URL, Referer e User-Agent.
+        var indiceEfetivo = indice
+        var fonteEfetiva = fonte
+        midia.effectiveOptionKey?.let { effectiveKey ->
+            val encontrada = fontes.indexOfFirst { it.superflixOptionKey == effectiveKey }
+            if (encontrada >= 0) {
+                indiceEfetivo = encontrada
+                val atual = fontes[encontrada]
+                val rotulo = midia.effectiveOptionLabel ?: atual.rotulo
+                val isFile = midia.effectiveOptionIsFile ?: atual.superflixIsFile
+                if (rotulo != atual.rotulo || isFile != atual.superflixIsFile) {
+                    val atualizadas = fontes.toMutableList()
+                    atualizadas[encontrada] = atual.copy(
+                        rotulo = rotulo,
+                        superflixIsFile = isFile,
+                    )
+                    fontes = atualizadas
+                    fonteEfetiva = atualizadas[encontrada]
+                } else {
+                    fonteEfetiva = atual
+                }
+                fonteAtual = indiceEfetivo
+                ObaLog.evento(
+                    ObaLog.Fase.PROVEDOR, "superflix_fonte_efetiva",
+                    "indice" to (indiceEfetivo + 1),
+                    "is_file" to fonteEfetiva.superflixIsFile,
+                )
+            }
+        }
+
         // Um mapa novo por fonte. `setDefaultRequestProperties` substitui o
         // anterior inteiro, entao nao ha risco de o Referer do servidor velho
         // sobreviver na troca — o que daria 403 no servidor novo.
@@ -565,7 +598,7 @@ fun TelaPlayer(pedido: Pedido) {
 
         ObaLog.evento(
             ObaLog.Fase.PLAYER, "tv_midia_preparada",
-            "servidor" to fonte.rotulo,
+            "servidor" to fonteEfetiva.rotulo,
             "url" to ObaLog.url(midia.url),
             "legendas" to midia.legendas.size,
             "hls" to midia.ehHls,
@@ -604,7 +637,7 @@ fun TelaPlayer(pedido: Pedido) {
         player.setMediaItem(item, retomarDe.coerceAtLeast(0L))
         player.prepare()
         player.playWhenReady = true
-        fonteAtual = indice
+        fonteAtual = indiceEfetivo
 
         // Só agora se sabe se a fonte presta, e só agora o relogio pode comecar:
         // o watchdog mede a preparacao desta midia, nao a extracao que veio
@@ -612,7 +645,7 @@ fun TelaPlayer(pedido: Pedido) {
         // tinha respondido, mas o vídeo podia nunca comecar.
         aguardandoPreparo = true
         val resultado = try {
-            aguardarPronto(player, fonte.rotulo, diagnostico)
+            aguardarPronto(player, fonteEfetiva.rotulo, diagnostico)
         } finally {
             // finally porque o cancelamento (troca de servidor no meio da
             // espera) tambem precisa liberar a trava; senao o ouvinte global
@@ -630,7 +663,7 @@ fun TelaPlayer(pedido: Pedido) {
         if (resultado is Preparo.Pronto) {
             ObaLog.evento(
                 ObaLog.Fase.PLAYER, "tv_reproducao_iniciada",
-                "servidor" to fonte.rotulo,
+                "servidor" to fonteEfetiva.rotulo,
             )
             // Deu certo: o proximo problema volta a ter failover automatico.
             escolhaManual = false
@@ -641,18 +674,18 @@ fun TelaPlayer(pedido: Pedido) {
         val motivo = (resultado as Preparo.Falhou).motivo
         ObaLog.alerta(
             ObaLog.Fase.PLAYER, "tv_fonte_nao_iniciou",
-            "servidor" to fonte.rotulo, "motivo" to motivo,
+            "servidor" to fonteEfetiva.rotulo, "motivo" to motivo,
         )
-        registrarFailover(indice, fonte.rotulo, motivo)
+        registrarFailover(indiceEfetivo, fonteEfetiva.rotulo, motivo)
         player.pause()
         player.stop()
         player.clearMediaItems()
 
-        if (!escolhaManual && indice + 1 < fontes.size) {
-            fonteAtual = indice + 1
-            preparar(indice + 1, retomarDe, minhaEpoca)
+        if (!escolhaManual && indiceEfetivo + 1 < fontes.size) {
+            fonteAtual = indiceEfetivo + 1
+            preparar(indiceEfetivo + 1, retomarDe, minhaEpoca)
         } else if (escolhaManual) {
-            falha = fonte.rotulo + " não iniciou (" + motivo + "). Escolha outro no menu."
+            falha = fonteEfetiva.rotulo + " não iniciou (" + motivo + "). Escolha outro no menu."
             carregando = false
         } else {
             falha = "Nenhum servidor conseguiu abrir este conteúdo."

@@ -315,6 +315,10 @@ class ObaflixBridge(
                     put("tipo", result.tipo ?: "hls")
                     put("referer", result.referer ?: JSONObject.NULL)
                     put("expiresAt", result.expiresAt ?: JSONObject.NULL)
+                    put("userAgent", result.userAgent ?: JSONObject.NULL)
+                    put("effectiveOptionKey", result.effectiveOptionKey ?: optionKey)
+                    put("effectiveOptionLabel", result.effectiveOptionLabel ?: "Servidor")
+                    put("effectiveOptionIsFile", result.effectiveOptionIsFile ?: false)
                     put("subtitles", org.json.JSONArray().apply {
                         result.subtitles.forEach { track ->
                             put(JSONObject().put("file", track.file).put("label", track.label))

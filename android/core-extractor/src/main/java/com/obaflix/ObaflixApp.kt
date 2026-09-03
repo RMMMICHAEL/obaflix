@@ -14,8 +14,13 @@ import java.util.concurrent.TimeUnit
 class ObaflixApp : Application() {
 
     companion object {
+        // internal, não private: o teste de regressão do 403 do embedplayer
+        // (SuperflixEmbedplayerFailoverTest) precisa apontar este cliente para
+        // um MockWebServer local antes de exercitar PlayerExtractors.extractEmbedPlayer,
+        // que o usa diretamente. Nada muda em produção — onCreate() continua
+        // sendo o único lugar que o define ali.
         lateinit var httpClient: OkHttpClient
-            private set
+            internal set
 
         /**
          * Cliente usado para o corpo da midia (manifesto, segmentos, MP4).

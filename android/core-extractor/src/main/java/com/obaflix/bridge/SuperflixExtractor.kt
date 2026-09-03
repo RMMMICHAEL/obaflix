@@ -67,6 +67,10 @@ data class NativeExtractResult(
     val expiresAt: Long? = null,
     /** UA legítimo do contexto que autorizou e resolveu esta mídia. */
     val userAgent: String? = null,
+    /** Opção pública que efetivamente produziu a mídia após renovação/failover. */
+    val effectiveOptionKey: String? = null,
+    val effectiveOptionLabel: String? = null,
+    val effectiveOptionIsFile: Boolean? = null,
 )
 
 data class SubtitleTrack(
@@ -91,6 +95,14 @@ object SuperflixExtractor {
         val status: Int? = null,
         val stage: String = "authorization",
     ) : Exception("SuperFlix requer nova autorização")
+
+    /** A autorização continua válida, mas o nmp/nms efêmero precisa de bootstrap novo. */
+    private class NativeOptionExpiredException(
+        val stage: String = "native-media",
+    ) : Exception("opção nativa Superflix expirada")
+
+    private fun hasExpiredNativeOption(body: String): Boolean =
+        body.contains("Expired native media option", ignoreCase = true)
 
     private fun userAgent(): String = ObaflixApp.webViewUserAgent ?: UA
 
@@ -328,7 +340,17 @@ object SuperflixExtractor {
             val candidate = resolveSource(client, cookies, target, warezPage.url, userAgent)
             val profile = profileSource(client, cookies, option, candidate, userAgent)
             log("source_ok", "superflix_source_ok is_file=${option.isFile == true} tipo=${profile.result.tipo}")
-            return profile.result.copy(expiresAt = expiresAt, userAgent = userAgent)
+            val effectiveIndex = currentOptions.indexOf(option).takeIf { it >= 0 } ?: 0
+            return profile.result.copy(
+                expiresAt = expiresAt,
+                userAgent = userAgent,
+                // A chave continua sendo o alias opaco que a interface recebeu.
+                // O rótulo/tipo vêm da opção atual, que pode ter sido remapeada
+                // depois de um bootstrap renovado.
+                effectiveOptionKey = optionKey,
+                effectiveOptionLabel = publicOptionLabel(option, effectiveIndex),
+                effectiveOptionIsFile = option.isFile == true,
+            )
         }
 
         private fun replaceAuthorizedContext(renewed: Session) {
@@ -347,13 +369,17 @@ object SuperflixExtractor {
             val observedGeneration = generation
             try {
                 return resolveOnce(optionKey)
-            } catch (error: AuthorizationRequiredException) {
+            } catch (error: Exception) {
+                if (error !is AuthorizationRequiredException && error !is NativeOptionExpiredException) {
+                    throw error
+                }
                 return renewalMutex.withLock {
                     // Outra resolução concorrente já renovou; não inicia outra.
                     if (generation == observedGeneration) {
                         replaceAuthorizedContext(renewSession(this@Session))
                     }
-                    // Segunda falha sai para o player: não há recursão nem loop.
+                    // Segunda falha sai para o player/failover: não há recursão
+                    // nem novo challenge em loop.
                     resolveOnce(optionKey)
                 }
             }
@@ -913,6 +939,7 @@ object SuperflixExtractor {
         mode: String = "navigate",
         extraHeaders: Map<String, String> = emptyMap(),
         readBody: Boolean = true,
+        readBodyLimitBytes: Long? = null,
     ): HttpResult = withContext(Dispatchers.IO) {
         val builder = Request.Builder()
             .url(url)
@@ -935,7 +962,22 @@ object SuperflixExtractor {
 
         client.newCall(builder.build()).execute().use { response ->
             cookies.absorb(url, response.headers.values("Set-Cookie"))
-            val text = if (readBody) response.body?.string().orEmpty() else ""
+            val contentType = response.header("Content-Type").orEmpty()
+            val contentLength = response.body?.contentLength() ?: -1L
+            val boundedBody = readBodyLimitBytes?.let { limit ->
+                !response.isSuccessful ||
+                    Regex("""text|json|xml|html""", RegexOption.IGNORE_CASE).containsMatchIn(contentType) ||
+                    contentLength in 0..limit
+            } == true
+            val text = when {
+                readBody -> response.body?.string().orEmpty()
+                boundedBody -> response.body?.source()?.let { source ->
+                    val limit = readBodyLimitBytes!!
+                    source.request(limit)
+                    source.buffer.readUtf8(minOf(source.buffer.size, limit))
+                }.orEmpty()
+                else -> ""
+            }
             HttpResult(url, response.code, response.headers, text)
         }
     }
@@ -967,6 +1009,9 @@ object SuperflixExtractor {
                 body = body,
                 extraHeaders = extraHeaders,
             )
+            if (isServerProvidedNativeRoute(url) && hasExpiredNativeOption(result.body)) {
+                throw NativeOptionExpiredException("native-media")
+            }
             if (result.status in 300..399) {
                 val location = result.headers["Location"]
                     ?: throw Exception("redirect ${result.status} sem Location em ${safeUrl(url)}")
@@ -1119,14 +1164,26 @@ object SuperflixExtractor {
         warezPageUrl: String,
         ua: String,
     ): NativeExtractResult {
+        val nativeTarget = isServerProvidedNativeRoute(targetUrl)
         val first = requestOnce(
             client = client,
             cookies = cookies,
             url = targetUrl,
             ua = ua,
             referer = warezPageUrl,
-            readBody = false,
+            // A rota nmp contém a media-source no próprio corpo. Lê-la aqui e
+            // reutilizá-la evita o segundo GET concorrente que fazia o Fire
+            // Player perder a ordem cookie -> POST.
+            readBody = nativeTarget,
         )
+        if (nativeTarget && hasExpiredNativeOption(first.body)) {
+            throw NativeOptionExpiredException("native-media")
+        }
+        val firstNativePage = if (nativeTarget && first.status in 200..299) {
+            Page(targetUrl, first.body)
+        } else {
+            null
+        }
 
         val resolvedUrl = if (first.status in 300..399) {
             // Mesmo motivo do fetchPage: o destino do player/redirect pode vir em
@@ -1145,7 +1202,8 @@ object SuperflixExtractor {
         log("target", safeUrl(resolvedUrl))
 
         if (isServerProvidedNativeRoute(resolvedUrl)) {
-            val mediaPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
+            val mediaPage = firstNativePage
+                ?: fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
             val rawMediaSource = findNativeMediaSource(mediaPage.html, mediaPage.url)
                 ?: throw Exception("media-source não encontrado no player nativo")
             val mediaSource = secureTransportUrl(rawMediaSource)
@@ -1163,7 +1221,11 @@ object SuperflixExtractor {
                 mode = "no-cors",
                 extraHeaders = mapOf("Range" to "bytes=0-0"),
                 readBody = false,
+                readBodyLimitBytes = 1_024L,
             )
+            if (hasExpiredNativeOption(mediaResponse.body)) {
+                throw NativeOptionExpiredException("native-media-source")
+            }
 
             if (mediaResponse.status in 300..399) {
                 val redirected = resolveUrl(mediaResponse.headers["Location"], mediaSource)
@@ -1199,26 +1261,15 @@ object SuperflixExtractor {
                 val embedPage = fetchPage(client, cookies, resolvedUrl, warezPageUrl, ua = ua)
                 findSubtitleTracks(embedPage.html, embedPage.url)
             }.getOrDefault(emptyList())
-            val stream = try {
-                PlayerExtractors.extractEmbedPlayer(
-                    resolvedUrl,
-                    r,
-                    ua,
-                    cookies.header(resolvedUrl),
-                )
-            } catch (error: PlayerExtractors.ProviderHttpException) {
-                if (error.status == 403 || error.status == 419) {
-                    throw AuthorizationRequiredException(
-                        error.status,
-                        "embedplayer",
-                    )
-                }
-
-                // 404/429/5xx e demais falhas do player externo não significam
-                // perda da autorização Superflix. Elas seguem como falha normal
-                // da fonte para permitir failover sem reabrir o challenge.
-                throw error
-            }
+            // Uma recusa do player externo pertence a esta fonte, não à
+            // autorização Superflix. 403/419 aqui também segue para o failover;
+            // reabrir o challenge não altera a sessão do servidor externo.
+            val stream = PlayerExtractors.extractEmbedPlayer(
+                resolvedUrl,
+                r,
+                ua,
+                cookies.header(resolvedUrl),
+            )
             return NativeExtractResult(stream, resolvedUrl, subtitles)
         }
 

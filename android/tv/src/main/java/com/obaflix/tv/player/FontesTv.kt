@@ -108,6 +108,10 @@ data class Midia(
      * link.
      */
     val userAgent: String? = null,
+    /** Alias público da opção que realmente resolveu após renovação/failover. */
+    val effectiveOptionKey: String? = null,
+    val effectiveOptionLabel: String? = null,
+    val effectiveOptionIsFile: Boolean? = null,
 )
 
 /**
@@ -404,6 +408,9 @@ object FontesTv {
                 legendas = result.subtitles.distinctBy { it.file },
                 qualidades = result.qualities.distinct(),
                 audios = result.audioTracks.distinct(),
+                effectiveOptionKey = result.effectiveOptionKey ?: optionKey,
+                effectiveOptionLabel = result.effectiveOptionLabel ?: fonte.rotulo,
+                effectiveOptionIsFile = result.effectiveOptionIsFile ?: fonte.superflixIsFile,
             )
         }
 
@@ -555,10 +562,17 @@ object FontesTv {
                 legendas = extraido.subtitles.distinctBy { it.file },
                 qualidades = extraido.qualities.distinct(),
                 audios = extraido.audioTracks.distinct(),
+                effectiveOptionKey = extraido.effectiveOptionKey,
+                effectiveOptionLabel = extraido.effectiveOptionLabel,
+                effectiveOptionIsFile = extraido.effectiveOptionIsFile,
             )
         }
 
-        val conferencia = conferirManifesto(extraido.stream, extraido.referer)
+        val conferencia = conferirManifesto(
+            extraido.stream,
+            extraido.referer,
+            extraido.userAgent ?: uaDoDesafio(fonte),
+        )
         if (conferencia is Conferencia.Morto) {
             // O provedor respondeu, e respondeu que nao existe. Entregar ao
             // player so adiaria a mesma resposta por quatro tentativas dele.
@@ -586,6 +600,9 @@ object FontesTv {
                 legendas = extraido.subtitles.distinctBy { it.file },
                 qualidades = extraido.qualities.distinct(),
                 audios = extraido.audioTracks.distinct(),
+                effectiveOptionKey = extraido.effectiveOptionKey,
+                effectiveOptionLabel = extraido.effectiveOptionLabel,
+                effectiveOptionIsFile = extraido.effectiveOptionIsFile,
             )
         }
 
@@ -599,6 +616,9 @@ object FontesTv {
             legendas = (extraido.subtitles + info.subtitles).distinctBy { it.file },
             qualidades = (extraido.qualities + info.variants.map { it.label }).distinct(),
             audios = (extraido.audioTracks + info.audioTracks).distinct(),
+            effectiveOptionKey = extraido.effectiveOptionKey,
+            effectiveOptionLabel = extraido.effectiveOptionLabel,
+            effectiveOptionIsFile = extraido.effectiveOptionIsFile,
         )
     }
 
@@ -609,8 +629,12 @@ object FontesTv {
      * o caso mais comum de "carregou e ficou preto". Para MP4 nao ha manifesto:
      * a checagem e so do status, sem baixar o corpo.
      */
-    private suspend fun conferirManifesto(url: String, referer: String?): Conferencia =
-        withTimeoutOrNull(CONFERENCIA_TIMEOUT_MS) { conferirAgora(url, referer) }
+    private suspend fun conferirManifesto(
+        url: String,
+        referer: String?,
+        userAgent: String?,
+    ): Conferencia =
+        withTimeoutOrNull(CONFERENCIA_TIMEOUT_MS) { conferirAgora(url, referer, userAgent) }
             ?: Conferencia.NaoDeuParaSaber
 
     /** Teto proprio da conferencia: ela e um atalho, nunca uma espera longa. */
@@ -630,7 +654,11 @@ object FontesTv {
      */
     private val DEFINITIVOS = setOf(404, 410)
 
-    private suspend fun conferirAgora(url: String, referer: String?): Conferencia =
+    private suspend fun conferirAgora(
+        url: String,
+        referer: String?,
+        userAgent: String?,
+    ): Conferencia =
         withContext(Dispatchers.IO) {
             // Range so em arquivo de midia de verdade. Playlist com Range volta
             // 404 em alguns CDN (visto no Cloudflare), e ai uma fonte boa era
@@ -643,7 +671,7 @@ object FontesTv {
                 // Exatamente os mesmos cabecalhos do player. Conferir com um
                 // conjunto e reproduzir com outro daria um "manifesto vivo" que
                 // o ExoPlayer nao consegue abrir.
-                .apply { CabecalhosMidia.de(referer, url).forEach { (n, v) -> header(n, v) } }
+                .apply { CabecalhosMidia.de(referer, url, userAgent).forEach { (n, v) -> header(n, v) } }
                 .apply {
                     // GET sempre, nunca HEAD: CDN da AWS (CloudFront e afins)
                     // recusa HEAD com 403 mesmo quando o GET funciona, porque a
