@@ -328,6 +328,19 @@ fun TelaPlayer(pedido: Pedido) {
     // Marca que o servidor da vez foi escolhido a dedo. Falha em escolha manual
     // nao pode virar avanco silencioso: quem escolheu precisa saber o que houve.
     var escolhaManual by remember { mutableStateOf(false) }
+    // Ultimo indice que nasceu do bootstrap do Superflix, ou -1.
+    //
+    // A fonte Superflix e uma so na lista, e o bootstrap a substitui pelas
+    // opcoes que ela por dentro oferece. Quem escolheu "Servidor 3" escolheu a
+    // fonte inteira: as opcoes nem existiam no momento da escolha, entao
+    // nenhuma delas foi escolhida por ninguem. Tratar a primeira como "escolha
+    // manual" era o que parava o fluxo automatico com manual=true logo no 403
+    // do player externo, sem sequer tentar a alternativa que estava do lado.
+    //
+    // Dentro desta janela o failover volta a ser automatico; passada a ultima
+    // opcao, a escolha manual original volta a valer e a tela avisa quem
+    // escolheu, exatamente como antes.
+    var ultimaAlternativaDoBootstrap by remember { mutableStateOf(-1) }
     // Enquanto o preparo espera por READY, quem trata a falha e o proprio
     // preparo. Sem esta trava, o ouvinte global avancaria de fonte ao mesmo
     // tempo e as duas trocas se atropelariam.
@@ -476,17 +489,32 @@ fun TelaPlayer(pedido: Pedido) {
      * de log virou 13s de silencio que nao deu para explicar, nem para
      * distinguir "escolha manual, respeitei" de "acabaram as fontes".
      */
+    /**
+     * A escolha manual ainda prende o failover neste indice?
+     *
+     * Nao prende enquanto houver alternativa do mesmo bootstrap adiante: aquelas
+     * opcoes nasceram depois da escolha e nunca foram escolhidas. Fora dessa
+     * janela, escolha manual continua sendo escolha manual.
+     */
+    fun presoNaEscolhaManual(indice: Int): Boolean =
+        escolhaManual && indice >= ultimaAlternativaDoBootstrap
+
     fun registrarFailover(indice: Int, rotulo: String, motivo: String) {
         val temProxima = indice + 1 < fontes.size
+        val preso = presoNaEscolhaManual(indice)
         ObaLog.evento(
             ObaLog.Fase.PLAYER, "tv_failover",
             "de" to rotulo,
             "motivo" to motivo,
             "indice" to indice,
             "fontes" to fontes.size,
-            "manual" to escolhaManual,
+            "manual" to preso,
+            // Distingue "o usuario escolheu" de "a escolha ainda tem
+            // alternativas do proprio bootstrap": sem isto, o log dizia
+            // manual=true numa tentativa que ninguem havia pedido.
+            "escolha_usuario" to escolhaManual,
             "acao" to when {
-                escolhaManual -> "para_escolha_manual"
+                preso -> "para_escolha_manual"
                 temProxima -> "proxima"
                 else -> "para_sem_fontes"
             },
@@ -522,9 +550,14 @@ fun TelaPlayer(pedido: Pedido) {
                 atualizada.addAll(posicao, opcoesSuperflix)
                 fontes = atualizada
                 fonteAtual = posicao
+                // A janela em que o failover volta a ser automatico mesmo depois
+                // de uma escolha manual: sao as opcoes que a fonte escolhida
+                // passou a oferecer, e nao escolhas de ninguem.
+                ultimaAlternativaDoBootstrap = posicao + opcoesSuperflix.size - 1
                 ObaLog.evento(
                     ObaLog.Fase.PROVEDOR, "superflix_bootstrap_ok",
                     "opcoes" to opcoesSuperflix.size,
+                    "alternativas_ate" to ultimaAlternativaDoBootstrap,
                 )
             }
         }
@@ -539,10 +572,10 @@ fun TelaPlayer(pedido: Pedido) {
             registrarFailover(indice, fonte.rotulo, "extracao_sem_midia")
             // Cai para a proxima. E o mesmo failover dos outros ambientes: a
             // pessoa nao precisa saber qual servidor falhou, so continuar vendo.
-            if (!escolhaManual && indice + 1 < fontes.size) {
+            if (!presoNaEscolhaManual(indice) && indice + 1 < fontes.size) {
                 fonteAtual = indice + 1
                 preparar(indice + 1, retomarDe, minhaEpoca)
-            } else if (escolhaManual) {
+            } else if (presoNaEscolhaManual(indice)) {
                 falha = "Não foi possível abrir " + fonte.rotulo + ". Escolha outro no menu."
                 carregando = false
             } else {
@@ -681,10 +714,10 @@ fun TelaPlayer(pedido: Pedido) {
         player.stop()
         player.clearMediaItems()
 
-        if (!escolhaManual && indiceEfetivo + 1 < fontes.size) {
+        if (!presoNaEscolhaManual(indiceEfetivo) && indiceEfetivo + 1 < fontes.size) {
             fonteAtual = indiceEfetivo + 1
             preparar(indiceEfetivo + 1, retomarDe, minhaEpoca)
-        } else if (escolhaManual) {
+        } else if (presoNaEscolhaManual(indiceEfetivo)) {
             falha = fonteEfetiva.rotulo + " não iniciou (" + motivo + "). Escolha outro no menu."
             carregando = false
         } else {
@@ -749,6 +782,9 @@ fun TelaPlayer(pedido: Pedido) {
         }
         sessao = abertura.sessao
         fontes = abertura.fontes
+        // Lista nova, janela velha nao vale: o indice guardado apontava para
+        // opcoes que nao existem mais.
+        ultimaAlternativaDoBootstrap = -1
 
         val alvoMs: Long = when {
             primeiraAbertura -> {
@@ -801,10 +837,11 @@ fun TelaPlayer(pedido: Pedido) {
                     "servidor" to (fontes.getOrNull(fonteAtual)?.rotulo ?: "?"),
                     "codigo" to error.errorCodeName,
                     "causa" to detalhe,
-                    "manual" to escolhaManual,
+                    "manual" to presoNaEscolhaManual(fonteAtual),
+                    "escolha_usuario" to escolhaManual,
                 )
 
-                if (escolhaManual) {
+                if (presoNaEscolhaManual(fonteAtual)) {
                     // Quem escolheu o servidor precisa ver o que aconteceu com a
                     // escolha. Pular sozinho aqui era o que fazia "selecionei o
                     // Servidor 3 e nao funciona" — ele falhava e o player ia
