@@ -35,6 +35,7 @@ interface EpMetadata {
 
 export function EpisodeGrid({
   serieId,
+  serieTitulo,
   episodios,
   temporadas,
   ratingMap = {},
@@ -42,6 +43,8 @@ export function EpisodeGrid({
   initialSeason,
 }: {
   serieId: string;
+  /** Só para rotular o modal de download ("Série - 1x3"). */
+  serieTitulo: string;
   episodios: Ep[];
   temporadas: number[];
   ratingMap?: Record<string, number>;
@@ -224,9 +227,10 @@ export function EpisodeGrid({
               */}
               <AndroidEpisodeActions
                 serieId={serieId}
+                serieTitulo={serieTitulo}
                 temporada={ep.temporada}
                 numeroEp={ep.numeroEp}
-                titulo={`${ep.numeroEp}. ${ep.titulo ?? `Episódio ${ep.numeroEp}`}`}
+                tituloEpisodio={`${ep.numeroEp}. ${ep.titulo ?? `Episódio ${ep.numeroEp}`}`}
                 poster={thumbnail ? imgUrl(thumbnail, "w500") : null}
               />
             </li>

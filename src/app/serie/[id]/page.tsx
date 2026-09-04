@@ -229,15 +229,33 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         generos={serie.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }))}
         watchHref={watchHref}
         watchLabel={watchLabel}
+        // Mesma coleção que alimenta o EpisodeGrid abaixo: o hero e a lista não
+        // podem discordar sobre quantos episódios existem. Só as ações de
+        // Baixar/Transmitir do Android usam isto — quando há mais de um
+        // episódio elas levam à lista em vez de escolher por conta própria.
+        totalEpisodios={episodiosPublicos.length}
+        episodioUnico={
+          episodiosPublicos.length === 1
+            ? {
+                temporada: episodiosPublicos[0].temporada,
+                numeroEp: episodiosPublicos[0].numeroEp,
+              }
+            : null
+        }
         trailerKey={trailer?.key}
         shareUrl={absoluteUrl(`/serie/${serie.id}`)}
       />
 
       {/* Temporadas e episódios logo abaixo do hero */}
       {temporadas.length > 0 && (
-        <div className="px-4 pt-2 md:px-14 md:pt-4">
+        // O id é o destino de "Baixar"/"Transmitir" do hero quando ainda não há
+        // um episódio escolhido: em vez de decidir por conta própria, a ação
+        // leva até aqui. `scroll-mt` desconta o cabeçalho fixo, senão o topo da
+        // lista para debaixo dele e a pessoa não vê o que foi destacado.
+        <div id="episodios" className="scroll-mt-24 px-4 pt-2 md:px-14 md:pt-4">
           <EpisodeGrid
             serieId={serie.id}
+            serieTitulo={serie.titulo}
             episodios={episodiosPublicos}
             temporadas={temporadas}
             ratingMap={epRatingMap}

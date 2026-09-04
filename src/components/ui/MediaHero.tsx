@@ -8,6 +8,7 @@ import { imgUrl, logoUrl } from "@/lib/tmdb";
 import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
+import { AndroidHeroActions } from "@/components/android/AndroidHeroActions";
 
 export interface MediaHeroProps {
   conteudoId: string;
@@ -33,6 +34,16 @@ export interface MediaHeroProps {
   generos?: { id: number; nome: string }[];
   watchHref?: string | null;
   watchLabel?: string;
+  /**
+   * Total de episódios disponíveis, e qual é o único quando só há um.
+   *
+   * Vem da MESMA coleção que alimenta o `EpisodeGrid`, para o hero e a lista
+   * nunca discordarem sobre quantos episódios existem. Só é usado pelas ações
+   * de Baixar/Transmitir do aplicativo Android — nada mais no hero depende
+   * disto, e no filme não se aplica.
+   */
+  totalEpisodios?: number;
+  episodioUnico?: { temporada: number; numeroEp: number } | null;
   trailerKey?: string | null;
   dub?: boolean;
   leg?: boolean;
@@ -70,6 +81,8 @@ export function MediaHero({
   generos = [],
   watchHref,
   watchLabel = "Assistir",
+  totalEpisodios,
+  episodioUnico = null,
   trailerKey,
   dub = false,
   leg = false,
@@ -336,6 +349,33 @@ export function MediaHero({
               className="flex h-12 items-center justify-center gap-2.5 rounded-xl border border-white/15 bg-white/10 px-7 text-[15px] font-semibold text-white backdrop-blur-sm transition-colors hover:border-white/30 hover:bg-white/20 md:h-[3.25rem]"
             />
           )}
+
+          {/*
+            Baixar e Transmitir do aplicativo Android. Devolve null em qualquer
+            outro ambiente.
+
+            Em filme a ação é direta: há uma mídia só. Em série, anime e desenho
+            ela só é direta quando existe episódio de retomada — aí o alvo é o
+            MESMO do botão Assistir, e baixar baixa exatamente o que assistir
+            tocaria. Sem retomada, `hrefFinal` é o primeiro episódio, que
+            ninguém escolheu: nesse caso o botão leva à lista em vez de decidir.
+          */}
+          <AndroidHeroActions
+            tipo={tipo}
+            conteudoId={conteudoId}
+            titulo={titulo}
+            // Lido só para filme. Em série, `watchHref` é o primeiro episódio —
+            // que ninguém escolheu — e por isso a decisão o ignora.
+            watchHref={watchHref}
+            poster={backdrop ? imgUrl(backdrop, "w780") : null}
+            retomada={
+              retomandoEpisodio
+                ? { temporada: continuar!.temporada!, numeroEp: continuar!.numeroEp! }
+                : null
+            }
+            totalEpisodios={totalEpisodios}
+            episodioUnico={episodioUnico}
+          />
 
           <MediaHeroActions conteudoId={conteudoId} tipo={tipo} shareUrl={shareUrl} titulo={titulo} />
         </div>

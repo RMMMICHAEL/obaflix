@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef } from "react";
+import { fontesCandidatas } from "@/lib/androidMedia";
 
 /**
  * Resolve fontes para baixar ou transmitir, fora do player.
@@ -83,9 +84,7 @@ export function useFonteParaMidia({
 
     sessaoRef.current = data?.sessao ?? null;
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
-    candidatasRef.current = lista.filter(
-      (f) => f.disponivel && f.nativo && !f.iframeDireto && !f.iframeDesafio && !f.superflixLocal,
-    );
+    candidatasRef.current = fontesCandidatas(lista);
   }, [conteudoId, conteudoTipo, temporada, numeroEp]);
 
   /** A n-ésima fonte candidata, já resolvida. `null` quando acabaram. */

@@ -2,9 +2,10 @@
 
 import { AndroidMediaActions, useAcoesDeMidiaDisponiveis } from "./AndroidMediaActions";
 import { useFonteParaMidia } from "./useFonteParaMidia";
+import { pidDeEpisodio, rotuloDeEpisodio } from "@/lib/androidMedia";
 
 /**
- * Baixar e Transmitir ao lado de um episódio.
+ * Baixar e Transmitir na linha de um episódio.
  *
  * Componente próprio porque `useFonteParaMidia` é um hook e não pode ser
  * chamado dentro do `map` da lista: cada episódio precisa da própria sessão de
@@ -15,15 +16,18 @@ import { useFonteParaMidia } from "./useFonteParaMidia";
  */
 export function AndroidEpisodeActions({
   serieId,
+  serieTitulo,
   temporada,
   numeroEp,
-  titulo,
+  tituloEpisodio,
   poster,
 }: {
   serieId: string;
+  /** Nome da série, para o título do modal ficar "Série - 1x3". */
+  serieTitulo: string;
   temporada: number;
   numeroEp: number;
-  titulo: string;
+  tituloEpisodio: string;
   poster?: string | null;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
@@ -37,15 +41,19 @@ export function AndroidEpisodeActions({
   if (!disponivel) return null;
 
   return (
-    <div className="flex items-center gap-1 pl-[9.5rem] pt-1 sm:pl-[13rem] md:pl-[15rem]">
+    // Alinhado com o texto do episódio, não com a miniatura: a linha de ações
+    // pertence ao bloco de informação, e recuá-la até a borda da imagem a
+    // deixaria órfã embaixo do card.
+    <div className="mt-1 pl-[9.5rem] pb-3 sm:pl-[14rem] md:pl-[16rem]">
       <AndroidMediaActions
         // Id público e estável: identifica o episódio para a fila de downloads
         // sem carregar nada da fonte.
-        pid={`serie:${serieId}:t${temporada}:e${numeroEp}`}
-        titulo={titulo}
+        pid={pidDeEpisodio(serieId, temporada, numeroEp)}
+        titulo={tituloEpisodio}
+        tituloCurto={rotuloDeEpisodio(serieTitulo, temporada, numeroEp)}
         poster={poster}
         resolverFonte={resolverFonte}
-        compacto
+        variante="episodio"
       />
     </div>
   );

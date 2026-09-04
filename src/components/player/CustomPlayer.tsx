@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, PictureInPicture2, Settings2, Check } from "lucide-react";
 import { AndroidMediaActions } from "@/components/android/AndroidMediaActions";
+import { pidDeEpisodio, pidDeFilme, rotuloDeEpisodio } from "@/lib/androidMedia";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -2936,12 +2937,18 @@ export function CustomPlayer({
               <AndroidMediaActions
                 pid={
                   conteudoTipo === "filme"
-                    ? `filme:${conteudoId}`
-                    : `serie:${conteudoId}:t${temporada ?? 1}:e${numeroEp ?? 1}`
+                    ? pidDeFilme(conteudoId)
+                    : pidDeEpisodio(conteudoId, temporada ?? 1, numeroEp ?? 1)
                 }
                 titulo={nomeEpisodio ? `${titulo} - ${nomeEpisodio}` : titulo}
+                tituloCurto={
+                  conteudoTipo === "filme"
+                    ? titulo
+                    : rotuloDeEpisodio(titulo, temporada ?? 1, numeroEp ?? 1)
+                }
                 poster={thumbUrl ?? null}
                 resolverFonte={fonteAtualParaMidia}
+                variante="player"
               />
 
               {/* Servidor dropdown */}
