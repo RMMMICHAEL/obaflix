@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, PictureInPicture2, Settings2, Check } from "lucide-react";
+import { AndroidMediaActions } from "@/components/android/AndroidMediaActions";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -537,6 +538,45 @@ export function CustomPlayer({
   const [showDiag, setShowDiag] = useState(false);
 
   const fonte = allFontes[fonteIdx];
+
+  // Espelhados em ref pelo mesmo motivo de initialProgressoSegRef: entrar na
+  // lista de dependências de um callback trocaria a identidade dele a cada
+  // render, e aqui isso não compra nada — o callback só lê no momento do clique.
+  const streamTipoRef = useRef(streamTipo);
+  streamTipoRef.current = streamTipo;
+  const fonteAtualEhDeSessaoRef = useRef(false);
+  fonteAtualEhDeSessaoRef.current = !!(fonte?.superflixLocal || fonte?.iframeDesafio);
+
+  /**
+   * A fonte que já está tocando, para os botões de baixar/transmitir do Android.
+   *
+   * Não resolve nada: devolve o que a extração desta reprodução já produziu.
+   * Uma segunda resolução aqui gastaria outra extração e, pior, mexeria no
+   * estado do player enquanto o vídeo toca.
+   *
+   * `tentativa > 0` devolve null de propósito: dentro do player a fonte é a que
+   * o usuário escolheu no seletor de servidor. Trocar por conta própria por
+   * causa de um download recusado mudaria o vídeo debaixo dele.
+   */
+  const fonteAtualParaMidia = useCallback(async (tentativa: number) => {
+    if (tentativa > 0) return null;
+    const stream = directStreamRef.current;
+    if (!stream) return null;
+    // "iframe" e "native" não são mídia direta: no primeiro quem reproduz é o
+    // player do próprio provedor, e não há arquivo a baixar nem URL a entregar.
+    const tipo = streamTipoRef.current;
+    if (tipo !== "hls" && tipo !== "mp4") return null;
+    return {
+      // Marca a origem presa à sessão do navegador. O Android recusa "superflix"
+      // para download e transmissão — a mídia dessas fontes não vale fora do
+      // contexto que a autorizou.
+      origem: fonteAtualEhDeSessaoRef.current ? "superflix" : "nativo",
+      stream,
+      tipo,
+      referer: streamRefererRef.current,
+      expiresAt: streamExpiresAtRef.current,
+    };
+  }, []);
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
@@ -2884,6 +2924,25 @@ export function CustomPlayer({
 
             {/* Right: servidor, áudio, cast, prev, next, report */}
             <div className="flex items-center gap-1 md:gap-1.5 flex-shrink-0">
+
+              {/*
+                Baixar e Transmitir do aplicativo Android, para o que está
+                tocando agora. Devolve null em qualquer outro ambiente.
+
+                Nenhum dos dois passa pelo caminho de reprodução: não chamam
+                extract, não mexem em status, não contam como intenção de
+                assistir. A regra de anúncios não é tocada por aqui.
+              */}
+              <AndroidMediaActions
+                pid={
+                  conteudoTipo === "filme"
+                    ? `filme:${conteudoId}`
+                    : `serie:${conteudoId}:t${temporada ?? 1}:e${numeroEp ?? 1}`
+                }
+                titulo={nomeEpisodio ? `${titulo} - ${nomeEpisodio}` : titulo}
+                poster={thumbUrl ?? null}
+                resolverFonte={fonteAtualParaMidia}
+              />
 
               {/* Servidor dropdown */}
               {allFontes.length > 0 && (
