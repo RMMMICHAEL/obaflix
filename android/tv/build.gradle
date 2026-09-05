@@ -41,6 +41,12 @@ android {
         kotlinCompilerExtensionVersion '1.5.10'
     }
 
+    // Mesmo motivo do :app e do :core-extractor: o android.jar de teste unitario
+    // so tem stubs que lancam RuntimeException.
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     buildTypes {
         release {
             minifyEnabled true
@@ -126,4 +132,9 @@ dependencies {
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    // JVM pura. O comportamento de foco do Compose so se prova em aparelho
+    // (exige teste instrumentado com compose-ui-test); o que da para travar aqui
+    // e a aritmetica de colunas e a fiacao da entrada de foco na fileira.
+    testImplementation 'junit:junit:4.13.2'
 }
