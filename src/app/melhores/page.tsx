@@ -2,26 +2,27 @@ import { prisma } from "@/lib/prisma";
 import { imgUrl } from "@/lib/tmdb";
 import { MelhoresClient, type ChartItem } from "./MelhoresClient";
 import { editorialAliases, EMMY_SERIES, matchEditorialEntries, OSCAR_FILMS } from "@/lib/editorialCatalog";
+import { dedupeCatalogo } from "@/lib/canonical";
 
 // Lido do banco (top250/popularRank), não mais buscado ao vivo do TMDB — os
 // Os scripts locais que mantêm esses campos são os únicos que escrevem aqui.
 export const dynamic = "force-dynamic";
 
 const selFilme = {
-  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, duracao: true, ano: true, nota: true,
+  id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, duracao: true, ano: true, nota: true,
   urlDub: true, urlLeg: true, top250: true, popularRank: true,
   generos: { select: { genero: { select: { nome: true } } } },
 } as const;
 
 const selSerie = {
-  id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
+  id: true, tmdbId: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
   top250: true, popularRank: true,
   generos: { select: { genero: { select: { nome: true } } } },
   _count: { select: { episodios: true } },
 } as const;
 
 const awardSelect = {
-  id: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true, ano: true,
+  id: true, tmdbId: true, titulo: true, tituloOriginal: true, poster: true, background: true, logo: true, ano: true,
 } as const;
 
 function uniqueGenres(rows: Array<{ genero: { nome: string } }>) {
@@ -100,12 +101,12 @@ export default async function MelhoresPage() {
     }),
   ]);
 
-  const oscarItems = matchEditorialEntries(OSCAR_FILMS, oscarRaw).map(({ item, entry }) => ({
+  const oscarItems = matchEditorialEntries(OSCAR_FILMS, dedupeCatalogo(oscarRaw, "filme")).map(({ item, entry }) => ({
     id: item.id, tipo: "filme" as const, titulo: item.titulo,
     poster: item.poster ?? null, background: item.background ?? null, logo: item.logo ?? null,
     ano: item.ano ?? null, count: entry.value ?? 0,
   }));
-  const emmyItems = matchEditorialEntries(EMMY_SERIES, emmyRaw).map(({ item, entry }) => ({
+  const emmyItems = matchEditorialEntries(EMMY_SERIES, dedupeCatalogo(emmyRaw, "serie")).map(({ item, entry }) => ({
     id: item.id, tipo: "serie" as const, titulo: item.titulo,
     poster: item.poster ?? null, background: item.background ?? null, logo: item.logo ?? null,
     ano: item.ano ?? null, count: entry.value ?? 0,
@@ -113,10 +114,10 @@ export default async function MelhoresPage() {
 
   return (
     <MelhoresClient
-      topFilmes={topFilmes.map((f) => filmeToChart(f, "top250"))}
-      topSeries={topSeries.map((s) => serieToChart(s, "top250"))}
-      popFilmes={popFilmes.map((f) => filmeToChart(f, "popularRank"))}
-      popSeries={popSeries.map((s) => serieToChart(s, "popularRank"))}
+      topFilmes={dedupeCatalogo(topFilmes, "filme").map((f) => filmeToChart(f, "top250"))}
+      topSeries={dedupeCatalogo(topSeries, "serie").map((s) => serieToChart(s, "top250"))}
+      popFilmes={dedupeCatalogo(popFilmes, "filme").map((f) => filmeToChart(f, "popularRank"))}
+      popSeries={dedupeCatalogo(popSeries, "serie").map((s) => serieToChart(s, "popularRank"))}
       oscarItems={oscarItems}
       emmyItems={emmyItems}
     />

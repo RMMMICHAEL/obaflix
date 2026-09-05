@@ -1,12 +1,15 @@
 import { unstable_cache } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { dedupeCanonical } from "@/lib/canonical";
 
 /** Quantidade máxima usada pelas vitrines largas do catálogo. */
 export const CATALOG_SHOWCASE_LIMIT = 24;
 
 const catalogItemSelect = {
   id: true,
+  // Criterio de deduplicacao, nunca conteudo de vitrine: sai antes do retorno.
+  tmdbId: true,
   titulo: true,
   poster: true,
   background: true,
@@ -56,14 +59,22 @@ export const getImdbTop250Showcases = unstable_cache(
 
     // URLs de provedor nunca atravessam a fronteira desta função. As vitrines
     // recebem somente os booleanos necessários para desenhar DUB/LEG.
-    const filmes = filmesRaw.map(({ urlDub, urlLeg, ...filme }) => ({
-      ...filme,
-      tipo: "filme" as const,
-      dub: Boolean(urlDub),
-      leg: Boolean(urlLeg),
-    }));
+    //
+    // A deduplicação canônica vem antes: `sync-top250` grava o mesmo rank em
+    // toda linha com aquele tmdbId, então um título duplicado ocupava duas ou
+    // três posições da vitrine — e o `take` acima já tinha gasto as vagas.
+    const filmes = dedupeCanonical(
+      filmesRaw.map(({ urlDub, urlLeg, ...filme }) => ({
+        ...filme,
+        tipo: "filme" as const,
+        dub: Boolean(urlDub),
+        leg: Boolean(urlLeg),
+      })),
+    ).map(({ tmdbId, ...filme }) => filme);
 
-    return { filmes, series };
+    const seriesSemDuplicata = dedupeCanonical(series).map(({ tmdbId, ...serie }) => serie);
+
+    return { filmes, series: seriesSemDuplicata };
   },
   ["catalog-showcases-imdb-top250-v1"],
   { revalidate: 300, tags: ["catalog-showcases", "imdb-top250"] },
@@ -98,19 +109,27 @@ export type RecentSeriesEpisode = {
  * número e data. Assim, um lote com centenas de episódios ocupa uma posição,
  * sem impedir que outras séries completem a vitrine.
  */
+/**
+ * A linha crua traz o tmdbId da série só para a deduplicação decidir qual
+ * duplicata fica. Ele não sobrevive ao retorno: nenhum componente precisa dele,
+ * e o que a vitrine não usa não deve chegar ao HTML.
+ */
+type LinhaRecente = RecentSeriesEpisode & { serieTmdbId: string | null };
+
 export const getRecentSeriesEpisodes = unstable_cache(
-  async (): Promise<RecentSeriesEpisode[]> => prisma.$queryRaw<RecentSeriesEpisode[]>(Prisma.sql`
+  async (): Promise<RecentSeriesEpisode[]> => prisma.$queryRaw<LinhaRecente[]>(Prisma.sql`
     WITH "SeriesRecentes" AS (
       SELECT e."serieId", MAX(e."createdAt") AS "atualizadoEm"
       FROM "Episodio" e
       WHERE e."urlDub" IS NOT NULL OR e."urlLeg" IS NOT NULL
       GROUP BY e."serieId"
       ORDER BY "atualizadoEm" DESC, e."serieId" ASC
-      LIMIT ${CATALOG_SHOWCASE_LIMIT}
+      LIMIT ${CATALOG_SHOWCASE_LIMIT * 2}
     )
     SELECT
       ep.id,
       ep."serieId",
+      s."tmdbId" AS "serieTmdbId",
       ep.titulo,
       ep.thumbnail,
       ep.temporada,
@@ -138,7 +157,17 @@ export const getRecentSeriesEpisodes = unstable_cache(
     ) ep
     INNER JOIN "Serie" s ON s.id = ep."serieId"
     ORDER BY sr."atualizadoEm" DESC, ep."serieId" ASC
-  `),
-  ["catalog-showcases-recent-series-v1"],
+  `).then((linhas) =>
+    // Um episódio por série já era garantido; o que faltava era um episódio por
+    // TÍTULO. Três linhas duplicadas são três `serieId` distintos, então o mesmo
+    // título ocupava três das vagas da vitrine. O CTE busca o dobro do limite
+    // justamente para que o colapso não deixe a prateleira curta.
+    dedupeCanonical(
+      linhas.map((linha) => ({ ...linha, tmdbId: linha.serieTmdbId, tipo: "serie" })),
+    )
+      .slice(0, CATALOG_SHOWCASE_LIMIT)
+      .map(({ tmdbId, tipo, serieTmdbId, ...linha }) => linha),
+  ),
+  ["catalog-showcases-recent-series-v2"],
   { revalidate: 300, tags: ["catalog-showcases", "recent-episodes"] },
 );
