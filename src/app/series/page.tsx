@@ -7,9 +7,24 @@ import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
-import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { expandGenreIds, groupGenres, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * As tres secoes de serie do catalogo.
+ *
+ * `tipo` guarda a SECAO (a prateleira em que o titulo mora), nao a midia — as
+ * tres sao series. Os importadores viram gênero 16 e reclassificam a serie para
+ * "desenho" ou "anime", entao filtrar por genero com `tipo: "serie"` fixo
+ * escondia justamente o acervo que o usuario estava procurando: "Animacao" em
+ * Series devolvia so o residuo que o WebCine trouxe, porque aquele pipeline
+ * classifica pelo endpoint e nao pelo genero.
+ *
+ * A secao continua mandando na navegacao (sem filtro, /series e so "serie"); o
+ * filtro de genero e que deixa de ser amputado por ela.
+ */
+const TIPOS_SERIE = ["serie", "anime", "desenho"] as const;
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 const NEW_EP_MS = 48 * 60 * 60 * 1000;
@@ -47,7 +62,7 @@ export default async function SeriesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
-  const generoIds = parseGenreIds(searchParams.genero);
+  const generoIds = expandGenreIds(parseGenreIds(searchParams.genero));
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;
   const q = searchParams.q ?? null;
@@ -58,7 +73,9 @@ export default async function SeriesPage({
 
   const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "serie" } } } },
+      // A lista de opcoes cobre as tres secoes, senao "Animacao" nem aparecia
+      // no seletor de /series — o acervo dela vive em "anime"/"desenho".
+      where: { series: { some: { serie: { tipo: { in: [...TIPOS_SERIE] } } } } },
       orderBy: { nome: "asc" },
     }),
     prisma.serie.findMany({
@@ -72,8 +89,13 @@ export default async function SeriesPage({
   const anos = anosRaw.map((a) => a.ano!).filter(Boolean) as number[];
 
   if (isFiltered) {
-    const where: any = { tipo: "serie" };
-    if (generoIds.length) where.generos = { some: { generoId: { in: generoIds } } };
+    const where: any = {};
+    if (generoIds.length) {
+      where.tipo = { in: [...TIPOS_SERIE] };
+      where.generos = { some: { generoId: { in: generoIds } } };
+    } else {
+      where.tipo = "serie";
+    }
     if (ano) where.ano = ano;
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 

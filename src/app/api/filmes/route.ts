@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { publicMedia } from "@/lib/publicMedia";
+import { expandGenreIds, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,9 @@ export async function GET(req: NextRequest) {
     const skip = (page - 1) * limit;
 
     const where: any = {};
-    if (genero) where.generos = { some: { generoId: Number(genero) } };
+    // Mesmo formato agrupado das paginas: "12,10759" em vez de um id so.
+    const generoIds = expandGenreIds(parseGenreIds(genero));
+    if (generoIds.length) where.generos = { some: { generoId: { in: generoIds } } };
     if (ano) where.ano = Number(ano);
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 

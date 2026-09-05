@@ -1,8 +1,17 @@
 "use client";
 
-import { Suspense, useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState, useCallback } from "react";
+import { useParams } from "next/navigation";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import {
+  avancarFonte,
+  fonteZerada,
+  intercalar,
+  proximaPagina,
+  temMais as aindaTemMais,
+  totalCombinado,
+  type EstadoFonte,
+} from "@/lib/pagination";
 
 const ORDENS = [
   { value: "recente", label: "Mais Recente" },
@@ -18,47 +27,80 @@ function GeneroConteudo() {
   const [nomeGenero, setNomeGenero] = useState<string>("");
   const [items, setItems] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [temMais, setTemMais] = useState(false);
   const [loading, setLoading] = useState(false);
   const [ordem, setOrdem] = useState("recente");
 
-  const load = useCallback(async (p: number, reset: boolean, ord: string) => {
-    setLoading(true);
-    const [filmesRes, seriesRes] = await Promise.all([
-      fetch(`/api/filmes?page=${p}&genero=${generoId}&ordem=${ord}`),
-      fetch(`/api/series?page=${p}&genero=${generoId}&ordem=${ord}`),
-    ]);
-    const filmesData = await filmesRes.json();
-    const seriesData = await seriesRes.json();
+  // Cursor fora do estado de render: `load` precisa da posicao atual sem
+  // depender de closure, e mudar de pagina nao deve, por si, redesenhar nada.
+  // A aritmetica em si vive em @/lib/pagination, testada fora do React.
+  const cursor = useRef<{ filmes: EstadoFonte; series: EstadoFonte }>({
+    filmes: fonteZerada(),
+    series: fonteZerada(),
+  });
 
-    if (filmesData.filmes?.[0]) {
-      const g = filmesData.filmes[0].generos?.find((g: any) => String(g.genero.id) === generoId);
-      if (g) setNomeGenero(g.genero.nome);
-    }
-    if (!nomeGenero && seriesData.series?.[0]) {
-      const g = seriesData.series[0].generos?.find((g: any) => String(g.genero.id) === generoId);
-      if (g) setNomeGenero(g.genero.nome);
-    }
+  const load = useCallback(
+    async (reset: boolean, ord: string) => {
+      if (reset) cursor.current = { filmes: fonteZerada(), series: fonteZerada() };
 
-    const filmes = (filmesData.filmes ?? []).map((f: any) => ({ ...f, tipo: "filme" as const }));
-    const series = (seriesData.series ?? []).map((s: any) => ({ ...s, tipo: s.tipo ?? "serie" }));
+      const paginaFilmes = proximaPagina(cursor.current.filmes);
+      const paginaSeries = proximaPagina(cursor.current.series);
+      if (paginaFilmes === null && paginaSeries === null) return;
 
-    // Interleave filmes and series for variety
-    const merged: any[] = [];
-    let fi = 0, si = 0;
-    while (fi < filmes.length || si < series.length) {
-      if (fi < filmes.length) merged.push(filmes[fi++]);
-      if (si < series.length) merged.push(series[si++]);
-    }
+      setLoading(true);
+      try {
+        // So pede a fonte que ainda tem o que dar.
+        const [filmesData, seriesData] = await Promise.all([
+          paginaFilmes === null
+            ? null
+            : fetch(`/api/filmes?page=${paginaFilmes}&genero=${generoId}&ordem=${ord}`)
+                .then((r) => r.json())
+                .catch(() => null),
+          paginaSeries === null
+            ? null
+            : fetch(`/api/series?page=${paginaSeries}&genero=${generoId}&ordem=${ord}`)
+                .then((r) => r.json())
+                .catch(() => null),
+        ]);
 
-    setItems((prev) => reset ? merged : [...prev, ...merged]);
-    setTotal((filmesData.total ?? 0) + (seriesData.total ?? 0));
-    setLoading(false);
-  }, [generoId]);
+        const filmes = (filmesData?.filmes ?? []).map((f: any) => ({ ...f, tipo: "filme" as const }));
+        const series = (seriesData?.series ?? []).map((s: any) => ({ ...s, tipo: s.tipo ?? "serie" }));
+
+        if (filmesData) {
+          cursor.current.filmes = avancarFonte(cursor.current.filmes, filmes.length, filmesData.total);
+        }
+        if (seriesData) {
+          cursor.current.series = avancarFonte(cursor.current.series, series.length, seriesData.total);
+        }
+
+        // O nome do genero vem do primeiro item que realmente carrega o id
+        // pedido — nao do primeiro item da lista, que depois da expansao das
+        // equivalencias filme/TV pode ter vindo pelo id irmao.
+        if (!nomeGenero) {
+          for (const item of [...filmes, ...series]) {
+            const encontrado = item.generos?.find((g: any) => String(g.genero.id) === generoId);
+            if (encontrado) { setNomeGenero(encontrado.genero.nome); break; }
+          }
+        }
+
+        const merged = intercalar(filmes, series);
+
+        setItems((prev) => (reset ? merged : [...prev, ...merged]));
+        setTotal(totalCombinado(cursor.current.filmes, cursor.current.series));
+        setTemMais(aindaTemMais(cursor.current.filmes, cursor.current.series));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [generoId, nomeGenero],
+  );
 
   useEffect(() => {
-    setPage(1);
-    load(1, true, ordem);
+    setNomeGenero("");
+    load(true, ordem);
+    // `load` muda junto com nomeGenero e reexecutaria a carga a cada rotulo
+    // encontrado; a dependencia real desta carga e a rota e a ordem.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generoId, ordem]);
 
   return (
@@ -95,16 +137,17 @@ function GeneroConteudo() {
             titulo={item.titulo}
             poster={item.poster}
             background={item.background}
+            logo={item.logo}
             ano={item.ano}
             nota={item.nota}
           />
         ))}
       </div>
 
-      {items.length < total && (
+      {temMais && (
         <div className="flex justify-center mt-8">
           <button
-            onClick={() => { const p = page + 1; setPage(p); load(p, false, ordem); }}
+            onClick={() => load(false, ordem)}
             disabled={loading}
             className="bg-zinc-800 text-white px-8 py-2.5 rounded hover:bg-zinc-700 transition disabled:opacity-50"
           >
