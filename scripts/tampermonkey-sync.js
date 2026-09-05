@@ -5,6 +5,7 @@
 // @description  Duplica add_filme, add_serie e add_episodio do painel Megaflix para o Obaflix automaticamente
 // @match        https://admin.megafrixapi.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
 // @connect      obaflix.vercel.app
 // ==/UserScript==
 
@@ -12,7 +13,20 @@
   'use strict';
 
   const OBAFLIX = 'https://obaflix.vercel.app';
-  const TOKEN = '@Oba152535'; // seu admin token
+
+  // O token NAO vive neste arquivo — ele ja esteve comitado aqui uma vez.
+  // Guarde o seu no armazenamento do proprio userscript, uma unica vez:
+  //   GM_setValue('obaflixAdminToken', '<seu token>')
+  // ou, sem GM_setValue, no localStorage do painel Megaflix pela consola.
+  const TOKEN =
+    (typeof GM_getValue === 'function' ? GM_getValue('obaflixAdminToken', '') : '') ||
+    localStorage.getItem('obaflixAdminToken') ||
+    '';
+
+  if (!TOKEN) {
+    console.warn('[Obaflix Sync] token de admin ausente — configure obaflixAdminToken.');
+    return;
+  }
   const TMDB_IMG = 'https://image.tmdb.org/t/p/w500';
 
   function fullImg(path) {
