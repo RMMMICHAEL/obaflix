@@ -192,6 +192,40 @@ export function agruparDuplicatas<T extends RegistroCatalogo>(
  * protege enquanto ele nao roda e cobre qualquer fonte nova que volte a
  * duplicar. Roda em memoria sobre resultado ja buscado, sem consulta extra.
  */
+/**
+ * Linha vinda do Prisma com a contagem de episodios em `_count`.
+ *
+ * O `select` do Prisma devolve `{ _count: { episodios } }`, e `pontuarRegistro`
+ * espera `episodios` na raiz. A adaptacao vive aqui em vez de em cada pagina
+ * porque errar isso e silencioso: sem a contagem, a linha com 0 episodios pode
+ * ganhar da que tem player so por ter a sinopse preenchida.
+ */
+export interface LinhaPrisma {
+  id: string;
+  tmdbId?: string | null;
+  tipo?: string | null;
+  _count?: { episodios: number };
+}
+
+/**
+ * Deduplicacao para listas que sairam direto do Prisma.
+ *
+ * Adapta `_count.episodios`, fixa a midia (a tabela ja diz qual e) e devolve as
+ * linhas originais, sem os campos auxiliares que a pontuacao usou.
+ */
+export function dedupeCatalogo<T extends LinhaPrisma>(
+  linhas: readonly T[],
+  midia: TipoMidia,
+): T[] {
+  const comCriterio = linhas.map((linha) => ({
+    ...linha,
+    tipo: midia,
+    episodios: linha._count?.episodios,
+  }));
+
+  return dedupeCanonical(comCriterio).map(({ tipo, episodios, ...linha }) => linha as unknown as T);
+}
+
 export function dedupeCanonical<T extends RegistroCatalogo>(registros: readonly T[]): T[] {
   const posicaoPorChave = new Map<string, number>();
   const resultado: T[] = [];
