@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Check, ChevronDown, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 import { useEstadoPessoal } from "@/components/ui/EstadoPessoal";
+import { AndroidEpisodeActions } from "@/components/android/AndroidEpisodeActions";
 
 interface Ep {
   id: string;
@@ -34,6 +35,7 @@ interface EpMetadata {
 
 export function EpisodeGrid({
   serieId,
+  serieTitulo,
   episodios,
   temporadas,
   ratingMap = {},
@@ -41,6 +43,8 @@ export function EpisodeGrid({
   initialSeason,
 }: {
   serieId: string;
+  /** Só para rotular o modal de download ("Série - 1x3"). */
+  serieTitulo: string;
   episodios: Ep[];
   temporadas: number[];
   ratingMap?: Record<string, number>;
@@ -213,6 +217,22 @@ export function EpisodeGrid({
                   )}
                 </div>
               </Link>
+
+              {/*
+                Fora do <Link>: um <button> dentro de <a> e HTML invalido, e no
+                Android baixar nunca pode navegar para a pagina de reproducao —
+                navegar seria intencao de assistir, que e exatamente o que
+                baixar nao significa. No navegador, no Electron e na TV este
+                componente devolve null e nada muda.
+              */}
+              <AndroidEpisodeActions
+                serieId={serieId}
+                serieTitulo={serieTitulo}
+                temporada={ep.temporada}
+                numeroEp={ep.numeroEp}
+                tituloEpisodio={`${ep.numeroEp}. ${ep.titulo ?? `Episódio ${ep.numeroEp}`}`}
+                poster={thumbnail ? imgUrl(thumbnail, "w500") : null}
+              />
             </li>
           );
         })}
