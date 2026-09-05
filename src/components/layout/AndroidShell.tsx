@@ -3,16 +3,24 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
-import { Film, Home, Search, Tv, UserRound, X } from "lucide-react";
+import { Film, Home, Search, Smile, Sparkles, Tv, UserRound, X } from "lucide-react";
 import { isPlayerRoute, useAppMode } from "./AppMode";
+import {
+  ANDROID_NAV_ITEMS,
+  ROTA_CONTA,
+  abaAtiva,
+  mostrarBuscaNaTopbar,
+  rotaDeBusca,
+  type NomeIcone,
+} from "./androidNav";
 
-const NAV_ITEMS = [
-  { href: "/android", label: "Início", icon: Home },
-  { href: "/filmes", label: "Filmes", icon: Film },
-  { href: "/buscar", label: "Buscar", icon: Search },
-  { href: "/series", label: "Séries", icon: Tv },
-  { href: "/conta", label: "Minha conta", shortLabel: "Conta", icon: UserRound },
-];
+const ICONES: Record<NomeIcone, typeof Home> = {
+  home: Home,
+  film: Film,
+  tv: Tv,
+  sparkles: Sparkles,
+  smile: Smile,
+};
 
 export function AndroidShell() {
   const pathname = usePathname();
@@ -25,13 +33,18 @@ export function AndroidShell() {
   // resta a regra própria do shell: nas rotas de player ele não aparece.
   const enabled = mode === "android" && !isPlayerRoute(pathname);
 
+  // Em /buscar quem tem o campo é a página. A lupa some para não existirem
+  // duas buscas na mesma tela — que era a confusão original, agravada por a
+  // segunda não funcionar.
+  const buscaNaTopbar = mostrarBuscaNaTopbar(pathname);
+
   useEffect(() => setSearchOpen(false), [pathname]);
 
   function submitSearch(event: FormEvent) {
     event.preventDefault();
-    const value = query.trim();
-    if (!value) return;
-    router.push(`/buscar?q=${encodeURIComponent(value)}`);
+    const destino = rotaDeBusca(query);
+    if (!destino) return;
+    router.push(destino);
   }
 
   if (!enabled) return null;
@@ -39,7 +52,7 @@ export function AndroidShell() {
   return (
     <div data-android-shell>
       <header className="android-topbar" aria-label="Cabeçalho do aplicativo">
-        {searchOpen ? (
+        {searchOpen && buscaNaTopbar ? (
           <form className="android-search" onSubmit={submitSearch} role="search">
             <Search size={19} aria-hidden="true" />
             <input
@@ -58,27 +71,39 @@ export function AndroidShell() {
             <Link href="/android" className="android-wordmark" aria-label="Obaflix, início">
               OBA<span>FLIX</span>
             </Link>
-            <button
-              type="button"
-              className="android-topbar-action"
-              onClick={() => setSearchOpen(true)}
-              aria-label="Abrir busca"
-            >
-              <Search size={21} />
-            </button>
+            <div className="android-topbar-actions">
+              {buscaNaTopbar && (
+                <button
+                  type="button"
+                  className="android-topbar-action"
+                  onClick={() => setSearchOpen(true)}
+                  aria-label="Buscar no catálogo"
+                >
+                  <Search size={21} />
+                </button>
+              )}
+              {/* Conta saiu da barra inferior para abrir vaga a Animes e Kids. */}
+              <Link
+                href={ROTA_CONTA}
+                className="android-topbar-action"
+                aria-label="Minha conta"
+                aria-current={abaAtiva(pathname, ROTA_CONTA) ? "page" : undefined}
+              >
+                <UserRound size={21} />
+              </Link>
+            </div>
           </>
         )}
       </header>
 
       <nav className="android-bottom-nav" aria-label="Navegação principal do aplicativo">
-        {NAV_ITEMS.map(({ href, label, shortLabel, icon: Icon }) => {
-          const active = href === "/android"
-            ? pathname === "/android"
-            : pathname === href || pathname.startsWith(`${href}/`);
+        {ANDROID_NAV_ITEMS.map(({ href, label, icone }) => {
+          const active = abaAtiva(pathname, href);
+          const Icon = ICONES[icone];
           return (
             <Link key={href} href={href} className={active ? "is-active" : undefined} aria-current={active ? "page" : undefined}>
               <Icon size={22} strokeWidth={active ? 2.4 : 1.8} aria-hidden="true" />
-              <span>{shortLabel ?? label}</span>
+              <span>{label}</span>
             </Link>
           );
         })}
