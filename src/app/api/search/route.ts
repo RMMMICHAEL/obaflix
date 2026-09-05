@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { searchFilme, searchSerie } from "@/lib/tmdb";
 import { checkRateLimit, clientIp } from "@/lib/requestSecurity";
 import { publicMedia } from "@/lib/publicMedia";
-import { dedupeCanonical } from "@/lib/canonical";
+import { mesclarResultadosBusca } from "@/lib/busca";
 
 // Remove acentos, hífens e chars especiais — mantém só alfanumérico lowercase
 function normalizeQuery(s: string): string {
@@ -32,6 +32,7 @@ interface FilmeRow {
   tituloOriginal: string | null;
   poster: string | null;
   background: string | null;
+  logo: string | null;
   ano: number | null;
   nota: number | null;
   urlDub: string | null;
@@ -47,6 +48,7 @@ interface SerieRow {
   tituloOriginal: string | null;
   poster: string | null;
   background: string | null;
+  logo: string | null;
   ano: number | null;
   nota: number | null;
   tipo: string;
@@ -55,7 +57,7 @@ interface SerieRow {
 async function localSearchFilmes(pattern: string, limit: number): Promise<FilmeRow[]> {
   return prisma.$queryRaw<FilmeRow[]>(
     Prisma.sql`
-      SELECT id, "tmdbId", titulo, "tituloOriginal", poster, background, ano, nota, "urlDub", "urlLeg"
+      SELECT id, "tmdbId", titulo, "tituloOriginal", poster, background, logo, ano, nota, "urlDub", "urlLeg"
       FROM "Filme"
       WHERE ${Prisma.raw(colNorm("titulo"))} LIKE ${pattern}
          OR ${Prisma.raw(colNorm('"tituloOriginal"'))} LIKE ${pattern}
@@ -73,7 +75,7 @@ async function localSearchSeries(
   const tipoSql = tipoFilter ? Prisma.sql`AND tipo = ${tipoFilter}` : Prisma.sql``;
   return prisma.$queryRaw<SerieRow[]>(
     Prisma.sql`
-      SELECT s.id, s."tmdbId", s.titulo, s."tituloOriginal", s.poster, s.background,
+      SELECT s.id, s."tmdbId", s.titulo, s."tituloOriginal", s.poster, s.background, s.logo,
              s.ano, s.nota, s.tipo,
              (SELECT COUNT(*)::int FROM "Episodio" e WHERE e."serieId" = s.id) AS episodios
       FROM "Serie" s
@@ -124,15 +126,12 @@ export async function GET(req: NextRequest) {
   const tmdbFilmeIds = (tmdbFilmes?.results ?? []).slice(0, 15).map((r) => String(r.id));
   const tmdbSerieIds = (tmdbSeries?.results ?? []).slice(0, 15).map((r) => String(r.id));
 
-  const localFilmeIdSet = new Set((filmeLocal as FilmeRow[]).map((f) => f.id));
-  const localSerieIdSet = new Set((serieLocal as SerieRow[]).map((s) => s.id));
-
   const [filmesByTmdb, seriesByTmdb] = await Promise.all([
     tmdbFilmeIds.length && !onlySeries
       ? prisma
           .$queryRaw<FilmeRow[]>(
             Prisma.sql`
-              SELECT id, "tmdbId", titulo, "tituloOriginal", poster, background, ano, nota, "urlDub", "urlLeg"
+              SELECT id, "tmdbId", titulo, "tituloOriginal", poster, background, logo, ano, nota, "urlDub", "urlLeg"
               FROM "Filme"
               WHERE "tmdbId" = ANY(${tmdbFilmeIds})
               LIMIT 15
@@ -144,7 +143,7 @@ export async function GET(req: NextRequest) {
       ? prisma
           .$queryRaw<SerieRow[]>(
             Prisma.sql`
-              SELECT s.id, s."tmdbId", s.titulo, s."tituloOriginal", s.poster, s.background,
+              SELECT s.id, s."tmdbId", s.titulo, s."tituloOriginal", s.poster, s.background, s.logo,
                      s.ano, s.nota, s.tipo,
                      (SELECT COUNT(*)::int FROM "Episodio" e WHERE e."serieId" = s.id) AS episodios
               FROM "Serie" s
@@ -159,24 +158,11 @@ export async function GET(req: NextRequest) {
 
   // ── 3. Merge: resultados locais primeiro, TMDB extras depois ──────────────
   //
-  // O `localIdSet` so evita reincluir a MESMA linha vinda pelos dois caminhos.
-  // Ele nao resolve duplicata de catalogo: "Lanternas" existe com tres ids
-  // diferentes, entao os tres passavam por aqui — e o cruzamento por tmdbId,
-  // que faz `WHERE "tmdbId" = ANY(...)`, devolvia os tres de uma vez.
-  //
-  // `dedupeCanonical` colapsa por tmdbId + midia e mantem o registro mais
-  // completo, entao a serie sai uma vez e com os episodios que ela de fato tem.
-  // Corre em memoria sobre resultado ja buscado, sem consulta extra. E defesa
-  // em profundidade: a correcao de verdade e o merge canonico no banco.
-  const filmes = dedupeCanonical([
-    ...(filmeLocal as FilmeRow[]),
-    ...(filmesByTmdb as FilmeRow[]).filter((f) => !localFilmeIdSet.has(f.id)),
-  ]).slice(0, 30);
-
-  const series = dedupeCanonical([
-    ...(serieLocal as SerieRow[]),
-    ...(seriesByTmdb as SerieRow[]).filter((s) => !localSerieIdSet.has(s.id)),
-  ]).slice(0, 30);
+  // Comparar `id` nao bastava: as duplicatas do catalogo tem ids distintos de
+  // proposito, e o cruzamento por tmdbId devolvia as tres linhas de uma vez.
+  // A regra vive em @/lib/busca, testada fora da rota.
+  const filmes = mesclarResultadosBusca(filmeLocal as FilmeRow[], filmesByTmdb as FilmeRow[], 30);
+  const series = mesclarResultadosBusca(serieLocal as SerieRow[], seriesByTmdb as SerieRow[], 30);
 
   // `episodios` e `tmdbId` sao criterio de eleicao, nao conteudo de vitrine:
   // saem antes da resposta para nao virar superficie exposta a mais.
