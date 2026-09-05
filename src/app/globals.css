@@ -108,6 +108,15 @@ video::cue {
   color: var(--android-text);
 }
 
+/* Lupa e conta lado a lado. Conta desceu da barra inferior para ca quando
+   Animes e Kids entraram como abas — sete itens nao cabem numa barra de
+   telefone, e a topbar tinha espaco sobrando ao lado da marca. */
+.android-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .android-topbar-action,
 .android-search button {
   width: 2.75rem;
@@ -363,12 +372,17 @@ video::cue {
   white-space: nowrap;
 }
 
+/* `minmax(11.5rem, 58vw)` resolvia sempre para o minimo — 184px —, porque numa
+   grade que ja transborda nao ha espaco livre para distribuir ate o maximo. O
+   card do projeto (LandscapeCard) tem piso de 230px; a trilha do app ficava
+   ~20% abaixo disso, e era essa a sensacao de "cards muito pequenos".
+   Uma largura unica, sem minmax, entrega o tamanho pedido de verdade. */
 .android-rail-track {
   margin-top: 0.7rem;
   padding: 0 1rem 0.75rem;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(11.5rem, 58vw);
+  grid-auto-columns: min(14.5rem, 62vw);
   gap: 0.78rem;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
@@ -381,7 +395,7 @@ video::cue {
   padding: 0 1rem 0.8rem;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(15.5rem, 70vw);
+  grid-auto-columns: min(18rem, 74vw);
   gap: 0.85rem;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
@@ -636,12 +650,15 @@ video::cue {
     padding-right: 2rem;
   }
 
+  /* Acima de 600px os cards ENCOLHIAM: 10.5rem = 168px, menos que os 184px do
+     celular em pe. Tablet e telefone deitado recebiam a versao menor. Agora a
+     largura cresce com a tela, como no resto do projeto. */
   .android-rail-track {
-    grid-auto-columns: 10.5rem;
+    grid-auto-columns: 16rem;
   }
 
   .android-wide-track {
-    grid-auto-columns: 19rem;
+    grid-auto-columns: 20rem;
   }
 }
 
