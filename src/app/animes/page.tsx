@@ -8,7 +8,7 @@ import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
 import { getTrendingTV, TmdbItem } from "@/lib/tmdb";
-import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { expandGenreIds, groupGenres, parseGenreIds } from "@/lib/genres";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import type { Prisma } from "@prisma/client";
 
@@ -54,7 +54,7 @@ export default async function AnimesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
-  const generoIds = parseGenreIds(searchParams.genero);
+  const generoIds = expandGenreIds(parseGenreIds(searchParams.genero));
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;
   const q = searchParams.q ?? null;

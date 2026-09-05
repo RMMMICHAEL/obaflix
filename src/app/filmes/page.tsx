@@ -7,7 +7,7 @@ import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
-import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { expandGenreIds, groupGenres, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,7 @@ export default async function FilmesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
-  const generoIds = parseGenreIds(searchParams.genero);
+  const generoIds = expandGenreIds(parseGenreIds(searchParams.genero));
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;
   const q = searchParams.q ?? null;

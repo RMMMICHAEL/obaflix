@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { expandGenreIds, parseGenreIds } from "@/lib/genres";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,11 @@ export async function GET(req: NextRequest) {
 
     const where: any = {};
     if (tipo) where.tipo = tipo;
-    if (genero) where.generos = { some: { generoId: Number(genero) } };
+    // `Number(genero)` virava NaN assim que o valor era a lista agrupada que o
+    // FilterBar emite ("12,10759"). Agora a API le o mesmo formato das paginas
+    // e expande as equivalencias filme/TV como elas fazem.
+    const generoIds = expandGenreIds(parseGenreIds(genero));
+    if (generoIds.length) where.generos = { some: { generoId: { in: generoIds } } };
     if (ano) where.ano = Number(ano);
     if (q) where.titulo = { contains: q, mode: "insensitive" };
 
