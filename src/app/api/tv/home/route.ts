@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getImdbTop250Showcases } from "@/lib/catalog-showcases";
+import { LIMITE_TOP10, LIMITE_VITRINE, ORDEM_POPULARIDADE, ORDEM_TOP10 } from "@/lib/ranking";
 
 export const dynamic = "force-dynamic";
 
@@ -33,10 +34,11 @@ const selBase = {
 const selFilme = selBase;
 const sel = { ...selBase, tipo: true } as const;
 
-const POR_POPULARIDADE = [
-  { popularidade: { sort: "desc", nulls: "last" } as const },
-  { nota: "desc" as const },
-];
+// Mesma ordenação do site, do Electron e do aplicativo móvel — importada, não
+// copiada. A cópia local que existia aqui era metade do motivo de a TV mostrar
+// uma lista diferente da do aplicativo; a outra metade era a falta de um
+// desempate determinístico, que agora vive em @/lib/ranking.
+const POR_POPULARIDADE = ORDEM_POPULARIDADE;
 
 /** Categorias em destaque na Home. O termo casa filme e série (ex.: "Ação" e
  *  "Ação & Aventura") por busca no nome do gênero, sem depender de id fixo. */
@@ -77,13 +79,13 @@ export async function GET() {
     novosFilmes,
     novasSeries,
   ] = await Promise.all([
-    filme({}, POR_POPULARIDADE, 24),
-    serie("serie", {}, POR_POPULARIDADE, 24),
-    filme({ popularRank: { not: null } }, { popularRank: "asc" }, 10),
-    serie("serie", { popularRank: { not: null } }, { popularRank: "asc" }, 10),
+    filme({}, POR_POPULARIDADE, LIMITE_VITRINE),
+    serie("serie", {}, POR_POPULARIDADE, LIMITE_VITRINE),
+    filme({ popularRank: { not: null } }, ORDEM_TOP10, LIMITE_TOP10),
+    serie("serie", { popularRank: { not: null } }, ORDEM_TOP10, LIMITE_TOP10),
     getImdbTop250Showcases(),
-    filme({}, { createdAt: "desc" }, 24),
-    serie("serie", {}, { createdAt: "desc" }, 24),
+    filme({}, { createdAt: "desc" }, LIMITE_VITRINE),
+    serie("serie", {}, { createdAt: "desc" }, LIMITE_VITRINE),
   ]);
 
   // "Em alta": mistura os mais populares de filmes e séries. É o que o site

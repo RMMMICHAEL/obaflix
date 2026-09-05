@@ -10,6 +10,12 @@ import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
+  LIMITE_TOP10,
+  LIMITE_VITRINE,
+  ORDEM_POPULARIDADE,
+  ORDEM_TOP10,
+} from "@/lib/ranking";
+import {
   getImdbTop250Showcases,
   getRecentSeriesEpisodes,
 } from "@/lib/catalog-showcases";
@@ -138,17 +144,17 @@ const carregarHome = unstable_cache(
     prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({
       where: { tipo: "anime", titulo: { notIn: [...ANIME_HOME_EXCLUSIONS] } },
-      orderBy: { popularidade: { sort: "desc", nulls: "last" } },
-      take: 24,
+      orderBy: ORDEM_POPULARIDADE,
+      take: LIMITE_VITRINE,
       select: selSerie,
     }),
-    prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selSerie }),
+    prisma.filme.findMany({ orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selFilme }),
+    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selSerie }),
     // Top 10 — mesma fonte de "Filmes/Séries Populares" de /melhores:
     // o popularRank que os scripts de sync gravam no catálogo. Antes vinha do
     // top250 (curadoria fixa do IMDb), que é outra lista e outra intenção.
-    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie", popularRank: { not: null } }, orderBy: { popularRank: "asc" }, take: 10, select: selSerie }),
+    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selFilme }),
+    prisma.serie.findMany({ where: { tipo: "serie", popularRank: { not: null } }, orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selSerie }),
     // Fonte local compartilhada com Android e Android TV. Nenhuma chamada ao
     // TMDB/IMDb acontece para montar estas vitrines.
     getImdbTop250Showcases(),

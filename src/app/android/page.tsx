@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronRight, Play, Star } from "lucide-react";
 import { prisma } from "@/lib/prisma";
+import { ORDEM_POPULARIDADE } from "@/lib/ranking";
 import { imgUrl } from "@/lib/tmdb";
 import { AndroidContinueWatching } from "@/components/android/AndroidContinueWatching";
 import { getServerSession } from "next-auth";
@@ -60,10 +61,11 @@ const seriesSelect = {
   ano: true, nota: true, tipo: true,
 } as const;
 
-const ordemPopular = [
-  { popularidade: { sort: "desc" as const, nulls: "last" as const } },
-  { nota: "desc" as const },
-];
+// A ordenação vive em @/lib/ranking: era esta cópia, mais três iguais, que
+// deixavam site, aplicativo e TV com listas diferentes. O `take` continua menor
+// aqui de propósito — a ordem canônica é total, então pedir menos devolve um
+// prefixo da MESMA lista, não outra lista.
+const ordemPopular = ORDEM_POPULARIDADE;
 
 /**
  * Catalogo da /android: identico para todo usuario, entao vive em cache

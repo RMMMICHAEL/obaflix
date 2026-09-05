@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { publicMedia } from "@/lib/publicMedia";
+import { ORDEM_POPULARIDADE } from "@/lib/ranking";
 
 export const dynamic = "force-dynamic";
 
@@ -11,10 +12,8 @@ export async function GET() {
   // então ordenar destaques por nota trazia a lista errada. `popularidade` é o
   // campo que a sincronização mantém e que /api/filmes?ordem=popular e a fileira
   // de animes já usavam; aqui filmes e séries passam a usá-lo também.
-  const porPopularidade = [
-    { popularidade: { sort: "desc", nulls: "last" } as const },
-    { nota: "desc" as const },
-  ];
+  // Importada de @/lib/ranking, não copiada — ver o comentário acima.
+  const porPopularidade = ORDEM_POPULARIDADE;
 
   const [lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos] =
     await Promise.all([
