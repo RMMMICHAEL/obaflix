@@ -48,6 +48,13 @@ model Filme {
 
   // O backfill varre "ainda nao verificado" na ordem de popularidade.
   @@index([artCheckedAt, popularidade])
+
+  // Chave canonica do catalogo. `id` continua sendo a primaria opaca porque
+  // links, historico e watchlist ja gravados dependem dela; e o tmdbId que
+  // responde "este titulo ja existe?". Sem esta trava, tres pipelines com
+  // espacos de id diferentes criavam tres linhas para o mesmo filme.
+  // NULL nao colide com NULL no Postgres: titulo sem tmdbId segue permitido.
+  @@unique([tmdbId])
 }
 
 model Serie {
@@ -83,6 +90,11 @@ model Serie {
   watchlist      Watchlist[]
 
   @@index([artCheckedAt, popularidade])
+
+  // Ver Filme.tmdbId. `tipo` aqui e a secao do catalogo, nao a midia — a
+  // unicidade e por titulo, entao a mesma serie nao pode existir uma vez como
+  // "serie" e outra como "anime", que era o caso que o cron do WebCine criava.
+  @@unique([tmdbId])
 }
 
 model Episodio {
