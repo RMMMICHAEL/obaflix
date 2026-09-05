@@ -98,13 +98,31 @@ function buildEpisodeUrl(tmdbId: number, title: string, season: number, ep: numb
 
 async function syncFilmes(log: string[]): Promise<number> {
   const items = await fetchCatalogPage("movies");
-  const wbIds = items.filter((f) => f.tmdb_id).map((f) => `wc_${f.id}`);
-  if (wbIds.length === 0) return 0;
+  const comTmdb = items.filter((f) => f.tmdb_id);
+  if (comTmdb.length === 0) return 0;
 
-  const existing = new Set(
-    (await prisma.filme.findMany({ where: { id: { in: wbIds } }, select: { id: true } })).map((f) => f.id),
+  const wbIds = comTmdb.map((f) => `wc_${f.id}`);
+  const tmdbIds = [...new Set(comTmdb.map((f) => String(f.tmdb_id)))];
+
+  // Duas guardas, nao uma. `id` sozinho so reconhece duplicata dentro do
+  // proprio namespace `wc_`, e o mesmo titulo ja pode estar no banco vindo do
+  // Megaflix (id numerico puro) ou do EmbedMovies (id = tmdbId). Sem a checagem
+  // por tmdbId este cron recriava, toda madrugada, as duplicatas que o merge
+  // canonico tinha acabado de juntar.
+  //
+  // O `in` limita a busca aos ids desta pagina em vez de carregar a coluna
+  // inteira como o script manual faz: mesma garantia, uma consulta indexada
+  // sobre um conjunto pequeno.
+  const [porId, porTmdb] = await Promise.all([
+    prisma.filme.findMany({ where: { id: { in: wbIds } }, select: { id: true } }),
+    prisma.filme.findMany({ where: { tmdbId: { in: tmdbIds } }, select: { tmdbId: true } }),
+  ]);
+  const existingIds = new Set(porId.map((f) => f.id));
+  const existingTmdb = new Set(porTmdb.map((f) => f.tmdbId!));
+
+  const novos = comTmdb.filter(
+    (f) => !existingIds.has(`wc_${f.id}`) && !existingTmdb.has(String(f.tmdb_id)),
   );
-  const novos = items.filter((f) => f.tmdb_id && !existing.has(`wc_${f.id}`));
   if (novos.length === 0) { log.push("🎬 Filmes: nenhum novo"); return 0; }
 
   // Gêneros
@@ -150,13 +168,26 @@ async function syncSeriesTipo(
 ): Promise<{ series: number; eps: number }> {
   const label = tipo === "anime" ? "Animes" : "Séries";
   const items = await fetchCatalogPage(endpoint);
-  const wbIds = items.filter((s) => s.tmdb_id).map((s) => `wc_${s.id}`);
-  if (wbIds.length === 0) return { series: 0, eps: 0 };
+  const comTmdb = items.filter((s) => s.tmdb_id);
+  if (comTmdb.length === 0) return { series: 0, eps: 0 };
 
-  const existing = new Set(
-    (await prisma.serie.findMany({ where: { id: { in: wbIds } }, select: { id: true } })).map((s) => s.id),
+  const wbIds = comTmdb.map((s) => `wc_${s.id}`);
+  const tmdbIds = [...new Set(comTmdb.map((s) => String(s.tmdb_id)))];
+
+  // Mesma guarda dupla de syncFilmes, e pelo mesmo motivo. Aqui a checagem por
+  // tmdbId nao filtra por `tipo`: a serie pode ter entrado como "serie" e
+  // voltar do endpoint de animes (ou o contrario), e criar a segunda linha
+  // seria exatamente a duplicata que se quer evitar.
+  const [porId, porTmdb] = await Promise.all([
+    prisma.serie.findMany({ where: { id: { in: wbIds } }, select: { id: true } }),
+    prisma.serie.findMany({ where: { tmdbId: { in: tmdbIds } }, select: { tmdbId: true } }),
+  ]);
+  const existingIds = new Set(porId.map((s) => s.id));
+  const existingTmdb = new Set(porTmdb.map((s) => s.tmdbId!));
+
+  const novas = comTmdb.filter(
+    (s) => !existingIds.has(`wc_${s.id}`) && !existingTmdb.has(String(s.tmdb_id)),
   );
-  const novas = items.filter((s) => s.tmdb_id && !existing.has(`wc_${s.id}`));
   if (novas.length === 0) { log.push(`${tipo === "anime" ? "🎌" : "📺"} ${label}: nenhuma nova`); return { series: 0, eps: 0 }; }
 
   // Gêneros
