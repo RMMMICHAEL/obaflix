@@ -11,6 +11,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
+    "merge-duplicatas": "tsx scripts/merge-duplicatas.ts",
+    "merge-duplicatas:apply": "tsx scripts/merge-duplicatas.ts --apply",
     "import": "tsx scripts/import.ts",
     "sync": "tsx scripts/sync-megaflix.ts",
     "sync-app": "tsx scripts/sync-app.ts",
