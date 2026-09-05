@@ -15,11 +15,16 @@ const APP     = "https://app.megafrixapi.com/4.6.2";
 const OBAFLIX = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
 // Sem fallback literal: o valor anterior estava comitado, e qualquer um com
 // acesso ao repositorio lia o token de admin. Falhar aqui e barato; vazar nao.
-const TOKEN = process.env.ADMIN_SECRET_TOKEN;
-if (!TOKEN) {
-  console.error("ADMIN_SECRET_TOKEN nao definido. Exporte a variavel antes de rodar.");
-  process.exit(1);
+function exigirEnv(nome: string): string {
+  const valor = process.env[nome];
+  if (!valor) {
+    console.error(`${nome} nao definido. Exporte a variavel antes de rodar.`);
+    process.exit(1);
+  }
+  return valor;
 }
+
+const TOKEN = exigirEnv("ADMIN_SECRET_TOKEN");
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");
