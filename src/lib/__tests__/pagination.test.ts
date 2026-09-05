@@ -72,7 +72,7 @@ describe("duas fontes com totais independentes", () => {
     // O defeito original: um numero de pagina so para filmes e series, e o
     // total somado. Quando os filmes acabavam, a tela seguia pedindo paginas
     // vazias de filme e nunca fechava o total.
-    let filmes = avancarFonte(fonteZerada(), 10, 10); // acabou na primeira
+    const filmes = avancarFonte(fonteZerada(), 10, 10); // acabou na primeira
     let series = avancarFonte(fonteZerada(), 24, 60);
 
     assert.equal(proximaPagina(filmes), null);
