@@ -51,3 +51,4 @@ android/local.properties
 *.p12
 
 .env*
+.vercel
