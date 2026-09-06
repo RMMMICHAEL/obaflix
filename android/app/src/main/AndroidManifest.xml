@@ -2,6 +2,40 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Unity Ads consulta o tipo de conexao antes de buscar o interstitial. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        Download em segundo plano.
+
+        Nao ha READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE nem
+        MANAGE_EXTERNAL_STORAGE, e nao deve haver: a gravacao acontece
+        exclusivamente na arvore que o usuario aponta no seletor do sistema
+        (ACTION_OPEN_DOCUMENT_TREE), com a concessao persistida por
+        takePersistableUriPermission. Nada fora dela e alcancavel pelo app.
+
+        FOREGROUND_SERVICE_DATA_SYNC e obrigatoria a partir do Android 14 para
+        o tipo dataSync declarado no servico; POST_NOTIFICATIONS e pedida em
+        tempo de execucao a partir do Android 13 e recusa-la nao impede o
+        download, so esconde o progresso.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        Visibilidade de pacote (Android 11+): sem isto, packageManager nao
+        enxerga o Web Video Cast e o app sempre concluiria que ele nao esta
+        instalado. Declara so o pacote de destino e a loja — nao e uma consulta
+        aberta ao que o usuario tem instalado.
+    -->
+    <queries>
+        <package android:name="com.instantbits.cast.webvideo" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="market" />
+        </intent>
+    </queries>
 
     <application
         android:name=".ObaflixApp"
@@ -26,6 +60,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            exported="false": o servico so e acionado pelo proprio app, por
+            Intent explicito. Exportado, qualquer aplicativo poderia enfileirar
+            ou cancelar downloads alheios.
+        -->
+        <service
+            android:name=".download.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 
