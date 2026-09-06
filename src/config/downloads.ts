@@ -23,12 +23,12 @@ const ou = (valor: string | undefined, padrao: string) => (valor ?? "").trim() |
 
 export const INSTALADORES = {
   android: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID, "https://app.obaflix.online/Obaflix-1.0.10.apk"),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID, "https://app.obaflix.online/Obaflix-1.0.15.apk"),
     versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_VERSAO, "Versão 1.0.10"),
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TAMANHO, "10,7 MB"),
   },
   androidTv: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV, "https://app.obaflix.online/Obaflix-TV-0.7.21.apk"),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV, "https://app.obaflix.online/Obaflix-TV-0.7.27.apk"),
     versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_VERSAO, "Versão 0.7.21"),
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_ANDROID_TV_TAMANHO, "5,2 MB"),
   },
