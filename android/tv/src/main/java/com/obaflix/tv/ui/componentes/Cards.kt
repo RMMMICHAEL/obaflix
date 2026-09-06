@@ -199,15 +199,12 @@ fun CardPaisagem(
     item: Item,
     chaveFoco: String,
     aoFocar: (Item) -> Unit = {},
-    // Simetrico ao CardPoster: e por aqui que a fileira marca o primeiro card
-    // como porta de entrada do foco (ver FileiraCatalogo).
-    modifier: Modifier = Modifier,
     aoAbrir: (Item) -> Unit,
 ) {
     val interacao = remember { MutableInteractionSource() }
     val focado by interacao.collectIsFocusedAsState()
 
-    Column(modifier = modifier.width(Medidas.PaisagemLargura)) {
+    Column(modifier = Modifier.width(Medidas.PaisagemLargura)) {
         MolduraArte(
             largura = Medidas.PaisagemLargura,
             altura = Medidas.PaisagemAltura,
