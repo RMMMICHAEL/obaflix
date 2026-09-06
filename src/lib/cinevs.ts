@@ -220,7 +220,7 @@ export function rotularFontes(
  * para o proxy. Fallback fechado de proposito.
  */
 async function corsPermiteDireto(url: string, timeoutMs: number): Promise<boolean> {
-  const ORIGEM_TESTE = "https://obaflix.vercel.app";
+  const ORIGEM_TESTE = "https://obaflix.online";
   try {
     const r = await fetch(url, {
       headers: { "User-Agent": UA, Accept: "*/*", Origin: ORIGEM_TESTE },
