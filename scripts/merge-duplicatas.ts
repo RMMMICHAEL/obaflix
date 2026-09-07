@@ -17,6 +17,7 @@
  * quem morre e exatamente quantas linhas de cada tabela seriam migradas.
  */
 
+import { Prisma } from "@prisma/client";
 import { prisma } from "../src/lib/prisma";
 import {
   agruparDuplicatas,
@@ -71,8 +72,12 @@ type LinhaSerie = RegistroCatalogo & { id: string };
  * seria desnecessario — a esmagadora maioria dos titulos nao tem duplicata.
  */
 async function tmdbIdsDuplicados(tabela: "Filme" | "Serie"): Promise<string[]> {
-  const linhas = await prisma.$queryRawUnsafe<{ tmdbId: string }[]>(
-    `SELECT "tmdbId" FROM "${tabela}"
+  const tabelaSql =
+    tabela === "Filme"
+      ? Prisma.sql`"Filme"`
+      : Prisma.sql`"Serie"`;
+  const linhas = await prisma.$queryRaw<{ tmdbId: string }[]>(
+    Prisma.sql`SELECT "tmdbId" FROM ${tabelaSql}
       WHERE "tmdbId" IS NOT NULL AND "tmdbId" <> ''
       GROUP BY "tmdbId"
       HAVING COUNT(*) > 1
