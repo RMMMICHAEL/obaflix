@@ -51,3 +51,12 @@ android/local.properties
 *.p12
 
 .env*
+
+# build artefacts e diagnostico local (nao commitar)
+/.wrangler/
+/releases/
+*.bak
+*.kt.txt
+log-*.txt
+diff-*.txt
+unreachable-commits.txt
