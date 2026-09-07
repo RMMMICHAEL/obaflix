@@ -4,7 +4,7 @@ export const maxDuration = 30;
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
-import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
+import { headerMatchesHost, readJsonBody, checkRateLimit } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import {
@@ -264,6 +264,15 @@ export async function POST(req: NextRequest) {
       { sessao, fontes: projetar(crescida ?? atuais) },
       { headers: NO_STORE },
     );
+  }
+
+  // Fan-out da fase 1 (warez2/playerflix + criação de sessão) agora com teto
+  // por usuário, mesmo padrão de /api/player/fonte-nativa. A fase 2
+  // (alternativas) retorna acima e não passa por aqui.
+  const limite = await checkRateLimit(`fontes:${userId}`, 40, 60);
+  if (!limite.allowed) {
+    audit("rate_limited", { userId, ip, ua, detail: "/fontes" });
+    return NextResponse.json({ error: "Muitas solicitações" }, { status: 429, headers: NO_STORE });
   }
 
   // ── Primeira fase: monta a lista base e abre a sessão ──────────────────────
