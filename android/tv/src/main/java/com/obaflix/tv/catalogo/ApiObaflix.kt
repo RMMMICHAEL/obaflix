@@ -489,7 +489,7 @@ object ApiObaflix {
             // aceitar remover o `X-Requested-With`. Sem isso o provedor recusa,
             // e pedir a fonte so encheria a lista com um servidor que nunca
             // abre. Quem sabe disso e o aplicativo, nao o servidor.
-            .put("desafioInterativo", desafioInterativoSuportado()),
+            .put("desafioInterativo", false), // Superflix/desafios interativos ficam exclusivos do Electron.
     )
 
     /**
