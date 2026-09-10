@@ -11,6 +11,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
+    "seed:planos": "tsx scripts/seed-planos.ts",
+    "seed:planos:apply": "tsx scripts/seed-planos.ts --apply",
     "import": "tsx scripts/import.ts",
     "sync": "tsx scripts/sync-megaflix.ts",
     "sync-app": "tsx scripts/sync-app.ts",
