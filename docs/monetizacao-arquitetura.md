@@ -1026,16 +1026,16 @@ direitos do plano padrão. Até fazer isso, tudo está no ar sem afetar ninguém
 | Falha | Comportamento | Justificativa |
 |---|---|---|
 | Backend Obaflix fora | reprodução não abre (já é assim hoje: `/fontes` é obrigatório) | nenhuma regressão |
-| Redis fora / cache indisponível | consulta o Postgres direto; se ele também falhar, **usa o plano padrão** | degrada para gratuito, não para bloqueio total |
+| Redis fora / falha operacional do cache | consulta o Postgres direto; se ele também falhar, os entitlements ficam **indeterminados** e o enforcement falha fechado | cache nunca inventa nem substitui direito |
+| Redis obrigatório não configurado em produção | **fail-fast**; não degrada silenciosamente para Postgres | erro de configuração precisa ser visível |
 | SDK de anúncio indisponível | **libera a reprodução**, registra `ad.indisponivel` | não bloquear catálogo gratuito por falha nossa; é perda de receita, não de acesso |
 | Anúncio não carrega em N tentativas | idem | idem |
 | Blackcat fora | checkout mostra erro claro; **nenhum pedido pendente órfão** | dinheiro falha fechado |
 | Webhook atrasado | reconciliação cobre | o usuário não fica pagando sem receber |
-| Banco fora | recursos pagos (canais, downloads, 4K) **falham fechados**; catálogo gratuito segue | segurança onde o direito é pago |
+| Banco fora | cache válido de entitlements ainda pode responder até expirar; em cache miss/vencido, os entitlements ficam **indeterminados** e o enforcement falha fechado | não existe fallback de runtime para `PLANO_GRATUITO` nem para um plano escrito em código |
 | Usuário sem internet | comportamento atual, sem mudança | — |
 
-Resumindo a política: **dinheiro e recurso pago falham fechados; catálogo
-gratuito falha aberto.**
+Resumindo o estado atual: **direito conhecido vem do Postgres ou de cache válido; direito que não pode ser determinado não vira plano gratuito nem permissão.** Falhas específicas de anúncio podem ter política permissiva própria quando essa fase for implementada.
 
 ---
 
