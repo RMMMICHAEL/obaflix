@@ -379,6 +379,7 @@ object FontesTv {
     suspend fun resolver(
         sessao: String,
         fonte: Fonte,
+        mediaBridge: com.obaflix.bridge.media.ObaflixMedia? = null,
         onSuperflixOptions: (List<Fonte>) -> Unit = {},
     ): Midia? {
         // Trilha por servidor: com varias tentativas em sequencia, o log sem
@@ -456,6 +457,61 @@ object FontesTv {
         // logcat; na tela o usuario continua vendo "Servidor N".
         val provedor = PlayerExtractors.detectProvider(embed) ?: "desconhecido"
         val comeco = System.currentTimeMillis()
+
+        // Playerflix/Servidor 2: o embed já contém o TMDB/temporada/episódio.
+        // Em vez de extrair uma URL crua que falha fora do contexto Abyss,
+        // mantém esse contexto numa WebView local e entrega localhost ao Media3.
+        if (provedor == "playerflix" && mediaBridge != null) {
+            val uri = android.net.Uri.parse(embed)
+            val tmdb = uri.getQueryParameter("id")?.toLongOrNull()
+            val season = uri.getQueryParameter("season")?.toIntOrNull()
+            val episode = uri.getQueryParameter("episode")?.toIntOrNull()
+
+            if (tmdb == null || tmdb <= 0L || season == null || season <= 0 ||
+                episode == null || episode <= 0) {
+                ObaLog.alerta(
+                    ObaLog.Fase.EXTRACAO, "tv_embedplay_bridge_parametros_invalidos",
+                    "servidor" to fonte.rotulo,
+                )
+                return null
+            }
+
+            val session = runCatching {
+                mediaBridge.start(
+                    com.obaflix.bridge.media.MediaRequest(
+                        type = "serie",
+                        tmdb = tmdb,
+                        season = season,
+                        episode = episode,
+                        quality = "720p",
+                    )
+                )
+            }.getOrElse { error ->
+                ObaLog.falha(
+                    ObaLog.Fase.EXTRACAO, "tv_embedplay_bridge_falhou", error,
+                    "servidor" to fonte.rotulo,
+                    "ms" to (System.currentTimeMillis() - comeco),
+                )
+                return null
+            }
+
+            ObaLog.evento(
+                ObaLog.Fase.EXTRACAO, "tv_embedplay_bridge_pronta",
+                "servidor" to fonte.rotulo,
+                "stream" to ObaLog.url(session.stream),
+                "qualidade" to session.quality,
+                "ms" to (System.currentTimeMillis() - comeco),
+            )
+
+            return Midia(
+                ehHls = false,
+                url = session.stream,
+                referer = null,
+                legendas = emptyList(),
+                qualidades = listOf(session.quality),
+                audios = emptyList(),
+            )
+        }
 
         // Fonte com desafio precisa de uma WebView hospedeira **antes** de o
         // extrator pedir o overlay. A camada e montada aqui e esperada; sem a

@@ -229,6 +229,23 @@ function friendlyPlayerError(error: unknown, label: string): string {
 // "native=1" identifica explicitamente esse path para o interceptor do main.js, que precisa
 // diferenciá-lo do path web/W3 (URLs assinadas com "sig", que devem passar pelo Vercel).
 function buildElectronProxyUrl(cdnUrl: string, referer?: string | null) {
+  // O bridge Android entrega a m?dia por um servidor local no pr?prio aparelho.
+  // Essa URL nunca pode ir ao Vercel/Electron proxy.
+  if (
+    typeof window !== "undefined" &&
+    (window as any).__OBAFLIX_ANDROID__ === true
+  ) {
+    try {
+      const parsed = new URL(cdnUrl);
+      if (
+        parsed.protocol === "http:" &&
+        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
+      ) {
+        return cdnUrl;
+      }
+    } catch {}
+  }
+
   const ref = referer ? `&ref=${encodeURIComponent(referer)}` : "";
   return `/api/player/proxy?url=${encodeURIComponent(cdnUrl)}&native=1${ref}`;
 }
@@ -340,6 +357,12 @@ export function CustomPlayer({
   const autoSkipDoneRef = useRef(false);
   // [DIAG] timestamp do último load() — para medir intervalo até o primeiro erro/warning pós-renovação
   const lastLoadAtRef = useRef(0);
+  const mediaSessionRef = useRef<{ api: { stop: (id: string) => Promise<unknown> }; id: string } | null>(null);
+  const stopMediaSession = useCallback(() => {
+    const session = mediaSessionRef.current;
+    mediaSessionRef.current = null;
+    if (session) void session.api.stop(session.id).catch(() => {});
+  }, []);
   const extractAbortRef = useRef<AbortController | null>(null);
   const isProxiedRef = useRef(false);
   const directStreamRef = useRef<string | null>(null);
@@ -430,6 +453,7 @@ export function CustomPlayer({
     return () => {
       unmountedRef.current = true;
       extractAbortRef.current?.abort();
+      stopMediaSession();
     };
   }, []);
 
@@ -890,6 +914,8 @@ export function CustomPlayer({
 
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number, manual = false) => {
+    extractAbortRef.current?.abort();
+    stopMediaSession();
     // REQUISITO: a nova fonte retoma da posição REAL, nunca de initialProgressoSeg,
     // que é prop fixada na montagem. Trocar aos 40 min e voltar ao começo
     // rebaixaria ~360 MB — mais do que toda a economia da extração nativa.
@@ -1049,6 +1075,7 @@ export function CustomPlayer({
   // ── Extract ──────────────────────────────────────────────────────────────────
   const extract = useCallback(async (fonteId: string) => {
     extractAbortRef.current?.abort();
+    stopMediaSession();
     const ctrl = new AbortController();
     extractAbortRef.current = ctrl;
     isProxiedRef.current = false;
@@ -1065,6 +1092,17 @@ export function CustomPlayer({
       if (!sessao) throw new Error("Sessão de reprodução indisponível");
 
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
+      const mediaApi = desktop?.startLocalMedia
+        ? { start: desktop.startLocalMedia, stop: desktop.stopLocalMedia }
+        : (typeof window !== "undefined" && (window as any).obaflixMedia);
+      console.info("[obaflix-media] EXTRACT_ROUTE", {
+        isAndroid,
+        nativo: alvo.nativo,
+        hasMediaApi: typeof mediaApi?.start === "function",
+        hasDesktopExtractor: typeof desktop?.extractStream === "function",
+        iframeDireto: alvo.iframeDireto,
+        iframeDesafio: alvo.iframeDesafio,
+      });
       let tipo: string;
       let playerUrl: string;
 
@@ -1076,6 +1114,7 @@ export function CustomPlayer({
           alvo.superflixLocal.sessionId,
           alvo.superflixLocal.optionKey,
         );
+        if (ctrl.signal.aborted || unmountedRef.current) return;
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         applyEffectiveSuperflixOption(
           alvo.superflixLocal.sessionId,
@@ -1094,7 +1133,9 @@ export function CustomPlayer({
         })));
       } else if (alvo.iframeDesafio && desktop?.prepareSuperflix && desktop?.resolveSuperflix) {
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
+        if (ctrl.signal.aborted || unmountedRef.current) return;
         const prepared = await desktop.prepareSuperflix(embedUrl);
+        if (ctrl.signal.aborted || unmountedRef.current) return;
         if (prepared.error) throw new Error(prepared.error);
         if (!prepared.sessionId || !Array.isArray(prepared.options) || !prepared.options.length) {
           throw new Error("Superflix não retornou servidores");
@@ -1136,6 +1177,7 @@ export function CustomPlayer({
         } = {};
         for (let index = 0; index < prepared.options.length; index += 1) {
           data = await desktop.resolveSuperflix(prepared.sessionId, prepared.options[index].key);
+          if (ctrl.signal.aborted || unmountedRef.current) return;
           if (!data.error && data.stream) {
             chosen = index;
             break;
@@ -1171,6 +1213,7 @@ export function CustomPlayer({
         // Compatibilidade com APK antigo: a versão nova nunca usa o embed para
         // seleção, mas o site ainda pode ser aberto por uma instalação anterior.
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
+        if (ctrl.signal.aborted || unmountedRef.current) return;
         const data = await desktop.extractStream(embedUrl);
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         streamExpiresAtRef.current = data.expiresAt ?? null;
@@ -1188,18 +1231,39 @@ export function CustomPlayer({
         // gastar uma chamada ao Vercel Compute tentando extrair uma mídia que
         // deve continuar dentro do player do próprio provedor.
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
+        if (ctrl.signal.aborted || unmountedRef.current) return;
         setStreamTipo("iframe");
         setStreamUrl(embedUrl);
         setStatus("playing");
         return;
-      } else if (desktop && alvo.nativo) {
+      } else if ((mediaApi?.start || desktop?.extractStream) && alvo.nativo) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
-        const data: { stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
-          await desktop.extractStream(embedUrl);
+        if (ctrl.signal.aborted || unmountedRef.current) return;
+        const useLocalPlayerflix = !!mediaApi?.start && isAndroid && conteudoTipo === "serie" &&
+          /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl);
+        console.info("[obaflix-media] NATIVE_START", {
+          via: useLocalPlayerflix ? "mediaApi" : "desktop.extractStream",
+          sourceId: fonteId,
+          playerflix: /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl),
+        });
+        const data: { sessionId?: string; streamType?: string; stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
+          await (useLocalPlayerflix
+            ? mediaApi.start({ embedUrl, sourceId: fonteId, contentType: conteudoTipo })
+            : desktop.extractStream(embedUrl));
+        if (ctrl.signal.aborted || unmountedRef.current) {
+          if (data.sessionId) void mediaApi?.stop(data.sessionId).catch(() => {});
+          return;
+        }
+        if (data.sessionId) mediaSessionRef.current = { api: mediaApi, id: data.sessionId };
         if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        console.info("[obaflix-media] NATIVE_RESULT", {
+          session: !!data.sessionId,
+          localStream: /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//i.test(data.stream),
+          type: data.streamType ?? data.tipo ?? "hls",
+        });
         streamExpiresAtRef.current = data.expiresAt ?? null;
-        tipo = data.tipo ?? "hls";
+        tipo = data.streamType ?? data.tipo ?? "hls";
         // No Electron, usamos a URL direta (DevTools do Electron é local, não exposto)
         playerUrl = tipo === "iframe" ? data.stream! : buildElectronProxyUrl(data.stream!, data.referer);
         streamRefererRef.current = data.referer ?? null;
@@ -1298,6 +1362,7 @@ export function CustomPlayer({
         }
       }
 
+      if (ctrl.signal.aborted || unmountedRef.current) return;
       setStreamTipo(tipo as StreamTipo);
       if (tipo === "iframe") {
         setStreamUrl(playerUrl);
@@ -1307,7 +1372,7 @@ export function CustomPlayer({
         setStatus("loading");
       }
     } catch (e: any) {
-      if (e?.name === "AbortError") return;
+      if (ctrl.signal.aborted || unmountedRef.current || e?.name === "AbortError") return;
 
       // Sessão morta não é falha da fonte: nenhuma outra fonte da mesma sessão
       // funcionaria, e tentar todas era exatamente o que multiplicava as

@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
      * reproducao e nunca passam por [PlaybackAdGate].
      */
     private var mediaBridge: MediaActionsBridge? = null
+    private var localMediaServer: LocalMediaServer? = null
 
     /**
      * Seletor nativo de diretorio.
@@ -273,7 +274,9 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // O único conteúdo HTTP aceito vem do proxy de loopback, limitado
+            // pelo network_security_config a 127.0.0.1. Nunca usar ALWAYS_ALLOW.
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = false
@@ -315,6 +318,13 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
         webView.addJavascriptInterface(
             mediaBridge!!,
             "_obaflixMedia",
+        )
+
+        localMediaServer?.close()
+        localMediaServer = LocalMediaServer()
+        webView.addJavascriptInterface(
+            ObaflixMedia(webView, lifecycleScope, bridgeCapability, localMediaServer!!),
+            "_obaflixPlayback",
         )
 
         webView.webViewClient = PlayerWebViewClient(
@@ -704,6 +714,20 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
                     setKeepScreenOn: function(enabled) {
                         window._obaflixBridge.setKeepScreenOn(bridgeCapability, !!enabled);
                     },
+                    // Reprodução local só é acionada pelo CustomPlayer para
+                    // episódios Playerflix; a ponte nativa valida novamente.
+                    startLocalMedia: function(payload) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: obaAdGateCb(resolve), reject: obaAdGateCb(reject) };
+                            try { window._obaflixPlayback.start(bridgeCapability, id, JSON.stringify(payload || {})); }
+                            catch (e) { delete window._obaflixCallbacks[id]; reject(e); }
+                        });
+                    },
+                    stopLocalMedia: function(id) {
+                        try { window._obaflixPlayback.stop(bridgeCapability, id); } catch (e) {}
+                        return Promise.resolve();
+                    },
 
                     // Download/Cast sao exclusivos do APK Android.
                     // Nao usam obaAdGateCb e nao passam pelo PlaybackAdGate.
@@ -875,6 +899,8 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
         // So no fechamento real (isFinishing); rotacao nao recria esta Activity
         // (configChanges no manifest).
         if (isFinishing) ObaflixAds.aoDestruirHost()
+        localMediaServer?.close()
+        localMediaServer = null
         // destroy() com a WebView ainda anexada deixa o Chromium tentando desenhar
         // numa view ja destruida quando a Activity e recriada (rotacao, troca de
         // tema). Soltar antes e o que a documentacao pede.

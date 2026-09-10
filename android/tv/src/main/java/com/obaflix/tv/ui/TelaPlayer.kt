@@ -319,6 +319,20 @@ fun TelaPlayer(pedido: Pedido) {
     val escopo = rememberCoroutineScope()
     val teclado = remember { FocusRequester() }
 
+    // Host local invisível da Media Bridge. O vídeo continua indo
+    // diretamente CDN -> aparelho; este FrameLayout só hospeda a WebView
+    // controlada pelo ObaflixMedia.
+    val mediaHost = remember {
+        android.widget.FrameLayout(context).apply {
+            isFocusable = false
+            isFocusableInTouchMode = false
+            layoutParams = ViewGroup.LayoutParams(1, 1)
+        }
+    }
+    val obaflixMedia = remember {
+        com.obaflix.bridge.media.ObaflixMedia(mediaHost)
+    }
+
     // ── Estado de reproducao ─────────────────────────────────────────────────
     var sessao by remember { mutableStateOf<String?>(null) }
     var fontes by remember { mutableStateOf<List<Fonte>>(emptyList()) }
@@ -513,7 +527,11 @@ fun TelaPlayer(pedido: Pedido) {
         player.stop()
         player.clearMediaItems()
 
-        val midia = FontesTv.resolver(id, fonte) { opcoesSuperflix ->
+        // Se a fonte anterior era EmbedPlay/Abyss, encerra localhost + WebView
+        // antes de resolver a próxima. close() também cancela start pendente.
+        obaflixMedia.close()
+
+        val midia = FontesTv.resolver(id, fonte, obaflixMedia) { opcoesSuperflix ->
             if (opcoesSuperflix.isNotEmpty() && epoca.get() == minhaEpoca) {
                 val atualizada = fontes.toMutableList()
                 val posicao = atualizada.indexOfFirst { it.id == fonte.id }
@@ -824,6 +842,7 @@ fun TelaPlayer(pedido: Pedido) {
         player.addAnalyticsListener(diagnostico)
         onDispose {
             salvarProgresso()
+            obaflixMedia.close()
             player.removeListener(ouvinte)
             player.removeAnalyticsListener(diagnostico)
             player.release()
@@ -1082,6 +1101,11 @@ fun TelaPlayer(pedido: Pedido) {
             },
     ) {
         AndroidView(factory = { vista }, modifier = Modifier.fillMaxSize())
+
+        AndroidView(
+            factory = { mediaHost },
+            modifier = Modifier.size(1.dp),
+        )
 
         // Enquanto a primeira fonte nao abre, a arte do conteudo segura a tela.
         // Preto puro com um texto no meio parece travamento; a capa do que se
