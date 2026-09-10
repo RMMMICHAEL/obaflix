@@ -143,6 +143,10 @@ model User {
   watchlist    Watchlist[]
   likes        Like[]
   dispositivos TvDevice[]
+  /// Relação virtual: não cria coluna em User. O histórico fica aqui inteiro —
+  /// renovações e planos anteriores — e "tem assinatura ativa?" é sempre uma
+  /// consulta por status e datas, nunca um campo guardado nesta linha.
+  assinaturas  Assinatura[]
 }
 
 /// Um aparelho de TV pareado.
@@ -278,4 +282,195 @@ model SyncMetric {
   ok               Boolean
   errorMessage     String?  @db.Text
   detail           String?  @db.Text
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Planos, preços e assinatura
+//
+// Fase 1 da camada de monetização: só as tabelas e o plano padrão. Nenhuma rota
+// lê estes modelos ainda, e nenhuma linha de Assinatura é criada — a migration
+// não muda o comportamento de nenhum usuário.
+//
+// Regra que atravessa os três modelos: **o nome do plano nunca decide nada**.
+// Quem decide é cada direito, explicitamente, coluna a coluna. É o que permite
+// mudar plano comercialmente sem publicar aplicativo novo.
+//
+// Campos de domínio fechado são `String` com CHECK, e não `enum` nativo. As
+// razões, na ordem em que pesaram:
+//
+//   - evoluir um nível (acrescentar, renomear, restringir) fica dentro de uma
+//     migration SQL comum, que é como este projeto já escreve migration;
+//   - `conteudoTipo` e `role` já são assim aqui — um `enum` criaria um segundo
+//     estilo para o mesmo tipo de campo;
+//   - o CHECK é declarado explicitamente na migration, onde dá para lê-lo;
+//   - o Prisma não representa esses CHECK no schema, então a validação vive no
+//     banco de qualquer forma.
+//
+// A contrapartida é que os valores aceitos passam a existir em dois lugares: as
+// constantes de `src/lib/planos.ts` e os CHECK da migration.
+// `src/lib/__tests__/planos.test.ts` lê os dois arquivos e falha se divergirem.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Um plano comercial e os direitos que ele concede.
+///
+/// O plano Gratuito é uma linha como qualquer outra, marcada `ehPadrao`. Quem
+/// não tem assinatura ativa resolve para ela. Isso evita o `if (!assinatura)`
+/// espalhado por todo lado, e faz "restringir o gratuito" ser a edição de uma
+/// linha em vez de um deploy.
+model Plano {
+  /// Slug estável — "gratuito", "plus". Serve à idempotência do seed, ao
+  /// suporte e ao log. **Nunca ramifique lógica por este valor**: quem decide
+  /// é o direito abaixo, não a identidade do plano.
+  id        String  @id
+  nome      String
+  descricao String?
+  ordem     Int     @default(0)
+  ativo     Boolean @default(true)
+
+  /// O plano de quem não tem assinatura ativa. Índice único parcial no SQL
+  /// garante no máximo um.
+  ehPadrao Boolean @default(false)
+
+  // ── Direitos ──────────────────────────────────────────────────────────────
+  // O default de cada campo é o mais restritivo. Um plano criado sem informar
+  // um direito não o concede por acidente — só o seed do Gratuito abre tudo, e
+  // abre de propósito, para preservar o comportamento de hoje.
+
+  /// Forma positiva de propósito. `remove_ads = false` é dupla negação em todo
+  /// `if`, e um campo ausente viraria "sem anúncios" por acidente. Aqui,
+  /// ausente ⇒ true ⇒ pede anúncio: falha para o lado seguro.
+  anunciosObrigatorios Boolean @default(true)
+
+  /// O `N` da regra de séries — anúncio a cada N episódios distintos. null
+  /// quando o plano não exibe anúncio.
+  episodiosPorAnuncio Int?
+
+  /// Janela do contador de episódios. Fora dela, o contador recomeça.
+  janelaAnuncioHoras Int @default(24)
+
+  /// Default `false` como todo direito aqui: um plano criado sem informar
+  /// acesso a catálogo não o concede. Quem libera é sempre uma decisão escrita,
+  /// e o seed do Gratuito escreve as duas explicitamente.
+  filmes Boolean @default(false)
+  series Boolean @default(false)
+
+  /// "nenhum" | "gratuito" | "plus" | "premium" — ordenado, não booleano.
+  /// Dois booleanos (has_iptv_plus + has_iptv_premium) permitem o estado
+  /// impossível "os dois verdadeiros" e obrigam cada cliente a inventar a
+  /// precedência. Um nível não permite.
+  ///
+  /// Direito separado de `anunciosObrigatorios` de propósito: um plano pode
+  /// ser sem anúncios e não incluir canais.
+  canaisNivel String @default("nenhum")
+
+  downloads Boolean @default(false)
+
+  /// Telas simultâneas. Hoje o limite é a constante MAX_CONCURRENT em
+  /// src/lib/playTokens.ts; quando a autorização for ligada, é este campo que
+  /// a substitui.
+  telasMax Int @default(1)
+
+  /// Reservado. Perfis não existem no schema — são projeto próprio, porque
+  /// tocam histórico, watchlist e continuar assistindo.
+  perfisMax Int @default(1)
+
+  /// "sd" | "hd" | "fhd" | "4k"
+  resolucaoMax String @default("hd")
+
+  /// "nenhum" | "limitado" | "completo"
+  tvNivel String @default("limitado")
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  precos      PlanoPreco[]
+  assinaturas Assinatura[]
+
+  @@index([ativo, ordem])
+}
+
+/// Uma duração comprável de um plano.
+///
+/// O plano Gratuito nasce sem nenhuma linha aqui: ele não é comprável, e isso
+/// fica modelado em vez de virar um caso especial no código.
+model PlanoPreco {
+  id      String @id @default(cuid())
+  planoId String
+  plano   Plano  @relation(fields: [planoId], references: [id], onDelete: Cascade)
+
+  /// O que o usuário lê: "Mensal", "6 meses", "Anual".
+  rotulo      String
+  duracaoDias Int
+
+  /// **Centavos, inteiro, sempre.** Nunca float — 8.90 não existe em binário e
+  /// o erro aparece na conferência do webhook, que compara o valor pago com o
+  /// esperado. Nunca string, que é como o modelo de referência fazia.
+  precoCentavos Int
+
+  /// Valor riscado na vitrine. null quando não há promoção.
+  precoOriginalCentavos Int?
+
+  moeda String  @default("BRL")
+  ativo Boolean @default(true)
+  ordem Int     @default(0)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  assinaturas Assinatura[]
+
+  @@index([planoId, ativo, ordem])
+}
+
+/// A assinatura de uma conta.
+///
+/// Não existe coluna "é premium", nem cache de direito. Assinatura ativa é
+/// sempre derivada: `status = 'ATIVA' AND iniciaEm <= now() < terminaEm`.
+/// Guardar o direito na linha significaria mantê-lo em sincronia com o
+/// vencimento, e é exatamente aí que sistemas assim erram.
+///
+/// A assinatura pertence à **conta**, não ao perfil.
+model Assinatura {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  planoId String
+  plano   Plano  @relation(fields: [planoId], references: [id])
+
+  /// Qual duração foi comprada. null para origem que não passou por preço
+  /// (cortesia, migração). SET NULL no banco: apagar um preço encerrado não
+  /// pode apagar a assinatura de ninguém.
+  planoPrecoId String?
+  planoPreco   PlanoPreco? @relation(fields: [planoPrecoId], references: [id], onDelete: SetNull)
+
+  /// "ATIVA" | "EXPIRADA" | "CANCELADA" | "SUSPENSA"
+  status String
+
+  iniciaEm  DateTime
+  terminaEm DateTime
+
+  /// "pagamento" | "cortesia" | "migracao" | "admin" — de onde veio o direito.
+  /// É o que responde "por que esta conta tem plano?" numa auditoria.
+  origem String @default("pagamento")
+
+  /// Trava de idempotência do pagamento: um pedido ativa no máximo uma
+  /// assinatura, garantido pelo banco e não por `if` em código.
+  ///
+  /// Único já nesta fase, e de propósito: criar índice único depois, sobre
+  /// tabela povoada, é migration com risco. Agora a tabela está vazia e custa
+  /// zero. A chave estrangeira para PedidoPagamento entra com aquela tabela —
+  /// aqui a coluna ainda não referencia nada.
+  pedidoId String? @unique
+
+  /// Anotação de suporte. Nunca dado de pagamento, nunca documento.
+  observacao String?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  /// "esta conta tem assinatura ativa?" — a consulta do caminho quente.
+  @@index([userId, status, terminaEm])
+  /// varredura de vencimento, sem varrer a tabela inteira.
+  @@index([status, terminaEm])
 }
