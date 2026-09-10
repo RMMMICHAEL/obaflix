@@ -6,16 +6,57 @@ fases seguem.
 
 **Sobre o tempo deste documento.** Ele foi escrito como diagnóstico, *antes* de
 qualquer implementação, e o texto das seções conserva esse ponto de vista — daí
-falar no futuro sobre tabelas e rotas. Desde então a **Fase 1 foi implementada**
-e vive no mesmo PR: `Plano`, `PlanoPreco`, `Assinatura`, a migration
-`20260910_planos_assinaturas` e o seed do plano padrão. Onde o texto e o código
-divergirem, **o código é a verdade**; `docs/database.md` descreve o que existe
-hoje no banco.
+falar no futuro sobre tabelas e rotas. Onde o texto e o código divergirem, **o
+código é a verdade**; `docs/database.md` descreve o que existe hoje no banco.
+
+Desde então foram implementadas:
+
+- **Fase 1** — `Plano`, `PlanoPreco`, `Assinatura`, a migration
+  `20260910_planos_assinaturas` e o seed do plano padrão.
+- **Fase 2** — `src/lib/entitlements.ts`: resolve o plano efetivo e os direitos
+  por `userId`, com o Postgres como autoridade e o Redis como cache de 120 s.
+- **Fase 3** — `src/lib/playbackAuthorization.ts`, aplicado em
+  `POST /api/player/fontes`: **na criação de uma sessão nova**, `direitos.filmes`
+  e `direitos.series` passam a valer, atrás de `MONETIZACAO_ATIVA`.
 
 Continua verdadeiro, e é o que importa: **nada de pagamento, anúncio, canais,
-entitlements em runtime ou bloqueio de reprodução foi escrito.** A Fase 1 criou
-tabelas que nenhuma rota lê e um plano padrão que reproduz o comportamento
-atual, campo a campo.
+concessão ou interface comercial foi escrito.** E o plano padrão no banco ainda
+concede tudo, então mesmo com a flag ligada nada muda para os usuários de hoje.
+
+### Estado do enforcement — Fase 3
+
+| | |
+|---|---|
+| **Flag** | `MONETIZACAO_ATIVA`, server-side, **desligada por padrão**. Só a string exata `"true"` liga. Não existe `NEXT_PUBLIC_` dela |
+| **Onde aplica** | `POST /api/player/fontes`, criação de sessão nova, antes de Warez, Playerflix, `montarFontes` e `criarSessaoFontes` |
+| **O que aplica** | `direitos.filmes` e `direitos.series`. Nada mais |
+| **Flag desligada** | bypass real — os entitlements **não são consultados** |
+| **Direito negado** | HTTP 403, `conteudo_indisponivel_no_plano` |
+| **Não deu para resolver** | HTTP 503, `entitlements_indisponiveis`. Fail-closed, e distinto do 403 |
+| **Admin** | passa pelos mesmos entitlements. A reconfirmação de `role` decide qual projeção de fontes ele enxerga, e não o isenta comercialmente |
+
+Ainda **não** aplicados: `anunciosObrigatorios`, `episodiosPorAnuncio`,
+`janelaAnuncioHoras`, `downloads`, `telasMax`, `perfisMax`, `resolucaoMax`,
+`tvNivel`, `canaisNivel`. `MAX_CONCURRENT` de `playTokens.ts` segue em 5.
+
+**Esta fase não é revogação instantânea, e não deve ser descrita como tal.**
+
+Ela impede a criação de sessões **novas**. Três consequências ficam abertas de
+propósito:
+
+1. Uma sessão de fontes aberta antes da perda de direito continua utilizável
+   pelo TTL dela — 4 h, deslizante.
+2. `/api/player/token` consome sessão existente sem nova checagem comercial, e
+   não foi tocado nesta fase.
+3. O caminho `sessao + alternativas=true` também não reautoriza. O único indício
+   de tipo de conteúdo ali é `corpo.conteudoTipo`, que vem do cliente — checar
+   por ele daria aparência de trava a algo que o próprio cliente controla, o que
+   é pior do que não checar. A sessão não guarda metadado comercial que prove o
+   conteúdo de origem, e reprojetar o formato da sessão pertence à fase de
+   concessões.
+
+Fechamento imediato de sessões antigas exige a concessão de reprodução e a
+revogação, e não deve ser improvisado antes delas.
 
 **Sobre as marcações [D].** Elas apontam decisões que dependiam de você. A maior
 parte já foi tomada — a **seção 21** registra o estado de cada uma. Quando uma
@@ -963,8 +1004,8 @@ nova é exposta.
 | Fase | Entrega | Como validar | Rollback |
 |---|---|---|---|
 | 1 ✅ | schema `Plano`/`PlanoPreco`/`Assinatura` + seed do plano padrão com tudo liberado | migration aplicada, nada muda | reverter o PR; `ROLLBACK.sql` versionado |
-| 2 | `ServicoEntitlements` + `AutorizacaoDeReproducao` + `/api/me/entitlements`, **sem aplicar** | testes unitários; a rota responde, ninguém consome | remover a rota |
-| 3 | aplicação em `/api/player/fontes` atrás da flag | flag ligada em conta de teste | desligar a flag |
+| 2 ✅ | `entitlements.ts` resolvendo direitos por usuário, **sem aplicar**. `/api/me/entitlements` ficou para a fase de anúncios, que é quem precisa dela | testes unitários; nenhum consumidor | remover o módulo |
+| 3 ✅ | `playbackAuthorization.ts` aplicado em `/api/player/fontes` atrás de `MONETIZACAO_ATIVA`; só `filmes` e `series`, só em sessão nova | flag ligada em conta de teste | desligar a flag — bypass real, sem consulta |
 | 4 | Blackcat backend + `PedidoPagamento` + criação de PIX (sem ativar nada) | pedido criado, QR gerado | desligar a rota |
 | 5 | webhook + confirmação fora de banda + reconciliação + ativação | webhook simulado; falso não ativa | desligar a rota; assinaturas ficam como estão |
 | 6 | checkout/modal PIX (React — serve Web + Android + Electron) | fluxo ponta a ponta em conta de teste | esconder a entrada de UI |
