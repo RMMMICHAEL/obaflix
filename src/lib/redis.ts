@@ -3,9 +3,19 @@ import { Redis } from "@upstash/redis";
 /**
  * Cliente Redis compartilhado.
  *
- * Em produção (Vercel): configure UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN.
- * Em desenvolvimento: se as variáveis estiverem ausentes, um stub in-memory é usado
- * automaticamente — sem erros, sem configuração extra.
+ * Em produção, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN são
+ * OBRIGATÓRIOS: sem eles, `getRedis()` lança em vez de cair para o stub. O
+ * estado que vive aqui — uso único de token, bloqueio por IP, limite de streams
+ * simultâneos — só está correto se todas as instâncias serverless enxergarem o
+ * mesmo Redis. Com um stub por instância, cada uma teria o próprio estado e
+ * "uso único" deixaria de ser único: o mesmo token seria aceito uma vez por
+ * instância. Falhar alto é a única saída segura; degradar em silêncio
+ * transformaria uma variável de ambiente esquecida numa brecha de autorização.
+ *
+ * Fora de produção, as variáveis são opcionais e o stub in-memory assume, para
+ * o fluxo ser testável localmente sem configuração extra.
+ *
+ * `src/lib/__tests__/redis.test.ts` trava esse contrato.
  *
  * API mínima exposta (o suficiente para os casos de uso de segurança):
  *   set(key, value, opts?)  → "OK" | null
