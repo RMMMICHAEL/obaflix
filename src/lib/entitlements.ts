@@ -257,6 +257,44 @@ export function planoDaLinha(linha: LinhaDePlano): PlanoAutorizador {
 export const TTL_ENTITLEMENTS_SEG = 120;
 
 /**
+ * O TTL que esta entrada pode receber, em segundos. `0` significa "não guarde".
+ *
+ * Um TTL fixo de 120 s prolongaria assinatura: uma que vence em 10 s entraria no
+ * Redis e continuaria respondendo `ativa: true` por quase dois minutos depois do
+ * vencimento. Cache é para evitar consulta, não para estender direito.
+ *
+ * Por isso, para assinatura ativa, o teto é o que falta até `expiraEm`.
+ * `Math.floor` de propósito: arredondar para cima faria a entrada sobreviver ao
+ * vencimento pela fração de segundo descartada — justamente o que se quer evitar.
+ * Sobrando menos de um segundo, o resultado é `0` e nada é guardado; resolver de
+ * novo custa uma consulta e responde certo.
+ *
+ * Plano padrão não vence, então segue com os 120 s inteiros.
+ */
+export function ttlDoCache(ent: Entitlements, agora: Date): number {
+  if (!ent.assinatura.ativa || !ent.assinatura.expiraEm) return TTL_ENTITLEMENTS_SEG;
+  const restanteSeg = Math.floor((ent.assinatura.expiraEm.getTime() - agora.getTime()) / 1000);
+  if (restanteSeg <= 0) return 0;
+  return Math.min(TTL_ENTITLEMENTS_SEG, restanteSeg);
+}
+
+/**
+ * Uma entrada bem formada ainda pode estar velha demais para autorizar.
+ *
+ * Segunda camada da mesma defesa que `ttlDoCache` faz na escrita. O TTL do Redis
+ * é a primeira, mas depende de o relógio do Redis, o do processo e o momento da
+ * gravação concordarem — e de a entrada não ter sido escrita por uma versão
+ * anterior deste código. Conferir na leitura não depende de nada disso.
+ *
+ * Vale a mesma convenção da janela: `expiraEm <= agora` já não autoriza.
+ */
+export function cacheAindaVale(ent: Entitlements, agora: Date): boolean {
+  if (!ent.assinatura.ativa) return true;
+  if (!ent.assinatura.expiraEm) return false;
+  return ent.assinatura.expiraEm.getTime() > agora.getTime();
+}
+
+/**
  * A chave, montada num lugar só.
  *
  * O `v1` é o que permite trocar o formato do valor guardado sem ler lixo da
@@ -387,30 +425,53 @@ const COLUNAS_DE_PLANO = {
   tvNivel: true,
 } as const;
 
+/**
+ * Os argumentos da consulta de assinaturas, montados à parte para poderem ser
+ * conferidos sem banco.
+ *
+ * **A janela inteira precisa estar aqui, não só parte dela.** `take` corta
+ * *depois* do filtro: com `iniciaEm` de fora, três assinaturas ATIVAS — duas
+ * começando amanhã e uma valendo agora — deixariam o `take: 2` trazer as duas
+ * futuras, a função pura descartaria as duas, e a que vale nunca seria vista. O
+ * usuário perderia o direito que pagou, e a consulta não teria erro nenhum
+ * aparente.
+ *
+ * Com a janela completa no filtro, `take: 2` passa a significar o que se quer
+ * dizer: **duas assinaturas atualmente válidas já bastam para provar
+ * ambiguidade**, e não vale trazer mil linhas de uma conta duplicada só para a
+ * resolução falhar.
+ *
+ * `status` + `terminaEm` cobrem `Assinatura_userId_status_terminaEm_idx`;
+ * `iniciaEm` é filtro residual sobre um conjunto já pequeno.
+ *
+ * `assinaturaValida` continua conferindo a janela na função pura. Não é
+ * redundância inútil: a regra tem de morar num lugar testável, e a consulta é
+ * uma otimização que precisa concordar com ela — o mesmo `agora` atravessa as
+ * duas.
+ */
+export function argumentosDaConsulta(userId: string, agora: Date) {
+  return {
+    where: {
+      userId,
+      status: "ATIVA",
+      iniciaEm: { lte: agora },
+      terminaEm: { gt: agora },
+    },
+    select: {
+      id: true,
+      status: true,
+      iniciaEm: true,
+      terminaEm: true,
+      plano: { select: COLUNAS_DE_PLANO },
+    },
+    orderBy: { terminaEm: "desc" },
+    take: 2,
+  } as const;
+}
+
 const fontePrisma: FonteDeEntitlements = {
-  /**
-   * `status` e `terminaEm` entram na consulta para usar
-   * `Assinatura_userId_status_terminaEm_idx` — é otimização, não a regra.
-   * `iniciaEm` fica de fora: quem confere a janela inteira é
-   * `assinaturaValida`, e o filtro daqui usa o MESMO `agora`.
-   *
-   * O `take` é a rede de segurança do caso ambíguo: sem ele, uma conta com mil
-   * assinaturas duplicadas traria mil linhas só para a resolução falhar. Duas
-   * já bastam para detectar a ambiguidade.
-   */
   async candidatas(userId, agora) {
-    const linhas = await prisma.assinatura.findMany({
-      where: { userId, status: "ATIVA", terminaEm: { gt: agora } },
-      select: {
-        id: true,
-        status: true,
-        iniciaEm: true,
-        terminaEm: true,
-        plano: { select: COLUNAS_DE_PLANO },
-      },
-      orderBy: { terminaEm: "desc" },
-      take: 2,
-    });
+    const linhas = await prisma.assinatura.findMany(argumentosDaConsulta(userId, agora));
 
     return linhas.map((l) => ({
       id: l.id,
@@ -479,9 +540,12 @@ export async function entitlementsDoUsuario(
 
   if (bruto !== null) {
     const doCache = reviverEntitlements(bruto);
-    if (doCache) return doCache;
-    // Entrada corrompida, truncada ou de um formato que este módulo não
-    // escreveu. Não se aproveita nada dela: recalcula e sobrescreve abaixo.
+    // `cacheAindaVale` é o que impede o cache de prolongar assinatura: uma
+    // entrada íntegra, porém já passada de `expiraEm`, não autoriza — recalcula
+    // e sobrescreve, como se estivesse corrompida.
+    if (doCache && cacheAindaVale(doCache, agora)) return doCache;
+    // Entrada corrompida, truncada, vencida, ou de um formato que este módulo
+    // não escreveu. Não se aproveita nada dela.
   }
 
   const [candidatas, planoPadrao] = await Promise.all([
@@ -493,10 +557,15 @@ export async function entitlementsDoUsuario(
   // deve ficar memorizada por dois minutos.
   const resolvido = resolverEntitlements({ agora, candidatas, planoPadrao });
 
-  try {
-    await cache.gravar(chave, JSON.stringify(resolvido), TTL_ENTITLEMENTS_SEG);
-  } catch {
-    // Não conseguir guardar não muda a resposta.
+  // Assinatura prestes a vencer recebe TTL menor, ou nenhum. Guardar por 120 s
+  // uma assinatura que acaba em 10 estenderia o direito por quase dois minutos.
+  const ttl = ttlDoCache(resolvido, agora);
+  if (ttl > 0) {
+    try {
+      await cache.gravar(chave, JSON.stringify(resolvido), ttl);
+    } catch {
+      // Não conseguir guardar não muda a resposta.
+    }
   }
 
   return resolvido;

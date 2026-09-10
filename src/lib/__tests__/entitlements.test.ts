@@ -4,8 +4,11 @@ import assert from "node:assert/strict";
 import {
   EntitlementsIndefinidos,
   TTL_ENTITLEMENTS_SEG,
+  argumentosDaConsulta,
   assinaturaValida,
+  cacheAindaVale,
   chaveEntitlements,
+  ttlDoCache,
   entitlementsDoUsuario,
   invalidarEntitlements,
   planoDaLinha,
@@ -600,5 +603,281 @@ describe("invalidarEntitlements", () => {
 
     assert.equal(segunda.registro.consultas, 1);
     assert.equal(r.assinatura.planoId, "gratuito");
+  });
+});
+
+// ── A consulta ───────────────────────────────────────────────────────────────
+
+/**
+ * Interpreta os argumentos que o próprio código produz.
+ *
+ * Não reimplementa o filtro: lê `args.where`, aplica o que estiver lá, ordena e
+ * corta. Se um campo da janela sumir de `argumentosDaConsulta`, este avaliador
+ * deixa de filtrá-lo — e o cenário abaixo quebra, que é o objetivo.
+ */
+function consultarEmMemoria(
+  linhas: AssinaturaCandidata[],
+  args: ReturnType<typeof argumentosDaConsulta>,
+): AssinaturaCandidata[] {
+  const onde = args.where as unknown as Record<string, unknown>;
+
+  const passa = (linha: AssinaturaCandidata) =>
+    Object.entries(onde).every(([campo, condicao]) => {
+      if (campo === "userId") return true; // o falso já é do usuário certo
+      const valor = (linha as unknown as Record<string, unknown>)[campo];
+      if (condicao && typeof condicao === "object" && !(condicao instanceof Date)) {
+        const c = condicao as { lte?: Date; gt?: Date };
+        const t = (valor as Date).getTime();
+        if (c.lte !== undefined && !(t <= c.lte.getTime())) return false;
+        if (c.gt !== undefined && !(t > c.gt.getTime())) return false;
+        return true;
+      }
+      return valor === condicao;
+    });
+
+  return linhas
+    .filter(passa)
+    .sort((a, b) => b.terminaEm.getTime() - a.terminaEm.getTime())
+    .slice(0, args.take);
+}
+
+describe("a consulta corta depois de filtrar a janela inteira", () => {
+  test("o filtro carrega status, iniciaEm e terminaEm", () => {
+    const args = argumentosDaConsulta("u1", AGORA);
+
+    assert.equal(args.where.userId, "u1");
+    assert.equal(args.where.status, "ATIVA");
+    assert.deepEqual(args.where.iniciaEm, { lte: AGORA });
+    assert.deepEqual(args.where.terminaEm, { gt: AGORA });
+    assert.equal(args.take, 2);
+  });
+
+  /**
+   * A regressão que motiva tudo isto.
+   *
+   * Sem `iniciaEm` no filtro, as duas futuras — que terminam mais tarde e
+   * portanto vêm primeiro na ordenação — ocupariam as duas vagas do `take`, a
+   * função pura descartaria as duas, e a assinatura que vale agora sumiria.
+   * O usuário perderia o direito que pagou, sem erro aparente em lugar nenhum.
+   */
+  test("assinaturas futuras não escondem a que vale agora", () => {
+    const daquiADias = (d: number) => new Date(AGORA.getTime() + d * 86_400_000);
+    const linhas = [
+      assinatura({ id: "futura-longa", iniciaEm: daquiADias(1), terminaEm: daquiADias(31) }),
+      assinatura({ id: "futura-media", iniciaEm: daquiADias(2), terminaEm: daquiADias(22) }),
+      assinatura({ id: "valida-agora", iniciaEm: emMinutos(-10), terminaEm: emMinutos(60) }),
+    ];
+
+    const trazidas = consultarEmMemoria(linhas, argumentosDaConsulta("u1", AGORA));
+
+    assert.deepEqual(trazidas.map((l) => l.id), ["valida-agora"]);
+  });
+
+  test("com a janela filtrada, take:2 significa duas VÁLIDAS", () => {
+    const linhas = [
+      assinatura({ id: "futura", iniciaEm: emMinutos(60), terminaEm: emMinutos(9999) }),
+      assinatura({ id: "valida-a", terminaEm: emMinutos(60) }),
+      assinatura({ id: "valida-b", terminaEm: emMinutos(30) }),
+    ];
+
+    const trazidas = consultarEmMemoria(linhas, argumentosDaConsulta("u1", AGORA));
+
+    assert.deepEqual(trazidas.map((l) => l.id).sort(), ["valida-a", "valida-b"]);
+    // E o par trazido é o que a resolução usa para detectar a ambiguidade.
+    assert.throws(
+      () =>
+        resolverEntitlements({
+          agora: AGORA,
+          candidatas: trazidas,
+          planoPadrao: planoPadraoRestrito(),
+        }),
+      (e: unknown) =>
+        e instanceof EntitlementsIndefinidos && e.motivo === "assinaturas_ambiguas",
+    );
+  });
+
+  test("assinatura que termina exatamente agora não é trazida", () => {
+    const linhas = [assinatura({ id: "no-limite", terminaEm: new Date(AGORA) })];
+    assert.deepEqual(consultarEmMemoria(linhas, argumentosDaConsulta("u1", AGORA)), []);
+  });
+
+  test("assinatura que começa exatamente agora é trazida", () => {
+    const linhas = [assinatura({ id: "estreando", iniciaEm: new Date(AGORA) })];
+    assert.deepEqual(
+      consultarEmMemoria(linhas, argumentosDaConsulta("u1", AGORA)).map((l) => l.id),
+      ["estreando"],
+    );
+  });
+});
+
+// ── O cache não prolonga assinatura ──────────────────────────────────────────
+
+describe("ttlDoCache: o cache não pode sobreviver ao vencimento", () => {
+  const ativo = (expiraEm: Date | null): Entitlements => ({
+    assinatura: { ativa: true, planoId: "plus", expiraEm },
+    direitos: planoPago(),
+  });
+  const padrao: Entitlements = {
+    assinatura: { ativa: false, planoId: "gratuito", expiraEm: null },
+    direitos: planoPago(),
+  };
+
+  test("plano padrão não vence, então recebe os 120 s inteiros", () => {
+    assert.equal(ttlDoCache(padrao, AGORA), TTL_ENTITLEMENTS_SEG);
+  });
+
+  test("assinatura com mais de 120 s restantes recebe 120", () => {
+    assert.equal(ttlDoCache(ativo(emMinutos(60)), AGORA), 120);
+  });
+
+  test("assinatura com menos de 120 s restantes recebe o que falta", () => {
+    const dez = new Date(AGORA.getTime() + 10_000);
+    assert.equal(ttlDoCache(ativo(dez), AGORA), 10);
+  });
+
+  test("exatamente 120 s restantes continua 120", () => {
+    assert.equal(ttlDoCache(ativo(new Date(AGORA.getTime() + 120_000)), AGORA), 120);
+  });
+
+  test("arredonda para baixo — nunca para cima", () => {
+    // 10,9 s viram 10. Arredondar para cima faria a entrada sobreviver ao
+    // vencimento pela fração descartada, que é exatamente o que se quer evitar.
+    assert.equal(ttlDoCache(ativo(new Date(AGORA.getTime() + 10_900)), AGORA), 10);
+  });
+
+  test("sobrando menos de um segundo, não guarda", () => {
+    assert.equal(ttlDoCache(ativo(new Date(AGORA.getTime() + 900)), AGORA), 0);
+    assert.equal(ttlDoCache(ativo(new Date(AGORA)), AGORA), 0);
+    assert.equal(ttlDoCache(ativo(new Date(AGORA.getTime() - 5_000)), AGORA), 0);
+  });
+
+  test("o TTL efetivo nunca ultrapassa o vencimento", () => {
+    for (const restanteMs of [1, 999, 1_000, 59_999, 120_000, 3_600_000]) {
+      const ent = ativo(new Date(AGORA.getTime() + restanteMs));
+      const ttl = ttlDoCache(ent, AGORA);
+      assert.ok(ttl * 1000 <= restanteMs, `TTL ${ttl}s passaria de ${restanteMs}ms`);
+    }
+  });
+});
+
+describe("cacheAindaVale: segunda camada, na leitura", () => {
+  const comVencimento = (expiraEm: Date | null): Entitlements => ({
+    assinatura: { ativa: true, planoId: "plus", expiraEm },
+    direitos: planoPago(),
+  });
+
+  test("entrada de plano padrão vale sempre", () => {
+    const padrao: Entitlements = {
+      assinatura: { ativa: false, planoId: "gratuito", expiraEm: null },
+      direitos: planoPago(),
+    };
+    assert.equal(cacheAindaVale(padrao, AGORA), true);
+  });
+
+  test("assinatura ainda dentro da janela vale", () => {
+    assert.equal(cacheAindaVale(comVencimento(emMinutos(1)), AGORA), true);
+  });
+
+  test("vencida não vale, mesmo íntegra", () => {
+    assert.equal(cacheAindaVale(comVencimento(emMinutos(-1)), AGORA), false);
+  });
+
+  test("vencendo exatamente agora não vale — mesma convenção da janela", () => {
+    assert.equal(cacheAindaVale(comVencimento(new Date(AGORA)), AGORA), false);
+  });
+});
+
+describe("entitlementsDoUsuario: cache vencido não autoriza", () => {
+  test("entrada ativa com expiraEm no passado é ignorada e força consulta", async () => {
+    // Gravada quando a assinatura ainda valia; lida depois do vencimento.
+    const gravadaAntes = new Date(AGORA.getTime() - 60_000);
+    const { cache } = cacheFalso();
+    const antiga = fonteFalsa([
+      assinatura({ terminaEm: new Date(AGORA.getTime() - 10_000) }),
+    ]);
+    await entitlementsDoUsuario("u1", { fonte: antiga.fonte, cache, agora: gravadaAntes });
+
+    // Agora a assinatura já venceu, e o Postgres não traz mais nenhuma válida.
+    const depois = fonteFalsa([]);
+    const r = await entitlementsDoUsuario("u1", { fonte: depois.fonte, cache, agora: AGORA });
+
+    assert.equal(depois.registro.consultas, 1, "deveria ter voltado ao Postgres");
+    assert.equal(r.assinatura.ativa, false);
+    assert.equal(r.assinatura.planoId, "gratuito");
+  });
+
+  test("o cache nunca devolve ativa=true depois de terminaEm", async () => {
+    const venceEm = new Date(AGORA.getTime() + 30_000);
+    const { cache } = cacheFalso();
+    const antes = fonteFalsa([assinatura({ terminaEm: venceEm })]);
+
+    const durante = await entitlementsDoUsuario("u1", { fonte: antes.fonte, cache, agora: AGORA });
+    assert.equal(durante.assinatura.ativa, true);
+
+    // Um instante depois do vencimento, com a entrada ainda no Redis.
+    const depoisDoVencimento = new Date(venceEm.getTime() + 1);
+    const semAssinatura = fonteFalsa([]);
+    const r = await entitlementsDoUsuario("u1", {
+      fonte: semAssinatura.fonte,
+      cache,
+      agora: depoisDoVencimento,
+    });
+
+    assert.equal(r.assinatura.ativa, false);
+    assert.equal(r.direitos.downloads, false);
+  });
+
+  test("entrada vencida é substituída por uma válida", async () => {
+    const { cache, mapa } = cacheFalso();
+    const antes = fonteFalsa([assinatura({ terminaEm: new Date(AGORA.getTime() + 30_000) })]);
+    await entitlementsDoUsuario("u1", { fonte: antes.fonte, cache, agora: AGORA });
+
+    const depois = new Date(AGORA.getTime() + 60_000);
+    await entitlementsDoUsuario("u1", { fonte: fonteFalsa([]).fonte, cache, agora: depois });
+
+    const guardado = reviverEntitlements(mapa.get("entitlements:v1:user:u1")!);
+    assert.equal(guardado?.assinatura.ativa, false);
+  });
+
+  test("assinatura curta é gravada com TTL limitado, não com 120", async () => {
+    const { cache, registro: reg } = cacheFalso();
+    const { fonte } = fonteFalsa([
+      assinatura({ terminaEm: new Date(AGORA.getTime() + 10_000) }),
+    ]);
+
+    await entitlementsDoUsuario("u1", { fonte, cache, agora: AGORA });
+
+    assert.deepEqual(reg.ttls, [10]);
+  });
+
+  test("assinatura longa é gravada com os 120 s", async () => {
+    const { cache, registro: reg } = cacheFalso();
+    const { fonte } = fonteFalsa([assinatura({ terminaEm: emMinutos(60) })]);
+
+    await entitlementsDoUsuario("u1", { fonte, cache, agora: AGORA });
+
+    assert.deepEqual(reg.ttls, [TTL_ENTITLEMENTS_SEG]);
+  });
+
+  test("plano padrão continua com os 120 s", async () => {
+    const { cache, registro: reg } = cacheFalso();
+    const { fonte } = fonteFalsa([]);
+
+    await entitlementsDoUsuario("u1", { fonte, cache, agora: AGORA });
+
+    assert.deepEqual(reg.ttls, [TTL_ENTITLEMENTS_SEG]);
+  });
+
+  test("sobrando menos de um segundo, não grava — e responde certo", async () => {
+    const { cache, registro: reg, mapa } = cacheFalso();
+    const { fonte } = fonteFalsa([
+      assinatura({ terminaEm: new Date(AGORA.getTime() + 500) }),
+    ]);
+
+    const r = await entitlementsDoUsuario("u1", { fonte, cache, agora: AGORA });
+
+    assert.equal(r.assinatura.ativa, true, "ainda vale neste instante");
+    assert.equal(reg.gravacoes, 0, "não vale a pena guardar por menos de 1 s");
+    assert.equal(mapa.size, 0);
   });
 });
