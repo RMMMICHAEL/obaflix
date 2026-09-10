@@ -1,9 +1,26 @@
 # Monetização, entitlements e autorização de conteúdo — diagnóstico e desenho
 
-Documento da **primeira entrega**: inventário, arquitetura atual, arquitetura
-proposta, modelo de dados, contratos e ameaças. **Nenhum código de pagamento,
-anúncio, migration ou bloqueio foi escrito.** As decisões marcadas com **[D]**
-dependem de aprovação antes da Fase 1.
+Inventário, arquitetura atual, arquitetura proposta, modelo de dados, contratos
+e ameaças. É o desenho aprovado como base do projeto, e a referência que as
+fases seguem.
+
+**Sobre o tempo deste documento.** Ele foi escrito como diagnóstico, *antes* de
+qualquer implementação, e o texto das seções conserva esse ponto de vista — daí
+falar no futuro sobre tabelas e rotas. Desde então a **Fase 1 foi implementada**
+e vive no mesmo PR: `Plano`, `PlanoPreco`, `Assinatura`, a migration
+`20260910_planos_assinaturas` e o seed do plano padrão. Onde o texto e o código
+divergirem, **o código é a verdade**; `docs/database.md` descreve o que existe
+hoje no banco.
+
+Continua verdadeiro, e é o que importa: **nada de pagamento, anúncio, canais,
+entitlements em runtime ou bloqueio de reprodução foi escrito.** A Fase 1 criou
+tabelas que nenhuma rota lê e um plano padrão que reproduz o comportamento
+atual, campo a campo.
+
+**Sobre as marcações [D].** Elas apontam decisões que dependiam de você. A maior
+parte já foi tomada — a **seção 21** registra o estado de cada uma. Quando uma
+seção diz "**[D-n]**", leia como "esta escolha está registrada em 21 com o que
+foi decidido".
 
 Nenhuma credencial real aparece aqui. Nenhum dado pessoal dos arquivos de
 exemplo (Webcine, Blackcat) foi copiado.
@@ -945,7 +962,7 @@ nova é exposta.
 
 | Fase | Entrega | Como validar | Rollback |
 |---|---|---|---|
-| 1 | schema `Plano`/`PlanoPreco`/`Assinatura` + seed do plano padrão com tudo liberado | migration aplicada, nada muda | `DROP` das tabelas |
+| 1 ✅ | schema `Plano`/`PlanoPreco`/`Assinatura` + seed do plano padrão com tudo liberado | migration aplicada, nada muda | reverter o PR; `ROLLBACK.sql` versionado |
 | 2 | `ServicoEntitlements` + `AutorizacaoDeReproducao` + `/api/me/entitlements`, **sem aplicar** | testes unitários; a rota responde, ninguém consome | remover a rota |
 | 3 | aplicação em `/api/player/fontes` atrás da flag | flag ligada em conta de teste | desligar a flag |
 | 4 | Blackcat backend + `PedidoPagamento` + criação de PIX (sem ativar nada) | pedido criado, QR gerado | desligar a rota |
@@ -1040,31 +1057,51 @@ automação, não usuário impaciente.
 
 ---
 
-## 21. Dúvidas que precisam da sua decisão
+## 21. Estado das decisões
 
-| # | Pergunta | Minha recomendação |
+### Decidido
+
+| # | Decisão | Onde vive |
 |---|---|---|
-| **D-1** | Onde está o trabalho de Unity Ads? Não existe neste repositório nem em nenhuma branch | preciso da resposta antes da fase de anúncios |
-| **D-2** | Nomes dos campos: português (coerente com `Filme`/`Serie`) ou inglês? | português, para não criar um terceiro dialeto |
-| **D-3** | TTL de 120 s no cache de entitlements | aceitar; abaixo disso o Supabase encarece |
-| **D-4** | Aprovar a matriz de planos da seção 5, ou fornecer a real | — |
-| **D-5** | Perfis entram agora? | **não** — projeto próprio, tocam histórico e watchlist |
-| **D-6** | Janela do contador de episódios e `N` configurável por plano? | 24 h; `N` no `Plano` |
-| **D-7** | TTL e `consumosMax` da concessão de anúncio | uma entrada, TTL 30 min — ajustável sem publicar app |
-| **D-8** | A URL do Direct Link só na configuração de produção, nunca no Git? | sim |
-| **D-9** | Pesquisar postback/SSV das duas redes de anúncio | sim, antes das fases 7 e 9 |
-| **D-10** | Política da TV: A, B ou C | **B**, com arquitetura pronta para C |
-| **D-11** | Perguntar à Blackcat por segredo/HMAC/allowlist de webhook | sim — muda a força da mitigação de T-10 |
-| **D-12** | Rotação de sessão web (hoje 30 dias, sem rotação) | tratar em PR próprio, fora deste escopo |
-| **D-13** | Retenção dos dados pessoais do pagamento | mínimo fiscal, descartar o resto |
-| **D-14** | Anúncio na Android TV | **não** |
-| **D-15** | Pagamento na TV | QR → celular, sem checkout na TV |
+| **D-2** | Campos em **português**, coerente com `Filme`/`Serie` — sem criar um terceiro dialeto | já aplicado no schema da Fase 1 |
+| **D-3** | Cache de entitlements no Redis com **TTL de 120 s**, invalidado explicitamente na ativação, upgrade, cancelamento e vencimento | seção 4.3; implementa na fase de entitlements |
+| **D-5** | **Perfis ficam para projeto posterior.** Tocam histórico, watchlist e continuar assistindo — é escopo próprio. `perfisMax` já existe como campo reservado | seção 5 |
+| **D-6** | Anúncio a cada **3 episódios distintos**, janela de **24 h**, e o `N` **configurável por plano** | colunas `episodiosPorAnuncio` e `janelaAnuncioHoras`, já no schema |
+| **D-7** | Concessão de anúncio: **uso único**, TTL inicial de **30 min**, configurável sem publicar aplicativo | seção 10; implementa na fase de anúncios |
+| **D-8** | Direct Link do Electron **somente em configuração de produção**, nunca no repositório nem no código do app | seção 11.1 |
+| **D-9** | **Pesquisar SSV/postback** da rede Android e do Direct Link **antes** de implementar cada uma | seções 7 e 11.2 |
+| **D-10** | Android TV: **opção B** — filmes e séries livres, canais e extras conforme assinatura, **sem anúncios na TV**. Arquitetura permanece pronta para C | seção 12 |
+| **D-11** | Webhook Blackcat **nunca é prova suficiente sozinho**: confirmar `PAID` servidor→servidor e validar valor e transação, sempre. Verificar com a Blackcat se existe segredo, HMAC ou allowlist | seção 14.2 |
+| **D-12** | Rotação de sessão web: **adiado**, PR próprio, fora deste escopo | — |
+| **D-13** | Dados pessoais do pagamento: **retenção mínima necessária** | seção 15.3 |
+| **D-14** | **Sem anúncios na Android TV.** O gratuito na TV é *limitado*, não *com anúncio* | seção 20 |
+| **D-15** | Pagamento na TV **por QR, concluído no celular**. Sem checkout por D-pad | seção 20 |
+
+Duas decisões estruturais confirmadas junto com essas, e que valem repetir aqui
+porque atravessam tudo:
+
+- **Um único cliente por plataforma**, com direitos definidos pelo backend. Nada
+  de APK "com ads" e APK "sem ads".
+- **A autoridade é o servidor** — assinatura, entitlements, anúncios e
+  autorização de reprodução.
+
+### Ainda pendente
+
+| # | Pergunta | Bloqueia |
+|---|---|---|
+| **D-1** | **Onde está o trabalho de Unity Ads?** Não está neste repositório nem em nenhuma branch. Precisa ser localizado, ou confirmado que a integração será feita do zero | a fase de anúncios do Android |
+| **D-4** | **Matriz comercial definitiva**: quais planos existem, com quais direitos e quais preços. A matriz da seção 5 é modelo inicial, não a real | criar `Básico`/`Plus`/`Premium` e o checkout |
+
+Nenhuma das duas bloqueia as fases de entitlements e autorização: elas operam
+sobre o plano padrão, que já existe.
 
 ---
 
-## 22. Revisão de segurança desta entrega
+## 22. Revisão de segurança do diagnóstico
 
-Conforme a regra obrigatória do `CLAUDE.md`:
+Conforme a regra obrigatória do `CLAUDE.md`. Esta seção cobre **o diagnóstico**,
+que é o que ela avaliou quando foi escrita. A Fase 1 tem revisão própria, no PR
+que a entrega, e `docs/database.md` registra o que ela criou.
 
 1. **O que foi revisado.** Superfícies auditadas: `src/lib/auth.ts`,
    `src/lib/authSession.ts`, `src/lib/playTokens.ts`,
@@ -1074,12 +1111,12 @@ Conforme a regra obrigatória do `CLAUDE.md`:
    `android/app/.../MainActivity.kt`, `ObaflixBridge.kt`, `AppIntegrity.kt`, e
    o cliente de TV (`ApiObaflix.kt`, `FontesTv.kt`).
 
-2. **Risco encontrado.** Esta entrega é **somente documentação** — nenhum
-   arquivo de código, configuração, schema ou build foi alterado, então ela não
-   cria vazamento novo de provider, domínio, credencial, URL interna, token ou
-   dado de usuário, e não abre replay, hotlink, acesso sem sessão, SSRF nem
-   CORS incorreto. Nenhuma credencial real, chave, URL de campanha ou dado
-   pessoal dos arquivos de exemplo foi transcrita para este documento.
+2. **Risco encontrado.** O diagnóstico em si não alterou nenhum arquivo de
+   código, configuração, schema ou build, então não cria vazamento novo de
+   provider, domínio, credencial, URL interna, token ou dado de usuário, e não
+   abre replay, hotlink, acesso sem sessão, SSRF nem CORS incorreto. Nenhuma
+   credencial real, chave, URL de campanha ou dado pessoal dos arquivos de
+   exemplo foi transcrita para este documento.
 
    Riscos **do desenho proposto**, que existirão quando implementado, estão
    enumerados e priorizados na seção 15. Os três que merecem atenção

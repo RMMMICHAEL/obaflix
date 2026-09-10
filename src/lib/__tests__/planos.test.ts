@@ -127,6 +127,47 @@ describe("domínio: código e banco não podem divergir", () => {
     }
   });
 
+  /**
+   * Todo direito nasce fechado.
+   *
+   * O default de coluna é o que vale para um plano criado sem informar um
+   * campo — pelo Studio, por um script futuro, por um seed de outro ambiente.
+   * Se ele conceder, o erro é silencioso: o plano funciona, e concede a mais.
+   *
+   * `anunciosObrigatorios` é o único `true`, e é o mesmo princípio: `true` ali
+   * significa "exige anúncio", que é o lado restritivo.
+   */
+  test("os defaults da migration não concedem nada", () => {
+    const restritivos: [string, string][] = [
+      ["anunciosObrigatorios", "BOOLEAN NOT NULL DEFAULT true"],
+      ["filmes", "BOOLEAN NOT NULL DEFAULT false"],
+      ["series", "BOOLEAN NOT NULL DEFAULT false"],
+      ["downloads", "BOOLEAN NOT NULL DEFAULT false"],
+      ["ehPadrao", "BOOLEAN NOT NULL DEFAULT false"],
+      ["canaisNivel", "TEXT NOT NULL DEFAULT 'nenhum'"],
+      ["resolucaoMax", "TEXT NOT NULL DEFAULT 'hd'"],
+      ["tvNivel", "TEXT NOT NULL DEFAULT 'limitado'"],
+      ["telasMax", "INTEGER NOT NULL DEFAULT 1"],
+      ["perfisMax", "INTEGER NOT NULL DEFAULT 1"],
+    ];
+
+    for (const [coluna, esperado] of restritivos) {
+      assert.ok(
+        migracao.includes(`"${coluna}" ${esperado}`),
+        `o default de ${coluna} deixou de ser o restritivo (esperado: ${esperado})`,
+      );
+    }
+  });
+
+  test("o seed concede explicitamente, em vez de herdar default", () => {
+    // O contraponto do teste acima: com defaults fechados, o comportamento de
+    // hoje só se preserva porque o Gratuito escreve cada liberação.
+    assert.equal(PLANO_GRATUITO.filmes, true);
+    assert.equal(PLANO_GRATUITO.series, true);
+    assert.equal(PLANO_GRATUITO.downloads, true);
+    assert.equal(PLANO_GRATUITO.anunciosObrigatorios, false);
+  });
+
   test("números do seed respeitam os CHECK de limite", () => {
     assert.ok(PLANO_GRATUITO.telasMax >= 1);
     assert.ok(PLANO_GRATUITO.perfisMax >= 1);

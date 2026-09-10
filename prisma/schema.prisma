@@ -295,11 +295,20 @@ model SyncMetric {
 // Quem decide é cada direito, explicitamente, coluna a coluna. É o que permite
 // mudar plano comercialmente sem publicar aplicativo novo.
 //
-// Sem `enum` de propósito. As migrations deste projeto são SQL escrito à mão, e
-// `ALTER TYPE ... ADD VALUE` no Postgres não roda dentro de transação:
-// acrescentar um nível de canal viraria uma migration com janela. `String` com
-// CHECK valida no banco do mesmo jeito e muda numa linha, dentro de transação —
-// e é o que `conteudoTipo` e `role` já fazem aqui.
+// Campos de domínio fechado são `String` com CHECK, e não `enum` nativo. As
+// razões, na ordem em que pesaram:
+//
+//   - evoluir um nível (acrescentar, renomear, restringir) fica dentro de uma
+//     migration SQL comum, que é como este projeto já escreve migration;
+//   - `conteudoTipo` e `role` já são assim aqui — um `enum` criaria um segundo
+//     estilo para o mesmo tipo de campo;
+//   - o CHECK é declarado explicitamente na migration, onde dá para lê-lo;
+//   - o Prisma não representa esses CHECK no schema, então a validação vive no
+//     banco de qualquer forma.
+//
+// A contrapartida é que os valores aceitos passam a existir em dois lugares: as
+// constantes de `src/lib/planos.ts` e os CHECK da migration.
+// `src/lib/__tests__/planos.test.ts` lê os dois arquivos e falha se divergirem.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Um plano comercial e os direitos que ele concede.
@@ -339,8 +348,11 @@ model Plano {
   /// Janela do contador de episódios. Fora dela, o contador recomeça.
   janelaAnuncioHoras Int @default(24)
 
-  filmes Boolean @default(true)
-  series Boolean @default(true)
+  /// Default `false` como todo direito aqui: um plano criado sem informar
+  /// acesso a catálogo não o concede. Quem libera é sempre uma decisão escrita,
+  /// e o seed do Gratuito escreve as duas explicitamente.
+  filmes Boolean @default(false)
+  series Boolean @default(false)
 
   /// "nenhum" | "gratuito" | "plus" | "premium" — ordenado, não booleano.
   /// Dois booleanos (has_iptv_plus + has_iptv_premium) permitem o estado

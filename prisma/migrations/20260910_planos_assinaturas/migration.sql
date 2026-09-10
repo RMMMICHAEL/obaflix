@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS "Plano" (
     "anunciosObrigatorios" BOOLEAN NOT NULL DEFAULT true,
     "episodiosPorAnuncio" INTEGER,
     "janelaAnuncioHoras" INTEGER NOT NULL DEFAULT 24,
-    "filmes" BOOLEAN NOT NULL DEFAULT true,
-    "series" BOOLEAN NOT NULL DEFAULT true,
+    -- Como todo direito aqui, o default nao concede. Quem libera catalogo e uma
+    -- decisao escrita — o seed do Gratuito escreve as duas explicitamente.
+    "filmes" BOOLEAN NOT NULL DEFAULT false,
+    "series" BOOLEAN NOT NULL DEFAULT false,
     "canaisNivel" TEXT NOT NULL DEFAULT 'nenhum',
     "downloads" BOOLEAN NOT NULL DEFAULT false,
     "telasMax" INTEGER NOT NULL DEFAULT 1,
@@ -90,10 +92,17 @@ CREATE TABLE IF NOT EXISTS "Assinatura" (
 );
 
 -- ── Dominio dos campos de texto ──────────────────────────────────────────────
--- O Prisma 5 nao expressa CHECK, e a alternativa seria `enum` nativo. Fugimos
--- de enum de proposito: `ALTER TYPE ... ADD VALUE` nao roda dentro de transacao
--- no Postgres, entao acrescentar um nivel de canal viraria migration com
--- janela. CHECK valida igual e muda numa linha, dentro de transacao.
+-- Campos de dominio fechado sao TEXT com CHECK, e nao `enum` nativo. As razoes,
+-- na ordem em que pesaram: evoluir um nivel fica dentro de uma migration SQL
+-- comum, que e como este projeto ja escreve migration; `conteudoTipo` e `role`
+-- ja sao assim, e um enum criaria um segundo estilo para o mesmo tipo de campo;
+-- o CHECK fica declarado aqui, onde da para le-lo; e o Prisma nao representa
+-- CHECK no schema, entao a validacao vive no banco de qualquer forma.
+--
+-- A contrapartida e que os valores aceitos existem em dois lugares: as
+-- constantes de src/lib/planos.ts e os CHECK abaixo. O teste
+-- src/lib/__tests__/planos.test.ts le os dois arquivos e falha se divergirem —
+-- entao mexer num lado sem o outro quebra o CI, e nao a producao.
 --
 -- DROP antes de ADD para o arquivo poder ser reexecutado, como as demais.
 

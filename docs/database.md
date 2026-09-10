@@ -149,7 +149,7 @@ comercialmente sem publicar aplicativo novo.
 | `anunciosObrigatorios` | `Boolean @default(true)` | Forma positiva de propósito — ausente ⇒ pede anúncio, falhando para o lado seguro |
 | `episodiosPorAnuncio` | `Int?` | O `N` da regra de séries. `null` quando o plano não exibe anúncio |
 | `janelaAnuncioHoras` | `Int @default(24)` | Janela do contador de episódios |
-| `filmes` / `series` | `Boolean @default(true)` | |
+| `filmes` / `series` | `Boolean @default(false)` | Como todo direito: o default não concede. O seed do Gratuito libera as duas explicitamente |
 | `canaisNivel` | `String @default("nenhum")` | `nenhum` \| `gratuito` \| `plus` \| `premium`. Direito separado de `anunciosObrigatorios` |
 | `downloads` | `Boolean @default(false)` | |
 | `telasMax` | `Int @default(1)` | Telas simultâneas. Substituirá `MAX_CONCURRENT` de `src/lib/playTokens.ts` |
@@ -198,13 +198,53 @@ nem cache de direito: assinatura ativa é sempre derivada de
 ### Domínio dos campos de texto
 
 `canaisNivel`, `resolucaoMax`, `tvNivel`, `status` e `origem` são `String` com
-`CHECK` no banco, não `enum` nativo. Motivo: `ALTER TYPE ... ADD VALUE` não roda
-dentro de transação no Postgres, então acrescentar um nível viraria migration com
-janela. `CHECK` valida igual e muda numa linha.
+`CHECK` no banco, não `enum` nativo. As razões, na ordem em que pesaram:
 
-Os valores aceitos vivem em dois lugares — as constantes de `src/lib/planos.ts` e
-os `CHECK` da migration. `src/lib/__tests__/planos.test.ts` lê os dois arquivos e
-falha se divergirem.
+- evoluir um nível (acrescentar, renomear, restringir) fica dentro de uma
+  migration SQL comum, que é como este projeto já escreve migration;
+- `conteudoTipo` e `role` já são `String` — um `enum` criaria um segundo estilo
+  para o mesmo tipo de campo;
+- o `CHECK` é declarado explicitamente na migration, onde dá para lê-lo e
+  alterá-lo;
+- o Prisma não representa esses `CHECK` no schema, então a validação vive no
+  banco de qualquer forma.
+
+A contrapartida é que os valores aceitos passam a existir em dois lugares — as
+constantes de `src/lib/planos.ts` e os `CHECK` da migration.
+`src/lib/__tests__/planos.test.ts` lê os dois arquivos e falha se divergirem,
+então mexer num lado sem o outro quebra o CI, e não a produção.
+
+### Defaults restritivos
+
+Todo direito de `Plano` tem o default que **não concede**: os booleanos em
+`false`, `anunciosObrigatorios` em `true` (a forma que exige anúncio),
+`canaisNivel` em `nenhum`, `resolucaoMax` em `hd`, `tvNivel` em `limitado`,
+`telasMax` e `perfisMax` em `1`.
+
+Um plano criado sem informar um direito não o concede por acidente. Quem libera
+é sempre uma decisão escrita — inclusive no plano Gratuito, que escreve as suas
+uma a uma. `planos.test.ts` verifica os defaults contra a migration.
+
+### Aplicando a migration
+
+`prisma/migrations/` **não tem `migration_lock.toml`**, e nenhuma das migrations
+anteriores foi gerada por `prisma migrate dev` — todas são SQL escrito à mão, com
+`IF NOT EXISTS`, feitas para serem **executadas diretamente** contra o Postgres
+(editor SQL do Supabase, ou `psql` com a `DIRECT_URL`, que não passa pelo
+pooler). `prisma migrate deploy` não é o caminho deste repositório: sem o lock e
+sem histórico em `_prisma_migrations`, ele trata o banco como fora de controle.
+
+Ordem para esta migration:
+
+1. executar `20260910_planos_assinaturas/migration.sql` inteiro, numa transação;
+2. rodar `20260910_planos_assinaturas/VERIFICACAO.sql` — só leitura, confere as
+   três tabelas, os `CHECK`, o índice parcial de `ehPadrao`, o único de
+   `pedidoId`, as chaves estrangeiras, o RLS e que nada foi populado. Toda
+   coluna `ok` precisa vir `true`;
+3. só então rodar o seed.
+
+O arquivo é idempotente — `IF NOT EXISTS` nas tabelas e nos índices, `DROP
+CONSTRAINT IF EXISTS` antes de cada `ADD` —, então reexecutar é inofensivo.
 
 ### Seed do plano padrão
 
