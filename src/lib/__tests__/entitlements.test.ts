@@ -881,3 +881,236 @@ describe("entitlementsDoUsuario: cache vencido não autoriza", () => {
     assert.equal(mapa.size, 0);
   });
 });
+
+// ── Configuração ausente × operação que falhou ───────────────────────────────
+
+/**
+ * A regressão do hotfix `fix/entitlements-redis-fail-fast`.
+ *
+ * Havia duas falhas muito diferentes caindo no mesmo `catch`:
+ *
+ *   - **operacional** — o `GET` falhou (rede, Upstash fora). Degradar para o
+ *     Postgres é o certo: ele é a autoridade, e a resposta sai correta.
+ *   - **de configuração** — em produção, sem `UPSTASH_REDIS_REST_URL`/`TOKEN`,
+ *     `getRedis()` recusa. Degradar aqui deixaria o serviço rodando sem Redis
+ *     distribuído em silêncio.
+ *
+ * Como `cacheRedis.ler` era `(chave) => getRedis().get(chave)` e só era chamada
+ * de dentro do `try`, a segunda virava a primeira. A correção separa as duas
+ * pela **posição**: a montagem do cache padrão passou a acontecer antes do
+ * `try`, e só as operações ficaram protegidas.
+ *
+ * ## Sobre o singleton de `redis.ts`
+ *
+ * `getRedis()` memoriza o cliente por processo. Um teste de "produção sem
+ * configuração" passaria à toa se um `MemoryStore` já tivesse sido criado antes
+ * da troca de `NODE_ENV`.
+ *
+ * Aqui isso não engana: se o cliente já estivesse memorizado, `getRedis()`
+ * devolveria o stub em vez de recusar, e as asserções de `rejects` abaixo
+ * **falhariam**. O modo de falha do acidente é teste vermelho, não teste verde
+ * — que é a direção segura. Ainda assim, nenhum outro teste deste arquivo toca
+ * o cache padrão: todos injetam o seu.
+ */
+describe("Redis: configuração ausente propaga, operação que falha degrada", () => {
+  const env = process.env as Record<string, string | undefined>;
+  const original = {
+    NODE_ENV: env.NODE_ENV,
+    url: env.UPSTASH_REDIS_REST_URL,
+    token: env.UPSTASH_REDIS_REST_TOKEN,
+  };
+
+  function restaurar(chave: string, valor: string | undefined) {
+    if (valor === undefined) delete env[chave];
+    else env[chave] = valor;
+  }
+
+  function semRedisEmProducao() {
+    delete env.UPSTASH_REDIS_REST_URL;
+    delete env.UPSTASH_REDIS_REST_TOKEN;
+    env.NODE_ENV = "production";
+  }
+
+  function voltarAoNormal() {
+    restaurar("NODE_ENV", original.NODE_ENV);
+    restaurar("UPSTASH_REDIS_REST_URL", original.url);
+    restaurar("UPSTASH_REDIS_REST_TOKEN", original.token);
+  }
+
+  test("cache padrão em produção sem configuração: o erro PROPAGA", async () => {
+    semRedisEmProducao();
+    try {
+      const { fonte, registro } = fonteFalsa([]);
+
+      await assert.rejects(
+        // Sem `cache` nas opções: o caminho é o cache padrão.
+        () => entitlementsDoUsuario("u1", { fonte, agora: AGORA }),
+        /Redis distribuído obrigatório em produção/,
+      );
+
+      // E não virou "cache miss": nem chegou a consultar o Postgres.
+      assert.equal(
+        registro.consultas,
+        0,
+        "a recusa de configuração precisa acontecer antes de qualquer trabalho",
+      );
+    } finally {
+      voltarAoNormal();
+    }
+  });
+
+  test("a mensagem de configuração não é engolida por entitlementsDoUsuario", async () => {
+    semRedisEmProducao();
+    try {
+      const { fonte } = fonteFalsa([assinatura()]);
+      let capturado: unknown = null;
+
+      try {
+        await entitlementsDoUsuario("u1", { fonte, agora: AGORA });
+      } catch (e) {
+        capturado = e;
+      }
+
+      assert.ok(capturado instanceof Error, "deveria ter lançado");
+      assert.match((capturado as Error).message, /Redis distribuído obrigatório em produção/);
+    } finally {
+      voltarAoNormal();
+    }
+  });
+
+  test("invalidarEntitlements com cache padrão também propaga", async () => {
+    // Invalidação silenciosa seria pior: deixaria de pé por 120 s um direito
+    // que acabou de mudar, e quem chamou não teria como saber.
+    semRedisEmProducao();
+    try {
+      await assert.rejects(
+        () => invalidarEntitlements("u1"),
+        /Redis distribuído obrigatório em produção/,
+      );
+    } finally {
+      voltarAoNormal();
+    }
+  });
+
+  test("fora de produção, o cache padrão funciona sem Upstash configurado", async () => {
+    // O contraponto: a recusa é da combinação produção + sem configuração, e
+    // não de "não ter Upstash". Em desenvolvimento o stub assume, como sempre.
+    delete env.UPSTASH_REDIS_REST_URL;
+    delete env.UPSTASH_REDIS_REST_TOKEN;
+    env.NODE_ENV = "development";
+    try {
+      const { fonte } = fonteFalsa([]);
+      const r = await entitlementsDoUsuario("u-dev", { fonte, agora: AGORA });
+      assert.equal(r.assinatura.planoId, "gratuito");
+    } finally {
+      voltarAoNormal();
+    }
+  });
+});
+
+describe("cache injetado nunca toca o Redis padrão", () => {
+  test("com cache injetado, produção sem configuração não atrapalha", async () => {
+    // Prova que a montagem do cache padrão é preguiçosa: se `criarCacheRedis()`
+    // fosse avaliado mesmo com cache injetado, isto lançaria.
+    const env = process.env as Record<string, string | undefined>;
+    const nodeEnvOriginal = env.NODE_ENV;
+    const urlOriginal = env.UPSTASH_REDIS_REST_URL;
+    const tokenOriginal = env.UPSTASH_REDIS_REST_TOKEN;
+
+    delete env.UPSTASH_REDIS_REST_URL;
+    delete env.UPSTASH_REDIS_REST_TOKEN;
+    env.NODE_ENV = "production";
+
+    try {
+      const { cache, registro: reg } = cacheFalso();
+      const { fonte } = fonteFalsa([assinatura()]);
+
+      const r = await entitlementsDoUsuario("u1", { fonte, cache, agora: AGORA });
+
+      assert.equal(r.assinatura.planoId, "plus");
+      assert.equal(reg.leituras, 1);
+      assert.equal(reg.gravacoes, 1);
+    } finally {
+      if (nodeEnvOriginal === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = nodeEnvOriginal;
+      if (urlOriginal === undefined) delete env.UPSTASH_REDIS_REST_URL;
+      else env.UPSTASH_REDIS_REST_URL = urlOriginal;
+      if (tokenOriginal === undefined) delete env.UPSTASH_REDIS_REST_TOKEN;
+      else env.UPSTASH_REDIS_REST_TOKEN = tokenOriginal;
+    }
+  });
+
+  test("invalidarEntitlements com cache injetado apaga a chave certa", async () => {
+    const { cache, mapa, registro: reg } = cacheFalso({
+      "entitlements:v1:user:u1": "qualquer coisa",
+      "entitlements:v1:user:u2": "de outro usuário",
+    });
+
+    await invalidarEntitlements("u1", cache);
+
+    assert.equal(reg.remocoes, 1);
+    assert.equal(mapa.has("entitlements:v1:user:u1"), false);
+    assert.equal(mapa.has("entitlements:v1:user:u2"), true);
+  });
+
+  test("invalidarEntitlements não engole falha operacional do cache injetado", async () => {
+    const cacheQuebrado: CacheDeEntitlements = {
+      async ler() {
+        return null;
+      },
+      async gravar() {},
+      async apagar() {
+        throw new Error("DEL falhou");
+      },
+    };
+
+    await assert.rejects(() => invalidarEntitlements("u1", cacheQuebrado), /DEL falhou/);
+  });
+});
+
+describe("falha operacional do cache continua degradando para o Postgres", () => {
+  test("ler que lança: consulta o Postgres e não inventa direito", async () => {
+    const cacheComLeituraQuebrada: CacheDeEntitlements = {
+      async ler() {
+        throw new Error("ECONNRESET no GET");
+      },
+      async gravar() {},
+      async apagar() {},
+    };
+    const { fonte, registro } = fonteFalsa([]);
+
+    const r = await entitlementsDoUsuario("u1", {
+      fonte,
+      cache: cacheComLeituraQuebrada,
+      agora: AGORA,
+    });
+
+    assert.equal(registro.consultas, 1, "deveria ter ido ao Postgres");
+    assert.equal(r.assinatura.ativa, false);
+    assert.equal(r.assinatura.planoId, "gratuito");
+    assert.equal(r.direitos.downloads, false, "nada de direito vindo do nada");
+  });
+
+  test("gravar que lança: a resposta do Postgres é devolvida assim mesmo", async () => {
+    const cacheComEscritaQuebrada: CacheDeEntitlements = {
+      async ler() {
+        return null;
+      },
+      async gravar() {
+        throw new Error("SET recusado");
+      },
+      async apagar() {},
+    };
+    const { fonte } = fonteFalsa([assinatura()]);
+
+    const r = await entitlementsDoUsuario("u1", {
+      fonte,
+      cache: cacheComEscritaQuebrada,
+      agora: AGORA,
+    });
+
+    assert.equal(r.assinatura.ativa, true);
+    assert.equal(r.assinatura.planoId, "plus");
+    assert.equal(r.direitos.telasMax, 2);
+  });
+});
