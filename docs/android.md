@@ -329,3 +329,13 @@ Para apontar para dev: alterar para `"http://10.0.2.2:3000"` (emulador) ou IP lo
 - `minSdk`: 26 (Android 8.0 Oreo) — WebView System WebView atualizado, OkHttp 4
 - `targetSdk`: 34 (Android 14)
 - `compileSdk`: 34
+
+## Handoff — incidente de regressão visual Android (2026-09)
+
+**INCIDENTE:** alterações visuais Android desapareceram depois do PR do media bridge.
+
+**CAUSA CONFIRMADA:** o código do media bridge não removeu a interface. O PR posterior foi criado a partir de `f8182b7`, uma linha que não continha os commits visuais `8754b40` e `5954636`. O merge `b3875b7` levou para `main` uma base Android anterior.
+
+**COMO FOI CORRIGIDO:** recuperar seletivamente os trechos visuais dos commits corretos sobre o `main` atual, preservando o player atual.
+
+**COMO EVITAR:** antes de criar PR de uma nova tarefa, executar `git fetch origin` e confirmar que a branch parte do `origin/main` atual. Quando existirem linhas paralelas/worktrees antigos, comparar a ancestry e o diff antes de abrir o PR.
