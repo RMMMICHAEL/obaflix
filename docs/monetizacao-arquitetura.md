@@ -18,10 +18,20 @@ Desde então foram implementadas:
 - **Fase 3** — `src/lib/playbackAuthorization.ts`, aplicado em
   `POST /api/player/fontes`: **na criação de uma sessão nova**, `direitos.filmes`
   e `direitos.series` passam a valer, atrás de `MONETIZACAO_ATIVA`.
+- **Fase 4** — `PedidoPagamento`, a migration `20260910_pedido_pagamento`,
+  `src/lib/billing/*` e `POST /api/billing/orders`: cria um pedido local e uma
+  venda PIX na Blackcat, atrás de `BLACKCAT_PIX_ATIVO`.
 
-Continua verdadeiro, e é o que importa: **nada de pagamento, anúncio, canais,
-concessão ou interface comercial foi escrito.** E o plano padrão no banco ainda
-concede tudo, então mesmo com a flag ligada nada muda para os usuários de hoje.
+Continua verdadeiro, e é o que importa: **nada de anúncio, canais, concessão ou
+interface comercial foi escrito, e nenhuma assinatura é criada por código.** O
+plano padrão no banco ainda concede tudo, então mesmo com as flags ligadas nada
+muda para os usuários de hoje.
+
+**A Fase 4 é infraestrutura de cobrança, e só.** Um PIX criado, um
+`transactionId`, um QR lido, uma tela visitada e até um `status: "PAID"` na
+resposta de criação **não concedem direito**. A confirmação servidor→servidor, o
+webhook e a reconciliação são a Fase 5, e as seções 13 e 14 continuam
+descrevendo o que falta.
 
 ### Estado do enforcement — Fase 3
 
@@ -398,7 +408,7 @@ erDiagram
 | `Plano` | nome, descrição, ordem, `ehPadrao`, e **as colunas de direito** (`anunciosObrigatorios`, `canaisNivel`, `downloads`, `telasMax`, `resolucaoMax`, `tvNivel`, …) | direitos como colunas, não JSON: dá para consultar, indexar e migrar |
 | `PlanoPreco` | rótulo, `duracaoDias`, `precoCentavos`, `precoOriginalCentavos`, `ativo` | **centavos, inteiro** — nunca float, nunca string |
 | `Assinatura` | `userId`, `planoId`, `planoPrecoId`, `status`, `iniciaEm`, `terminaEm`, `pedidoId`, `origem` | ativa ⇔ `status = ATIVA AND iniciaEm <= now < terminaEm` |
-| `PedidoPagamento` | `userId`, `planoId`, `planoPrecoId`, `valorEsperadoCentavos`, `moeda`, `status`, `refExterna` (única, imprevisível), `provedor`, `transacaoId`, `expiraEm` | snapshot do preço no momento da criação |
+| `PedidoPagamento` ✅ | `userId`, `planoId`, `planoPrecoId`, `valorCentavos`, `duracaoDias`, `moeda`, `status`, `refExterna` (única, imprevisível), `provedor`, `transacaoId` (único), `expiraEm` | snapshot do preço **e da duração** no momento da criação. Implementado na Fase 4; ver `docs/database.md` para o desenho final |
 | `EventoPagamento` | `provedor`, `transacaoId`, `evento`, `statusRecebido`, `recebidoEm`, `payloadResumo` | **`@@unique([provedor, transacaoId, evento, statusRecebido])`** ← a idempotência |
 
 ### 6.2 O que **não** vira tabela, e por quê
@@ -432,7 +442,7 @@ eventos estruturados de `auditLog` respondem isso sem uma linha por concessão.
 | `POST /api/ads/ssv/<rede>` | **assinatura do provedor** | Redis | callback server-side, se existir |
 | `GET /api/channels` | sessão + direito | Redis + PG | lista de canais do nível autorizado |
 | `GET /api/billing/plans` | pública | cache de borda | planos e preços ativos |
-| `POST /api/billing/orders` | sessão | PG + Blackcat | cria `PedidoPagamento` e a venda PIX |
+| `POST /api/billing/orders` ✅ | sessão + origem + limite | PG + Blackcat | cria `PedidoPagamento` e a venda PIX. **Não ativa nada** |
 | `GET /api/billing/orders/:id` | sessão, dono | PG (Redis para o polling) | estado do pedido — **nosso backend, nunca a Blackcat direto** |
 | `POST /api/billing/webhook/blackcat` | nenhuma (ver 14) | PG | recebe, responde 200, confirma fora de banda |
 | `GET /api/billing/config` | sessão | Redis | config de anúncio por plataforma (URL do Direct Link, cooldown, TTL) |
@@ -744,6 +754,37 @@ Pontos obrigatórios:
 - **Nada de QR completo, CPF ou telefone em log.** Só `pedidoId`,
   `transactionId` e status.
 
+**O que a Fase 4 implementou deste diagrama, e o que não.** Implementado: tudo
+até `{ pedidoId, qrCode, copiaECola, expiraEm }`, com uma diferença — o log
+registra `pedidoId` e um código de motivo sanitizado, e **não** o
+`transactionId`, que não é necessário para investigar e é o identificador que a
+Fase 5 usa para casar confirmação com pedido. Ele também não vai na resposta ao
+cliente: o cliente trabalha com o nosso `pedidoId`.
+
+Não implementado, e é a Fase 5: o laço de polling e `GET /api/billing/orders/:id`.
+Uma rota de consulta agora devolveria um estado que nada atualiza.
+
+Dois pontos que o diagrama não mostra e valem estar escritos:
+
+- **A ordem é local antes de externo.** O pedido nasce `CRIADO` no Postgres antes
+  da chamada à Blackcat.
+- **Passar a `AGUARDANDO` exige duas condições, não uma:** `HTTP 201` **e**
+  `data.status === "PENDING"`, mais um `expiresAt` parseável e ainda no futuro.
+  `201` diz que a requisição foi aceita; `status` diz em que estado a venda
+  nasceu. `PAID`, `CANCELLED`, `REFUNDED`, ausente ou desconhecido não devolvem
+  PIX como sucesso — vão para `REVISAO_MANUAL` com o `transactionId` gravado, e
+  **nunca** para `PAGO`. Um `PAID` na criação não é compra concluída; é anomalia,
+  e a única prova de pagamento continua sendo a confirmação servidor→servidor da
+  Fase 5.
+- **Postgres e Blackcat não participam da mesma transação, e nenhuma transação
+  SQL resolve isso.** Existe uma janela real: a venda é criada lá e a gravação do
+  `transacaoId` falha aqui. Mitigam o dano a `refExterna` (vai no `externalRef`,
+  então a venda órfã é rastreável até o pedido), o único de `transacaoId` (a
+  Fase 5 não consegue ativar duas assinaturas a partir da mesma transação) e a
+  reconciliação da Fase 5, que é o que fecha a janela de fato. Um `timeout` é
+  indistinguível de "criou e não respondeu": `FALHOU` ali significa "não
+  conseguimos concluir", nunca "não existe venda lá".
+
 ---
 
 ## 14. Fluxo do webhook — o ponto crítico
@@ -937,7 +978,8 @@ Todas **aditivas**. Nenhuma coluna existente alterada ou removida.
 | 1 | `Plano`, `PlanoPreco` | nenhum (tabelas novas, vazias) | sim, `DROP` |
 | 2 | seed do plano padrão (Gratuito) com **todos os direitos hoje concedidos** | nenhum | sim |
 | 3 | `Assinatura` | nenhum | sim |
-| 4 | `PedidoPagamento`, `EventoPagamento` (+ unique de idempotência) | nenhum | sim |
+| 4 ✅ | `PedidoPagamento` (+ uniques de `refExterna` e `transacaoId`) e a FK de `Assinatura.pedidoId` | nenhum sobre dados; a FK aborta a migration se houver `pedidoId` órfão, em vez de apagar | sim, `ROLLBACK.sql` — que recusa se houver pedido |
+| 5 | `EventoPagamento` (+ unique de idempotência do webhook) | nenhum (tabela nova, vazia) | sim, `DROP` |
 
 O passo 2 é o que torna o rollout seguro: **enquanto o plano padrão conceder
 tudo, ativar a camada não muda nada para ninguém.** Restringir os direitos do
@@ -1001,12 +1043,18 @@ Por trás de `MONETIZACAO_ATIVA` (env), desligado por padrão. Com a flag
 desligada, `AutorizacaoDeReproducao` devolve `PERMITIDO` sempre e nenhuma rota
 nova é exposta.
 
+**São duas flags, e de propósito.** `MONETIZACAO_ATIVA` decide se o enforcement
+comercial nega conteúdo; `BLACKCAT_PIX_ATIVO` (Fase 4) decide se é possível
+cobrar. Precisam ser acionáveis em separado: cobrar antes de restringir é o
+rollout normal, e desligar a cobrança durante um incidente do gateway não pode
+derrubar o acesso de quem já pagou. Nenhuma das duas tem versão `NEXT_PUBLIC_`.
+
 | Fase | Entrega | Como validar | Rollback |
 |---|---|---|---|
 | 1 ✅ | schema `Plano`/`PlanoPreco`/`Assinatura` + seed do plano padrão com tudo liberado | migration aplicada, nada muda | reverter o PR; `ROLLBACK.sql` versionado |
 | 2 ✅ | `entitlements.ts` resolvendo direitos por usuário, **sem aplicar**. `/api/me/entitlements` ficou para a fase de anúncios, que é quem precisa dela | testes unitários; nenhum consumidor | remover o módulo |
 | 3 ✅ | `playbackAuthorization.ts` aplicado em `/api/player/fontes` atrás de `MONETIZACAO_ATIVA`; só `filmes` e `series`, só em sessão nova | flag ligada em conta de teste | desligar a flag — bypass real, sem consulta |
-| 4 | Blackcat backend + `PedidoPagamento` + criação de PIX (sem ativar nada) | pedido criado, QR gerado | desligar a rota |
+| 4 ✅ | Blackcat backend + `PedidoPagamento` + criação de PIX (sem ativar nada), atrás de `BLACKCAT_PIX_ATIVO` | pedido criado, QR gerado, **nenhuma `Assinatura`** | desligar a flag — a rota recusa antes de consultar ou chamar qualquer coisa |
 | 5 | webhook + confirmação fora de banda + reconciliação + ativação | webhook simulado; falso não ativa | desligar a rota; assinaturas ficam como estão |
 | 6 | checkout/modal PIX (React — serve Web + Android + Electron) | fluxo ponta a ponta em conta de teste | esconder a entrada de UI |
 | 7 | Android Ads: auditoria do SDK, ponte, desafio, SSV se houver | APK de teste | desligar `anunciosObrigatorios` no plano |
@@ -1193,3 +1241,13 @@ que a entrega, e `docs/database.md` registra o que ela criou.
 3. **Mitigação aplicada.** Nenhuma foi necessária nesta entrega, por não haver
    alteração de código. R-1 a R-3 estão especificados como requisitos das fases
    correspondentes: R-3 na Fase 4, R-1 na Fase 5, R-2 na Fase 7.
+
+   **R-3 foi aplicado na Fase 4.** `BLACKCAT_API_KEY` é lida em um único lugar
+   (`src/lib/billing/blackcat.ts`), só no servidor, e só aparece no header
+   `X-API-Key`. Não existe `NEXT_PUBLIC_` dela, ela não entra em `BuildConfig`,
+   `preload.js`, Kotlin, Git, log, resposta HTTP nem mensagem de erro — faltando
+   a chave, a resposta é um 503 genérico que não a nomeia, para não virar oráculo
+   de configuração. `src/lib/__tests__/billingOrdersRoute.test.ts` trava a
+   ausência do nome da variável, do header e do domínio do provedor no arquivo de
+   rota. **R-1 continua aberto e é o requisito central da Fase 5**: a Fase 4 não
+   trata webhook e não tem caminho para `PAGO`.

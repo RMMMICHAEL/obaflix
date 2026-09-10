@@ -33,7 +33,21 @@ export type AuditEvent =
   // conta, e crescer é esperado; `entitlements_indisponiveis` é incidente de
   // infraestrutura, e crescer é alarme.
   | "playback_negado"
-  | "entitlements_indisponiveis";
+  | "entitlements_indisponiveis"
+  // Cobrança (Fase 4). Separados dos eventos de player pelo mesmo motivo dos
+  // anteriores: somar uma falha de gateway ao contador de `stream_rejected`
+  // faria as duas métricas perderem sentido.
+  //
+  // `billing_order_failed` cobre tanto a recusa comercial (preço inexistente,
+  // inativo, incoerente) quanto a falha do provedor. O `detail` distingue, com
+  // código interno já sanitizado — nunca a mensagem da Blackcat.
+  //
+  // **O que nunca entra no `detail` destes dois:** QR, copia-e-cola,
+  // `qrCodeBase64`, CPF, telefone, `X-API-Key`, `Authorization`, cookie,
+  // `refExterna` ou qualquer parte do payload do provedor. `pedidoId` e o código
+  // do motivo bastam para investigar, e `pedidoId` é identificador nosso.
+  | "billing_order_created"
+  | "billing_order_failed";
 
 interface AuditMeta {
   userId?: string;

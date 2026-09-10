@@ -147,6 +147,9 @@ model User {
   /// renovações e planos anteriores — e "tem assinatura ativa?" é sempre uma
   /// consulta por status e datas, nunca um campo guardado nesta linha.
   assinaturas  Assinatura[]
+  /// Também virtual. Um pedido é tentativa de compra, não direito: a conta pode
+  /// ter dezenas aqui e nenhuma assinatura.
+  pedidos      PedidoPagamento[]
 }
 
 /// Um aparelho de TV pareado.
@@ -385,6 +388,7 @@ model Plano {
 
   precos      PlanoPreco[]
   assinaturas Assinatura[]
+  pedidos     PedidoPagamento[]
 
   @@index([ativo, ordem])
 }
@@ -418,6 +422,7 @@ model PlanoPreco {
   atualizadoEm DateTime @updatedAt
 
   assinaturas Assinatura[]
+  pedidos     PedidoPagamento[]
 
   @@index([planoId, ativo, ordem])
 }
@@ -459,9 +464,14 @@ model Assinatura {
   ///
   /// Único já nesta fase, e de propósito: criar índice único depois, sobre
   /// tabela povoada, é migration com risco. Agora a tabela está vazia e custa
-  /// zero. A chave estrangeira para PedidoPagamento entra com aquela tabela —
-  /// aqui a coluna ainda não referencia nada.
-  pedidoId String? @unique
+  /// zero.
+  ///
+  /// A chave estrangeira entrou na Fase 4, junto de `PedidoPagamento`. É
+  /// `NoAction` — nunca `Cascade`: apagar um pedido não pode apagar o direito
+  /// que alguém pagou. Ver a nota de `PedidoPagamento` sobre por que `NoAction`
+  /// e não `Restrict`.
+  pedidoId String?          @unique
+  pedido   PedidoPagamento? @relation(fields: [pedidoId], references: [id], onDelete: NoAction, onUpdate: Cascade)
 
   /// Anotação de suporte. Nunca dado de pagamento, nunca documento.
   observacao String?
@@ -473,4 +483,97 @@ model Assinatura {
   @@index([userId, status, terminaEm])
   /// varredura de vencimento, sem varrer a tabela inteira.
   @@index([status, terminaEm])
+}
+
+/// Uma tentativa de compra. **Nunca um direito.**
+///
+/// Um pedido existir, ter QR, ter `transacaoId` e ter sido visitado não concede
+/// nada. Quem concede é `Assinatura`, e a única transição para `PAGO` acontece
+/// na confirmação servidor→servidor da Fase 5 — nunca a partir de uma resposta
+/// de criação, de um retorno do frontend ou de um webhook.
+///
+/// ## Por que o valor e a duração ficam repetidos aqui
+///
+/// `valorCentavos` e `duracaoDias` são **snapshot**, não desnormalização por
+/// desempenho. O preço em `PlanoPreco` pode mudar entre a criação do PIX e a
+/// confirmação do pagamento; se a Fase 5 conferisse o valor pago contra a
+/// tabela de preços atual, uma alteração comercial no meio do caminho faria a
+/// conferência recusar um pagamento correto — ou aceitar um incorreto. O pedido
+/// precisa saber quanto custava e o que estava sendo comprado **naquele
+/// instante**.
+///
+/// ## O que esta tabela deliberadamente não guarda
+///
+/// Nada de `qrCode`, `copyPaste`, `qrCodeBase64`, CPF, telefone, `Authorization`,
+/// cookie, chave de API ou payload da Blackcat. O QR vai na resposta HTTP
+/// autenticada de quem acabou de criar o pedido e morre ali. Guardar o
+/// copia-e-cola transformaria um vazamento de backup em meio de pagamento
+/// utilizável, e guardar documento sem necessidade contraria a retenção mínima
+/// (D-13).
+model PedidoPagamento {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// RESTRICT no banco: plano com pedido não é apagado. Descontinuar é
+  /// `ativo = false`, como em `Assinatura`.
+  planoId String
+  plano   Plano  @relation(fields: [planoId], references: [id])
+
+  /// Obrigatório, ao contrário de `Assinatura.planoPrecoId`: um pedido só nasce
+  /// de um preço. Por isso a ação de delete aqui não pode ser `SET NULL` —
+  /// é RESTRICT, e apagar uma tabela de preços com pedidos é recusado.
+  planoPrecoId String
+  planoPreco   PlanoPreco @relation(fields: [planoPrecoId], references: [id])
+
+  /// Quem processa. Coluna, e não constante de código, porque a Fase 5 procura
+  /// pedido por `(provedor, transacaoId)` e um segundo gateway não pode
+  /// colidir com o primeiro.
+  provedor String @default("blackcat")
+
+  /// Domínio fechado por CHECK, mesmo critério de `Assinatura.status`:
+  /// CRIADO | AGUARDANDO | CONFIRMANDO | PAGO | EXPIRADO | CANCELADO | FALHOU |
+  /// ESTORNADO | REVISAO_MANUAL. A Fase 4 só escreve os três primeiros estados
+  /// terminais dela — CRIADO, AGUARDANDO e FALHOU (e REVISAO_MANUAL quando o
+  /// valor diverge). Os demais existem para a Fase 5 não precisar de migration.
+  status String
+
+  /// Centavos, inteiro. Snapshot de `PlanoPreco.precoCentavos`. CHECK `> 0`.
+  valorCentavos Int
+  moeda         String @default("BRL")
+
+  /// Snapshot de `PlanoPreco.duracaoDias`. CHECK `> 0`. É o que a Fase 5 usa
+  /// para calcular `terminaEm` sem reler a tabela de preços.
+  duracaoDias Int
+
+  /// Nossa referência, gerada no servidor com 128 bits de aleatoriedade e
+  /// enviada à Blackcat em `externalRef`. Imprevisível de propósito: um id
+  /// sequencial permitiria enumerar e correlacionar pedidos de outras contas.
+  /// É também o que liga uma venda criada na Blackcat a um pedido nosso quando
+  /// a resposta HTTP se perde.
+  refExterna String @unique
+
+  /// O `transactionId` da Blackcat. **Só chega por resposta server-side do
+  /// provedor** — nunca do frontend. Nulo até a venda ser criada; único para
+  /// que a confirmação da Fase 5 não consiga ativar dois pedidos com a mesma
+  /// transação. Postgres aceita vários NULL num índice único, que é o que
+  /// permite as duas coisas ao mesmo tempo.
+  transacaoId String? @unique
+
+  /// Quando o PIX deixa de ser pagável, conforme o provedor. Nulo enquanto a
+  /// venda não existe. Alimenta a reconciliação da Fase 5.
+  expiraEm DateTime?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  /// No máximo uma — `Assinatura.pedidoId` é único. A relação é o lado inverso
+  /// da FK criada na Fase 4; nenhuma linha é criada por esta fase.
+  assinatura Assinatura?
+
+  /// "os pedidos desta conta, do mais novo para o mais velho" — a listagem de
+  /// suporte e a trava de retentativa.
+  @@index([userId, status, criadoEm])
+  /// A varredura da reconciliação: pedidos parados por estado e vencimento.
+  @@index([status, expiraEm])
 }
