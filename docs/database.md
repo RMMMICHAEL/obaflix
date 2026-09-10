@@ -192,13 +192,123 @@ nem cache de direito: assinatura ativa é sempre derivada de
 | `status` | `String` | `ATIVA` \| `EXPIRADA` \| `CANCELADA` \| `SUSPENSA` |
 | `iniciaEm` / `terminaEm` | `DateTime` | CHECK `terminaEm > iniciaEm` |
 | `origem` | `String @default("pagamento")` | `pagamento` \| `cortesia` \| `migracao` \| `admin` |
-| `pedidoId` | `String? @unique` | Trava de idempotência: um pedido ativa no máximo uma assinatura. **Sem FK ainda** — `PedidoPagamento` não existe |
+| `pedidoId` | `String? @unique` | Trava de idempotência: um pedido ativa no máximo uma assinatura. FK → `PedidoPagamento`, `ON DELETE NO ACTION` (Fase 4) |
 | `observacao` | `String?` | Anotação de suporte. Nunca dado de pagamento, nunca documento |
+
+### PedidoPagamento
+
+Uma tentativa de compra. **Nunca um direito.** Um pedido existir, ter QR, ter
+`transacaoId` e ter sido visitado não concede nada — quem concede é `Assinatura`,
+e a única transição para `PAGO` é a confirmação servidor→servidor da Fase 5.
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `id` | `String @id @default(cuid())` | O identificador que o cliente recebe |
+| `userId` | `String` | FK → `User`, `ON DELETE CASCADE` |
+| `planoId` | `String` | FK → `Plano`, `ON DELETE RESTRICT` |
+| `planoPrecoId` | `String` | FK → `PlanoPreco`, `ON DELETE RESTRICT`. **NOT NULL**, ao contrário de `Assinatura.planoPrecoId`: um pedido só nasce de um preço, então `SET NULL` é impossível |
+| `provedor` | `String @default("blackcat")` | CHECK. Coluna, e não constante de código, porque a Fase 5 procura pedido por `(provedor, transacaoId)` |
+| `status` | `String` | CHECK. Ver a máquina de estados abaixo |
+| `valorCentavos` | `Int` | **Snapshot**, centavos, CHECK `> 0` |
+| `moeda` | `String @default("BRL")` | |
+| `duracaoDias` | `Int` | **Snapshot**, CHECK `> 0` |
+| `refExterna` | `String @unique` | 128 bits aleatórios, gerados no servidor. Vai no `externalRef` da Blackcat |
+| `transacaoId` | `String? @unique` | O `transactionId` do provedor. Só chega por resposta server-side; nulo até a venda existir. Único com múltiplos `NULL` permitidos, que é o que o Postgres faz |
+| `expiraEm` | `DateTime?` | Quando o PIX deixa de ser pagável |
+
+Índices: `@@index([userId, status, criadoEm])` para a listagem de suporte, e
+`@@index([status, expiraEm])` para a varredura da reconciliação da Fase 5.
+
+#### Os dois snapshots
+
+`valorCentavos` e `duracaoDias` são cópias de `PlanoPreco`, não referências — e
+isso é o desenho, não desnormalização por desempenho.
+
+O preço pode mudar entre a criação do PIX e a confirmação do pagamento. Se a
+Fase 5 conferisse o valor pago contra a tabela de preços **atual**, uma alteração
+comercial no meio do caminho faria a conferência recusar um pagamento correto —
+ou aceitar um incorreto. O pedido precisa saber quanto custava e qual duração
+estava sendo comprada *naquele instante*.
+
+#### Estados
+
+```text
+CRIADO ──► AGUARDANDO ──┬──► CONFIRMANDO ──► PAGO ──► ESTORNADO
+                        ├──► EXPIRADO
+                        ├──► CANCELADO
+                        ├──► FALHOU
+                        └──► REVISAO_MANUAL
+```
+
+Os nove estão no `CHECK` desde a Fase 4, para a Fase 5 não precisar de uma
+migration de domínio no meio do fluxo de pagamento. **A Fase 4 escreve apenas
+quatro:** `CRIADO`, `AGUARDANDO`, `FALHOU` e `REVISAO_MANUAL`.
+
+A escolha entre os dois últimos segue uma regra só:
+
+> **Transação conhecida ⇒ `REVISAO_MANUAL`. Transação desconhecida ⇒ `FALHOU`.**
+
+Se sabemos o `transactionId`, existe uma venda no provedor que pode ser pagável;
+`FALHOU` diria "não há nada lá" e faria a reconciliação da Fase 5 pular
+justamente a linha que precisa de gente olhando. O `transacaoId` é gravado junto
+para o cruzamento ser possível — e não concede nada: `REVISAO_MANUAL` não é um
+estado que autorize.
+
+Caem em `REVISAO_MANUAL`: valor devolvido diferente do snapshot; `status` da
+criação diferente de `PENDING`; PIX já vencido na criação; e dados de PIX
+inutilizáveis apesar de haver transação. Caem em `FALHOU`: timeout, erro de rede,
+erro HTTP e resposta sem `transactionId` aproveitável.
+
+**Passar a `AGUARDANDO` exige duas condições, não uma:** `HTTP 201` **e**
+`data.status === "PENDING"`. O primeiro diz que a requisição foi aceita; o
+segundo, em que estado a venda nasceu. Um `PAID` na resposta de criação não é
+compra concluída — é anomalia, e vira `REVISAO_MANUAL`, nunca `PAGO`.
+
+Os valores aceitos vivem em dois lugares — `STATUS_PEDIDO` em
+`src/lib/billing/pedidos.ts` e o `CHECK` da migration.
+`src/lib/__tests__/pedidoPagamento.test.ts` lê os dois arquivos e falha se
+divergirem, mesmo mecanismo dos domínios da Fase 1.
+
+#### O que esta tabela deliberadamente não guarda
+
+Nada de `qrCode`, `copyPaste`, `qrCodeBase64`, CPF, telefone, `Authorization`,
+cookie, chave de API ou payload do provedor. O QR vai na resposta HTTP
+autenticada de quem acabou de criar o pedido e morre ali: guardar o copia-e-cola
+transformaria um vazamento de backup em meio de pagamento utilizável, e guardar
+documento sem necessidade contraria a retenção mínima (D-13).
+
+#### `Assinatura.pedidoId` → `PedidoPagamento`
+
+A coluna existe desde a Fase 1; a chave estrangeira entrou na Fase 4. Ela é
+`ON DELETE NO ACTION`, e a escolha é técnica:
+
+- **`CASCADE` está fora de questão.** Apagar um pedido apagaria a assinatura que
+  ele originou — direito pago desaparecendo por causa de uma limpeza de pedidos.
+- **`RESTRICT` recusaria o `DELETE` linha a linha.** `NO ACTION` faz a mesma
+  recusa, mas verifica no fim do comando. A diferença aparece na exclusão de
+  conta: `DELETE FROM "User"` cascateia para `Assinatura` *e* para
+  `PedidoPagamento`, e a ordem entre as duas não é definida. Com `RESTRICT`,
+  apagar o pedido antes da assinatura que o referencia abortaria a exclusão da
+  conta. Com `NO ACTION`, no fim do comando as duas linhas já saíram e a
+  verificação passa.
+
+Na prática: apagar um pedido isolado continua sendo recusado, e apagar a conta
+continua funcionando.
+
+Opcionalidade e unicidade não mudaram — a coluna segue nullable e única, então um
+pedido ativa no máximo uma assinatura, garantido pelo banco.
+
+#### RLS
+
+`ENABLE ROW LEVEL SECURITY`, **sem nenhuma policy e sem nenhum `GRANT`**, mesmo
+critério das tabelas da Fase 1. Numa tabela que guarda valor cobrado e referência
+de transação, a segunda camada importa mais do que nas outras.
 
 ### Domínio dos campos de texto
 
-`canaisNivel`, `resolucaoMax`, `tvNivel`, `status` e `origem` são `String` com
-`CHECK` no banco, não `enum` nativo. As razões, na ordem em que pesaram:
+`canaisNivel`, `resolucaoMax`, `tvNivel`, `status` e `origem` de
+`Plano`/`Assinatura`, e `status` e `provedor` de `PedidoPagamento`, são `String`
+com `CHECK` no banco, não `enum` nativo. As razões, na ordem em que pesaram:
 
 - evoluir um nível (acrescentar, renomear, restringir) fica dentro de uma
   migration SQL comum, que é como este projeto já escreve migration;
@@ -210,9 +320,14 @@ nem cache de direito: assinatura ativa é sempre derivada de
   banco de qualquer forma.
 
 A contrapartida é que os valores aceitos passam a existir em dois lugares — as
-constantes de `src/lib/planos.ts` e os `CHECK` da migration.
-`src/lib/__tests__/planos.test.ts` lê os dois arquivos e falha se divergirem,
-então mexer num lado sem o outro quebra o CI, e não a produção.
+constantes e os `CHECK` da migration correspondente. Um teste lê os dois arquivos
+e falha se divergirem, então mexer num lado sem o outro quebra o CI, e não a
+produção:
+
+| Domínio | Constantes | Teste |
+|---|---|---|
+| `Plano` e `Assinatura` | `src/lib/planos.ts` | `src/lib/__tests__/planos.test.ts` |
+| `PedidoPagamento` | `src/lib/billing/pedidos.ts` | `src/lib/__tests__/pedidoPagamento.test.ts` |
 
 ### Defaults restritivos
 
@@ -234,7 +349,7 @@ anteriores foi gerada por `prisma migrate dev` — todas são SQL escrito à mã
 pooler). `prisma migrate deploy` não é o caminho deste repositório: sem o lock e
 sem histórico em `_prisma_migrations`, ele trata o banco como fora de controle.
 
-Ordem para esta migration:
+Ordem, na sequência em que as fases foram escritas:
 
 1. executar `20260910_planos_assinaturas/migration.sql` inteiro — ele próprio
    abre e fecha a transação;
@@ -242,11 +357,21 @@ Ordem para esta migration:
    três tabelas, os `CHECK`, o índice parcial de `ehPadrao`, o único de
    `pedidoId`, as chaves estrangeiras, o RLS e que nada foi populado. Toda
    coluna `ok` precisa vir `true`;
-3. só então rodar o seed.
+3. rodar o seed do plano padrão;
+4. executar `20260910_pedido_pagamento/migration.sql` — cria `PedidoPagamento` e
+   a FK de `Assinatura.pedidoId`. **Antes de criar a FK ele confere se existe
+   `Assinatura.pedidoId` apontando para pedido inexistente e ABORTA a migration
+   inteira se existir.** Não apaga e não corrige nada: dado órfão ali é direito
+   concedido cuja origem se perdeu, e isso é decisão humana. Se abortar, investigue
+   linha a linha — não limpe a coluna para fazer a migration passar;
+5. rodar `20260910_pedido_pagamento/VERIFICACAO.sql` — confere a tabela, as
+   colunas e tipos, os `CHECK`, os uniques, os índices, as FKs (inclusive que a
+   nova é `NO ACTION`, e **não** `CASCADE`), o RLS, a ausência de policy e que
+   nenhuma assinatura foi criada.
 
-O arquivo abre `BEGIN` e fecha `COMMIT` sozinho: uma falha no meio não deixa a
-Fase 1 pela metade — tabelas sem `CHECK`, ou com `CHECK` e sem RLS. Não depende
-de quem executa lembrar de abrir a transação.
+Cada arquivo abre `BEGIN` e fecha `COMMIT` sozinho: uma falha no meio não deixa a
+fase pela metade — tabelas sem `CHECK`, ou com `CHECK` e sem RLS. Não depende de
+quem executa lembrar de abrir a transação.
 
 Sobre reexecutar: o arquivo foi escrito para **tolerar** reexecução
 funcionalmente — `IF NOT EXISTS` nas tabelas e índices, `DROP CONSTRAINT IF
@@ -302,10 +427,25 @@ item do diff por ser outra decisão, com outro risco.
 
 ### Rollback
 
-`prisma/migrations/20260910_planos_assinaturas/ROLLBACK.sql` fica versionado e
-**não é executado por nada**. O rollback real da Fase 1 é reverter o PR: nenhuma
-rota lê estas tabelas, então o aplicativo volta ao estado anterior mesmo com elas
-presentes no banco.
+Os arquivos `ROLLBACK.sql` ficam versionados ao lado de cada migration e **não
+são executados por nada**. Ficam ali para que desfazer não dependa de alguém
+reescrever o SQL sob pressão.
+
+**Fase 1** (`20260910_planos_assinaturas/ROLLBACK.sql`) — o rollback real é
+reverter o PR: nenhuma rota lê aquelas tabelas, então o aplicativo volta ao
+estado anterior mesmo com elas presentes no banco.
+
+**Fase 4** (`20260910_pedido_pagamento/ROLLBACK.sql`) — o rollback real é
+**desligar a flag**: `BLACKCAT_PIX_ATIVO=false`, ou remover a variável. Com ela
+desligada, `POST /api/billing/orders` recusa antes de qualquer coisa; é
+instantâneo, não precisa de deploy e não perde nada. Reverter o PR é o segundo
+passo. O arquivo só entra em cena se a tabela precisar sumir de fato, e ele
+**recusa sozinho** se houver qualquer pedido ou qualquer assinatura ligada a
+pedido — apagar aquela tabela apagaria o registro de quanto foi cobrado, de quem
+e com qual transação no provedor, e isso não pode acontecer em silêncio. Ele
+também derruba a FK explicitamente antes do `DROP TABLE`, em vez de usar
+`CASCADE`: `DROP TABLE ... CASCADE` removeria a *constraint* e deixaria
+`Assinatura.pedidoId` órfã sem avisar.
 
 ## Banco em Produção
 

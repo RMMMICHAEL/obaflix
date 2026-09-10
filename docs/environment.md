@@ -42,6 +42,36 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `EMBED_WORKER_SECRET` | Secret para autenticar com o Worker | `""` |
 | `CRON_SECRET` | Token para autenticar chamadas do Vercel Cron | — |
 
+## Monetização
+
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| `MONETIZACAO_ATIVA` | Enforcement comercial em `POST /api/player/fontes`. **Só a string exata `"true"` liga** | desligado |
+| `BLACKCAT_PIX_ATIVO` | Criação real de PIX em `POST /api/billing/orders`. **Só a string exata `"true"` liga** | desligado |
+| `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
+| `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
+
+**Duas flags, de propósito.** `MONETIZACAO_ATIVA` decide se o enforcement nega
+conteúdo; `BLACKCAT_PIX_ATIVO` decide se é possível cobrar. Precisam ser
+acionáveis em separado — cobrar antes de restringir é o rollout normal, e
+desligar a cobrança durante um incidente do gateway não pode derrubar o acesso de
+quem já pagou.
+
+**Só `"true"` liga, nas duas.** `Boolean(process.env.X)` seria o erro clássico:
+`Boolean("false")` é `true`, então escrever `=false` para desligar ligaria. A
+comparação é estrita, e `"TRUE"`, `"1"` e `" true"` deixam desligado.
+
+**Nenhuma das duas tem versão `NEXT_PUBLIC_`, e não deve passar a ter.** O
+cliente não precisa saber se o enforcement está ligado nem qual gateway existe.
+
+**Cuidado com `BLACKCAT_API_KEY`:** nunca no Git, em `NEXT_PUBLIC_`, no
+`BuildConfig` do Android, no `preload.js` do Electron, em Kotlin, em log ou em
+resposta HTTP. É lida em um lugar só — `src/lib/billing/blackcat.ts` — e só
+aparece no header `X-API-Key`. Faltando com `BLACKCAT_PIX_ATIVO=true`, a rota
+responde 503 genérico **sem nomear a variável**, sem chamar o provedor e sem
+criar pedido: uma mensagem do tipo "API key missing" seria um oráculo de
+configuração para quem estivesse sondando.
+
 ## Electron
 
 O app Electron não usa `.env` — a única configuração é a URL do site:
