@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { Search } from "lucide-react";
 
@@ -11,7 +11,9 @@ type Aba = "tudo" | "filme" | "serie" | "anime";
 
 function BuscarConteudo() {
   const sp = useSearchParams();
+  const router = useRouter();
   const q = sp.get("q") ?? "";
+  const [termo, setTermo] = useState(q);
   const [filmes, setFilmes] = useState<any[]>([]);
   const [series, setSeries] = useState<any[]>([]);
   const [aba, setAba] = useState<Aba>("tudo");
@@ -25,6 +27,14 @@ function BuscarConteudo() {
       .then((d) => { setFilmes(d.filmes ?? []); setSeries(d.series ?? []); })
       .finally(() => setLoading(false));
   }, [q]);
+
+  useEffect(() => setTermo(q), [q]);
+
+  function buscar(event: FormEvent) {
+    event.preventDefault();
+    const valor = termo.trim();
+    if (valor) router.push(`/buscar?q=${encodeURIComponent(valor)}`);
+  }
 
   const abas: { id: Aba; label: string }[] = [
     { id: "tudo", label: "Tudo" },
@@ -44,6 +54,17 @@ function BuscarConteudo() {
           {q ? `Resultados para "${q}"` : "Buscar"}
         </h1>
       </div>
+
+      <form className="mb-6 flex gap-2" onSubmit={buscar} role="search">
+        <input
+          value={termo}
+          onChange={(event) => setTermo(event.target.value)}
+          placeholder="Filme, série, anime..."
+          aria-label="Buscar no catálogo"
+          className="min-w-0 flex-1 rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-white outline-none focus:border-red-500"
+        />
+        <button type="submit" className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white">Buscar</button>
+      </form>
 
       <div className="flex gap-2 mb-6">
         {abas.map((a) => (
