@@ -236,15 +236,24 @@ sem histórico em `_prisma_migrations`, ele trata o banco como fora de controle.
 
 Ordem para esta migration:
 
-1. executar `20260910_planos_assinaturas/migration.sql` inteiro, numa transação;
+1. executar `20260910_planos_assinaturas/migration.sql` inteiro — ele próprio
+   abre e fecha a transação;
 2. rodar `20260910_planos_assinaturas/VERIFICACAO.sql` — só leitura, confere as
    três tabelas, os `CHECK`, o índice parcial de `ehPadrao`, o único de
    `pedidoId`, as chaves estrangeiras, o RLS e que nada foi populado. Toda
    coluna `ok` precisa vir `true`;
 3. só então rodar o seed.
 
-O arquivo é idempotente — `IF NOT EXISTS` nas tabelas e nos índices, `DROP
-CONSTRAINT IF EXISTS` antes de cada `ADD` —, então reexecutar é inofensivo.
+O arquivo abre `BEGIN` e fecha `COMMIT` sozinho: uma falha no meio não deixa a
+Fase 1 pela metade — tabelas sem `CHECK`, ou com `CHECK` e sem RLS. Não depende
+de quem executa lembrar de abrir a transação.
+
+Sobre reexecutar: o arquivo foi escrito para **tolerar** reexecução
+funcionalmente — `IF NOT EXISTS` nas tabelas e índices, `DROP CONSTRAINT IF
+EXISTS` antes de cada `ADD` — e o resultado final é o mesmo. Mas **não deve ser
+reexecutado casualmente depois que houver dados**: `DROP`/`ADD` de constraint
+adquire lock na tabela, e o `ADD` revalida as linhas existentes. Com as tabelas
+vazias isso é instantâneo; com uma tabela de assinaturas povoada, não é.
 
 ### Seed do plano padrão
 
@@ -253,14 +262,31 @@ npm run seed:planos          # dry-run, só mostra o que faria
 npm run seed:planos:apply    # grava
 ```
 
-Idempotente por `upsert` no id. Cria **apenas** o plano Gratuito, e **nenhuma**
-linha de `Assinatura`.
+Cria **apenas** o plano Gratuito, e **nenhuma** linha de `Assinatura`.
+
+**Cria se faltar; nunca sobrescreve.** `PLANO_GRATUITO`, em `src/lib/planos.ts`,
+é **bootstrap** — não é configuração permanente. Depois que a linha existe, o
+**Postgres é a fonte de verdade**, inclusive e sobretudo quando alguém já ajustou
+os direitos por decisão comercial. Rodar `--apply` com o plano existente não
+altera nenhum campo: o script informa o que encontrou, aponta o que difere da
+fotografia, e encerra com sucesso.
+
+A razão é concreta. Com um banco de produção em `anunciosObrigatorios = true`,
+`downloads = false`, `telasMax = 1`, um seed que sobrescreve devolveria tudo à
+fotografia inicial — sem anúncio, com download, cinco telas. Um comando chamado
+"seed" teria desligado a monetização e reaberto direitos, e nada no nome dele
+avisaria.
+
+O custo é conhecido e aceito: o seed **não** conserta uma coluna editada à mão.
+Alteração comercial tem fluxo próprio, com intenção explícita. **Não existe
+`--force`**, e não deve passar a existir nesta fase — uma flag que devolve o
+comportamento perigoso reintroduz o risco com um passo a mais, e um passo a mais
+não é uma barreira.
 
 Os valores semeados são uma **fotografia do comportamento atual** do Obaflix, não
 a matriz comercial: sem anúncio, com download, 4K, TV completa e `telasMax = 5`
-(o `MAX_CONCURRENT` de hoje). É assim que a migration não muda o comportamento de
-nenhum usuário. Restringir o gratuito é editar `PLANO_GRATUITO` e rodar o seed —
-não é um deploy.
+(o `MAX_CONCURRENT` de hoje). É assim que a Fase 1 não muda o comportamento de
+nenhum usuário.
 
 ### Divergência conhecida com `prisma migrate diff`
 

@@ -21,6 +21,20 @@
 -- criterio da migration 20260827_tv_pairing, que ignorou de proposito um item
 -- do diff por ele ser outra decisao, com outro risco.
 
+-- ── Transacao ────────────────────────────────────────────────────────────────
+-- Este repositorio executa o SQL direto contra o Postgres, e nao por
+-- `prisma migrate deploy` — nao ha `migration_lock.toml` e nenhuma migration
+-- daqui veio de `migrate dev`. Sem BEGIN/COMMIT explicitos, um erro no meio
+-- deixaria a Fase 1 pela metade: tabelas criadas sem CHECK, ou com CHECK e sem
+-- RLS. O arquivo garante a atomicidade sozinho, em vez de depender de quem
+-- executa lembrar de abrir a transacao.
+--
+-- Todos os comandos abaixo sao transacionais no Postgres. Se algum dia entrar
+-- aqui um `CREATE INDEX CONCURRENTLY`, ele NAO pode ficar dentro deste bloco —
+-- concurrent nao roda em transacao, e teria de sair para um arquivo proprio.
+
+BEGIN;
+
 -- ── Tabelas ──────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS "Plano" (
@@ -104,7 +118,10 @@ CREATE TABLE IF NOT EXISTS "Assinatura" (
 -- src/lib/__tests__/planos.test.ts le os dois arquivos e falha se divergirem —
 -- entao mexer num lado sem o outro quebra o CI, e nao a producao.
 --
--- DROP antes de ADD para o arquivo poder ser reexecutado, como as demais.
+-- DROP antes de ADD para o arquivo tolerar reexecucao, como as demais daqui.
+-- "Tolerar" e o termo certo: o resultado final e o mesmo, mas reexecutar depois
+-- que houver dados nao e gratuito — DROP/ADD de constraint pega lock na tabela
+-- e o ADD revalida as linhas existentes. Ver a nota em docs/database.md.
 
 ALTER TABLE "Plano" DROP CONSTRAINT IF EXISTS "Plano_canaisNivel_check";
 ALTER TABLE "Plano" ADD CONSTRAINT "Plano_canaisNivel_check"
@@ -210,3 +227,5 @@ ALTER TABLE "Assinatura" ADD CONSTRAINT "Assinatura_planoPrecoId_fkey"
 ALTER TABLE "Plano" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "PlanoPreco" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Assinatura" ENABLE ROW LEVEL SECURITY;
+
+COMMIT;

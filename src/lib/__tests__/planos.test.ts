@@ -11,7 +11,9 @@ import {
   TV_NIVEIS,
   STATUS_ASSINATURA,
   ORIGENS_ASSINATURA,
-  dadosDoUpsert,
+  diferencas,
+  semearPlanoPadrao,
+  type RepositorioDePlanos,
 } from "../planos";
 
 /**
@@ -179,58 +181,128 @@ describe("domínio: código e banco não podem divergir", () => {
   });
 });
 
-describe("seed idempotente", () => {
-  /** Repositório mínimo com a semântica de upsert do Prisma. */
-  function repositorioFalso() {
+/**
+ * O seed cria se faltar e **nunca sobrescreve**.
+ *
+ * `PLANO_GRATUITO` é bootstrap; depois que a linha existe, o Postgres é a fonte
+ * de verdade. O cenário que estes testes existem para tornar impossível:
+ *
+ *   produção com anunciosObrigatorios=true, downloads=false, telasMax=1
+ *   → alguém roda `seed:planos:apply`
+ *   → a monetização é desligada e os direitos reabrem, sem ninguém pedir.
+ *
+ * Os testes exercitam `semearPlanoPadrao` — a função que o script chama de
+ * verdade — contra um repositório em memória, e não uma reimplementação dela.
+ */
+describe("seed: cria se faltar, nunca sobrescreve", () => {
+  function repositorioFalso(inicial?: Record<string, unknown>) {
     const linhas = new Map<string, Record<string, unknown>>();
-    return {
+    if (inicial) linhas.set(String(inicial.id), { ...inicial });
+    let criacoes = 0;
+    const repo: RepositorioDePlanos & { linhas: typeof linhas; criacoes: () => number } = {
       linhas,
-      upsert(dados: ReturnType<typeof dadosDoUpsert>) {
-        const existente = linhas.get(dados.where.id);
-        if (existente) linhas.set(dados.where.id, { ...existente, ...dados.update });
-        else linhas.set(dados.where.id, { ...dados.create });
+      criacoes: () => criacoes,
+      async buscar(id) {
+        return linhas.get(id) ?? null;
+      },
+      async criar(plano) {
+        criacoes++;
+        linhas.set(plano.id, { ...plano });
       },
     };
+    return repo;
   }
 
-  test("rodar duas vezes deixa uma linha, idêntica", () => {
+  test("primeira execução cria exatamente uma linha", async () => {
     const repo = repositorioFalso();
-    repo.upsert(dadosDoUpsert(PLANO_GRATUITO));
+
+    const r = await semearPlanoPadrao(repo, PLANO_GRATUITO);
+
+    assert.equal(r.acao, "criado");
+    assert.equal(repo.linhas.size, 1);
+    assert.equal(repo.criacoes(), 1);
+    assert.deepEqual(repo.linhas.get("gratuito"), { ...PLANO_GRATUITO });
+  });
+
+  test("segunda execução continua uma linha, sem gravar de novo", async () => {
+    const repo = repositorioFalso();
+    await semearPlanoPadrao(repo, PLANO_GRATUITO);
     const depoisDaPrimeira = { ...repo.linhas.get("gratuito") };
 
-    repo.upsert(dadosDoUpsert(PLANO_GRATUITO));
+    const r = await semearPlanoPadrao(repo, PLANO_GRATUITO);
 
+    assert.equal(r.acao, "mantido");
     assert.equal(repo.linhas.size, 1);
+    assert.equal(repo.criacoes(), 1, "não pode ter havido uma segunda escrita");
     assert.deepEqual(repo.linhas.get("gratuito"), depoisDaPrimeira);
   });
 
-  test("o update conserta coluna editada à mão", () => {
-    // O erro clássico de seed: `update` cobrindo menos campos que `create`. A
-    // linha nasce certa, alguém mexe numa coluna, o seed roda de novo e não
-    // conserta — e a diferença só aparece quando aquele campo passa a decidir
-    // alguma coisa.
-    const repo = repositorioFalso();
-    repo.upsert(dadosDoUpsert(PLANO_GRATUITO));
-
-    repo.linhas.set("gratuito", {
-      ...repo.linhas.get("gratuito")!,
-      telasMax: 1,
+  /** O teste que impede o reset de produção. */
+  test("plano já ajustado comercialmente NÃO é sobrescrito", async () => {
+    // Um banco com a monetização ligada: exige anúncio, sem download, 1 tela.
+    const emProducao = {
+      ...PLANO_GRATUITO,
       anunciosObrigatorios: true,
-    });
+      episodiosPorAnuncio: 3,
+      downloads: false,
+      telasMax: 1,
+      resolucaoMax: "hd",
+      tvNivel: "limitado",
+    };
+    const repo = repositorioFalso(emProducao);
 
-    repo.upsert(dadosDoUpsert(PLANO_GRATUITO));
+    const r = await semearPlanoPadrao(repo, PLANO_GRATUITO);
 
-    const linha = repo.linhas.get("gratuito")!;
-    assert.equal(linha.telasMax, PLANO_GRATUITO.telasMax);
-    assert.equal(linha.anunciosObrigatorios, false);
+    assert.equal(r.acao, "mantido");
+    assert.equal(repo.criacoes(), 0);
+    assert.deepEqual(
+      repo.linhas.get("gratuito"),
+      emProducao,
+      "o seed reabriu direitos que o banco havia fechado",
+    );
   });
 
-  test("o upsert cobre todo campo do plano, menos o id", () => {
-    const dados = dadosDoUpsert(PLANO_GRATUITO);
-    const noCreate = Object.keys(dados.create).sort();
-    const noUpdate = Object.keys(dados.update).sort();
+  test("alteração manual de uma única coluna também sobrevive", async () => {
+    const repo = repositorioFalso({ ...PLANO_GRATUITO, telasMax: 2 });
 
-    assert.deepEqual(noCreate, Object.keys(PLANO_GRATUITO).sort());
-    assert.deepEqual(noUpdate, noCreate.filter((c) => c !== "id"));
+    await semearPlanoPadrao(repo, PLANO_GRATUITO);
+
+    assert.equal(repo.linhas.get("gratuito")!.telasMax, 2);
+  });
+
+  test("a criação grava todo campo do plano, id incluído", async () => {
+    const repo = repositorioFalso();
+    await semearPlanoPadrao(repo, PLANO_GRATUITO);
+
+    assert.deepEqual(
+      Object.keys(repo.linhas.get("gratuito")!).sort(),
+      Object.keys(PLANO_GRATUITO).sort(),
+    );
+  });
+});
+
+describe("diferencas: relata sem agir", () => {
+  test("aponta cada direito que o banco tem diferente da fotografia", () => {
+    const noBanco = {
+      ...PLANO_GRATUITO,
+      anunciosObrigatorios: true,
+      telasMax: 1,
+    };
+
+    const d = diferencas(noBanco, PLANO_GRATUITO);
+    const campos = d.map((x) => x.campo).sort();
+
+    assert.deepEqual(campos, ["anunciosObrigatorios", "telasMax"]);
+  });
+
+  test("linha igual à fotografia não gera diferença", () => {
+    assert.deepEqual(diferencas({ ...PLANO_GRATUITO }, PLANO_GRATUITO), []);
+  });
+
+  test("coluna que o banco não devolve não vira diferença falsa", () => {
+    // A linha real traz criadoEm/atualizadoEm e pode não trazer algo que a
+    // fotografia tem, se o schema andar. Ausente não é divergente.
+    const parcial = { id: "gratuito", telasMax: PLANO_GRATUITO.telasMax };
+    assert.deepEqual(diferencas(parcial, PLANO_GRATUITO), []);
   });
 });

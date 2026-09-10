@@ -71,9 +71,14 @@ export const TELAS_SIMULTANEAS_HOJE = 5;
  *
  * A razão é a regra da Fase 1: a migration não pode mudar o comportamento de
  * ninguém. Restringir o gratuito — ligar anúncio, cortar download, baixar
- * `telasMax` — é a edição desta linha no banco, depois, quando a decisão
+ * `telasMax` — é a edição da **linha no banco**, depois, quando a decisão
  * comercial estiver tomada e a camada de autorização existir. Não é um deploy,
  * e não é aqui.
+ *
+ * Editar esta constante depois disso **não** muda produção, e é assim de
+ * propósito: o seed cria se faltar e nunca sobrescreve
+ * ([semearPlanoPadrao]). Esta constante é o valor de partida da linha, e para
+ * de ter efeito no instante em que a linha nasce.
  */
 export const PLANO_GRATUITO: PlanoSemeado = {
   id: "gratuito",
@@ -115,15 +120,70 @@ export const PLANO_GRATUITO: PlanoSemeado = {
 };
 
 /**
- * Monta o `upsert` do seed.
- *
- * Existe separado do script por um motivo: o erro clássico de seed é o `update`
- * cobrir menos campos que o `create`. A linha nasce certa, alguém edita uma
- * coluna à mão, o seed roda de novo e não conserta — e a diferença só aparece
- * quando o campo esquecido passa a decidir alguma coisa. Derivando os dois do
- * mesmo objeto, isso não tem como acontecer, e o teste prova que continua assim.
+ * O mínimo do banco que o seed precisa. Existe para o seed ser exercitado de
+ * verdade nos testes — sem Postgres e sem simular o Prisma inteiro.
  */
-export function dadosDoUpsert(plano: PlanoSemeado) {
-  const { id, ...campos } = plano;
-  return { where: { id }, create: { id, ...campos }, update: campos };
+export interface RepositorioDePlanos {
+  buscar(id: string): Promise<Record<string, unknown> | null>;
+  criar(plano: PlanoSemeado): Promise<void>;
+}
+
+export type ResultadoDoSeed =
+  | { acao: "criado"; plano: PlanoSemeado }
+  | { acao: "mantido"; existente: Record<string, unknown> };
+
+/**
+ * Semeia o plano padrão — **cria se faltar, e nunca sobrescreve**.
+ *
+ * A assimetria é deliberada e é a regra que dá nome às coisas aqui:
+ *
+ *   `PLANO_GRATUITO` é **bootstrap**, não configuração permanente.
+ *   Depois que a linha existe, o **Postgres é a fonte de verdade**.
+ *
+ * A versão anterior fazia `upsert` com `update` de todos os campos, e isso era
+ * uma armadilha esperando a monetização entrar no ar. Um banco de produção com
+ * `anunciosObrigatorios = true`, `downloads = false`, `telasMax = 1` voltaria,
+ * ao primeiro `seed:planos:apply` de alguém, para a fotografia de hoje — sem
+ * anúncio, com download, cinco telas. Um comando chamado "seed" teria desligado
+ * a monetização e reaberto direitos, e nada no nome dele avisaria.
+ *
+ * O custo dessa escolha é conhecido: o seed deixa de consertar uma coluna
+ * editada à mão. É o custo certo. Alteração comercial tem fluxo próprio, com
+ * intenção explícita — não é efeito colateral de um bootstrap.
+ *
+ * Não existe `--force`, e não deve existir nesta fase: uma flag que devolve o
+ * comportamento perigoso reintroduz o risco com um passo a mais, e um passo a
+ * mais não é uma barreira.
+ */
+export async function semearPlanoPadrao(
+  repo: RepositorioDePlanos,
+  plano: PlanoSemeado = PLANO_GRATUITO,
+): Promise<ResultadoDoSeed> {
+  const existente = await repo.buscar(plano.id);
+  if (existente) return { acao: "mantido", existente };
+
+  await repo.criar(plano);
+  return { acao: "criado", plano };
+}
+
+/**
+ * Os direitos da linha existente que diferem da fotografia.
+ *
+ * Só para relatar. O seed nunca age sobre isto — e é justamente por não agir
+ * que mostrar a diferença tem valor: quem roda vê o que o banco decidiu desde o
+ * bootstrap, sem que o comando toque em nada.
+ */
+export function diferencas(
+  existente: Record<string, unknown>,
+  plano: PlanoSemeado = PLANO_GRATUITO,
+): { campo: string; noBanco: unknown; naFotografia: unknown }[] {
+  const saida: { campo: string; noBanco: unknown; naFotografia: unknown }[] = [];
+  for (const [campo, naFotografia] of Object.entries(plano)) {
+    if (campo === "id") continue;
+    const noBanco = existente[campo];
+    if (noBanco !== undefined && String(noBanco) !== String(naFotografia)) {
+      saida.push({ campo, noBanco, naFotografia });
+    }
+  }
+  return saida;
 }
