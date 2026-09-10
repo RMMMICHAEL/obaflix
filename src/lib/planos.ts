@@ -6,9 +6,14 @@
  * um seed com os valores digitados dentro do script não teria como ser
  * verificado sem banco, e é justamente esses valores que precisam de trava.
  *
- * **Nada em runtime lê este arquivo nesta fase.** Nenhuma rota, nenhum
- * componente, nenhum player. A resolução de direitos por requisição é a fase
- * seguinte, e vai ler o banco — não esta constante.
+ * **`PLANO_GRATUITO` não é lido em runtime.** Ele é o valor de partida da linha
+ * do plano padrão e perde efeito no instante em que ela nasce. Quem resolve
+ * direitos por usuário é `src/lib/entitlements.ts`, e ele lê o **banco**: o
+ * plano padrão de runtime é a linha com `ehPadrao = true`, nunca esta constante.
+ *
+ * O que `entitlements.ts` aproveita daqui são os **tipos e domínios**
+ * (`DireitosDoPlano`, `CANAIS_NIVEIS`, `RESOLUCOES`, `TV_NIVEIS`) — justamente
+ * para não existir uma segunda definição do que é um direito válido.
  *
  * Os conjuntos abaixo são o espelho dos CHECK da migration
  * `20260910_planos_assinaturas`. Estando os dois no repositório, um teste
