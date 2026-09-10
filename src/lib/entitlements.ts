@@ -4,13 +4,16 @@
  * Responde uma pergunta só, e é a única camada autorizada a respondê-la:
  * **quais direitos esta conta tem agora?**
  *
- * O que esta fase entrega, e onde ela para:
+ * O que este módulo faz, e onde ele para:
  *
  *   - resolve o plano efetivo e projeta os direitos → **sim**
- *   - decide se uma reprodução pode começar → **não, é a fase seguinte**
+ *   - decide se uma reprodução pode começar → **não**, isso é de
+ *     `src/lib/playbackAuthorization.ts`, que consome o resultado daqui
  *   - substitui `MAX_CONCURRENT` de `playTokens.ts` por `telasMax` → **não**
  *
- * Nada aqui bloqueia nada. Nenhuma rota consome este módulo ainda.
+ * Nada aqui bloqueia nada: este módulo só responde. Quem nega é a camada de
+ * autorização, e desde a Fase 3 ela é acionada por `POST /api/player/fontes` na
+ * criação de sessão nova, atrás de `MONETIZACAO_ATIVA`.
  *
  * ## As regras que não se negociam
  *
@@ -314,15 +317,38 @@ export interface CacheDeEntitlements {
   apagar(chave: string): Promise<void>;
 }
 
-const cacheRedis: CacheDeEntitlements = {
-  ler: (chave) => getRedis().get(chave),
-  gravar: async (chave, valor, ttlSeg) => {
-    await getRedis().set(chave, valor, { ex: ttlSeg });
-  },
-  apagar: async (chave) => {
-    await getRedis().del(chave);
-  },
-};
+/**
+ * Monta o cache padrão sobre o Redis.
+ *
+ * **`getRedis()` roda aqui, na montagem — e não dentro de `ler`/`gravar`.** A
+ * posição é o ponto: quem chama esta função a chama fora do `try` que protege
+ * as operações, então a recusa por Redis não configurado em produção atravessa,
+ * enquanto uma falha de rede num `GET` continua sendo capturada.
+ *
+ * Antes, `ler` era `(chave) => getRedis().get(chave)`. Como `ler` só é chamada
+ * de dentro do `try`, o `throw` de configuração caía no mesmo `catch` do erro
+ * operacional e virava "cache miss" — o serviço seguiria em produção sem Redis
+ * distribuído, em silêncio, que é o contrário do combinado. Separar os dois
+ * casos lá dentro exigiria inspecionar a mensagem do erro, que não é contrato:
+ * seria trocar um defeito por outro mais frágil.
+ *
+ * O cliente é resolvido uma vez e reaproveitado pelos três métodos. `getRedis()`
+ * memoriza por processo, então isto não abre conexão nova; o que muda é só
+ * *quando* a ausência de configuração aparece.
+ */
+function criarCacheRedis(): CacheDeEntitlements {
+  const redis = getRedis();
+
+  return {
+    ler: (chave) => redis.get(chave),
+    gravar: async (chave, valor, ttlSeg) => {
+      await redis.set(chave, valor, { ex: ttlSeg });
+    },
+    apagar: async (chave) => {
+      await redis.del(chave);
+    },
+  };
+}
 
 /**
  * Reconstrói o objeto guardado, ou devolve `null`.
@@ -513,20 +539,31 @@ export interface OpcoesDeResolucao {
 /**
  * Os direitos desta conta, agora.
  *
- * Ordem: cache → Postgres → cache. Uma falha do Redis não interrompe nada, e
- * também não concede nada: sem cache, a resposta continua vindo do Postgres.
+ * Ordem: cache → Postgres → cache.
  *
- * O que **não** é engolido é o Redis não estar configurado em produção —
- * `getRedis()` lança nesse caso, e a chamada fica de fora do `try` de propósito
- * para que a variável de ambiente esquecida apareça, em vez de virar um sistema
- * silenciosamente sem cache. Ver `src/lib/redis.ts`.
+ * Duas falhas diferentes, tratadas de formas diferentes:
+ *
+ * **Operacional** — o cliente existe, mas o `GET` ou o `SET` falhou (rede,
+ * Upstash fora, timeout). Capturada: sem cache, a resposta continua vindo do
+ * Postgres, que é a autoridade. Não interrompe nada e não concede nada.
+ *
+ * **De configuração** — em produção, sem `UPSTASH_REDIS_REST_URL`/`TOKEN`,
+ * `getRedis()` recusa. **Propaga.** A montagem do cache padrão
+ * (`criarCacheRedis()`) acontece antes do `try` abaixo justamente para isso:
+ * uma variável obrigatória esquecida tem de aparecer no primeiro pedido, e não
+ * virar um serviço rodando sem Redis distribuído sem que ninguém perceba.
+ *
+ * O `??` importa: com `opcoes.cache` injetado, `criarCacheRedis()` nem é
+ * avaliado, e nenhum teste precisa de Redis para exercitar esta função.
  */
 export async function entitlementsDoUsuario(
   userId: string,
   opcoes: OpcoesDeResolucao = {},
 ): Promise<Entitlements> {
   const fonte = opcoes.fonte ?? fontePrisma;
-  const cache = opcoes.cache ?? cacheRedis;
+  // Fora do `try` de propósito, e o `??` só avalia isto quando não há cache
+  // injetado. Ver o bloco acima sobre as duas falhas.
+  const cache = opcoes.cache ?? criarCacheRedis();
   const agora = opcoes.agora ?? new Date();
   const chave = chaveEntitlements(userId);
 
@@ -580,10 +617,21 @@ export async function entitlementsDoUsuario(
  * que acabou de perder.
  *
  * Nenhum desses fluxos existe ainda; esta fase entrega a função, não a chamada.
+ *
+ * **Aqui nada é capturado, e é deliberado.** Ao contrário da leitura de cache,
+ * onde falhar significa só consultar o Postgres, falhar em invalidar significa
+ * deixar de pé por até 120 s um direito que acabou de mudar — um cancelamento
+ * que não pega, ou uma compra que não aparece. Quem chamar precisa saber que
+ * não deu certo para poder tentar de novo; engolir aqui criaria exatamente a
+ * dessincronia que esta função existe para evitar.
+ *
+ * Pelo mesmo motivo do resto do módulo, a montagem do cache padrão fica fora de
+ * qualquer proteção: Redis não configurado em produção recusa, alto.
  */
 export async function invalidarEntitlements(
   userId: string,
-  cache: CacheDeEntitlements = cacheRedis,
+  cache?: CacheDeEntitlements,
 ): Promise<void> {
-  await cache.apagar(chaveEntitlements(userId));
+  const alvo = cache ?? criarCacheRedis();
+  await alvo.apagar(chaveEntitlements(userId));
 }
