@@ -1,4 +1,7 @@
 import { prisma } from "@/lib/prisma";
+import { latestItemPerContent } from "@/lib/continue-watching-items";
+
+export { latestItemPerContent } from "@/lib/continue-watching-items";
 
 export type ContinueWatchingItem = {
   historyId: string;
@@ -25,7 +28,6 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
       OR: [{ progressoSeg: { gt: 10 } }, { queued: true }],
     },
     orderBy: { updatedAt: "desc" },
-    take: 24,
     select: {
       id: true,
       conteudoId: true,
@@ -39,10 +41,11 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
     },
   });
 
-  if (!history.length) return [];
+  const latestHistory = latestItemPerContent(history).slice(0, 24);
+  if (!latestHistory.length) return [];
 
-  const movieIds = [...new Set(history.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
-  const seriesIds = [...new Set(history.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
+  const movieIds = [...new Set(latestHistory.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
+  const seriesIds = [...new Set(latestHistory.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
 
   const [movies, series] = await Promise.all([
     movieIds.length
@@ -62,7 +65,7 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
   const movieMap = new Map(movies.map((item) => [item.id, item]));
   const seriesMap = new Map(series.map((item) => [item.id, item]));
 
-  return history.flatMap((item) => {
+  return latestHistory.flatMap((item) => {
     const content = item.conteudoTipo === "filme"
       ? movieMap.get(item.conteudoId)
       : seriesMap.get(item.conteudoId);

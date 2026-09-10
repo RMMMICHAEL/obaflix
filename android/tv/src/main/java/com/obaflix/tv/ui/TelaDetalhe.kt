@@ -46,7 +46,9 @@ import coil.compose.AsyncImage
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.Detalhe
 import com.obaflix.tv.catalogo.Episodio
+import com.obaflix.tv.catalogo.EstadoPessoal
 import com.obaflix.tv.catalogo.Item
+import com.obaflix.tv.catalogo.ProgressoPessoal
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.player.Pedido
@@ -77,7 +79,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
     var detalhe by remember(destino.id) { mutableStateOf<Detalhe?>(null) }
     var relacionados by remember(destino.id) { mutableStateOf<List<Item>>(emptyList()) }
     var erro by remember(destino.id) { mutableStateOf(false) }
-    var progressos by remember(destino.id) { mutableStateOf<Map<String, Item>>(emptyMap()) }
+    var estadoPessoal by remember(destino.id) { mutableStateOf<EstadoPessoal?>(null) }
     var temporada by remember(destino.id) { mutableStateOf<Int?>(null) }
     var favorito by remember(destino.id) { mutableStateOf(false) }
     var recarga by remember(destino.id) { mutableStateOf(0) }
@@ -103,7 +105,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
     }
 
     LaunchedEffect(destino.id, recarga) {
-        progressos = ApiObaflix.continuarAssistindo().orEmpty().associateBy { it.chaveProgresso }
+        estadoPessoal = ApiObaflix.estadoPessoal(destino.id, destino.tipo)
     }
 
     LaunchedEffect(destino.id) {
@@ -175,7 +177,7 @@ fun TelaDetalhe(destino: Camada.Detalhe) {
                 detalhe = detalhe,
                 relacionados = relacionados,
                 temporada = temporada,
-                progressos = progressos,
+                estadoPessoal = estadoPessoal,
                 favorito = favorito,
                 margem = margem,
                 botaoPrincipal = botaoPrincipal,
@@ -195,7 +197,7 @@ private fun Conteudo(
     detalhe: Detalhe?,
     relacionados: List<Item>,
     temporada: Int?,
-    progressos: Map<String, Item>,
+    estadoPessoal: EstadoPessoal?,
     favorito: Boolean,
     margem: androidx.compose.ui.unit.Dp,
     botaoPrincipal: FocusRequester,
@@ -211,21 +213,30 @@ private fun Conteudo(
         if (detalhe == null || temporada == null) emptyList() else detalhe.episodiosDa(temporada)
     }
 
-    val emAndamento = remember(progressos, detalhe, base) {
-        if (!ehSerie) progressos[base.id]
-        else detalhe?.episodios?.firstNotNullOfOrNull { ep -> progressos[ep.id] }
+    val emAndamento = remember(estadoPessoal, detalhe, ehSerie) {
+        if (!ehSerie) null
+        else detalhe?.episodios?.firstOrNull { ep ->
+            ep.temporada == estadoPessoal?.temporada && ep.numeroEp == estadoPessoal?.numeroEp
+        }
     }
 
     val proximo = remember(emAndamento, detalhe, temporada, episodios) {
         when {
             !ehSerie -> null
-            emAndamento?.episodioId != null -> detalhe?.episodios?.firstOrNull { it.id == emAndamento.episodioId }
+            emAndamento != null -> emAndamento
             else -> detalhe?.episodios?.firstOrNull() ?: episodios.firstOrNull()
         }
     }
 
     fun pedido(episodio: Episodio?, doComeco: Boolean): Pedido {
-        val progresso = if (doComeco) 0 else progressos[episodio?.id ?: base.id]?.progressoSeg ?: 0
+        val progressoSalvo = if (episodio == null) {
+            estadoPessoal?.progressoSeg ?: 0
+        } else {
+            estadoPessoal?.progressoEpisodios?.get(episodio.id)
+                ?.takeUnless { it.concluido }
+                ?.progressoSeg ?: 0
+        }
+        val progresso = if (doComeco) 0 else progressoSalvo
         return Pedido(
             conteudoId = base.id,
             conteudoTipo = base.tipo,
@@ -321,7 +332,7 @@ private fun Conteudo(
             val rotuloPrincipal = when {
                 ehSerie && emAndamento != null && proximo != null ->
                     "Continuar T" + proximo.temporada + " E" + proximo.numeroEp
-                emAndamento != null && emAndamento.progressoSeg > 0 -> "Continuar"
+                !ehSerie && (estadoPessoal?.progressoSeg ?: 0) > 0 -> "Continuar"
                 else -> "Assistir"
             }
             BotaoAcao(
@@ -331,7 +342,7 @@ private fun Conteudo(
                 modifier = Modifier.focusRequester(botaoPrincipal),
                 aoClicar = { Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = false))) },
             )
-            if (emAndamento != null && emAndamento.progressoSeg > 0) {
+            if ((ehSerie && emAndamento != null) || (!ehSerie && (estadoPessoal?.progressoSeg ?: 0) > 0)) {
                 BotaoAcao(icone = "↺", texto = "Do início") {
                     Navegacao.abrir(Camada.Player(pedido(proximo, doComeco = true)))
                 }
@@ -355,8 +366,8 @@ private fun Conteudo(
             EspacoV(12.dp)
             GradeEpisodios(
                 episodios = episodios,
-                progressos = progressos,
-                emAndamento = emAndamento?.episodioId,
+                progressos = estadoPessoal?.progressoEpisodios.orEmpty(),
+                emAndamento = emAndamento?.id,
                 margem = margem,
                 aoAbrir = { ep -> Navegacao.abrir(Camada.Player(pedido(ep, doComeco = false))) },
             )
@@ -448,13 +459,14 @@ private fun SeletorTemporada(
 /**
  * Episodios como botoes numerados, como o mSelectionView da referencia.
  *
- * O primeiro carrega um ícone de play; os demais, o numero. O que esta em
- * andamento fica destacado, e os indisponiveis aparecem apagados.
+ * Episódios concluídos recebem uma marca de assistido; o primeiro ainda não
+ * iniciado carrega um ícone de play. O que está em andamento fica destacado,
+ * e os indisponíveis aparecem apagados.
  */
 @Composable
 private fun GradeEpisodios(
     episodios: List<Episodio>,
-    progressos: Map<String, Item>,
+    progressos: Map<String, ProgressoPessoal>,
     emAndamento: String?,
     margem: androidx.compose.ui.unit.Dp,
     aoAbrir: (Episodio) -> Unit,
@@ -474,9 +486,14 @@ private fun GradeEpisodios(
     ) {
         itemsIndexed(episodios, key = { _, ep -> ep.id }) { indice, ep ->
             BotaoEpisodio(
-                rotulo = if (indice == 0) "▶" else ep.numeroEp.toString(),
+                rotulo = when {
+                    progressos[ep.id]?.concluido == true -> "✓"
+                    indice == 0 -> "▶"
+                    else -> ep.numeroEp.toString()
+                },
                 emAndamento = ep.id == emAndamento,
-                progresso = progressos[ep.id]?.progresso ?: 0f,
+                progresso = progressos[ep.id]?.takeUnless { it.concluido }?.progresso ?: 0f,
+                concluido = progressos[ep.id]?.concluido == true,
                 disponivel = ep.disponivel,
                 aoClicar = { if (ep.disponivel) aoAbrir(ep) },
             )
@@ -489,6 +506,7 @@ private fun BotaoEpisodio(
     rotulo: String,
     emAndamento: Boolean,
     progresso: Float,
+    concluido: Boolean,
     disponivel: Boolean,
     aoClicar: () -> Unit,
 ) {
@@ -498,7 +516,7 @@ private fun BotaoEpisodio(
     val forma = RoundedCornerShape(6.dp)
     val fundo = when {
         focado -> Cores.FocoHalo
-        emAndamento -> Cores.Destaque
+        emAndamento || concluido -> Cores.Destaque
         else -> Cores.Superficie
     }
     val cor = when {

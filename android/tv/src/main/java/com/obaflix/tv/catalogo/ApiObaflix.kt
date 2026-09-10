@@ -256,7 +256,38 @@ object ApiObaflix {
         val arr = vetor("/api/continuar-assistindo") ?: return null
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { item(it, it.optString("conteudoTipo").ifBlank { "filme" }) }
-        }.distinctBy { it.chaveProgresso }
+        }.distinctBy { it.tipo + ":" + it.id }
+    }
+
+    /**
+     * Estado pessoal da ficha: a retomada e escolhida no servidor pelo
+     * `updatedAt`, enquanto os progressos individuais preservam as barras de
+     * todos os episodios ja vistos.
+     */
+    suspend fun estadoPessoal(conteudoId: String, tipo: String): EstadoPessoal? {
+        val tipoDaRota = if (tipo == "filme") "filme" else "serie"
+        val o = objeto("/api/user/continue?conteudoId=" + conteudoId + "&tipo=" + tipoDaRota) ?: return null
+        val continuar = o.optJSONObject("continuar")
+        val progressos = o.optJSONObject("progressoEpisodios")
+        val mapa = buildMap {
+            progressos?.keys()?.forEach { episodioId ->
+                val progresso = progressos.optJSONObject(episodioId) ?: return@forEach
+                put(
+                    episodioId,
+                    ProgressoPessoal(
+                        progressoSeg = progresso.optInt("progressoSeg"),
+                        duracaoSeg = progresso.optInt("duracaoSeg").takeIf { it > 0 },
+                        concluido = progresso.optBoolean("concluido"),
+                    ),
+                )
+            }
+        }
+        return EstadoPessoal(
+            temporada = continuar?.optInt("temporada")?.takeIf { it > 0 },
+            numeroEp = continuar?.optInt("numeroEp")?.takeIf { it > 0 },
+            progressoSeg = continuar?.optInt("progressoSeg") ?: 0,
+            progressoEpisodios = mapa,
+        )
     }
 
     // ── Catalogo filtrado ────────────────────────────────────────────────────

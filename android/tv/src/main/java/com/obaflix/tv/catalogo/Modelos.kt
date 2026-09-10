@@ -57,6 +57,24 @@ data class Fileira(
 
 data class Home(val destaques: List<Item>, val fileiras: List<Fileira>)
 
+data class ProgressoPessoal(
+    val progressoSeg: Int,
+    val duracaoSeg: Int?,
+    val concluido: Boolean,
+) {
+    val progresso: Float
+        get() = if (duracaoSeg != null && duracaoSeg > 0) {
+            (progressoSeg.toFloat() / duracaoSeg).coerceIn(0f, 1f)
+        } else 0f
+}
+
+data class EstadoPessoal(
+    val temporada: Int?,
+    val numeroEp: Int?,
+    val progressoSeg: Int,
+    val progressoEpisodios: Map<String, ProgressoPessoal>,
+)
+
 data class Episodio(
     val id: String,
     val serieId: String,

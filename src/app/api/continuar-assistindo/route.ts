@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { readJsonBody } from "@/lib/requestSecurity";
+import { latestItemPerContent } from "@/lib/continue-watching-items";
 
 export async function GET(req: NextRequest) {
   const usuario = await getUserFromRequest(req);
@@ -17,7 +18,6 @@ export async function GET(req: NextRequest) {
       OR: [{ progressoSeg: { gt: 10 } }, { queued: true }],
     },
     orderBy: { updatedAt: "desc" },
-    take: 24,
     select: {
       id: true,
       conteudoId: true,
@@ -31,11 +31,12 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  if (history.length === 0) return NextResponse.json([]);
+  const latestHistory = latestItemPerContent(history).slice(0, 24);
+  if (latestHistory.length === 0) return NextResponse.json([]);
 
   // Busca dados de filmes e séries por conteudoId (não via FK, que pode ser null em registros antigos)
-  const filmeIds = [...new Set(history.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
-  const serieIds = [...new Set(history.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
+  const filmeIds = [...new Set(latestHistory.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
+  const serieIds = [...new Set(latestHistory.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
 
   const [filmes, series] = await Promise.all([
     filmeIds.length
@@ -55,7 +56,7 @@ export async function GET(req: NextRequest) {
   const filmeMap = new Map(filmes.map((f) => [f.id, f]));
   const serieMap = new Map(series.map((s) => [s.id, s]));
 
-  const items = history
+  const items = latestHistory
     .map((h) => {
       const content =
         h.conteudoTipo === "filme"
