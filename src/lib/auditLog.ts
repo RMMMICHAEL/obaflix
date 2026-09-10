@@ -23,7 +23,17 @@ export type AuditEvent =
   // reaproveitar deixaria o contador de "ip_blocked" subir por uma revogação
   // de aparelho, que não tem nada a ver, e a métrica perderia sentido.
   | "tv_paired"
-  | "tv_device_revoked";
+  | "tv_device_revoked"
+  // Enforcement comercial, pelo mesmo motivo dos eventos de TV acima: somar uma
+  // recusa por plano ao contador de `stream_rejected`, que mede problema de
+  // token e de extração, faria as duas métricas perderem sentido justamente
+  // quando a monetização for ligada e o volume mudar.
+  //
+  // Os dois são separados de propósito: `playback_negado` é resposta sobre a
+  // conta, e crescer é esperado; `entitlements_indisponiveis` é incidente de
+  // infraestrutura, e crescer é alarme.
+  | "playback_negado"
+  | "entitlements_indisponiveis";
 
 interface AuditMeta {
   userId?: string;

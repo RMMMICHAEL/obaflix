@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import { autorizarCatalogo, negativaDeCatalogo } from "@/lib/playbackAuthorization";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
   diagnosticarSessao, diagFonte,
@@ -211,6 +212,22 @@ export async function POST(req: NextRequest) {
     fontes.map((f) => (ehAdmin ? projetarAdmin(f) : projetarPublica(f)));
 
   // ── Segunda fase: alternativas do Playerflix numa sessão já existente ──────
+  //
+  // Sem enforcement comercial aqui, e é decisão, não esquecimento.
+  //
+  // O único indício do tipo de conteúdo neste caminho é `corpo.conteudoTipo`,
+  // que vem do cliente. Reautorizar por ele seria pior que não reautorizar: um
+  // cliente sem direito a séries declararia "filme" e passaria — e a checagem
+  // daria a impressão de existir uma trava que na verdade o cliente controla.
+  // A sessão foi criada antes desta fase e não guarda metadado comercial que
+  // prove qual conteúdo a originou.
+  //
+  // Reprojetar o formato da sessão para carregar essa prova é mudança de
+  // `fontes.ts` que a Fase 3 não faz. A consequência está registrada em
+  // docs/monetizacao-arquitetura.md: uma sessão aberta antes da perda de
+  // direito segue utilizável pelo TTL dela, e `/api/player/token` também
+  // consome sessão existente sem nova checagem comercial. Esta fase impede
+  // sessões NOVAS; revogação imediata pertence à fase de concessões.
   if (typeof corpo.sessao === "string" && corpo.alternativas === true) {
     const sessao = corpo.sessao;
     const estado = await diagnosticarSessao(sessao, userId);
@@ -269,6 +286,36 @@ export async function POST(req: NextRequest) {
   // ── Primeira fase: monta a lista base e abre a sessão ──────────────────────
   if (!conteudoId) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+
+  // Série sem temporada/episódio é pedido inválido, e a montagem já recusava
+  // isso mais abaixo. Conferir aqui antecipa o 400 para antes da decisão
+  // comercial: não faz sentido resolver direitos — nem negar por plano — um
+  // pedido que seria descartado por má formação de qualquer jeito.
+  if (conteudoTipo === "serie" && (temporada === null || numeroEp === null)) {
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+
+  // ── Enforcement comercial (Fase 3) ────────────────────────────────────────
+  //
+  // Só `direitos.filmes` e `direitos.series`, e só aqui: na criação de uma
+  // sessão NOVA. Atrás de MONETIZACAO_ATIVA, que nasce desligada — com a flag
+  // off, `autorizarCatalogo` devolve permitido sem resolver nada, e o caminho
+  // de reprodução fica idêntico ao de hoje.
+  //
+  // A posição é escolhida: depois da autenticação e da validação do pedido, e
+  // ANTES de Warez, Playerflix, `montarFontes` e `criarSessaoFontes`. Um
+  // usuário negado não deve custar requisição a provedor externo nem deixar
+  // sessão no Redis — e um erro nas buscas externas não deve mascarar a recusa.
+  //
+  // Não decide nada por nome de plano, por `planoId`, por `assinatura.ativa`,
+  // pelo `role` do JWT nem por campo do corpo. O admin também passa por aqui:
+  // a reconfirmação de `role` acima decide qual projeção ele enxerga, e não o
+  // isenta comercialmente enquanto não houver decisão explícita nesse sentido.
+  const negativa = negativaDeCatalogo(await autorizarCatalogo(userId, conteudoTipo));
+  if (negativa) {
+    audit(negativa.evento, { userId, ip, ua, detail: `/fontes: ${conteudoTipo}` });
+    return NextResponse.json(negativa.corpo, { status: negativa.status, headers: NO_STORE });
   }
 
   let tmdbId: string | null = null;
