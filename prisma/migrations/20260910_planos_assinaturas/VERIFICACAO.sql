@@ -47,7 +47,7 @@ WHERE c.relname = 'Assinatura_pedidoId_key'
 -- 5. As quatro chaves estrangeiras, com a acao de delete correta.
 SELECT 'chaves estrangeiras' AS item,
        count(*) = 4 AS ok,
-       string_agg(conname || ' -> ' || confdeltype, ', ' ORDER BY conname) AS encontrado
+       string_agg(conname || ' -> ' || confdeltype::text, ', ' ORDER BY conname) AS encontrado
        -- confdeltype: c=CASCADE, r=RESTRICT, n=SET NULL
        -- esperado: PlanoPreco_planoId c | Assinatura_userId c
        --           Assinatura_planoId r | Assinatura_planoPrecoId n
