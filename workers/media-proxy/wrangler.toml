@@ -15,5 +15,19 @@ APP_ORIGIN = "https://obaflix.vercel.app"
 # assinatura válida.
 CDN_ALLOWLIST = ""
 
-# ASSINATURA_SECRET NÃO vai aqui. É o mesmo valor de NEXTAUTH_SECRET no backend:
+# Sufixos permitidos para a PÁGINA que arma o grant de canal. Lista própria, e
+# não a de CDN: são papéis diferentes, com hosts diferentes. Juntá-las daria a um
+# host de CDN comprometido o direito de ser buscado como página de arm.
+# Vazia recusa o arm — nunca o libera.
+CANAIS_PLAYER_ALLOWLIST = ""
+
+# Base pública deste Worker. O mesmo valor de CANAIS_MEDIA_BASE no backend.
+CANAIS_MEDIA_BASE = ""
+
+# ASSINATURA_SECRET NÃO vai aqui. É o CANAIS_MEDIA_SIGNING_SECRET do backend —
+# um segredo próprio, criado só para isto, e NÃO o NEXTAUTH_SECRET: este Worker
+# roda em infra de terceiro, e um vazamento aqui não pode alcançar a assinatura
+# de sessão de autenticação do produto.
 #   npx wrangler secret put ASSINATURA_SECRET
+#   npx wrangler secret put UPSTASH_REDIS_REST_URL
+#   npx wrangler secret put UPSTASH_REDIS_REST_TOKEN

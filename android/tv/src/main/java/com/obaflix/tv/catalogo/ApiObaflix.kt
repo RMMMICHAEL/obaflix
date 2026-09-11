@@ -560,8 +560,9 @@ object ApiObaflix {
     /**
      * Catalogo de canais desta conta.
      *
-     * A rota ja filtra por entitlement e ja marca `liberado`. O aparelho nao
-     * refaz nenhuma das duas contas: ele desenha o que veio.
+     * A rota ja filtra por entitlement: o que volta e so o que esta conta pode
+     * abrir. O aparelho nao refaz essa conta e nao tem canal bloqueado para
+     * desenhar — ele desenha o que veio.
      */
     suspend fun canais(): CatalogoDeCanais? {
         val raiz = objeto("/api/canais") ?: return null
@@ -576,8 +577,6 @@ object ApiObaflix {
                     nome = texto(o, "nome") ?: "Canal",
                     categoria = texto(o, "categoria") ?: "variedades",
                     logoUrl = texto(o, "logoUrl"),
-                    nivelMinimo = texto(o, "nivelMinimo") ?: "premium",
-                    liberado = o.optBoolean("liberado"),
                 )
             }
         }.orEmpty()
@@ -617,17 +616,19 @@ object ApiObaflix {
     /**
      * Pede a concessao de reproducao de um canal.
      *
-     * So e chamada no OK. Passar o foco por um card **nao** chega aqui: cada
-     * chamada resolve o canal no provedor, e percorrer uma grade de cem canais
-     * abriria cem sessoes em alguns segundos.
+     * So e chamada no OK e na renovacao periodica. Passar o foco por um card
+     * **nao** chega aqui: a primeira chamada resolve o canal no provedor, e
+     * percorrer uma grade de cem canais abriria cem sessoes em alguns segundos.
      *
      * Precisa do status HTTP, e nao so do corpo, porque 403 e 404 levam a telas
      * diferentes — por isso repete a logica de renovacao em vez de usar
      * `executar`, que descarta o status.
      */
-    suspend fun concessaoDeCanal(canalId: String): Concessao = withContext(Dispatchers.IO) {
+    suspend fun concessaoDeCanal(canalId: String, sessionId: String? = null): Concessao = withContext(Dispatchers.IO) {
         val caminho = "/api/canais/" + java.net.URLEncoder.encode(canalId, "UTF-8") + "/play"
-        val corpo = JSONObject()
+        // Com `sessionId`, o servidor renova sem voltar ao provedor; sem ele,
+        // resolve do zero. A checagem de entitlement acontece nos dois casos.
+        val corpo = JSONObject().apply { if (sessionId != null) put("sessionId", sessionId) }
 
         var r = chamarLendoErro(caminho, corpo)
         if (r.status == 401) {
@@ -642,7 +643,12 @@ object ApiObaflix {
                 val raiz = r.corpo?.let { runCatching { JSONObject(it) }.getOrNull() }
                 val url = raiz?.let { texto(it, "manifestUrl") }
                     ?: return@withContext Concessao.FalhaTemporaria
-                Concessao.Liberado(url, raiz.optLong("expiraEm"))
+                Concessao.Liberado(
+                    manifestUrl = url,
+                    sessionId = texto(raiz, "sessionId") ?: "",
+                    expiraEm = raiz.optLong("expiraEm"),
+                    validoPorSegundos = raiz.optInt("validoPorSegundos", 300),
+                )
             }
             401 -> Concessao.SemSessao
             403 -> {

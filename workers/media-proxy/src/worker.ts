@@ -23,15 +23,21 @@ export interface Env extends EnvCanais {
   /**
    * Os campos vêm de `EnvCanais`:
    *
-   *   ASSINATURA_SECRET       mesmo segredo do backend (NEXTAUTH_SECRET)
-   *   CDN_ALLOWLIST           sufixos de host permitidos como alvo
-   *   APP_ORIGIN              origem do app, única autorizada no CORS
-   *   CANAIS_MEDIA_BASE       base pública deste Worker, para reescrever HLS
-   *   UPSTASH_REDIS_REST_*    sessão de canal (ver `canais.ts`)
+   *   ASSINATURA_SECRET        segredo de assinatura de mídia
+   *   CDN_ALLOWLIST            sufixos de host permitidos como alvo de mídia
+   *   CANAIS_PLAYER_ALLOWLIST  sufixos permitidos para a página que arma o grant
+   *   APP_ORIGIN               origem do app, única autorizada no CORS
+   *   CANAIS_MEDIA_BASE        base pública deste Worker, para reescrever HLS
+   *   UPSTASH_REDIS_REST_*     sessão de canal (ver `canais.ts`)
    *
-   * Os três primeiros já eram usados pelo caminho de filmes/séries; os dois
-   * últimos só pelo de canais. Um deploy sem eles mantém filmes/séries
-   * funcionando e devolve 403 em canal — que é a falha correta.
+   * `ASSINATURA_SECRET` é o `CANAIS_MEDIA_SIGNING_SECRET` do backend, e **não**
+   * o `NEXTAUTH_SECRET`. Este Worker roda em infra de terceiro, com outra
+   * superfície de deploy e outra lista de quem pode ler secrets; um vazamento
+   * aqui não pode alcançar a assinatura de sessão de autenticação do produto.
+   * O pior caso passa a ser "emitir URL de mídia válida" — ruim, e limitado.
+   *
+   * Um deploy sem as variáveis de canal mantém filmes/séries funcionando e
+   * devolve 403 em canal, que é a falha correta.
    */
 }
 

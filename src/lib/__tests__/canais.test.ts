@@ -6,38 +6,89 @@
  *
  * A divisão segue as camadas:
  *
- *   1. acesso      — a escala ordenada de níveis
+ *   1. acesso      — a escala ordenada, e os dois domínios que não são o mesmo
  *   2. autorização — a rota de concessão, por injeção de dependência
  *   3. catálogo    — o que sai e o que não sai na listagem
  *   4. resolver    — SSRF, allowlist, protocolo
- *   5. assinatura  — expiração, adulteração, escopo, dono
- *   6. HLS         — nenhuma URL de upstream sobrevive à reescrita
+ *   5. assinatura  — expiração, adulteração, escopo, nonce, segredo próprio
+ *   6. sessão      — renovação, dono, canal, teto absoluto
+ *   7. HLS         — nenhuma URL de upstream sobrevive à reescrita
  */
+
+// O segredo de assinatura é próprio, e não o NEXTAUTH_SECRET. Precisa existir
+// antes do import de `sessao.ts`, que o lê na derivação da chave.
+process.env.CANAIS_MEDIA_SIGNING_SECRET ||= "segredo-de-canais-para-teste";
 
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NextRequest } from "next/server";
 
-import { autorizarCanal, nivelAlcanca } from "../canais/acesso";
+import {
+  autorizarCanal,
+  ehNivelMinimoDeCanal,
+  nivelAlcanca,
+  niveisAlcancadosPor,
+  NIVEIS_MINIMOS_DE_CANAL,
+} from "../canais/acesso";
 import { extrairCandidatosDeMidia } from "../canais/resolver";
 import { hostDeMidiaPermitido, ehIdDeProviderValido, montarUrlDoPlayer } from "../canais/providers";
-import { materialAssinado } from "../canais/assinatura";
+import {
+  desempacotarRecurso,
+  empacotarRecurso,
+  materialAssinado,
+  mesmaOrigem,
+} from "../canais/assinatura";
 import { reescreverManifesto, vazaUpstream } from "../canais/hls";
+import {
+  assinar,
+  assinaturaConfere,
+  criarSessaoDeCanal,
+  derivarSub,
+  lerSessao,
+  renovarSessaoDeCanal,
+  TTL_GRANT_S,
+} from "../canais/sessao";
 import { createPlayCanalHandler, type CanalDoBanco } from "../../app/api/canais/[id]/play/route";
 import { createCanaisCatalogoHandler } from "../../app/api/canais/route";
 
-// ── 1. Acesso: a escala ordenada ─────────────────────────────────────────────
+// ── 1. Acesso: a escala, e os dois domínios ──────────────────────────────────
 
 test("nivelAlcanca respeita a ordem nenhum < gratuito < plus < premium", () => {
   assert.equal(nivelAlcanca("premium", "plus"), true);
   assert.equal(nivelAlcanca("premium", "premium"), true);
   assert.equal(nivelAlcanca("plus", "premium"), false);
   assert.equal(nivelAlcanca("gratuito", "plus"), false);
+  assert.equal(nivelAlcanca("gratuito", "gratuito"), true);
+});
+
+test('"nenhum" na conta nunca alcança canal algum — nem um marcado "nenhum"', () => {
+  // O bug que isto tranca: a comparação por índice fazia 0 >= 0 e uma conta sem
+  // direito a canal algum recebia autorização para um canal marcado "nenhum".
+  assert.equal(nivelAlcanca("nenhum", "nenhum"), false);
   assert.equal(nivelAlcanca("nenhum", "gratuito"), false);
-  // Valor fora do domínio nunca permite — nem como concedido, nem como exigido.
-  assert.equal(nivelAlcanca("deus", "premium"), false);
-  assert.equal(nivelAlcanca("premium", "inexistente"), false);
-  assert.equal(nivelAlcanca("", ""), false);
+  assert.equal(nivelAlcanca("nenhum", "plus"), false);
+  assert.equal(nivelAlcanca("nenhum", "premium"), false);
+  assert.deepEqual(niveisAlcancadosPor("nenhum"), []);
+});
+
+test('"nenhum" não é nível mínimo válido de canal', () => {
+  assert.deepEqual([...NIVEIS_MINIMOS_DE_CANAL], ["gratuito", "plus", "premium"]);
+  assert.equal(ehNivelMinimoDeCanal("nenhum"), false);
+  assert.equal(ehNivelMinimoDeCanal("gratuito"), true);
+  // Nenhuma conta, nem a premium, alcança um canal com nível fora do domínio.
+  assert.equal(nivelAlcanca("premium", "nenhum"), false);
+  assert.equal(nivelAlcanca("premium", "vip"), false);
+  assert.equal(nivelAlcanca("premium", ""), false);
+});
+
+test("niveisAlcancadosPor devolve exatamente o que a conta abre", () => {
+  assert.deepEqual(niveisAlcancadosPor("premium"), ["gratuito", "plus", "premium"]);
+  assert.deepEqual(niveisAlcancadosPor("plus"), ["gratuito", "plus"]);
+  assert.deepEqual(niveisAlcancadosPor("gratuito"), ["gratuito"]);
+  // Fora do domínio é lista vazia, que quer dizer catálogo vazio — nunca
+  // catálogo inteiro.
+  assert.deepEqual(niveisAlcancadosPor("vip"), []);
+  assert.deepEqual(niveisAlcancadosPor(""), []);
 });
 
 test("autorizarCanal nega plano insuficiente, canal inativo e canal adulto", () => {
@@ -48,12 +99,12 @@ test("autorizarCanal nega plano insuficiente, canal inativo e canal adulto", () 
   assert.equal(autorizarCanal(base, "gratuito").situacao, "negado");
   assert.equal(autorizarCanal(base, "nenhum").situacao, "negado");
 
-  // Canal fora do ar nega mesmo para premium.
   assert.equal(autorizarCanal({ ...base, ativo: false }, "premium").situacao, "negado");
-  // Adulto nega mesmo ativo e mesmo para premium.
   assert.equal(autorizarCanal({ ...base, adulto: true }, "premium").situacao, "negado");
 
-  // Nível fora do domínio é incidente, não resposta sobre a conta.
+  // Nível de canal fora do domínio estreito é inconsistência de dado, não
+  // resposta sobre a conta — e "nenhum" entra nesse caso.
+  assert.equal(autorizarCanal({ ...base, nivelMinimo: "nenhum" }, "premium").situacao, "indeterminado");
   assert.equal(autorizarCanal({ ...base, nivelMinimo: "vip" }, "premium").situacao, "indeterminado");
   assert.equal(autorizarCanal(base, "vip").situacao, "indeterminado");
 });
@@ -79,7 +130,7 @@ const CANAL_PLUS: CanalDoBanco = {
 };
 
 function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, canal = CANAL_PLUS) {
-  const chamadas = { resolveu: 0, sessoes: 0 };
+  const chamadas = { resolveu: 0, sessoes: 0, renovacoes: 0 };
   const handler = createPlayCanalHandler({
     env: { CANAIS_MEDIA_BASE: "https://media.example.test" },
     clientIp: () => "1.2.3.4",
@@ -87,6 +138,7 @@ function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, 
     recordAbuseAttempt: async () => {},
     getUserFromRequest: async () => ({ userId: "u1" }),
     checkRateLimit: async () => ({ allowed: true }),
+    lerCorpo: async () => ({}),
     buscarCanal: async (id) => (id === canal.id || id === canal.slug ? canal : null),
     nivelDaConta: async () => "premium",
     resolver: async () => {
@@ -95,7 +147,16 @@ function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, 
     },
     criarSessao: async () => {
       chamadas.sessoes++;
-      return { sessionId: "s".repeat(32), exp: 2_000_000_000, sig: "a".repeat(22) };
+      return {
+        sessionId: "s".repeat(32),
+        exp: 2_000_000_000,
+        sig: "a".repeat(22),
+        validoPorSegundos: TTL_GRANT_S,
+      };
+    },
+    renovarSessao: async () => {
+      chamadas.renovacoes++;
+      return null;
     },
     audit: () => {},
     ...over,
@@ -112,7 +173,6 @@ test("sem sessão: playback negado, e nada é resolvido", async () => {
   const r = await run();
   assert.equal(r.status, 401);
   assert.equal((await r.json()).erro, "nao_autenticado");
-  // A parte cara nunca é paga por quem não provou ser ninguém.
   assert.equal(chamadas.resolveu, 0);
 });
 
@@ -124,6 +184,18 @@ test("canaisNivel=nenhum e plano abaixo do canal: negado, sem resolver", async (
     assert.equal((await r.json()).erro, "upgrade_necessario");
     assert.equal(chamadas.resolveu, 0);
   }
+});
+
+test('conta "nenhum" é negada mesmo num canal com nivelMinimo "nenhum"', async () => {
+  // O banco recusa criar essa linha (CHECK), mas se ela existir — migration
+  // revertida, escrita fora da ferramenta — a rota ainda nega.
+  const canalQuebrado = { ...CANAL_PLUS, nivelMinimo: "nenhum" };
+  const { run, chamadas } = play({ nivelDaConta: async () => "nenhum" }, canalQuebrado);
+  const r = await run();
+  assert.equal(r.status, 503);
+  assert.equal((await r.json()).erro, "indeterminado");
+  assert.equal(chamadas.resolveu, 0);
+  assert.equal(chamadas.sessoes, 0);
 });
 
 test("plus tentando premium é negado; premium no canal premium é permitido", async () => {
@@ -141,14 +213,10 @@ test("plus tentando premium é negado; premium no canal premium é permitido", a
 
 test("channelId inexistente e channelId adulterado não elevam acesso", async () => {
   const { run } = play();
-  // Id que não existe.
   assert.equal((await run("nao-existe")).status, 404);
-  // Id absurdo/gigante: mesma recusa, sem exceção e sem consulta especial.
   assert.equal((await run("../../etc/passwd")).status, 404);
   assert.equal((await run("x".repeat(200))).status, 404);
 
-  // Trocar o id para um canal premium com uma conta plus continua negando: o
-  // direito sai da linha do banco, nunca do que o cliente digitou.
   const premium = { ...CANAL_PLUS, id: "canal-premium", slug: "premium", nivelMinimo: "premium" };
   const tentativa = play({ nivelDaConta: async () => "plus" }, premium);
   assert.equal((await tentativa.run("canal-premium")).status, 403);
@@ -184,16 +252,78 @@ test("a concessão devolve só URL do edge — nunca upstream, provider ou playe
   const texto = JSON.stringify(corpo);
 
   assert.match(corpo.manifestUrl, /^https:\/\/media\.example\.test\/canal\/s+\/master\.m3u8\?e=\d+&k=/);
-  // O host do CDN, o host do player, a chave do provider e o id dele no
-  // provider — nenhum tem caminho para a resposta.
   for (const proibido of ["cdn.example.test", "player.example.test", "megafrix", "Referer", "cookie"]) {
     assert.equal(texto.includes(proibido), false, `vazou "${proibido}" na concessão`);
   }
-  // `abc` é o providerChannelId. Testado à parte porque é curto o bastante para
-  // casar por acidente dentro de um id de sessão aleatório — aqui a sessão é
-  // fixa, então a asserção é honesta.
   assert.equal(texto.includes("abc"), false, "vazou o providerChannelId");
   assert.equal(r.headers.get("Cache-Control")?.includes("no-store"), true);
+});
+
+test("renovação reautoriza e não volta ao provider", async () => {
+  const { run, chamadas } = play({
+    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
+    renovarSessao: async () => {
+      chamadas.renovacoes++;
+      return {
+        sessionId: "S".repeat(32),
+        exp: 2_000_000_000,
+        sig: "b".repeat(22),
+        validoPorSegundos: TTL_GRANT_S,
+      };
+    },
+  });
+
+  const r = await run();
+  assert.equal(r.status, 200);
+  assert.equal(chamadas.renovacoes, 1);
+  // O ponto da renovação: entitlement foi reconferido, provider não foi tocado.
+  assert.equal(chamadas.resolveu, 0);
+  assert.equal(chamadas.sessoes, 0);
+});
+
+test("renovação recusada cai para o caminho completo, sem erro para o cliente", async () => {
+  const { run, chamadas } = play({
+    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
+    // `null` é o que `renovarSessaoDeCanal` devolve para sessão de outra conta,
+    // de outro canal, sumida ou passada do teto absoluto.
+    renovarSessao: async () => null,
+  });
+  const r = await run();
+  assert.equal(r.status, 200);
+  assert.equal(chamadas.resolveu, 1);
+  assert.equal(chamadas.sessoes, 1);
+});
+
+test("renovação não escapa da checagem de entitlement", async () => {
+  let renovou = 0;
+  const { run } = play({
+    nivelDaConta: async () => "gratuito",
+    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
+    renovarSessao: async () => {
+      renovou++;
+      return { sessionId: "x", exp: 1, sig: "y", validoPorSegundos: 1 };
+    },
+  });
+  const r = await run();
+  assert.equal(r.status, 403);
+  // A renovação nem chega a ser tentada: o plano já não alcança o canal.
+  assert.equal(renovou, 0);
+});
+
+test("sessionId malformado no corpo é ignorado, não confiado", async () => {
+  for (const ruim of ["../outro", "a b", "x".repeat(200), "", 42, null, { a: 1 }]) {
+    let renovou = 0;
+    const { run } = play({
+      lerCorpo: async () => ({ sessionId: ruim }),
+      renovarSessao: async () => {
+        renovou++;
+        return null;
+      },
+    });
+    const r = await run();
+    assert.equal(r.status, 200);
+    assert.equal(renovou, 0, `tentou renovar com sessionId ${JSON.stringify(ruim)}`);
+  }
 });
 
 test("sem CANAIS_MEDIA_BASE a rota falha em vez de entregar o upstream", async () => {
@@ -224,17 +354,17 @@ function catalogo(over: Partial<Parameters<typeof createCanaisCatalogoHandler>[0
     isIpBlocked: async () => false,
     getUserFromRequest: async () => ({ userId: "u1" }),
     nivelDaConta: async () => "gratuito",
-    listarCanais: async ({ nivelDaConta }) => [
-      {
-        id: "c1", slug: "aberto", nome: "Aberto", categoria: "abertos", logoUrl: null,
-        aoVivo: true, nivelMinimo: "gratuito", liberado: nivelAlcanca(nivelDaConta, "gratuito"),
-      },
-      {
-        id: "c2", slug: "pago", nome: "Pago", categoria: "esportes", logoUrl: null,
-        aoVivo: true, nivelMinimo: "premium", liberado: nivelAlcanca(nivelDaConta, "premium"),
-      },
-    ],
-    categoriasComCanais: async () => ["todos", "abertos", "esportes"],
+    // Espelha o que `listarCanais` faz de verdade: filtra por nível na consulta
+    // e projeta só os campos públicos.
+    listarCanais: async ({ nivelDaConta }) =>
+      [
+        { nivelMinimo: "gratuito", item: { id: "c1", slug: "aberto", nome: "Aberto", categoria: "abertos", logoUrl: null, aoVivo: true } },
+        { nivelMinimo: "premium", item: { id: "c2", slug: "pago", nome: "Pago", categoria: "esportes", logoUrl: null, aoVivo: true } },
+      ]
+        .filter((l) => niveisAlcancadosPor(nivelDaConta).includes(l.nivelMinimo as never))
+        .map((l) => l.item),
+    categoriasComCanais: async (nivelDaConta) =>
+      nivelDaConta === "premium" ? ["todos", "abertos", "esportes"] : ["todos", "abertos"],
     ...over,
   });
 }
@@ -245,18 +375,41 @@ test("catálogo exige sessão", async () => {
   assert.equal(r.status, 401);
 });
 
-test("catálogo não expõe HLS, player URL, provider nem cookie", async () => {
-  const h = catalogo();
+test("catálogo não devolve canal que a conta não pode abrir", async () => {
+  const gratuita = catalogo();
+  const corpoGratuito = await (await gratuita(new NextRequest("http://local/api/canais"))).json();
+
+  assert.deepEqual(corpoGratuito.canais.map((c: { slug: string }) => c.slug), ["aberto"]);
+  // Nem o nome, nem a existência do canal premium chegam à conta gratuita.
+  assert.equal(JSON.stringify(corpoGratuito).includes("Pago"), false);
+  // E a categoria só dele também não, senão a ausência contaria a mesma coisa.
+  assert.equal(JSON.stringify(corpoGratuito).includes("esportes"), false);
+
+  const premium = catalogo({ nivelDaConta: async () => "premium" });
+  const corpoPremium = await (await premium(new NextRequest("http://local/api/canais"))).json();
+  assert.deepEqual(corpoPremium.canais.map((c: { slug: string }) => c.slug), ["aberto", "pago"]);
+});
+
+test('conta "nenhum" recebe catálogo vazio, não catálogo inteiro', async () => {
+  const h = catalogo({ nivelDaConta: async () => "nenhum" });
+  const corpo = await (await h(new NextRequest("http://local/api/canais"))).json();
+  assert.deepEqual(corpo.canais, []);
+});
+
+test("catálogo não expõe HLS, player URL, provider, nível nem cookie", async () => {
+  const h = catalogo({ nivelDaConta: async () => "premium" });
   const r = await h(new NextRequest("http://local/api/canais"));
   const texto = JSON.stringify(await r.json());
 
-  for (const proibido of [".m3u8", "media_url", "player_url", "megafrix", "providerChannelId", "Cookie", "referer"]) {
+  for (const proibido of [
+    ".m3u8", "media_url", "player_url", "megafrix", "providerChannelId",
+    "Cookie", "referer",
+    // O nível saiu da projeção: com o filtro por entitlement, todo canal da
+    // lista é abrível, e o campo não tem mais uso na interface.
+    "nivelMinimo", "liberado",
+  ]) {
     assert.equal(texto.toLowerCase().includes(proibido.toLowerCase()), false, `vazou "${proibido}"`);
   }
-  // O que o cliente precisa para desenhar o cadeado: nível e liberado.
-  const corpo = JSON.parse(texto);
-  assert.equal(corpo.canais[0].liberado, true);
-  assert.equal(corpo.canais[1].liberado, false, "gratuito não pode ver premium como liberado");
   assert.equal(r.headers.get("Cache-Control")?.includes("no-store"), true);
 });
 
@@ -274,7 +427,6 @@ test("entitlements indefinidos devolvem 503, nunca catálogo aberto", async () =
 // ── 4. Resolver: SSRF, allowlist, protocolo ──────────────────────────────────
 
 test("allowlist de mídia: vazia nega tudo, e sufixo não casa prefixo", () => {
-  // Sem a variável, nada passa. Allowlist vazia que libera seria um SSRF.
   assert.equal(hostDeMidiaPermitido("cdn.example.test", {}), false);
   assert.equal(hostDeMidiaPermitido("cdn.example.test", { CANAIS_CDN_ALLOWLIST: "" }), false);
 
@@ -282,7 +434,6 @@ test("allowlist de mídia: vazia nega tudo, e sufixo não casa prefixo", () => {
   assert.equal(hostDeMidiaPermitido("example.test", env), true);
   assert.equal(hostDeMidiaPermitido("cdn.example.test", env), true);
   assert.equal(hostDeMidiaPermitido("CDN.EXAMPLE.TEST", env), true);
-  // O ataque clássico de sufixo sem ponto.
   assert.equal(hostDeMidiaPermitido("malexample.test", env), false);
   assert.equal(hostDeMidiaPermitido("example.test.mal.com", env), false);
 });
@@ -298,11 +449,8 @@ test("candidatos de mídia: só https, e o resolver recusa interno e não-HTTPS"
     </script>`;
   const achados = extrairCandidatosDeMidia(html);
 
-  // http:// e ftp:// nem chegam a ser candidatos — o padrão exige https.
   assert.equal(achados.some((u) => u.startsWith("http://")), false);
   assert.equal(achados.some((u) => u.startsWith("ftp:")), false);
-  // localhost é candidato aqui, e é recusado adiante por `assertSafeUrl` e pela
-  // allowlist. As duas portas são independentes de propósito.
   assert.equal(achados.includes("https://localhost/live.m3u8"), true);
   assert.equal(hostDeMidiaPermitido("localhost", { CANAIS_CDN_ALLOWLIST: "example.test" }), false);
   assert.equal(achados.includes("https://cdn.example.test/live/master.m3u8"), true);
@@ -319,23 +467,31 @@ test("providerChannelId fora do formato não monta URL de player", () => {
 
 // ── 5. Assinatura ────────────────────────────────────────────────────────────
 
-test("o material assinado separa escopo, sessão, recurso e expiração", () => {
-  const m = materialAssinado({ escopo: "s", sessionId: "sid", recurso: "0/seg.ts", exp: 42 });
-  assert.equal(m, "s:sid:0/seg.ts:42");
-  // Trocar o escopo muda o material: uma assinatura de manifesto não vale como
-  // assinatura de segmento, e é isso que dá efeito ao TTL curto do segmento.
-  assert.notEqual(m, materialAssinado({ escopo: "m", sessionId: "sid", recurso: "0/seg.ts", exp: 42 }));
-  // Trocar qualquer campo muda o material.
-  assert.notEqual(m, materialAssinado({ escopo: "s", sessionId: "sid2", recurso: "0/seg.ts", exp: 42 }));
-  assert.notEqual(m, materialAssinado({ escopo: "s", sessionId: "sid", recurso: "1/seg.ts", exp: 42 }));
-  assert.notEqual(m, materialAssinado({ escopo: "s", sessionId: "sid", recurso: "0/seg.ts", exp: 43 }));
+test("o material assinado separa escopo, sessão, nonce, recurso e expiração", () => {
+  const p = { escopo: "s" as const, sessionId: "sid", nonce: "n1", recurso: "0/seg.ts", exp: 42 };
+  assert.equal(materialAssinado(p), "s:sid:n1:0/seg.ts:42");
+
+  // Trocar qualquer campo muda o material — inclusive o nonce, que é o que dá
+  // à renovação o poder de derrubar URLs já emitidas.
+  for (const dif of [
+    { ...p, escopo: "m" as const },
+    { ...p, sessionId: "sid2" },
+    { ...p, nonce: "n2" },
+    { ...p, recurso: "1/seg.ts" },
+    { ...p, exp: 43 },
+  ]) {
+    assert.notEqual(materialAssinado(p), materialAssinado(dif));
+  }
 });
 
-test("assinar e conferir: adulteração, expiração e dono", async (t) => {
-  process.env.NEXTAUTH_SECRET ||= "segredo-de-teste";
-  const { assinar, assinaturaConfere, derivarSub } = await import("../canais/sessao");
-
-  const p = { escopo: "m" as const, sessionId: "sid-1", recurso: "master", exp: 2_000_000_000 };
+test("assinar e conferir: adulteração, expiração, escopo e nonce", async (t) => {
+  const p = {
+    escopo: "m" as const,
+    sessionId: "sid-1",
+    nonce: "nonce-1",
+    recurso: "master",
+    exp: 2_000_000_000,
+  };
   const sig = assinar(p);
 
   await t.test("assinatura válida confere", () => {
@@ -343,19 +499,20 @@ test("assinar e conferir: adulteração, expiração e dono", async (t) => {
   });
 
   await t.test("token alterado é recusado", () => {
-    // Um caractere trocado.
     const adulterada = (sig[0] === "A" ? "B" : "A") + sig.slice(1);
     assert.equal(assinaturaConfere(p, adulterada), false);
-    // Comprimento diferente também, sem lançar.
     assert.equal(assinaturaConfere(p, sig.slice(1)), false);
     assert.equal(assinaturaConfere(p, ""), false);
   });
 
-  await t.test("recurso, sessão ou escopo diferentes não reaproveitam a assinatura", () => {
+  await t.test("nonce diferente não confere — é o que a renovação derruba", () => {
+    assert.equal(assinaturaConfere({ ...p, nonce: "nonce-2" }, sig), false);
+  });
+
+  await t.test("recurso, sessão, escopo ou exp diferentes não reaproveitam", () => {
     assert.equal(assinaturaConfere({ ...p, recurso: "0/outro.ts" }, sig), false);
     assert.equal(assinaturaConfere({ ...p, sessionId: "sid-2" }, sig), false);
     assert.equal(assinaturaConfere({ ...p, escopo: "s" }, sig), false);
-    // Esticar a expiração invalida: `exp` está dentro do material assinado.
     assert.equal(assinaturaConfere({ ...p, exp: p.exp + 3600 }, sig), false);
   });
 
@@ -374,7 +531,124 @@ test("assinar e conferir: adulteração, expiração e dono", async (t) => {
   });
 });
 
-// ── 6. HLS: o upstream não sobrevive à reescrita ─────────────────────────────
+test("a chave de canais é própria, e não o NEXTAUTH_SECRET", () => {
+  const original = process.env.CANAIS_MEDIA_SIGNING_SECRET;
+  const p = { escopo: "m" as const, sessionId: "s", nonce: "n", recurso: "master", exp: 9 };
+  const comSegredo = assinar(p);
+
+  // Mexer no NEXTAUTH_SECRET não pode mudar nada aqui: são chaves separadas,
+  // e é essa separação que impede um vazamento no Worker alcançar a
+  // autenticação do produto.
+  process.env.NEXTAUTH_SECRET = "outro-valor-qualquer";
+  assert.equal(assinar(p), comSegredo);
+
+  // Sem o segredo próprio, falha alto em vez de assinar com algo derivado.
+  delete process.env.CANAIS_MEDIA_SIGNING_SECRET;
+  assert.throws(() => assinar(p), /CANAIS_MEDIA_SIGNING_SECRET/);
+  process.env.CANAIS_MEDIA_SIGNING_SECRET = original;
+});
+
+test("recurso empacotado sobrevive a query string e recusa saída de diretório", () => {
+  // O caso que quebrava: `?` colado no caminho misturaria a query do provider
+  // com a nossa, e do outro lado o pathname não conteria o que foi assinado.
+  const comQuery = empacotarRecurso(2, "seg.ts?token=abc&x=1");
+  assert.equal(comQuery.includes("?"), false, "a query tem de sair encodada");
+  assert.equal(comQuery.includes("&"), false);
+  assert.deepEqual(desempacotarRecurso(comQuery), {
+    indiceDaBase: 2,
+    caminhoComQuery: "seg.ts?token=abc&x=1",
+  });
+
+  assert.deepEqual(desempacotarRecurso(empacotarRecurso(0, "a.ts")), {
+    indiceDaBase: 0,
+    caminhoComQuery: "a.ts",
+  });
+
+  // Entrada hostil: subir de diretório sairia da base e mudaria o alvo.
+  assert.equal(desempacotarRecurso(empacotarRecurso(0, "../../etc/passwd")), null);
+  assert.equal(desempacotarRecurso(empacotarRecurso(0, "/absoluto.ts")), null);
+  for (const ruim of ["", "abc", "-1/x", "x/y", "0/", "0/%ZZ"]) {
+    assert.equal(desempacotarRecurso(ruim), null, `aceitou "${ruim}"`);
+  }
+});
+
+test("mesmaOrigem não cai no truque do sufixo", () => {
+  const base = "https://media.exemplo";
+  assert.equal(mesmaOrigem("https://media.exemplo/canal/x", base), true);
+  // O ataque que `startsWith` aceitava: o host hostil vem depois do prefixo.
+  assert.equal(mesmaOrigem("https://media.exemplo.evil.example/x", base), false);
+  assert.equal(mesmaOrigem("https://media.exemploevil.test/x", base), false);
+  assert.equal(mesmaOrigem("http://media.exemplo/x", base), false, "esquema faz parte da origem");
+  assert.equal(mesmaOrigem("https://media.exemplo:8443/x", base), false, "porta também");
+  assert.equal(mesmaOrigem("não é url", base), false);
+});
+
+// ── 6. Sessão: renovação, dono, canal, teto ──────────────────────────────────
+
+test("renovar rotaciona o nonce e invalida as URLs anteriores", async () => {
+  const c1 = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-1", fonte: FONTE });
+  const sessao1 = await lerSessao(c1.sessionId);
+  assert.ok(sessao1);
+
+  const c2 = await renovarSessaoDeCanal({
+    userId: "dono",
+    canalId: "canal-1",
+    sessionId: c1.sessionId,
+  });
+  assert.ok(c2, "a renovação legítima precisa funcionar");
+
+  const sessao2 = await lerSessao(c1.sessionId);
+  assert.ok(sessao2);
+  assert.notEqual(sessao2.nonce, sessao1.nonce, "o nonce tem de girar");
+  // A mesma sessão, e o mesmo upstream: renovar não volta ao provider.
+  assert.equal(c2.sessionId, c1.sessionId);
+  assert.equal(sessao2.upstream, sessao1.upstream);
+
+  // A assinatura da concessão antiga para de conferir contra o nonce novo —
+  // mesmo estando dentro do `exp`. É esta a mitigação de replay.
+  const antiga = { escopo: "m" as const, sessionId: c1.sessionId, nonce: sessao2.nonce, recurso: "master", exp: c1.exp };
+  assert.equal(assinaturaConfere(antiga, c1.sig), false);
+  // E a nova confere.
+  assert.equal(
+    assinaturaConfere({ ...antiga, exp: c2.exp }, c2.sig),
+    true,
+  );
+});
+
+test("renovar recusa outra conta, outro canal e sessão inexistente", async () => {
+  const c = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-1", fonte: FONTE });
+
+  assert.equal(
+    await renovarSessaoDeCanal({ userId: "intruso", canalId: "canal-1", sessionId: c.sessionId }),
+    null,
+    "sessionId capturado não pode ser renovado por outra conta",
+  );
+  assert.equal(
+    await renovarSessaoDeCanal({ userId: "dono", canalId: "outro-canal", sessionId: c.sessionId }),
+    null,
+    "a sessão é de um canal só",
+  );
+  assert.equal(
+    await renovarSessaoDeCanal({ userId: "dono", canalId: "canal-1", sessionId: "nao-existe-aqui-1" }),
+    null,
+  );
+});
+
+test("o teto absoluto não se move com renovação", async () => {
+  const c = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-1", fonte: FONTE });
+  const antes = (await lerSessao(c.sessionId))!.expiraDefinitivamenteEm;
+
+  await renovarSessaoDeCanal({ userId: "dono", canalId: "canal-1", sessionId: c.sessionId });
+  const depois = (await lerSessao(c.sessionId))!;
+
+  assert.equal(depois.expiraDefinitivamenteEm, antes, "renovar não pode empurrar o teto");
+  assert.ok(depois.expiraEm > Date.now(), "a janela deslizante, essa sim, anda");
+  // O grant entregue ao cliente é curto — é o que força a volta ao backend.
+  assert.equal(c.validoPorSegundos, TTL_GRANT_S);
+  assert.ok(TTL_GRANT_S <= 10 * 60, "grant longo demais para ser reautorização");
+});
+
+// ── 7. HLS: o upstream não sobrevive à reescrita ─────────────────────────────
 
 const assinadorFalso = async (escopo: "m" | "s", recurso: string, exp: number) =>
   `sig-${escopo}-${recurso.length}-${exp}`;
@@ -393,8 +667,6 @@ async function reescrever(manifesto: string, basesConhecidas: string[] = []) {
 }
 
 test("segmentos absolutos de outro host são reescritos e o CDN não sobrevive", async () => {
-  // A forma real medida na Fase A: segmentos absolutos, noutro host, com
-  // extensão disfarçada.
   const entrada = [
     "#EXTM3U",
     "#EXT-X-VERSION:3",
@@ -411,10 +683,27 @@ test("segmentos absolutos de outro host são reescritos e o CDN não sobrevive",
   assert.equal(manifesto.includes("segmentos.example.test"), false);
   assert.equal(basesMudaram, true);
   assert.deepEqual(bases, ["https://segmentos.example.test/assets/"]);
-  // O cliente vê índice e nome do arquivo, nunca o host.
   assert.match(manifesto, /media\.example\.test\/canal\/sid\/s\/0\/abc123\.css\?e=1111&k=/);
-  // As tags são preservadas.
   assert.equal(manifesto.includes("#EXT-X-MEDIA-SEQUENCE:1271"), true);
+});
+
+test("segmento com query string vira um recurso só, e a query não escapa", async () => {
+  const entrada = [
+    "#EXTM3U",
+    "#EXTINF:4.0,",
+    "https://segmentos.example.test/a/seg1.ts?token=abc&expira=9",
+  ].join("\n");
+
+  const { manifesto, bases } = await reescrever(entrada);
+
+  assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
+  assert.equal(manifesto.includes("token=abc"), false, "a query do provider não pode sair crua");
+  // A base guarda o host e o diretório; a query viaja encodada no recurso.
+  assert.deepEqual(bases, ["https://segmentos.example.test/a/"]);
+  const linha = manifesto.split("\n").find((l) => l.startsWith("https://media."))!;
+  // Só a NOSSA query está presente: exatamente um `?`, e ele é o do `e=`.
+  assert.equal(linha.split("?").length, 2);
+  assert.match(linha, /\?e=1111&k=/);
 });
 
 test("chave AES, MAP, MEDIA e variantes também são reescritos", async () => {
@@ -434,21 +723,16 @@ test("chave AES, MAP, MEDIA e variantes também são reescritos", async () => {
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
   assert.equal(manifesto.includes("chaves.example.test"), false);
   assert.equal(manifesto.includes("cdn.example.test"), false);
-  // A URI da chave continua sendo uma URI, só que nossa — e com escopo de
-  // segmento, porque a chave é buscada uma vez como um segmento.
   assert.match(manifesto, /#EXT-X-KEY:METHOD=AES-128,URI="https:\/\/media\.example\.test\/canal\/sid\/s\//);
   assert.match(manifesto, /IV=0x00/, "o resto da tag precisa sobreviver");
-  // Manifesto filho ganha rota e validade de manifesto, não de segmento.
   assert.match(manifesto, /\/canal\/sid\/v\/\d+\/variante-720\.m3u8\?e=2222&k=/);
   assert.match(manifesto, /\/canal\/sid\/v\/\d+\/pt\.m3u8\?e=2222&k=/);
-  // Segmento relativo resolve contra a base do manifesto.
   assert.match(manifesto, /\/canal\/sid\/s\/\d+\/seg1\.ts\?e=1111&k=/);
 });
 
 test("URI que não pode ser reescrita com segurança é removida, nunca repassada", async () => {
   const entrada = [
     "#EXTM3U",
-    // http:// simples: não vira URL do edge, e não pode sair como está.
     "http://inseguro.example.test/seg.ts",
     '#EXT-X-KEY:METHOD=AES-128,URI="http://inseguro.example.test/k.key"',
     "#EXTINF:4.0,",
@@ -465,9 +749,13 @@ test("URI que não pode ser reescrita com segurança é removida, nunca repassad
 test("vazaUpstream é a rede que não envelhece junto com a lista de tags", () => {
   const edge = "https://media.example.test";
   assert.equal(vazaUpstream("#EXTM3U\nhttps://media.example.test/canal/x/s/0/a.ts", edge), false);
-  // Uma tag futura que a reescrita ainda não conheça é pega aqui.
   assert.equal(vazaUpstream('#EXT-X-FUTURO:URI="https://cdn.example.test/x"', edge), true);
   assert.equal(vazaUpstream("#EXTM3U\nseg.ts", edge), false, "relativo não é vazamento");
+  // O sufixo hostil: `startsWith` deixaria passar, `mesmaOrigem` não.
+  assert.equal(
+    vazaUpstream("#EXTM3U\nhttps://media.example.test.evil.example/a.ts", edge),
+    true,
+  );
 });
 
 test("o teto de bases impede um upstream hostil de inflar a sessão", async () => {
@@ -478,6 +766,5 @@ test("o teto de bases impede um upstream hostil de inflar a sessão", async () =
   const { manifesto, bases } = await reescrever(linhas.join("\n"));
 
   assert.ok(bases.length <= 8, `bases cresceu para ${bases.length}`);
-  // Passando do teto, as linhas são descartadas — não repassadas.
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
 });

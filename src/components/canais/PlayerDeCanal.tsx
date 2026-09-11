@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
 
@@ -16,15 +16,31 @@ import type { ItemDeCanal } from "@/lib/canais/catalogo";
  *
  * ## O que este componente nunca vê
  *
- * A URL upstream, o provider, o host do CDN, o Referer. Ele recebe do
- * `/play` uma URL de manifesto no domínio de mídia do Obaflix e é só o que
- * existe no estado. Nada é guardado em `localStorage`: a concessão é curta e
- * uma URL persistida seria uma cópia sobrevivendo à sessão que a autorizou.
+ * A URL upstream, o provider, o host do CDN, o Referer. Ele recebe do `/play`
+ * uma URL de manifesto no domínio de mídia do Obaflix e é só o que existe no
+ * estado. Nada é guardado em `localStorage`: a concessão é curta e uma URL
+ * persistida seria uma cópia sobrevivendo à sessão que a autorizou.
+ *
+ * ## A renovação, e por que ela é o ponto
+ *
+ * A concessão vale poucos minutos. Este componente volta ao `/play` bem antes
+ * de vencer, mandando o `sessionId`, e o servidor **reautoriza de verdade**:
+ * reconfere sessão, entitlement e rate limit, e rotaciona o nonce — o que
+ * derruba na hora toda URL emitida antes, inclusive uma que alguém tivesse
+ * capturado dentro da validade.
+ *
+ * A URL nova **não** é empurrada para o `<video>` em curso. Trocar o `src` de um
+ * HLS ao vivo reinicia o buffer e dá um solavanco visível a cada poucos
+ * minutos. Ela fica guardada e só entra em uso quando o player precisa de fato
+ * recarregar — numa falha, ou na próxima abertura. Quem mantém a reprodução viva
+ * é a sessão no Redis, que o edge revalida a cada manifesto.
  */
 
 interface Concessao {
+  sessionId: string;
   manifestUrl: string;
   expiraEm: number;
+  validoPorSegundos: number;
 }
 
 type Estado =
@@ -32,10 +48,24 @@ type Estado =
   | { fase: "tocando"; concessao: Concessao }
   | { fase: "erro"; mensagem: string; podeTentarDeNovo: boolean };
 
-async function pedirConcessao(canalId: string): Promise<Concessao> {
+class ErroDeCanal extends Error {
+  constructor(mensagem: string, readonly podeTentarDeNovo: boolean) {
+    super(mensagem);
+  }
+}
+
+/**
+ * Pede — ou renova — a concessão.
+ *
+ * `sessionId` presente é renovação: o servidor reaproveita o upstream já
+ * resolvido em vez de voltar ao provider. Ausente, ou recusado, é o caminho
+ * completo.
+ */
+async function pedirConcessao(canalId: string, sessionId?: string): Promise<Concessao> {
   const r = await fetch(`/api/canais/${encodeURIComponent(canalId)}/play`, {
     method: "POST",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
   });
 
   if (!r.ok) {
@@ -59,24 +89,33 @@ async function pedirConcessao(canalId: string): Promise<Concessao> {
   return (await r.json()) as Concessao;
 }
 
-class ErroDeCanal extends Error {
-  constructor(mensagem: string, readonly podeTentarDeNovo: boolean) {
-    super(mensagem);
-  }
-}
-
 export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFechar: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [estado, setEstado] = useState<Estado>({ fase: "pedindo" });
   const [tentativa, setTentativa] = useState(0);
 
-  // ── Concessão ──────────────────────────────────────────────────────────────
+  /**
+   * A concessão mais recente, fora do estado de render.
+   *
+   * A renovação atualiza esta referência sem recompor: o `useEffect` do HLS
+   * depende de `estado`, e mudá-lo a cada renovação recriaria a instância do
+   * player e cortaria o vídeo.
+   */
+  const concessaoRef = useRef<Concessao | null>(null);
+
+  const aplicar = useCallback((c: Concessao) => {
+    concessaoRef.current = c;
+  }, []);
+
+  // ── Primeira concessão ─────────────────────────────────────────────────────
   useEffect(() => {
     let vivo = true;
     setEstado({ fase: "pedindo" });
     pedirConcessao(canal.id)
       .then((concessao) => {
-        if (vivo) setEstado({ fase: "tocando", concessao });
+        if (!vivo) return;
+        aplicar(concessao);
+        setEstado({ fase: "tocando", concessao });
       })
       .catch((e: unknown) => {
         if (!vivo) return;
@@ -90,7 +129,47 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
     return () => {
       vivo = false;
     };
-  }, [canal.id, tentativa]);
+  }, [canal.id, tentativa, aplicar]);
+
+  // ── Reautorização periódica ────────────────────────────────────────────────
+  useEffect(() => {
+    if (estado.fase !== "tocando") return;
+    let vivo = true;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const agendar = (validoPorSegundos: number) => {
+      // 60% da validade: cedo o bastante para uma falha ainda caber numa
+      // segunda tentativa antes de a atual vencer.
+      const emMs = Math.max(30, Math.floor(validoPorSegundos * 0.6)) * 1000;
+      timer = setTimeout(async () => {
+        if (!vivo) return;
+        const atual = concessaoRef.current;
+        try {
+          const nova = await pedirConcessao(canal.id, atual?.sessionId);
+          if (!vivo) return;
+          aplicar(nova);
+          agendar(nova.validoPorSegundos);
+        } catch (e) {
+          if (!vivo) return;
+          // Recusa definitiva (plano caiu, canal saiu do ar) para a reprodução
+          // na hora; falha temporária deixa o vídeo seguir com a concessão
+          // atual até ela vencer, e aí o erro do HLS assume.
+          const erro = e instanceof ErroDeCanal ? e : null;
+          if (erro && !erro.podeTentarDeNovo) {
+            setEstado({ fase: "erro", mensagem: erro.message, podeTentarDeNovo: false });
+          } else {
+            agendar(60);
+          }
+        }
+      }, emMs);
+    };
+
+    agendar(estado.concessao.validoPorSegundos);
+    return () => {
+      vivo = false;
+      clearTimeout(timer);
+    };
+  }, [estado, canal.id, aplicar]);
 
   // ── HLS ────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -120,10 +199,10 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
         hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => {}));
         hls.on(Hls.Events.ERROR, (_e, dados) => {
           if (!dados.fatal) return;
-          // Erro fatal de rede num canal ao vivo costuma ser a concessão
-          // vencida ou a fonte caindo. Pede outra — uma vez, pelo incremento
-          // de `tentativa`, e não em laço: quem falha duas vezes não vai
-          // passar na terceira, e insistir vira tempestade contra o edge.
+          // Erro fatal num canal ao vivo costuma ser a concessão vencida ou a
+          // fonte caindo. Vira estado de erro com ação manual, e não repetição
+          // automática: insistir sozinho contra um canal fora do ar vira
+          // tempestade no edge.
           setEstado({
             fase: "erro",
             mensagem: "A transmissão foi interrompida.",
@@ -140,7 +219,10 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
       video.removeAttribute("src");
       video.load();
     };
-  }, [estado]);
+    // `estado.concessao.manifestUrl` de propósito, e não `estado`: a renovação
+    // não passa por aqui, então o player não é recriado a cada poucos minutos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estado.fase, estado.fase === "tocando" ? estado.concessao.manifestUrl : null]);
 
   // ── BACK / ESC fecham ──────────────────────────────────────────────────────
   useEffect(() => {

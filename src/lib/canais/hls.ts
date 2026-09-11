@@ -26,11 +26,15 @@
  *
  * ## O modelo de URL pública
  *
- *   <base do edge>/canal/<sessionId>/s/<i>/<caminho>?e=<exp>&k=<sig>
+ *   <base do edge>/canal/<sessionId>/s/<i>/<caminho+query encodado>?e=<exp>&k=<sig>
  *
  * `<i>` é o índice da base upstream dentro da sessão (Redis), não o host. O
- * cliente vê um número e um nome de arquivo; o domínio real fica no servidor.
+ * caminho e a query do upstream viajam **percent-encodados num segmento só**
+ * (ver `empacotarRecurso`), para uma URI com `?token=…` não misturar a query do
+ * provider com a nossa nem quebrar a assinatura do outro lado.
  */
+
+import { empacotarRecurso, mesmaOrigem } from "./assinatura";
 
 /** Assina um recurso. Assíncrona porque no Worker o HMAC é WebCrypto. */
 export type Assinador = (escopo: "m" | "s", recurso: string, exp: number) => Promise<string>;
@@ -64,12 +68,26 @@ function ehTag(linha: string): boolean {
 }
 
 /**
- * Separa uma URI absoluta em base (tudo até a última barra, inclusive) e
- * caminho restante. A base é o que fica escondido; o caminho é o que viaja.
+ * Separa uma URI absoluta em base (tudo até a última barra do caminho,
+ * inclusive) e o resto — caminho final **mais query e fragmento**.
+ *
+ * A query fica do lado que viaja, e não do lado escondido, porque ela pode
+ * variar por segmento (`?token=…`): se entrasse na base, cada segmento criaria
+ * uma base nova e o teto de `MAX_BASES` estouraria no primeiro provider que
+ * assinasse segmento.
  */
-function partir(absoluta: string): { base: string; caminho: string } {
-  const corte = absoluta.lastIndexOf("/");
-  return { base: absoluta.slice(0, corte + 1), caminho: absoluta.slice(corte + 1) };
+function partir(absoluta: string): { base: string; caminho: string } | null {
+  let u: URL;
+  try {
+    u = new URL(absoluta);
+  } catch {
+    return null;
+  }
+  const corte = u.pathname.lastIndexOf("/");
+  if (corte < 0) return null;
+  const base = `${u.origin}${u.pathname.slice(0, corte + 1)}`;
+  const caminho = `${u.pathname.slice(corte + 1)}${u.search}${u.hash}`;
+  return { base, caminho };
 }
 
 /**
@@ -91,12 +109,13 @@ function indiceDaBase(bases: string[], base: string): number {
 
 /** `.m3u8` (ou `.m3u`) — manifesto filho, que precisa de reescrita própria. */
 function ehManifesto(caminho: string): boolean {
-  return /\.m3u8?(\?|$)/i.test(caminho);
+  return /\.m3u8?(\?|#|$)/i.test(caminho);
 }
 
 export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaDeReescrita> {
   const bases = [...e.basesConhecidas];
   const antes = bases.length;
+  const baseDoEdge = e.baseDoEdge.replace(/\/+$/, "");
 
   /** Uma URI do upstream vira uma URI do edge. `null` quando não dá. */
   async function publica(refBruta: string): Promise<string | null> {
@@ -110,19 +129,22 @@ export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaD
     }
     if (!absoluta.startsWith("https://")) return null;
 
-    const { base, caminho } = partir(absoluta);
-    const i = indiceDaBase(bases, base);
+    const partes = partir(absoluta);
+    if (!partes) return null;
+    const i = indiceDaBase(bases, partes.base);
     if (i < 0) return null;
 
     // Um manifesto filho é buscado pelo edge de novo e reescrito de novo, então
     // ganha o escopo e a validade de manifesto. Um segmento é buscado uma vez e
-    // ganha os cinco minutos.
-    const escopo: "m" | "s" = ehManifesto(caminho) ? "m" : "s";
+    // ganha a validade curta.
+    const escopo: "m" | "s" = ehManifesto(partes.caminho) ? "m" : "s";
     const exp = escopo === "m" ? e.expManifesto : e.expSegmento;
-    const recurso = `${i}/${caminho}`;
+    const recurso = empacotarRecurso(i, partes.caminho);
     const sig = await e.assinar(escopo, recurso, exp);
     const rota = escopo === "m" ? "v" : "s";
-    return `${e.baseDoEdge}/canal/${e.sessionId}/${rota}/${recurso}${caminho.includes("?") ? "&" : "?"}e=${exp}&k=${sig}`;
+    // `recurso` já é um segmento único e percent-encodado, então a única query
+    // da URL resultante é a nossa.
+    return `${baseDoEdge}/canal/${e.sessionId}/${rota}/${recurso}?e=${exp}&k=${sig}`;
   }
 
   /** Reescreve o valor de `URI="…"` dentro de uma tag, preservando o resto. */
@@ -162,15 +184,20 @@ export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaD
 }
 
 /**
- * `true` se o texto ainda contém URL absoluta http(s) que não seja do edge.
+ * `true` se o texto ainda contém URL absoluta que não seja do edge.
  *
  * Rede de segurança do teste e do próprio edge: a reescrita acima é feita por
  * lista de tags conhecidas, e lista de tags conhecidas envelhece. Esta checagem
  * não envelhece — ela pergunta o que realmente importa, que é se sobrou host de
  * terceiro no que vai sair.
+ *
+ * A comparação é por **origem**, e não por prefixo de string. `startsWith` —
+ * como esta função fazia antes — aceita `https://media.exemplo.evil.example`
+ * quando a base é `https://media.exemplo`: o host hostil vem depois, e o
+ * prefixo casa. Origem é esquema + host + porta, e não tem essa falha.
  */
 export function vazaUpstream(manifesto: string, baseDoEdge: string): boolean {
   const urls = manifesto.match(/https?:\/\/[^\s"',]+/gi);
   if (!urls) return false;
-  return urls.some((u) => !u.startsWith(baseDoEdge));
+  return urls.some((u) => !mesmaOrigem(u, baseDoEdge));
 }

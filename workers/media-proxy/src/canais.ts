@@ -18,40 +18,47 @@
  * 2. A URL de mídia é **permanente**. Não expira, não é assinada, e a mesma
  *    string vale no dia seguinte.
  *
- * O primeiro achado diz que **quem arma tem de ser quem busca** — se o backend
- * resolvesse e o aparelho tocasse, o CDN veria dois IPs e devolveria 403. O
- * segundo diz que entregar a URL ao aparelho é entregar o canal para sempre.
+ * O primeiro achado diz que **quem arma tem de ser quem busca**; o segundo, que
+ * entregar a URL ao aparelho é entregar o canal para sempre. Daí o desenho: o
+ * Worker arma e busca na **mesma invocação**, e o aparelho nunca vê o upstream.
  *
- * Daí o desenho: o Worker arma e busca na **mesma invocação**, do mesmo egress,
- * e o aparelho nunca vê o upstream.
+ * > **O egress precisa ser provado no Worker publicado.** "Mesma invocação" não
+ * > é promessa contratual de IP de saída estável na Cloudflare — IP de egress
+ * > dedicado é recurso à parte. Antes de ativar, rode
+ * > `scripts/verificar-arm-no-edge.ts` contra o Worker real. Ver
+ * > `docs/canais-fase-a.md`.
  *
  * ## As rotas
  *
  *   /canal/<sid>/master.m3u8   manifesto da sessão
- *   /canal/<sid>/v/<i>/<path>  manifesto filho (variante)
- *   /canal/<sid>/s/<i>/<path>  segmento
+ *   /canal/<sid>/v/<i>/<rec>   manifesto filho (variante)
+ *   /canal/<sid>/s/<i>/<rec>   segmento
  *
  * `<i>` é o índice da base upstream **dentro da sessão no Redis**, nunca o
- * host. Todas exigem `?e=<exp>&k=<hmac>`.
+ * host; `<rec>` é caminho+query do upstream, percent-encodado num segmento só.
+ * Todas exigem `?e=<exp>&k=<hmac>`.
  *
  * ## O que segura cada coisa
  *
  * | Controle | O que segura |
  * |---|---|
- * | HMAC sobre `escopo:sid:recurso:exp` | URL forjada pelo cliente |
- * | `exp` conferido antes do HMAC | replay de link antigo |
- * | Sessão no Redis, TTL curto | concessão revogada continuar valendo |
+ * | HMAC sobre `escopo:sid:nonce:recurso:exp` | URL forjada pelo cliente |
+ * | `exp` conferido antes da criptografia | replay de link antigo |
+ * | Nonce vindo da sessão, nunca da URL | URL capturada sobreviver à renovação |
+ * | Sessão no Redis, TTL curto + teto absoluto | concessão revogada continuar valendo |
  * | Índice de base, não host | descoberta do CDN pela URL |
- * | Allowlist de host no upstream | vazamento de chave virar SSRF |
+ * | Allowlist no alvo de mídia **e** na página de arm | vazamento de chave virar SSRF |
  * | Resposta montada campo a campo | domínio real vazar em header |
  *
- * Nenhum é opcional, e nenhum deles é "o" controle: a URL permanente do
- * provider significa que um vazamento não tem conserto por expiração.
+ * O que este Worker **não** faz, e não pode fazer: identificar quem está
+ * pedindo. A requisição do player não carrega credencial nossa. O `sub` da
+ * sessão existe para o backend conferir na renovação, não aqui.
  */
 
 import { reescreverManifesto, vazaUpstream } from "../../../src/lib/canais/hls";
 import {
   chaveDaSessao,
+  desempacotarRecurso,
   materialAssinado,
   materialDaChave,
   semanaDaChave,
@@ -60,8 +67,22 @@ import {
 } from "../../../src/lib/canais/assinatura";
 
 export interface EnvCanais {
+  /**
+   * `CANAIS_MEDIA_SIGNING_SECRET` do backend. **Não** é o `NEXTAUTH_SECRET`:
+   * este Worker roda em infra de terceiro, e um vazamento aqui não pode
+   * alcançar a assinatura de sessão de autenticação do produto.
+   */
   ASSINATURA_SECRET: string;
+  /** Sufixos de host permitidos como alvo de mídia, separados por vírgula. */
   CDN_ALLOWLIST: string;
+  /**
+   * Sufixos de host permitidos para a **página que arma o grant**.
+   *
+   * Lista própria, e não a de CDN: são papéis diferentes, com hosts diferentes,
+   * e juntá-las daria a um host de CDN comprometido o direito de ser buscado
+   * como página de arm — e vice-versa. Vazia recusa o arm, nunca o libera.
+   */
+  CANAIS_PLAYER_ALLOWLIST: string;
   APP_ORIGIN: string;
   /** Base pública deste Worker, para as URLs reescritas. Sem barra final. */
   CANAIS_MEDIA_BASE: string;
@@ -98,11 +119,15 @@ function iguaisEmTempoConstante(a: string, b: string): boolean {
   return dif === 0;
 }
 
-async function hmac(
-  env: EnvCanais,
-  p: { escopo: EscopoDeCanal; sessionId: string; recurso: string; exp: number },
-  semana: number,
-): Promise<string> {
+interface Recurso {
+  escopo: EscopoDeCanal;
+  sessionId: string;
+  nonce: string;
+  recurso: string;
+  exp: number;
+}
+
+async function hmac(env: EnvCanais, p: Recurso, semana: number): Promise<string> {
   const chave = await derivarChave(env.ASSINATURA_SECRET, semana);
   const dados = new TextEncoder().encode(materialAssinado(p));
   return base64url(await crypto.subtle.sign("HMAC", chave, dados)).slice(0, TAMANHO_DA_ASSINATURA);
@@ -110,7 +135,7 @@ async function hmac(
 
 async function assinaturaConfere(
   env: EnvCanais,
-  p: { escopo: EscopoDeCanal; sessionId: string; recurso: string; exp: number },
+  p: Recurso,
   sig: string,
   agoraMs: number,
 ): Promise<boolean> {
@@ -123,14 +148,31 @@ async function assinaturaConfere(
 
 // ── Allowlist ────────────────────────────────────────────────────────────────
 
-/** Sufixo, e sempre com o ponto: `.exemplo.com` não casa `malexemplo.com`. */
+/**
+ * Sufixo, e sempre com o ponto: `.exemplo.com` não casa `malexemplo.com`.
+ * Lista vazia nega tudo — allowlist vazia que libera é um SSRF.
+ */
 function hostPermitido(host: string, allowlist: string): boolean {
   const alvo = host.toLowerCase();
-  return allowlist
+  const lista = (allowlist || "")
     .split(",")
     .map((h) => h.trim().toLowerCase())
-    .filter(Boolean)
-    .some((p) => alvo === p || alvo.endsWith(`.${p}`));
+    .filter(Boolean);
+  if (lista.length === 0) return false;
+  return lista.some((p) => alvo === p || alvo.endsWith(`.${p}`));
+}
+
+/** Três portas antes de qualquer fetch: https, sem credenciais, allowlist. */
+function alvoAceitavel(bruta: string, allowlist: string): URL | null {
+  let u: URL;
+  try {
+    u = new URL(bruta);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" || u.username || u.password) return null;
+  if (!hostPermitido(u.hostname, allowlist)) return null;
+  return u;
 }
 
 // ── Sessão (Redis via REST do Upstash) ───────────────────────────────────────
@@ -146,6 +188,7 @@ interface SessaoDeCanal {
   nonce: string;
   criadaEm: number;
   expiraEm: number;
+  expiraDefinitivamenteEm: number;
 }
 
 /**
@@ -178,7 +221,13 @@ async function lerSessao(env: EnvCanais, sessionId: string): Promise<SessaoDeCan
   try {
     const s = JSON.parse(bruto) as SessaoDeCanal;
     if (typeof s.upstream !== "string" || !Array.isArray(s.bases)) return null;
-    if (typeof s.expiraEm !== "number" || s.expiraEm < Date.now()) return null;
+    if (typeof s.nonce !== "string" || !s.nonce) return null;
+    const agora = Date.now();
+    if (typeof s.expiraEm !== "number" || s.expiraEm < agora) return null;
+    // Teto absoluto: a janela deslizante sozinha é imortal.
+    if (typeof s.expiraDefinitivamenteEm !== "number" || s.expiraDefinitivamenteEm < agora) {
+      return null;
+    }
     return s;
   } catch {
     return null;
@@ -188,6 +237,9 @@ async function lerSessao(env: EnvCanais, sessionId: string): Promise<SessaoDeCan
 /**
  * Regrava a sessão e renova o TTL. Janela deslizante: enquanto o player busca
  * manifesto a sessão vive; parou de buscar, ela morre sozinha em `ttlS`.
+ *
+ * Nunca move `expiraDefinitivamenteEm` — é o que obriga a reautorização pelo
+ * backend de tempos em tempos.
  */
 async function gravarSessao(
   env: EnvCanais,
@@ -210,9 +262,10 @@ async function gravarSessao(
   }
 }
 
-const TTL_SESSAO_S = 30 * 60;
-const TTL_MANIFESTO_S = 60 * 60;
-const TTL_SEGMENTO_S = 5 * 60;
+/** Espelho de `src/lib/canais/sessao.ts`. Mudou lá, muda aqui. */
+const TTL_SESSAO_S = 7 * 60;
+const TTL_GRANT_S = 5 * 60;
+const TTL_SEGMENTO_S = 90;
 
 // ── Busca no upstream, com arm ───────────────────────────────────────────────
 
@@ -244,13 +297,18 @@ function cabecalhosParaUpstream(s: SessaoDeCanal, req: Request): Headers {
  * **deste Worker** — o mesmo que vai buscar a mídia a seguir, na mesma
  * invocação.
  *
+ * A página passa pela sua própria allowlist. A URL vem da sessão, que vem do
+ * nosso backend, mas "veio do banco" não é o mesmo que "é um alvo permitido": a
+ * allowlist é o que segura o caso de a chave de assinatura vazar e alguém
+ * conseguir plantar uma sessão.
+ *
  * O corpo é descartado: quem extrai a URL de mídia é o backend, na resolução. O
  * que interessa aqui é só o efeito colateral.
  */
 async function armar(env: EnvCanais, s: SessaoDeCanal): Promise<void> {
+  const alvo = alvoAceitavel(s.paginaDoPlayer, env.CANAIS_PLAYER_ALLOWLIST);
+  if (!alvo) return;
   try {
-    const alvo = new URL(s.paginaDoPlayer);
-    if (alvo.protocol !== "https:") return;
     const r = await fetch(alvo.toString(), {
       method: "GET",
       redirect: "manual",
@@ -296,22 +354,9 @@ async function buscarComArm(
   return r;
 }
 
-/** Três portas antes de qualquer fetch: https, sem credenciais, allowlist. */
-function alvoAceitavel(env: EnvCanais, bruta: string): URL | null {
-  let u: URL;
-  try {
-    u = new URL(bruta);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "https:" || u.username || u.password) return null;
-  if (!hostPermitido(u.hostname, env.CDN_ALLOWLIST)) return null;
-  return u;
-}
-
 // ── Handler ──────────────────────────────────────────────────────────────────
 
-const ROTA = /^\/canal\/([A-Za-z0-9_-]{16,64})\/(master\.m3u8|[vs]\/\d+\/.+)$/;
+const ROTA = /^\/canal\/([A-Za-z0-9_-]{16,64})\/(master\.m3u8|[vs]\/\d+\/[^/]+)$/;
 
 export function ehRotaDeCanal(pathname: string): boolean {
   return pathname.startsWith("/canal/");
@@ -334,7 +379,8 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   const exp = Number(expBruto);
   if (!Number.isSafeInteger(exp)) return negar();
 
-  // Expiração antes da criptografia: pedido vencido não merece um HMAC.
+  // Expiração antes de tudo: pedido vencido não merece nem um GET no Redis nem
+  // um HMAC.
   const agora = Date.now();
   if (agora > exp * 1000) return negar();
 
@@ -342,28 +388,36 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   const escopo: EscopoDeCanal = ehMaster || resto.startsWith("v/") ? "m" : "s";
   const recurso = ehMaster ? "master" : resto.slice(2);
 
-  if (!(await assinaturaConfere(env, { escopo, sessionId, recurso, exp }, sig, agora))) {
-    return negar();
-  }
-
+  // A sessão vem **antes** da assinatura, porque o nonce que fecha o HMAC mora
+  // nela. É o que faz uma renovação (nonce novo) invalidar na hora toda URL
+  // emitida antes, mesmo dentro da validade. O custo é um GET no Redis para
+  // pedido inválido — aceitável: `sessionId` são 24 bytes aleatórios, adivinhar
+  // não é um caminho, e a expiração já barrou o replay óbvio acima.
   const sessao = await lerSessao(env, sessionId);
   if (!sessao) return negar();
+
+  const confere = await assinaturaConfere(
+    env,
+    { escopo, sessionId, nonce: sessao.nonce, recurso, exp },
+    sig,
+    agora,
+  );
+  if (!confere) return negar();
 
   // Qual URL upstream este pedido representa.
   let alvoBruto: string;
   if (ehMaster) {
     alvoBruto = sessao.upstream;
   } else {
-    const barra = recurso.indexOf("/");
-    const indice = Number(recurso.slice(0, barra));
-    const caminho = recurso.slice(barra + 1);
-    // O índice vem da URL, logo é entrada. Uma base fora do intervalo não é
-    // "base 0 por padrão": é recusa.
-    if (!Number.isInteger(indice) || indice < 0 || indice >= sessao.bases.length) return negar();
-    alvoBruto = sessao.bases[indice] + caminho;
+    const partes = desempacotarRecurso(recurso);
+    // O recurso vem da URL, logo é entrada. Índice fora do intervalo não é
+    // "base 0 por padrão": é recusa. E um caminho que tente subir de diretório
+    // já foi recusado no desempacotamento.
+    if (!partes || partes.indiceDaBase >= sessao.bases.length) return negar();
+    alvoBruto = sessao.bases[partes.indiceDaBase] + partes.caminhoComQuery;
   }
 
-  const alvo = alvoAceitavel(env, alvoBruto);
+  const alvo = alvoAceitavel(alvoBruto, env.CDN_ALLOWLIST);
   if (!alvo) return negar();
 
   let upstream: Response;
@@ -409,25 +463,32 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
 
   // Manifesto: precisa ser lido inteiro e reescrito.
   const texto = await upstream.text();
+  const baseDoEdge = env.CANAIS_MEDIA_BASE.replace(/\/+$/, "");
   const expSegmento = Math.floor(agora / 1000) + TTL_SEGMENTO_S;
-  const expManifesto = Math.floor(agora / 1000) + TTL_MANIFESTO_S;
+  // O manifesto filho não pode valer mais do que o grant que trouxe o pai: sem
+  // este teto, uma variante cunharia um link novo a cada busca e a concessão se
+  // renovaria sozinha para sempre, sem passar pelo backend.
+  const expManifesto = Math.min(exp, Math.floor(agora / 1000) + TTL_GRANT_S);
 
   const reescrito = await reescreverManifesto({
     manifesto: texto,
     urlDoManifesto: alvo.toString(),
     sessionId,
-    baseDoEdge: env.CANAIS_MEDIA_BASE.replace(/\/+$/, ""),
+    baseDoEdge,
     basesConhecidas: sessao.bases,
     expSegmento,
     expManifesto,
-    assinar: (esc, rec, e) => hmac(env, { escopo: esc, sessionId, recurso: rec, exp: e }, semanaDaChave(agora)),
+    assinar: (esc, rec, e) =>
+      hmac(
+        env,
+        { escopo: esc, sessionId, nonce: sessao.nonce, recurso: rec, exp: e },
+        semanaDaChave(agora),
+      ),
   });
 
   // Rede de segurança independente da lista de tags: se sobrou host de terceiro
   // no que ia sair, não sai. Prefere-se canal quebrado a CDN publicado.
-  if (vazaUpstream(reescrito.manifesto, env.CANAIS_MEDIA_BASE.replace(/\/+$/, ""))) {
-    return negar();
-  }
+  if (vazaUpstream(reescrito.manifesto, baseDoEdge)) return negar();
 
   // Só escreve quando a reescrita descobriu base nova. Renova o TTL sempre: é
   // a janela deslizante que mantém a sessão viva enquanto se assiste.

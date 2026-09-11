@@ -82,6 +82,40 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
         concessao = ApiObaflix.concessaoDeCanal(canal.id)
     }
 
+    // ── Reautorizacao periodica ──────────────────────────────────────────────
+    //
+    // A concessao vale poucos minutos. Voltar ao backend antes de vencer nao e
+    // so renovar um link: o servidor reconfere sessao e entitlement e gira o
+    // nonce, o que derruba na hora toda URL emitida antes — inclusive uma que
+    // alguem tivesse capturado dentro da validade.
+    //
+    // A URL nova NAO e empurrada para o ExoPlayer em curso: trocar o MediaItem
+    // de um HLS ao vivo reinicia o buffer e da um solavanco visivel a cada
+    // poucos minutos. Ela fica guardada e entra em uso na proxima recarga. Quem
+    // mantem a reproducao viva e a sessao no Redis, que o edge revalida a cada
+    // manifesto.
+    val liberada = concessao as? Concessao.Liberado
+    LaunchedEffect(liberada?.sessionId) {
+        var atual = liberada ?: return@LaunchedEffect
+        while (true) {
+            // 60% da validade: cedo o bastante para uma falha ainda caber numa
+            // segunda tentativa antes de a atual vencer.
+            val esperaMs = (atual.validoPorSegundos.coerceAtLeast(60) * 600L)
+            kotlinx.coroutines.delay(esperaMs)
+            when (val nova = ApiObaflix.concessaoDeCanal(canal.id, atual.sessionId)) {
+                is Concessao.Liberado -> atual = nova
+                // Recusa definitiva (plano caiu, canal saiu do ar) para a
+                // reproducao na hora. Falha temporaria deixa o video seguir com
+                // a concessao atual ate vencer, e ai o erro do player assume.
+                is Concessao.PrecisaDeUpgrade, is Concessao.SemSessao, is Concessao.Indisponivel -> {
+                    concessao = nova
+                    return@LaunchedEffect
+                }
+                is Concessao.FalhaTemporaria -> kotlinx.coroutines.delay(30_000)
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         when (val c = concessao) {
             null -> Mensagem("Conectando…", "", null) {}
