@@ -45,6 +45,8 @@ import com.obaflix.tv.catalogo.CanalTv
 import com.obaflix.tv.catalogo.Concessao
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.player.HandoffDeCanal
+import com.obaflix.tv.player.PlayerDeMidia
+import com.obaflix.tv.player.TrocaDeFonte
 import com.obaflix.tv.sessao.SessaoTv
 import com.obaflix.tv.ui.componentes.focavel
 import kotlinx.coroutines.delay
@@ -118,6 +120,36 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
         }
     }
 
+    /**
+     * A ponte entre `TrocaDeFonte` e o ExoPlayer.
+     *
+     * Fina de proposito: uma linha por membro. `TrocaDeFonte` tem a regra que
+     * importa — preservar a posicao na troca — e e testada em JVM; aqui so se
+     * liga a interface ao player real, que nao instancia fora do Android.
+     */
+    val troca = remember(player) {
+        TrocaDeFonte(object : PlayerDeMidia {
+            override val posicaoMs: Long get() = player.currentPosition
+            override val temItem: Boolean get() = player.mediaItemCount > 0
+
+            override fun definirFonte(url: String, manterPosicao: Boolean) {
+                val item = MediaItem.Builder()
+                    .setUri(url)
+                    // Declarado, e nao adivinhado pela extensao: a rota do edge
+                    // termina em `.m3u8`, mas depender disso amarraria o player
+                    // ao formato da URL.
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build()
+                // `resetPosition = !manterPosicao`. A sobrecarga de um argumento
+                // so reseta sempre — usa-la aqui faria cada renovacao reiniciar
+                // o conteudo.
+                player.setMediaItem(item, !manterPosicao)
+            }
+
+            override fun preparar() = player.prepare()
+        })
+    }
+
     // ── Concessao, renovacao e migracao ──────────────────────────────────────
     //
     // Sair da tela cancela o LaunchedEffect, e o ciclo morre junto.
@@ -127,18 +159,9 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
         HandoffDeCanal(
             canalId = canal.id,
             pedir = { id, sessionId -> ApiObaflix.concessaoDeCanal(id, sessionId) },
+            // AQUI o player migra de verdade, preservando a posicao.
             trocarFonte = { url ->
-                // AQUI o player migra de verdade.
-                player.setMediaItem(
-                    MediaItem.Builder()
-                        .setUri(url)
-                        // Declarado, e nao adivinhado pela extensao: a rota do
-                        // edge termina em `.m3u8`, mas depender disso amarraria
-                        // o player ao formato da URL.
-                        .setMimeType(MimeTypes.APPLICATION_M3U8)
-                        .build(),
-                )
-                player.prepare()
+                troca.aplicar(url)
                 tocando = true
             },
             aoPerder = { motivo -> recusa = motivo },

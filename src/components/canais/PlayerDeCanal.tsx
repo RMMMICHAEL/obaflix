@@ -35,9 +35,17 @@ import {
  * fazia, e o resultado é 403 no meio da reprodução assim que a janela de grace
  * do servidor fecha.
  *
- * `loadSource` numa live re-sincroniza na borda; o corte é de fração de
- * segundo, e acontece a cada ~3 min. É o preço de a concessão ser curta, e foi
- * escolhido conscientemente: o alternativo é um link que vale uma hora.
+ * ## O custo medido da troca
+ *
+ * `loadSource` **reposiciona**: medido contra uma live local, trocar a fonte com
+ * o vídeo em 7,98 s devolveu 6,01 s. Por isso a posição é restaurada à mão, pelo
+ * buffer — ver o comentário no efeito do HLS. O que sobra é um corte curto a
+ * cada ~3 min, que é o preço de a concessão ser curta.
+ *
+ * Se esse corte incomodar em produção, a saída **não** é alongar a concessão: é
+ * manter a URL do manifesto estável na sessão e rotacionar só os segmentos.
+ * Está descrito em `docs/canais-fase-a.md`, e é decisão de produto, não de
+ * implementação.
  */
 
 type Estado =
@@ -184,10 +192,37 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
           });
         });
 
-        // **Aqui** o player migra de verdade. `loadSource` numa live re-sincroniza
-        // na borda; o buffer anterior é descartado e o corte dura frações de
-        // segundo.
-        trocarRef.current = (url) => hls.loadSource(url);
+        // **Aqui** o player migra de verdade.
+        //
+        // `loadSource` **não preserva a posição** — medido, não suposto: numa
+        // live local, trocar a fonte com o vídeo em 7,98 s devolveu 6,01 s. O
+        // `hls.js` reposiciona pela playlist nova, e o `duration` de uma live é
+        // `Infinity`, então nenhuma checagem baseada em `duration` protege.
+        //
+        // Por isso a posição é restaurada à mão, e a condição é o **buffer**:
+        // se o ponto anterior ainda está bufferizado na fonte nova, volta-se a
+        // ele; se não está (a janela da live já passou por cima), fica onde o
+        // `hls.js` colocou, que é a borda — o certo para uma transmissão.
+        trocarRef.current = (url) => {
+          const antes = video.currentTime;
+          const tocava = !video.paused;
+
+          const restaurar = () => {
+            for (let i = 0; i < video.buffered.length; i++) {
+              if (antes >= video.buffered.start(i) && antes <= video.buffered.end(i)) {
+                if (Math.abs(video.currentTime - antes) > 0.1) video.currentTime = antes;
+                break;
+              }
+            }
+            if (tocava) void video.play().catch(() => {});
+          };
+
+          hls.loadSource(url);
+          // `FRAG_BUFFERED` é quando já há o que restaurar. `MANIFEST_PARSED`
+          // cobre o caso de o fragmento já estar em buffer e o evento não vir.
+          hls.once(Hls.Events.FRAG_BUFFERED, restaurar);
+          hls.once(Hls.Events.MANIFEST_PARSED, () => setTimeout(restaurar, 0));
+        };
         trocarRef.current(pendenteRef.current ?? estado.primeiraUrl);
         pendenteRef.current = null;
 

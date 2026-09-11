@@ -263,6 +263,50 @@ revogação.
 **Apagar a sessão não tem grace.** Logout, revogação e entitlement perdido matam
 as duas gerações no mesmo instante.
 
+### Concorrência: duas defesas no cliente
+
+A sessão carrega uma **geração monotônica** (`geracao`, +1 a cada renovação), e
+ela sai na concessão. O cliente usa isso para duas coisas:
+
+- **Single-flight** — enquanto um pedido está em voo, quem chegar junto espera o
+  mesmo resultado em vez de disparar outro. Um `Mutex` não resolve: serializar
+  três chamadas ainda gasta três pedidos, e cada pedido gira o nonce.
+- **Guarda monotônica** — se duas respostas chegarem fora de ordem, a mais
+  antiga é **recusada**. Sem ela o cliente regrediria para uma geração já
+  aposentada, cuja URL morre na grace seguinte, e o 403 apareceria minutos
+  depois, longe da causa.
+
+O nonce não serve para ordenar: é opaco e aleatório de propósito.
+
+### O custo da troca, medido
+
+`hls.loadSource()` **não preserva a posição** — medido contra uma live local:
+`currentTime` 7,983 antes, 6,010 depois. E `duration` de uma live é `Infinity`,
+então uma guarda do tipo `Number.isFinite(duration) && t < duration` nunca
+dispara e a posição se perde calada.
+
+Os dois clientes restauram a posição à mão:
+
+- **web** — pelo **buffer**: se o ponto anterior ainda está bufferizado na fonte
+  nova, volta-se a ele; senão, fica na borda (o certo numa live);
+- **TV** — `setMediaItem(item, resetPosition = false)`, travado por
+  `TrocaDeFonteTest`. A sobrecarga de um argumento só reseta sempre.
+
+Sobra um corte curto a cada ~3 min. **Se isso incomodar em produção, a saída não
+é alongar a concessão** — é manter a URL do manifesto estável pela vida da
+sessão e rotacionar só os segmentos (que é onde estão a banda e o valor de
+replay). O manifesto continuaria morrendo com a sessão (7 min sem renovar) e na
+revogação (imediato), e o player nunca precisaria trocar de fonte. É decisão de
+produto, e está registrada aqui em vez de ser tomada no meio de uma correção.
+
+### O que os testes ainda não cobrem
+
+A continuidade **visual** — vídeo tocando, frames avançando durante a troca —
+não é coberta automaticamente: aba oculta suspende reprodução, e emulador de TV
+não estava disponível. O harness e o passo a passo estão em
+`scripts/continuidade/README.md`, e é o único item da validação que depende de
+um operador humano.
+
 O que o edge **não** faz, e não pode: identificar quem está pedindo. A requisição
 do player não carrega credencial nossa. O `sub` da sessão é conferido pelo
 backend na renovação — é o que impede renovar a sessão de outra conta com um
