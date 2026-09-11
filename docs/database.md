@@ -380,17 +380,76 @@ reexecutado casualmente depois que houver dados**: `DROP`/`ADD` de constraint
 adquire lock na tabela, e o `ADD` revalida as linhas existentes. Com as tabelas
 vazias isso é instantâneo; com uma tabela de assinaturas povoada, não é.
 
-### Seed do plano padrão
+### A matriz comercial
+
+Quatro linhas em `Plano`: o padrão `gratuito` mais os três compráveis. Os valores
+vivem em `src/lib/planos.ts` e `src/lib/__tests__/matrizComercial.test.ts` trava
+cada um.
+
+| Direito | `gratuito` | `basic` | `plus` | `premium` |
+|---|---|---|---|---|
+| `ehPadrao` | **sim** | não | não | não |
+| `filmes` / `series` | sim | sim | sim | sim |
+| `anunciosObrigatorios` | **sim** | não | não | não |
+| `canaisNivel` | `nenhum` | `nenhum` | `plus` | `premium` |
+| `downloads` | não | não | sim | sim |
+| `telasMax` | **1** | 2 | 2 | 2 |
+| `perfisMax` | 1 | 1 | 1 | 1 |
+| `resolucaoMax` | `sd` | `hd` | `hd` | `4k` |
+| `tvNivel` | `limitado` | `completo` | `completo` | `completo` |
+
+`gratuito` é o **degrau mais baixo** da matriz: fica abaixo ou igual ao `basic`
+em todo direito, e `inversoesDeDireito(PLANO_GRATUITO)` devolve vazio. Ele era a
+fotografia do comportamento atual até a matriz ser aprovada; agora precisa ficar
+abaixo do Basic pago, senão vender Basic seria oferecer menos por dinheiro do que
+a conta já tem de graça.
+
+> **A constante e a linha do banco são coisas diferentes.** O seed **cria se
+> faltar e nunca sobrescreve**, e a linha `gratuito` já existe em produção com os
+> valores antigos (5 telas, download, 4K). Editar `PLANO_GRATUITO` **não muda
+> produção** — quem aplica à linha existente é
+> `npm run planos:gratuito:apply` (`scripts/ajustar-plano-gratuito.ts`), um
+> comando separado, com dry-run por padrão.
+
+**Os três comerciais nascem sem `PlanoPreco`**, logo não são compráveis:
+`resolverPreco` recusa com `preco_inexistente`. É o estado pretendido enquanto os
+valores comerciais não estiverem fechados.
+
+`canaisNivel` é ordenado (`nenhum < gratuito < plus < premium`) e comparado com
+`Canal.nivelMinimo` — nunca com nome ou categoria do canal. `basic` em `nenhum`
+não alcança canal algum, nem os marcados `gratuito`; `plus` não alcança
+`premium`; `premium` alcança os três.
+
+**Nem todo direito da tabela é aplicado hoje**, e a classificação vive em
+`src/lib/direitosAplicados.ts` — registro em código, com teste que impede a
+marcação de envelhecer. Aplicados: `filmes`, `series`, `telasMax` e `downloads`.
+Gravados sem consumidor: `resolucaoMax`, `tvNivel`, `perfisMax`,
+`anunciosObrigatorios`, `episodiosPorAnuncio`, `janelaAnuncioHoras` — e
+`canaisNivel`, cuja camada de aplicação existe mas ainda não está em `main`. Ver
+a seção 5.1 de `docs/monetizacao-arquitetura.md`, inclusive para a ressalva sobre
+`downloads` ser decisão de servidor obedecida no cliente.
+
+**Semear a matriz está bloqueado enquanto a LINHA do banco estiver invertida.**
+A trava compara `inversoesDeDireito` contra a linha real de `gratuito`, lida pelo
+`planoDaLinhaCrua` — **não** contra a constante. A distinção é o ponto: a
+constante já está com os valores aprovados, a linha ainda não, e comparar a
+constante faria a trava se levantar enquanto produção continuasse invertida.
+Ordem correta: `planos:gratuito:apply` primeiro, `seed:planos:apply` depois. Ver
+o bloco de bloqueador na seção 5 da arquitetura.
+
+### Seed dos planos
 
 ```bash
 npm run seed:planos          # dry-run, só mostra o que faria
-npm run seed:planos:apply    # grava
+npm run seed:planos:apply    # grava o que faltar
 ```
 
-Cria **apenas** o plano Gratuito, e **nenhuma** linha de `Assinatura`.
+Cria as quatro linhas de `Plano` que faltarem, e **nenhuma** linha de
+`Assinatura`, de `PlanoPreco` ou de `Canal`.
 
-**Cria se faltar; nunca sobrescreve.** `PLANO_GRATUITO`, em `src/lib/planos.ts`,
-é **bootstrap** — não é configuração permanente. Depois que a linha existe, o
+**Cria se faltar; nunca sobrescreve.** As constantes de `src/lib/planos.ts` —
+`PLANO_GRATUITO` e os três de `PLANOS_COMERCIAIS` — são **bootstrap**, não
+configuração permanente. Depois que a linha existe, o
 **Postgres é a fonte de verdade**, inclusive e sobretudo quando alguém já ajustou
 os direitos por decisão comercial. Rodar `--apply` com o plano existente não
 altera nenhum campo: o script informa o que encontrou, aponta o que difere da
@@ -408,10 +467,11 @@ Alteração comercial tem fluxo próprio, com intenção explícita. **Não exis
 comportamento perigoso reintroduz o risco com um passo a mais, e um passo a mais
 não é uma barreira.
 
-Os valores semeados são uma **fotografia do comportamento atual** do Obaflix, não
-a matriz comercial: sem anúncio, com download, 4K, TV completa e `telasMax = 5`
-(o `MAX_CONCURRENT` de hoje). É assim que a Fase 1 não muda o comportamento de
-nenhum usuário.
+Os valores de **`gratuito`** são uma **fotografia do comportamento atual** do
+Obaflix, e não um degrau da matriz: sem anúncio, com download, 4K, TV completa e
+`telasMax = 5` (o `MAX_CONCURRENT` de hoje). É assim que a Fase 1 não mudou o
+comportamento de nenhum usuário, e continua sendo assim — semear Basic, Plus e
+Premium não toca em quem não assina.
 
 ### Divergência conhecida com `prisma migrate diff`
 

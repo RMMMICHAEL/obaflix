@@ -126,9 +126,27 @@ async function markUsed(token: string): Promise<boolean> {
 
 // ── Limite de streams simultâneos (Redis sorted set por expiresAt) ────────────
 
+/**
+ * O limite que vale quando o enforcement comercial está desligado.
+ *
+ * Deixou de ser **o** limite e passou a ser o **default**: quem decide agora é
+ * `telasMax` do plano, resolvido por `limiteDeTelas` em
+ * `playbackAuthorization.ts` e passado para cá. Com `MONETIZACAO_ATIVA` off
+ * aquela função devolve este mesmo número, e o comportamento fica idêntico ao
+ * anterior — nenhuma conta perde tela por causa desta mudança.
+ *
+ * Continua sendo a constante que `TELAS_SIMULTANEAS_HOJE` (`planos.ts`) e
+ * `TELAS_SEM_ENFORCEMENT` (`playbackAuthorization.ts`) espelham;
+ * `planos.test.ts` trava a sincronia.
+ */
 const MAX_CONCURRENT = 5;
 
-async function registerStream(userId: string, tokenHash: string, expiresAt: number): Promise<boolean> {
+async function registerStream(
+  userId: string,
+  tokenHash: string,
+  expiresAt: number,
+  limite: number = MAX_CONCURRENT,
+): Promise<boolean> {
   const redis = getRedis();
   const key = KEY.activeStreams(userId);
   const now = Date.now();
@@ -137,8 +155,8 @@ async function registerStream(userId: string, tokenHash: string, expiresAt: numb
   await redis.zremrangebyscore(key, 0, now);
 
   const before = await redis.zcard(key);
-  if (before >= MAX_CONCURRENT) {
-    audit("concurrent_limit", { userId, detail: `${before} streams ativos` });
+  if (before >= limite) {
+    audit("concurrent_limit", { userId, detail: `${before} streams ativos (limite ${limite})` });
     return false;
   }
 
@@ -223,11 +241,19 @@ export async function createStreamToken(
   clientIp: string,
   userAgent: string,
   manifest?: string,
+  /**
+   * Teto de streams simultâneos desta conta, vindo de `limiteDeTelas`.
+   *
+   * Opcional com default de propósito: quem esquecer de passar cai no
+   * comportamento anterior em vez de num limite acidentalmente restritivo. O
+   * caminho real (`/api/player/extract`) sempre passa.
+   */
+  limiteDeTelas: number = MAX_CONCURRENT,
 ): Promise<{ token: string; accepted: boolean }> {
   const expiresAt = Date.now() + STREAM_TOKEN_TTL_MS;
   const th = crypto.randomBytes(12).toString("hex");
 
-  const accepted = await registerStream(userId, th, expiresAt);
+  const accepted = await registerStream(userId, th, expiresAt, limiteDeTelas);
   if (!accepted) return { token: "", accepted: false };
   const [key] = keys();
   const payload: StreamTokenPayload = {

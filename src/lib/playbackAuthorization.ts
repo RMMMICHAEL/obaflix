@@ -180,3 +180,109 @@ export function negativaDeCatalogo(r: ResultadoDeCatalogo): NegativaDeCatalogo |
     evento: "entitlements_indisponiveis",
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Limite de telas simultâneas
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * O limite que vale quando o enforcement está desligado.
+ *
+ * É o `MAX_CONCURRENT` de `playTokens.ts`, repetido aqui pelo mesmo motivo que
+ * `TELAS_SIMULTANEAS_HOJE` existe em `planos.ts`: aquele arquivo não exporta a
+ * constante. `planos.test.ts` já trava a sincronia entre os três.
+ */
+export const TELAS_SEM_ENFORCEMENT = 5;
+
+export type ResultadoDeTelas =
+  | { situacao: "definido"; limite: number; via: "flag_desligada" | "direito" }
+  | { situacao: "indeterminado" };
+
+/**
+ * Quantas telas simultâneas esta conta pode ter agora.
+ *
+ * Mesma forma de `autorizarCatalogo`, e pelos mesmos motivos:
+ *
+ *   - **flag desligada devolve o limite de hoje sem chamar o resolver.** Com o
+ *     enforcement off, esta camada não custa uma consulta, um comando de Redis
+ *     nem um modo de falha novo no caminho de reprodução de todo mundo;
+ *   - **falha do resolver vira `indeterminado`, que nega.** Fail-closed: quando
+ *     não dá para saber quantas telas a conta tem, a resposta segura não é
+ *     "cinco".
+ *
+ * Devolver o **número** em vez de "pode/não pode" é deliberado: quem conta os
+ * streams ativos é o sorted set do Redis em `playTokens.ts`, e essa contagem
+ * precisa do teto, não de uma decisão já tomada sem ver o estado atual.
+ */
+export async function limiteDeTelas(
+  userId: string,
+  opcoes: OpcoesDeAutorizacao = {},
+): Promise<ResultadoDeTelas> {
+  const ativa = opcoes.ativa ?? monetizacaoAtiva();
+  if (!ativa) {
+    return { situacao: "definido", limite: TELAS_SEM_ENFORCEMENT, via: "flag_desligada" };
+  }
+
+  const resolver = opcoes.resolver ?? entitlementsDoUsuario;
+
+  let entitlements: Entitlements;
+  try {
+    entitlements = await resolver(userId);
+  } catch {
+    return { situacao: "indeterminado" };
+  }
+
+  const limite = entitlements.direitos.telasMax;
+  // Um teto não-inteiro ou menor que 1 não é limite, é linha corrompida. O CHECK
+  // do banco recusa `telasMax < 1`, então chegar aqui significa que alguma coisa
+  // passou por fora dele — e liberar cinco telas por causa disso seria escolher
+  // o lado errado do erro.
+  if (!Number.isInteger(limite) || limite < 1) return { situacao: "indeterminado" };
+
+  return { situacao: "definido", limite, via: "direito" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direitos que o cliente precisa conhecer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * O subconjunto dos direitos que a interface precisa para não oferecer o que a
+ * conta não tem.
+ *
+ * **Só `downloads`, e só porque o download é feito pelo cliente.** Todo o resto
+ * é decidido no servidor, e o cliente não precisa saber — o que ele não sabe ele
+ * não tenta contornar, e um objeto de direitos completo na resposta seria um
+ * mapa do que vale a pena atacar.
+ */
+export interface DireitosDoCliente {
+  downloads: boolean;
+}
+
+/**
+ * Resolve o que o cliente pode saber.
+ *
+ * Com a flag desligada devolve o comportamento de hoje — download liberado —
+ * **sem chamar o resolver**, pela mesma razão de `limiteDeTelas`.
+ *
+ * Falha do resolver devolve `downloads: false`. Fail-closed, e aqui custa pouco:
+ * o usuário perde o botão de baixar por alguns segundos, não a reprodução.
+ * Comparação estrita com `true` de propósito — um direito `undefined` vindo de
+ * cache de formato antigo não vira permissão por coerção.
+ */
+export async function direitosDoCliente(
+  userId: string,
+  opcoes: OpcoesDeAutorizacao = {},
+): Promise<DireitosDoCliente> {
+  const ativa = opcoes.ativa ?? monetizacaoAtiva();
+  if (!ativa) return { downloads: true };
+
+  const resolver = opcoes.resolver ?? entitlementsDoUsuario;
+
+  try {
+    const entitlements = await resolver(userId);
+    return { downloads: entitlements.direitos.downloads === true };
+  } catch {
+    return { downloads: false };
+  }
+}

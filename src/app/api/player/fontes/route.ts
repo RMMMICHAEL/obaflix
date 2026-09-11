@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { autorizarCatalogo, negativaDeCatalogo } from "@/lib/playbackAuthorization";
+import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
   diagnosticarSessao, diagFonte,
@@ -376,5 +376,27 @@ export async function POST(req: NextRequest) {
 
   const sessao = await criarSessaoFontes(userId, ambiente, fontes);
 
-  return NextResponse.json({ sessao, fontes: projetar(fontes) }, { headers: NO_STORE });
+  // ── Direitos que o cliente precisa conhecer ───────────────────────────────
+  //
+  // Só `downloads`, e só porque o download é executado PELO cliente: no
+  // Electron o app baixa do CDN direto, sem passar por nós. Não existe momento
+  // posterior em que o servidor possa negar — então ou ele decide aqui, ou não
+  // decide em lugar nenhum.
+  //
+  // Resolvido no fim, e não junto da autorização de catálogo: um pedido que
+  // falhou antes não paga por isto. O custo é um GET no Redis (os entitlements
+  // acabaram de ser resolvidos e ficam 120 s em cache), e vai na resposta que
+  // esta rota já devolvia — nenhuma requisição nova, conforme a regra de
+  // consumo do CLAUDE.md.
+  //
+  // Nada além de `downloads` sai daqui. Um objeto de direitos completo seria um
+  // mapa do que vale a pena atacar, e o resto é decidido no servidor de
+  // qualquer forma.
+  //
+  // Campo novo numa resposta existente: os três ambientes toleram. A TV lê com
+  // `org.json`/`opt*`, que ignora chave desconhecida; Android e Electron
+  // carregam este mesmo app web.
+  const direitos = await direitosDoCliente(userId);
+
+  return NextResponse.json({ sessao, fontes: projetar(fontes), direitos }, { headers: NO_STORE });
 }
