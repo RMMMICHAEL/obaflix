@@ -29,9 +29,10 @@
  * `customer`, `pix`, `externalRef`) — nenhum campo foi deduzido a partir do nome
  * de algo na resposta, e nenhum exemplo de outro gateway foi copiado.
  *
- * `postbackUrl` existe na documentação e **não é enviado**: webhook é Fase 5, e
- * registrar uma URL de retorno antes de existir rota que a trate criaria um
- * endpoint anunciado e não implementado.
+ * `postbackUrl` só é enviado quando `BLACKCAT_CONFIRMACAO_ATIVA === "true"`.
+ * Nesse caso ele é montado exclusivamente no servidor a partir de `NEXTAUTH_URL`
+ * e `BLACKCAT_WEBHOOK_PATH_SECRET`. Se essa configuração estiver incompleta ou
+ * não for HTTPS, a integração falha fechada e não cria o PIX.
  *
  * `metadata` e os cinco campos `utm_*` também não são enviados: são opcionais,
  * não servem a esta fase, e cada um deles é um lugar a mais por onde dado nosso
@@ -67,6 +68,7 @@ export const STATUS_DE_SUCESSO = 201;
 export interface ConfiguracaoBlackcat {
   apiKey: string;
   baseUrl: string;
+  postbackUrl?: string;
 }
 
 /**
@@ -88,20 +90,47 @@ export function lerConfiguracao(
   const apiKey = env.BLACKCAT_API_KEY;
   if (typeof apiKey !== "string" || apiKey.trim() === "") return null;
 
+  let baseUrl = BASE_BLACKCAT_PADRAO;
   const bruta = env.BLACKCAT_API_BASE_URL;
-  if (bruta === undefined || bruta.trim() === "") {
-    return { apiKey, baseUrl: BASE_BLACKCAT_PADRAO };
+
+  if (bruta !== undefined && bruta.trim() !== "") {
+    let url: URL;
+
+    try {
+      url = new URL(bruta);
+    } catch {
+      return null;
+    }
+
+    if (url.protocol !== "https:") return null;
+    baseUrl = bruta.replace(/\/+$/, "");
   }
 
-  let url: URL;
-  try {
-    url = new URL(bruta);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:") return null;
+  let postbackUrl: string | undefined;
 
-  return { apiKey, baseUrl: bruta.replace(/\/+$/, "") };
+  if (env.BLACKCAT_CONFIRMACAO_ATIVA === "true") {
+    const origemBruta = env.NEXTAUTH_URL?.trim();
+    const segredo = env.BLACKCAT_WEBHOOK_PATH_SECRET?.trim();
+
+    if (!origemBruta || !segredo) return null;
+
+    let origem: URL;
+
+    try {
+      origem = new URL(origemBruta);
+    } catch {
+      return null;
+    }
+
+    if (origem.protocol !== "https:") return null;
+
+    postbackUrl =
+      `${origem.origin}/api/billing/webhook/blackcat/${encodeURIComponent(segredo)}`;
+  }
+
+  return postbackUrl
+    ? { apiKey, baseUrl, postbackUrl }
+    : { apiKey, baseUrl };
 }
 
 // ── Validação da resposta ────────────────────────────────────────────────────
@@ -324,6 +353,7 @@ export function provedorComConfiguracao(
         // Nossa referência, para a venda ser rastreável até o pedido mesmo que a
         // resposta se perca. É o campo documentado para isso — não foi inventado.
         externalRef: pedido.refExterna,
+        ...(config.postbackUrl ? { postbackUrl: config.postbackUrl } : {}),
       };
 
       let resposta: Response;

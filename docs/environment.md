@@ -53,6 +53,12 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
 | `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
 
+Quando `BLACKCAT_CONFIRMACAO_ATIVA="true"`, a criação do PIX exige também
+`NEXTAUTH_URL` válida em HTTPS e `BLACKCAT_WEBHOOK_PATH_SECRET` não vazio.
+O backend monta `postbackUrl` sozinho como
+`/api/billing/webhook/blackcat/<segredo>` e envia esse campo no `create-sale`.
+Nenhuma URL ou segredo vem do cliente.
+
 **Três flags, de propósito.** `MONETIZACAO_ATIVA` decide se o enforcement nega
 conteúdo; `BLACKCAT_PIX_ATIVO` decide se é possível cobrar. Precisam ser
 acionáveis em separado — a confirmação pode ficar desligada enquanto PIX e
