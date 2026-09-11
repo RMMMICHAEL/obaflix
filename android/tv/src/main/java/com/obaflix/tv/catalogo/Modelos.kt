@@ -86,3 +86,61 @@ data class Detalhe(
 data class Pagina(val itens: List<Item>, val pagina: Int, val paginas: Int) {
     val temMais: Boolean get() = pagina < paginas
 }
+
+// ── Canais ao vivo ───────────────────────────────────────────────────────────
+
+/**
+ * Um canal, do jeito que o aparelho o conhece.
+ *
+ * Nao ha campo de URL, e nao deve passar a haver. O catalogo de canais devolve
+ * so metadado publico; o endereco de midia aparece uma vez, na concessao, ja
+ * apontando para o dominio de midia do Obaflix — nunca para o provedor.
+ *
+ * Tambem nao ha programa atual, proximo, horario nem progresso: nao existe
+ * fonte confiavel de EPG nesta fase, e um horario inventado erra na tela de
+ * quem esta olhando.
+ */
+data class CanalTv(
+    val id: String,
+    val slug: String,
+    val nome: String,
+    val categoria: String,
+    val logoUrl: String?,
+    /** Nivel exigido, para desenhar o cadeado. Nao autoriza nada. */
+    val nivelMinimo: String,
+    /**
+     * Se esta conta alcanca o canal, calculado no servidor.
+     *
+     * Dica de interface, nao permissao: quem decide e o pedido de concessao, do
+     * zero, a cada OK. Um aparelho adulterado que force este campo ganha um
+     * card sem cadeado e uma recusa ao apertar OK.
+     */
+    val liberado: Boolean,
+)
+
+/** Uma categoria, com o rotulo que o servidor mandou. */
+data class CategoriaDeCanal(val id: String, val rotulo: String)
+
+data class CatalogoDeCanais(
+    val canais: List<CanalTv>,
+    val categorias: List<CategoriaDeCanal>,
+)
+
+/**
+ * O resultado de pedir para reproduzir um canal.
+ *
+ * `Liberado` carrega a unica URL que o aparelho chega a ver. As recusas sao
+ * separadas por tipo porque a tela responde de forma diferente a cada uma — e
+ * nenhuma delas carrega motivo tecnico, host ou status do provedor.
+ */
+sealed interface Concessao {
+    data class Liberado(val manifestUrl: String, val expiraEm: Long) : Concessao
+    /** Plano nao alcanca. `nivelExigido` e o que a tela mostra. */
+    data class PrecisaDeUpgrade(val nivelExigido: String?) : Concessao
+    /** Sessao caiu. A raiz volta ao pareamento. */
+    data object SemSessao : Concessao
+    /** Canal fora do ar, inexistente ou adulto. Indistinguiveis de proposito. */
+    data object Indisponivel : Concessao
+    /** Falha temporaria: rede, provedor fora, limite de tentativas. */
+    data object FalhaTemporaria : Concessao
+}

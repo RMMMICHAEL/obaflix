@@ -554,4 +554,103 @@ object ApiObaflix {
             legendas = legendas,
         )
     }
+
+    // ── Canais ao vivo ───────────────────────────────────────────────────────
+
+    /**
+     * Catalogo de canais desta conta.
+     *
+     * A rota ja filtra por entitlement e ja marca `liberado`. O aparelho nao
+     * refaz nenhuma das duas contas: ele desenha o que veio.
+     */
+    suspend fun canais(): CatalogoDeCanais? {
+        val raiz = objeto("/api/canais") ?: return null
+
+        val lista = raiz.optJSONArray("canais")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = texto(o, "id") ?: return@mapNotNull null
+                CanalTv(
+                    id = id,
+                    slug = texto(o, "slug") ?: id,
+                    nome = texto(o, "nome") ?: "Canal",
+                    categoria = texto(o, "categoria") ?: "variedades",
+                    logoUrl = texto(o, "logoUrl"),
+                    nivelMinimo = texto(o, "nivelMinimo") ?: "premium",
+                    liberado = o.optBoolean("liberado"),
+                )
+            }
+        }.orEmpty()
+
+        val categorias = raiz.optJSONArray("categorias")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = texto(o, "id") ?: return@mapNotNull null
+                CategoriaDeCanal(id, texto(o, "rotulo") ?: id)
+            }
+        }.orEmpty()
+
+        return CatalogoDeCanais(lista, categorias)
+    }
+
+    /**
+     * Como `chamar`, mas devolve o corpo tambem quando a resposta nega.
+     *
+     * Existe so para a concessao de canal: o 403 traz `nivelExigido`, e e ele
+     * que decide entre "seu plano nao inclui" e "este canal e do plano X". O
+     * `chamar` compartilhado descarta corpo de erro de proposito — as outras
+     * rotas esperam dado, e devolver um corpo de erro ali faria cada uma tentar
+     * interpretar uma negativa como catalogo.
+     */
+    private fun chamarLendoErro(caminho: String, corpo: JSONObject?): Resposta = runCatching {
+        ObaflixApp.httpClient.newCall(requisicao(caminho, corpo, false)).execute().use { r ->
+            Resposta(r.code, r.body?.string())
+        }
+    }.getOrElse {
+        ObaLog.alerta(
+            ObaLog.Fase.SESSAO, "canal_concessao_falhou",
+            "rota" to caminho.substringBefore("?"), "erro" to it.javaClass.simpleName,
+        )
+        Resposta(0, null)
+    }
+
+    /**
+     * Pede a concessao de reproducao de um canal.
+     *
+     * So e chamada no OK. Passar o foco por um card **nao** chega aqui: cada
+     * chamada resolve o canal no provedor, e percorrer uma grade de cem canais
+     * abriria cem sessoes em alguns segundos.
+     *
+     * Precisa do status HTTP, e nao so do corpo, porque 403 e 404 levam a telas
+     * diferentes — por isso repete a logica de renovacao em vez de usar
+     * `executar`, que descarta o status.
+     */
+    suspend fun concessaoDeCanal(canalId: String): Concessao = withContext(Dispatchers.IO) {
+        val caminho = "/api/canais/" + java.net.URLEncoder.encode(canalId, "UTF-8") + "/play"
+        val corpo = JSONObject()
+
+        var r = chamarLendoErro(caminho, corpo)
+        if (r.status == 401) {
+            val ctx = contexto
+            val renovou = ctx != null && travaRenovacao.withLock { PareamentoTv.renovar(ctx) }
+            if (!renovou) return@withContext Concessao.SemSessao
+            r = chamarLendoErro(caminho, corpo)
+        }
+
+        when (r.status) {
+            200 -> {
+                val raiz = r.corpo?.let { runCatching { JSONObject(it) }.getOrNull() }
+                val url = raiz?.let { texto(it, "manifestUrl") }
+                    ?: return@withContext Concessao.FalhaTemporaria
+                Concessao.Liberado(url, raiz.optLong("expiraEm"))
+            }
+            401 -> Concessao.SemSessao
+            403 -> {
+                val raiz = r.corpo?.let { runCatching { JSONObject(it) }.getOrNull() }
+                Concessao.PrecisaDeUpgrade(raiz?.let { texto(it, "nivelExigido") })
+            }
+            404 -> Concessao.Indisponivel
+            else -> Concessao.FalhaTemporaria
+        }
+    }
 }

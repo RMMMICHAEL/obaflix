@@ -159,6 +159,7 @@ fun AppTv() {
                 }
                 is Camada.Detalhe -> TelaDetalhe(topo)
                 is Camada.Player -> TelaPlayer(topo.pedido)
+                is Camada.PlayerDeCanal -> TelaPlayerDeCanal(topo.canal)
                 is Camada.Perfil -> TelaPerfil()
             }
 
@@ -236,6 +237,7 @@ private fun Moldura(aoFocarArte: (String?) -> Unit) {
             Aba.Series -> TelaCatalogo(Aba.Series, aoFocarArte)
             Aba.Animes -> TelaCatalogo(Aba.Animes, aoFocarArte)
             Aba.Kids -> TelaCatalogo(Aba.Kids, aoFocarArte)
+            Aba.Canais -> TelaCanais()
             Aba.Busca -> TelaBusca()
         }
     }
