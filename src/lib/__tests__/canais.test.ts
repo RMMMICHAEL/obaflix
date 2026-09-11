@@ -548,28 +548,41 @@ test("a chave de canais é própria, e não o NEXTAUTH_SECRET", () => {
   process.env.CANAIS_MEDIA_SIGNING_SECRET = original;
 });
 
+const ID_FALSO = "aBcDeFgH12345678";
+
 test("recurso empacotado sobrevive a query string e recusa saída de diretório", () => {
   // O caso que quebrava: `?` colado no caminho misturaria a query do provider
   // com a nossa, e do outro lado o pathname não conteria o que foi assinado.
-  const comQuery = empacotarRecurso(2, "seg.ts?token=abc&x=1");
+  const comQuery = empacotarRecurso(ID_FALSO, "seg.ts?token=abc&x=1");
   assert.equal(comQuery.includes("?"), false, "a query tem de sair encodada");
   assert.equal(comQuery.includes("&"), false);
   assert.deepEqual(desempacotarRecurso(comQuery), {
-    indiceDaBase: 2,
+    idDaBase: ID_FALSO,
     caminhoComQuery: "seg.ts?token=abc&x=1",
   });
 
-  assert.deepEqual(desempacotarRecurso(empacotarRecurso(0, "a.ts")), {
-    indiceDaBase: 0,
+  assert.deepEqual(desempacotarRecurso(empacotarRecurso(ID_FALSO, "a.ts")), {
+    idDaBase: ID_FALSO,
     caminhoComQuery: "a.ts",
   });
 
   // Entrada hostil: subir de diretório sairia da base e mudaria o alvo.
-  assert.equal(desempacotarRecurso(empacotarRecurso(0, "../../etc/passwd")), null);
-  assert.equal(desempacotarRecurso(empacotarRecurso(0, "/absoluto.ts")), null);
-  for (const ruim of ["", "abc", "-1/x", "x/y", "0/", "0/%ZZ"]) {
+  assert.equal(desempacotarRecurso(empacotarRecurso(ID_FALSO, "../../etc/passwd")), null);
+  assert.equal(desempacotarRecurso(empacotarRecurso(ID_FALSO, "/absoluto.ts")), null);
+  for (const ruim of ["", "abc", "curto/x", "x/y", `${ID_FALSO}/`, `${ID_FALSO}/%ZZ`]) {
     assert.equal(desempacotarRecurso(ruim), null, `aceitou "${ruim}"`);
   }
+});
+
+test("a query do upstream é transporte, não sigilo — e isso está documentado", () => {
+  // `encodeURIComponent` é reversível por qualquer um. O que se esconde é o
+  // HOST, pelo id opaco da base; a query não é tratada como secreta neste
+  // desenho, e um provider futuro que traga credencial nela precisa de
+  // identificador opaco, como a base já tem.
+  const recurso = empacotarRecurso(ID_FALSO, "seg.ts?token=SEGREDO");
+  assert.equal(decodeURIComponent(recurso.split("/")[1]), "seg.ts?token=SEGREDO");
+  // O host, esse sim, não sai: o id não contém nada do valor de origem.
+  assert.equal(recurso.includes("example"), false);
 });
 
 test("mesmaOrigem não cai no truque do sufixo", () => {
@@ -653,16 +666,20 @@ test("o teto absoluto não se move com renovação", async () => {
 const assinadorFalso = async (escopo: "m" | "s", recurso: string, exp: number) =>
   `sig-${escopo}-${recurso.length}-${exp}`;
 
-async function reescrever(manifesto: string, basesConhecidas: string[] = []) {
+/** Id determinístico e legível, para as asserções não dependerem do HMAC. */
+const idFalsoDaBase = async (base: string) =>
+  `b${[...base].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(36)}`.padEnd(8, "0");
+
+async function reescrever(manifesto: string) {
   return reescreverManifesto({
     manifesto,
     urlDoManifesto: "https://cdn.example.test/live/master.m3u8",
     sessionId: "sid",
     baseDoEdge: "https://media.example.test",
-    basesConhecidas,
     expSegmento: 1111,
     expManifesto: 2222,
     assinar: assinadorFalso,
+    idDaBase: idFalsoDaBase,
   });
 }
 
@@ -677,13 +694,17 @@ test("segmentos absolutos de outro host são reescritos e o CDN não sobrevive",
     "https://segmentos.example.test/assets/def456.css",
   ].join("\n");
 
-  const { manifesto, bases, basesMudaram } = await reescrever(entrada);
+  const { manifesto, basesUsadas } = await reescrever(entrada);
 
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
   assert.equal(manifesto.includes("segmentos.example.test"), false);
-  assert.equal(basesMudaram, true);
-  assert.deepEqual(bases, ["https://segmentos.example.test/assets/"]);
-  assert.match(manifesto, /media\.example\.test\/canal\/sid\/s\/0\/abc123\.css\?e=1111&k=/);
+  // A base sai listada para quem chama persistir ANTES de servir.
+  assert.deepEqual(
+    basesUsadas.map((b) => b.base),
+    ["https://segmentos.example.test/assets/"],
+  );
+  const id = await idFalsoDaBase("https://segmentos.example.test/assets/");
+  assert.ok(manifesto.includes(`/canal/sid/s/${id}/abc123.css?e=1111&k=`));
   assert.equal(manifesto.includes("#EXT-X-MEDIA-SEQUENCE:1271"), true);
 });
 
@@ -694,12 +715,12 @@ test("segmento com query string vira um recurso só, e a query não escapa", asy
     "https://segmentos.example.test/a/seg1.ts?token=abc&expira=9",
   ].join("\n");
 
-  const { manifesto, bases } = await reescrever(entrada);
+  const { manifesto, basesUsadas } = await reescrever(entrada);
 
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
   assert.equal(manifesto.includes("token=abc"), false, "a query do provider não pode sair crua");
   // A base guarda o host e o diretório; a query viaja encodada no recurso.
-  assert.deepEqual(bases, ["https://segmentos.example.test/a/"]);
+  assert.deepEqual(basesUsadas.map((b) => b.base), ["https://segmentos.example.test/a/"]);
   const linha = manifesto.split("\n").find((l) => l.startsWith("https://media."))!;
   // Só a NOSSA query está presente: exatamente um `?`, e ele é o do `e=`.
   assert.equal(linha.split("?").length, 2);
@@ -725,9 +746,9 @@ test("chave AES, MAP, MEDIA e variantes também são reescritos", async () => {
   assert.equal(manifesto.includes("cdn.example.test"), false);
   assert.match(manifesto, /#EXT-X-KEY:METHOD=AES-128,URI="https:\/\/media\.example\.test\/canal\/sid\/s\//);
   assert.match(manifesto, /IV=0x00/, "o resto da tag precisa sobreviver");
-  assert.match(manifesto, /\/canal\/sid\/v\/\d+\/variante-720\.m3u8\?e=2222&k=/);
-  assert.match(manifesto, /\/canal\/sid\/v\/\d+\/pt\.m3u8\?e=2222&k=/);
-  assert.match(manifesto, /\/canal\/sid\/s\/\d+\/seg1\.ts\?e=1111&k=/);
+  assert.match(manifesto, /\/canal\/sid\/v\/[A-Za-z0-9_-]+\/variante-720\.m3u8\?e=2222&k=/);
+  assert.match(manifesto, /\/canal\/sid\/v\/[A-Za-z0-9_-]+\/pt\.m3u8\?e=2222&k=/);
+  assert.match(manifesto, /\/canal\/sid\/s\/[A-Za-z0-9_-]+\/seg1\.ts\?e=1111&k=/);
 });
 
 test("URI que não pode ser reescrita com segurança é removida, nunca repassada", async () => {
@@ -743,7 +764,7 @@ test("URI que não pode ser reescrita com segurança é removida, nunca repassad
 
   assert.equal(manifesto.includes("inseguro.example.test"), false);
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
-  assert.match(manifesto, /\/canal\/sid\/s\/\d+\/bom\.ts/);
+  assert.match(manifesto, /\/canal\/sid\/s\/[A-Za-z0-9_-]+\/bom\.ts/);
 });
 
 test("vazaUpstream é a rede que não envelhece junto com a lista de tags", () => {
@@ -763,8 +784,10 @@ test("o teto de bases impede um upstream hostil de inflar a sessão", async () =
   for (let i = 0; i < 30; i++) {
     linhas.push("#EXTINF:4.0,", `https://host${i}.example.test/a/seg.ts`);
   }
-  const { manifesto, bases } = await reescrever(linhas.join("\n"));
+  const { manifesto, basesUsadas } = await reescrever(linhas.join("\n"));
 
-  assert.ok(bases.length <= 8, `bases cresceu para ${bases.length}`);
+  // O teto protege duas coisas: a sessão de inchar e, agora que a persistência
+  // de base é obrigatória, uma resposta de virar milhares de gravações no Redis.
+  assert.ok(basesUsadas.length <= 8, `bases cresceu para ${basesUsadas.length}`);
   assert.equal(vazaUpstream(manifesto, "https://media.example.test"), false);
 });

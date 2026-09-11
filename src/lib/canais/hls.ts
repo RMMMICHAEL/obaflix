@@ -26,18 +26,27 @@
  *
  * ## O modelo de URL pública
  *
- *   <base do edge>/canal/<sessionId>/s/<i>/<caminho+query encodado>?e=<exp>&k=<sig>
+ *   <base do edge>/canal/<sessionId>/s/<idDaBase>/<caminho+query>?e=<exp>&k=<sig>
  *
- * `<i>` é o índice da base upstream dentro da sessão (Redis), não o host. O
- * caminho e a query do upstream viajam **percent-encodados num segmento só**
- * (ver `empacotarRecurso`), para uma URI com `?token=…` não misturar a query do
- * provider com a nossa nem quebrar a assinatura do outro lado.
+ * `<idDaBase>` é opaco e **determinístico**: `HMAC(chave, base)` truncado. Não é
+ * mais um índice em vetor, e a diferença importa — ver `assinatura.ts`.
+ *
+ * ## Quem persiste é quem chama
+ *
+ * Esta função **não escreve em lugar nenhum**: ela devolve, em `basesUsadas`,
+ * todas as bases que o manifesto reescrito passou a referenciar. Quem chama
+ * precisa garantir que cada uma esteja persistida **antes** de servir o
+ * resultado — senão o manifesto sai apontando para um id que ninguém consegue
+ * resolver, e todo segmento dele responde 403.
  */
 
 import { empacotarRecurso, mesmaOrigem } from "./assinatura";
 
 /** Assina um recurso. Assíncrona porque no Worker o HMAC é WebCrypto. */
 export type Assinador = (escopo: "m" | "s", recurso: string, exp: number) => Promise<string>;
+
+/** Calcula o id opaco de uma base. Assíncrona pelo mesmo motivo. */
+export type IdentificadorDeBase = (base: string) => Promise<string>;
 
 export interface EntradaDeReescrita {
   /** O manifesto como veio do upstream. */
@@ -47,19 +56,23 @@ export interface EntradaDeReescrita {
   sessionId: string;
   /** Prefixo público do edge, sem barra final. Ex.: `https://media.exemplo` */
   baseDoEdge: string;
-  /** Bases já conhecidas da sessão. A reescrita pode acrescentar. */
-  basesConhecidas: string[];
   expSegmento: number;
   expManifesto: number;
   assinar: Assinador;
+  idDaBase: IdentificadorDeBase;
 }
 
 export interface SaidaDeReescrita {
   manifesto: string;
-  /** As bases após a reescrita. Se mudou, a sessão precisa ser regravada. */
-  bases: string[];
-  /** `true` se `bases` ganhou entrada nova — evita escrever no Redis à toa. */
-  basesMudaram: boolean;
+  /**
+   * Toda base referenciada pelo manifesto reescrito, com o id de cada.
+   *
+   * Quem chama tem de persistir todas antes de servir. Não há "novas" e
+   * "conhecidas" aqui de propósito: este módulo não sabe o que está no Redis, e
+   * inventar esse palpite seria a forma mais fácil de servir um manifesto cuja
+   * base ninguém gravou.
+   */
+  basesUsadas: { id: string; base: string }[];
 }
 
 /** `true` para linha de tag; `false` para URI nua e para linha vazia. */
@@ -73,7 +86,7 @@ function ehTag(linha: string): boolean {
  *
  * A query fica do lado que viaja, e não do lado escondido, porque ela pode
  * variar por segmento (`?token=…`): se entrasse na base, cada segmento criaria
- * uma base nova e o teto de `MAX_BASES` estouraria no primeiro provider que
+ * uma base nova, e o teto de `MAX_BASES` estouraria no primeiro provider que
  * assinasse segmento.
  */
 function partir(absoluta: string): { base: string; caminho: string } | null {
@@ -91,21 +104,14 @@ function partir(absoluta: string): { base: string; caminho: string } | null {
 }
 
 /**
- * Índice da base, acrescentando se for nova.
+ * Teto de bases distintas num manifesto.
  *
- * Um manifesto legítimo usa uma ou duas bases. O teto existe porque um upstream
- * hostil poderia listar milhares de hosts distintos e inflar a sessão no Redis
- * — e porque, passando disso, algo está errado e falhar é melhor que servir.
+ * Um manifesto legítimo usa uma ou duas. O teto existe porque um upstream
+ * hostil poderia listar milhares de hosts distintos e transformar uma resposta
+ * em milhares de gravações no Redis — e porque, passando disso, algo está
+ * errado e falhar é melhor que servir.
  */
 const MAX_BASES = 8;
-
-function indiceDaBase(bases: string[], base: string): number {
-  const i = bases.indexOf(base);
-  if (i >= 0) return i;
-  if (bases.length >= MAX_BASES) return -1;
-  bases.push(base);
-  return bases.length - 1;
-}
 
 /** `.m3u8` (ou `.m3u`) — manifesto filho, que precisa de reescrita própria. */
 function ehManifesto(caminho: string): boolean {
@@ -113,9 +119,9 @@ function ehManifesto(caminho: string): boolean {
 }
 
 export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaDeReescrita> {
-  const bases = [...e.basesConhecidas];
-  const antes = bases.length;
   const baseDoEdge = e.baseDoEdge.replace(/\/+$/, "");
+  /** base → id, memoizado: o mesmo manifesto repete a base em toda linha. */
+  const idsPorBase = new Map<string, string>();
 
   /** Uma URI do upstream vira uma URI do edge. `null` quando não dá. */
   async function publica(refBruta: string): Promise<string | null> {
@@ -131,15 +137,20 @@ export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaD
 
     const partes = partir(absoluta);
     if (!partes) return null;
-    const i = indiceDaBase(bases, partes.base);
-    if (i < 0) return null;
+
+    let id = idsPorBase.get(partes.base);
+    if (id === undefined) {
+      if (idsPorBase.size >= MAX_BASES) return null;
+      id = await e.idDaBase(partes.base);
+      idsPorBase.set(partes.base, id);
+    }
 
     // Um manifesto filho é buscado pelo edge de novo e reescrito de novo, então
     // ganha o escopo e a validade de manifesto. Um segmento é buscado uma vez e
     // ganha a validade curta.
     const escopo: "m" | "s" = ehManifesto(partes.caminho) ? "m" : "s";
     const exp = escopo === "m" ? e.expManifesto : e.expSegmento;
-    const recurso = empacotarRecurso(i, partes.caminho);
+    const recurso = empacotarRecurso(id, partes.caminho);
     const sig = await e.assinar(escopo, recurso, exp);
     const rota = escopo === "m" ? "v" : "s";
     // `recurso` já é um segmento único e percent-encodado, então a única query
@@ -178,8 +189,7 @@ export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaD
 
   return {
     manifesto: saida.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n"),
-    bases,
-    basesMudaram: bases.length !== antes,
+    basesUsadas: [...idsPorBase].map(([base, id]) => ({ id, base })),
   };
 }
 
@@ -191,10 +201,10 @@ export async function reescreverManifesto(e: EntradaDeReescrita): Promise<SaidaD
  * não envelhece — ela pergunta o que realmente importa, que é se sobrou host de
  * terceiro no que vai sair.
  *
- * A comparação é por **origem**, e não por prefixo de string. `startsWith` —
- * como esta função fazia antes — aceita `https://media.exemplo.evil.example`
- * quando a base é `https://media.exemplo`: o host hostil vem depois, e o
- * prefixo casa. Origem é esquema + host + porta, e não tem essa falha.
+ * A comparação é por **origem**, e não por prefixo de string. `startsWith`
+ * aceita `https://media.exemplo.evil.example` quando a base é
+ * `https://media.exemplo`: o host hostil vem depois, e o prefixo casa. Origem é
+ * esquema + host + porta, e não tem essa falha.
  */
 export function vazaUpstream(manifesto: string, baseDoEdge: string): boolean {
   const urls = manifesto.match(/https?:\/\/[^\s"',]+/gi);

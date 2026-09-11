@@ -22,21 +22,22 @@
  * entregar a URL ao aparelho é entregar o canal para sempre. Daí o desenho: o
  * Worker arma e busca na **mesma invocação**, e o aparelho nunca vê o upstream.
  *
- * > **O egress precisa ser provado no Worker publicado.** "Mesma invocação" não
- * > é promessa contratual de IP de saída estável na Cloudflare — IP de egress
- * > dedicado é recurso à parte. Antes de ativar, rode
- * > `scripts/verificar-arm-no-edge.ts` contra o Worker real. Ver
+ * > **O egress ser o mesmo é premissa, não garantia.** "Mesma invocação" não é
+ * > promessa contratual de IP de saída estável na Cloudflare — egress dedicado
+ * > é recurso à parte. Antes de ativar, rode `npm run canais:verificar-edge`
+ * > contra o Worker publicado; se der intermitente, a ativação para e a
+ * > alternativa escolhida precisa ser testada com o mesmo script. Ver
  * > `docs/canais-fase-a.md`.
  *
  * ## As rotas
  *
- *   /canal/<sid>/master.m3u8   manifesto da sessão
- *   /canal/<sid>/v/<i>/<rec>   manifesto filho (variante)
- *   /canal/<sid>/s/<i>/<rec>   segmento
+ *   /canal/<sid>/master.m3u8    manifesto da sessão
+ *   /canal/<sid>/v/<idBase>/<rec>   manifesto filho (variante)
+ *   /canal/<sid>/s/<idBase>/<rec>   segmento
  *
- * `<i>` é o índice da base upstream **dentro da sessão no Redis**, nunca o
- * host; `<rec>` é caminho+query do upstream, percent-encodado num segmento só.
- * Todas exigem `?e=<exp>&k=<hmac>`.
+ * `<idBase>` é opaco e determinístico — `HMAC(chave, base)` truncado —, e
+ * `<rec>` é caminho+query do upstream percent-encodado num segmento só. Todas
+ * exigem `?e=<exp>&k=<hmac>`.
  *
  * ## O que segura cada coisa
  *
@@ -45,8 +46,9 @@
  * | HMAC sobre `escopo:sid:nonce:recurso:exp` | URL forjada pelo cliente |
  * | `exp` conferido antes da criptografia | replay de link antigo |
  * | Nonce vindo da sessão, nunca da URL | URL capturada sobreviver à renovação |
+ * | Geração anterior só dentro da grace | handoff sem matar o player, e sem janela longa |
  * | Sessão no Redis, TTL curto + teto absoluto | concessão revogada continuar valendo |
- * | Índice de base, não host | descoberta do CDN pela URL |
+ * | Id opaco de base, não host | descoberta do CDN pela URL |
  * | Allowlist no alvo de mídia **e** na página de arm | vazamento de chave virar SSRF |
  * | Resposta montada campo a campo | domínio real vazar em header |
  *
@@ -57,12 +59,15 @@
 
 import { reescreverManifesto, vazaUpstream } from "../../../src/lib/canais/hls";
 import {
+  chaveDaBase,
   chaveDaSessao,
   desempacotarRecurso,
   materialAssinado,
   materialDaChave,
+  materialDoIdDaBase,
   semanaDaChave,
   TAMANHO_DA_ASSINATURA,
+  TAMANHO_DO_ID_DE_BASE,
   type EscopoDeCanal,
 } from "../../../src/lib/canais/assinatura";
 
@@ -98,6 +103,21 @@ function negar(): Response {
   });
 }
 
+/**
+ * Falha temporária. Usada quando **nós** não conseguimos cumprir o pedido —
+ * Redis fora, por exemplo —, e não quando o pedido é inválido.
+ *
+ * A distinção importa para o cliente: 403 é "desista e peça outra concessão";
+ * 503 é "tente de novo". Colapsar os dois faria uma queda de Redis parecer
+ * revogação em massa.
+ */
+function indisponivel(): Response {
+  return new Response("Indisponível", {
+    status: 503,
+    headers: { "Cache-Control": "no-store", "Retry-After": "2" },
+  });
+}
+
 // ── Assinatura ───────────────────────────────────────────────────────────────
 
 async function derivarChave(secret: string, semana: number): Promise<CryptoKey> {
@@ -127,21 +147,43 @@ interface Recurso {
   exp: number;
 }
 
-async function hmac(env: EnvCanais, p: Recurso, semana: number): Promise<string> {
+async function hmacCru(env: EnvCanais, material: string, semana: number): Promise<string> {
   const chave = await derivarChave(env.ASSINATURA_SECRET, semana);
-  const dados = new TextEncoder().encode(materialAssinado(p));
-  return base64url(await crypto.subtle.sign("HMAC", chave, dados)).slice(0, TAMANHO_DA_ASSINATURA);
+  const dados = new TextEncoder().encode(material);
+  return base64url(await crypto.subtle.sign("HMAC", chave, dados));
 }
 
+async function hmac(env: EnvCanais, p: Recurso, semana: number): Promise<string> {
+  return (await hmacCru(env, materialAssinado(p), semana)).slice(0, TAMANHO_DA_ASSINATURA);
+}
+
+async function idDaBase(env: EnvCanais, base: string, agoraMs: number): Promise<string> {
+  const material = materialDoIdDaBase(base);
+  return (await hmacCru(env, material, semanaDaChave(agoraMs))).slice(0, TAMANHO_DO_ID_DE_BASE);
+}
+
+/**
+ * Confere a assinatura contra as gerações aceitáveis da sessão.
+ *
+ * A corrente sempre; a anterior **só** enquanto `graceAte` não passou. É a
+ * janela de handoff: sem ela, girar o nonce numa renovação mataria as URLs que
+ * o player está usando naquele exato instante.
+ */
 async function assinaturaConfere(
   env: EnvCanais,
-  p: Recurso,
+  p: Omit<Recurso, "nonce">,
+  sessao: SessaoDeCanal,
   sig: string,
   agoraMs: number,
 ): Promise<boolean> {
+  const nonces = [sessao.nonce];
+  if (sessao.noncePrevio && agoraMs < sessao.graceAte) nonces.push(sessao.noncePrevio);
+
   const w = semanaDaChave(agoraMs);
-  for (const semana of [w, w - 1]) {
-    if (iguaisEmTempoConstante(await hmac(env, p, semana), sig)) return true;
+  for (const nonce of nonces) {
+    for (const semana of [w, w - 1]) {
+      if (iguaisEmTempoConstante(await hmac(env, { ...p, nonce }, semana), sig)) return true;
+    }
   }
   return false;
 }
@@ -175,7 +217,7 @@ function alvoAceitavel(bruta: string, allowlist: string): URL | null {
   return u;
 }
 
-// ── Sessão (Redis via REST do Upstash) ───────────────────────────────────────
+// ── Sessão e bases (Redis via REST do Upstash) ───────────────────────────────
 
 interface SessaoDeCanal {
   canalId: string;
@@ -184,8 +226,9 @@ interface SessaoDeCanal {
   paginaDoPlayer: string;
   referer: string | null;
   userAgent: string | null;
-  bases: string[];
   nonce: string;
+  noncePrevio: string | null;
+  graceAte: number;
   criadaEm: number;
   expiraEm: number;
   expiraDefinitivamenteEm: number;
@@ -195,6 +238,10 @@ interface SessaoDeCanal {
  * Redis, e não KV: o estado aqui decide autorização, e KV é eventualmente
  * consistente. Uma revogação levaria até um minuto para valer em todos os
  * pontos — e é nesse minuto que um replay funciona.
+ *
+ * Lança em qualquer falha. Quem chama decide se isso é 403 (não achou) ou 503
+ * (não deu para saber) — e a diferença entre os dois é o assunto de
+ * `persistirBases`.
  */
 async function comandoRedis(env: EnvCanais, cmd: (string | number)[]): Promise<unknown> {
   const r = await fetch(env.UPSTASH_REDIS_REST_URL, {
@@ -220,8 +267,7 @@ async function lerSessao(env: EnvCanais, sessionId: string): Promise<SessaoDeCan
   if (typeof bruto !== "string") return null;
   try {
     const s = JSON.parse(bruto) as SessaoDeCanal;
-    if (typeof s.upstream !== "string" || !Array.isArray(s.bases)) return null;
-    if (typeof s.nonce !== "string" || !s.nonce) return null;
+    if (typeof s.upstream !== "string" || typeof s.nonce !== "string" || !s.nonce) return null;
     const agora = Date.now();
     if (typeof s.expiraEm !== "number" || s.expiraEm < agora) return null;
     // Teto absoluto: a janela deslizante sozinha é imortal.
@@ -235,18 +281,16 @@ async function lerSessao(env: EnvCanais, sessionId: string): Promise<SessaoDeCan
 }
 
 /**
- * Regrava a sessão e renova o TTL. Janela deslizante: enquanto o player busca
- * manifesto a sessão vive; parou de buscar, ela morre sozinha em `ttlS`.
+ * Renova o TTL da sessão. **Best-effort, e pode ser.**
  *
- * Nunca move `expiraDefinitivamenteEm` — é o que obriga a reautorização pelo
- * backend de tempos em tempos.
+ * Nada aqui muda conteúdo: só empurra a janela deslizante. Se falhar, a sessão
+ * continua com o TTL anterior e a reprodução segue — nenhum manifesto já
+ * servido passa a apontar para algo inexistente.
+ *
+ * É o oposto de `persistirBases`, e a diferença é exatamente essa: lá a escrita
+ * é pré-requisito do que vai ser servido; aqui não é.
  */
-async function gravarSessao(
-  env: EnvCanais,
-  sessionId: string,
-  s: SessaoDeCanal,
-  ttlS: number,
-): Promise<void> {
+async function renovarTtlDaSessao(env: EnvCanais, sessionId: string, s: SessaoDeCanal, ttlS: number) {
   try {
     await comandoRedis(env, [
       "SET",
@@ -256,16 +300,91 @@ async function gravarSessao(
       ttlS,
     ]);
   } catch {
-    // Falha ao renovar não derruba a reprodução em curso: a sessão ainda tem o
-    // TTL antigo. O que não pode é a falha virar concessão — e não vira, porque
-    // este caminho só escreve, nunca autoriza.
+    /* ver o comentário acima: falhar aqui não compromete nada já servido */
   }
+}
+
+/**
+ * Cache de bases por isolate.
+ *
+ * O mapa id→base é imutável (o id deriva do valor), então cachear não pode
+ * devolver resposta errada. Serve a dois propósitos: evitar um GET no Redis por
+ * segmento — são centenas por reprodução — e evitar reescrever a mesma linha a
+ * cada manifesto.
+ *
+ * É cache, não autoridade: a sessão continua sendo lida do Redis em toda
+ * requisição, e é ela que decide autorização.
+ */
+const MAX_CACHE_DE_BASES = 500;
+const cacheDeBases = new Map<string, string>();
+/** id → instante até o qual já sabemos que a linha está no Redis. */
+const basesPersistidasAte = new Map<string, number>();
+
+function lembrarBase(id: string, base: string, persistidaAteMs: number): void {
+  if (cacheDeBases.size >= MAX_CACHE_DE_BASES) {
+    // Descarte simples do mais antigo: `Map` mantém ordem de inserção, e o
+    // custo de errar é uma ida ao Redis.
+    const primeiro = cacheDeBases.keys().next();
+    if (!primeiro.done) {
+      cacheDeBases.delete(primeiro.value);
+      basesPersistidasAte.delete(primeiro.value);
+    }
+  }
+  cacheDeBases.set(id, base);
+  basesPersistidasAte.set(id, persistidaAteMs);
+}
+
+async function resolverBase(env: EnvCanais, id: string): Promise<string | null> {
+  const emCache = cacheDeBases.get(id);
+  if (emCache) return emCache;
+  let bruto: unknown;
+  try {
+    bruto = await comandoRedis(env, ["GET", chaveDaBase(id)]);
+  } catch {
+    return null;
+  }
+  if (typeof bruto !== "string" || !bruto) return null;
+  lembrarBase(id, bruto, Date.now() + TTL_BASE_S * 1000);
+  return bruto;
+}
+
+/**
+ * Persiste as bases de um manifesto. **Obrigatório: lança se não conseguir.**
+ *
+ * O manifesto reescrito já contém o id de cada base. Servi-lo sem a linha
+ * correspondente no Redis entregaria ao player um documento cujos segmentos
+ * todos respondem 403 — uma falha que parece revogação e não é.
+ *
+ * Por isso este caminho **não** engole erro, ao contrário de
+ * `renovarTtlDaSessao`. Quem chama transforma a exceção em 503, e o player
+ * tenta de novo.
+ *
+ * Concorrência não é problema aqui: o id deriva do valor, então duas
+ * descobertas simultâneas da mesma base gravam o mesmo par, e de bases
+ * diferentes gravam chaves diferentes. Não existe o `SET` de um documento
+ * comum que a versão anterior tinha, e com ele foi embora o last-write-wins.
+ */
+async function persistirBases(
+  env: EnvCanais,
+  bases: { id: string; base: string }[],
+  agoraMs: number,
+): Promise<void> {
+  const pendentes = bases.filter((b) => (basesPersistidasAte.get(b.id) ?? 0) <= agoraMs);
+  if (pendentes.length === 0) return;
+
+  await Promise.all(
+    pendentes.map((b) => comandoRedis(env, ["SET", chaveDaBase(b.id), b.base, "EX", TTL_BASE_S])),
+  );
+  // Só marca depois de todas terem gravado. Marcar antes faria uma falha
+  // parcial virar "já está lá" para a próxima requisição deste isolate.
+  for (const b of pendentes) lembrarBase(b.id, b.base, agoraMs + TTL_BASE_S * 1000);
 }
 
 /** Espelho de `src/lib/canais/sessao.ts`. Mudou lá, muda aqui. */
 const TTL_SESSAO_S = 7 * 60;
 const TTL_GRANT_S = 5 * 60;
 const TTL_SEGMENTO_S = 90;
+const TTL_BASE_S = 6 * 3600;
 
 // ── Busca no upstream, com arm ───────────────────────────────────────────────
 
@@ -301,9 +420,6 @@ function cabecalhosParaUpstream(s: SessaoDeCanal, req: Request): Headers {
  * nosso backend, mas "veio do banco" não é o mesmo que "é um alvo permitido": a
  * allowlist é o que segura o caso de a chave de assinatura vazar e alguém
  * conseguir plantar uma sessão.
- *
- * O corpo é descartado: quem extrai a URL de mídia é o backend, na resolução. O
- * que interessa aqui é só o efeito colateral.
  */
 async function armar(env: EnvCanais, s: SessaoDeCanal): Promise<void> {
   const alvo = alvoAceitavel(s.paginaDoPlayer, env.CANAIS_PLAYER_ALLOWLIST);
@@ -356,7 +472,7 @@ async function buscarComArm(
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
-const ROTA = /^\/canal\/([A-Za-z0-9_-]{16,64})\/(master\.m3u8|[vs]\/\d+\/[^/]+)$/;
+const ROTA = /^\/canal\/([A-Za-z0-9_-]{16,64})\/(master\.m3u8|[vs]\/[A-Za-z0-9_-]{8,32}\/[^/]+)$/;
 
 export function ehRotaDeCanal(pathname: string): boolean {
   return pathname.startsWith("/canal/");
@@ -388,21 +504,16 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   const escopo: EscopoDeCanal = ehMaster || resto.startsWith("v/") ? "m" : "s";
   const recurso = ehMaster ? "master" : resto.slice(2);
 
-  // A sessão vem **antes** da assinatura, porque o nonce que fecha o HMAC mora
-  // nela. É o que faz uma renovação (nonce novo) invalidar na hora toda URL
-  // emitida antes, mesmo dentro da validade. O custo é um GET no Redis para
-  // pedido inválido — aceitável: `sessionId` são 24 bytes aleatórios, adivinhar
-  // não é um caminho, e a expiração já barrou o replay óbvio acima.
+  // A sessão vem **antes** da assinatura, porque os nonces que fecham o HMAC
+  // moram nela. É o que faz uma renovação invalidar as URLs antigas passada a
+  // grace, e uma revogação invalidar tudo na hora. O custo é um GET no Redis
+  // para pedido inválido — aceitável: `sessionId` são 24 bytes aleatórios.
   const sessao = await lerSessao(env, sessionId);
   if (!sessao) return negar();
 
-  const confere = await assinaturaConfere(
-    env,
-    { escopo, sessionId, nonce: sessao.nonce, recurso, exp },
-    sig,
-    agora,
-  );
-  if (!confere) return negar();
+  if (!(await assinaturaConfere(env, { escopo, sessionId, recurso, exp }, sessao, sig, agora))) {
+    return negar();
+  }
 
   // Qual URL upstream este pedido representa.
   let alvoBruto: string;
@@ -410,11 +521,13 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     alvoBruto = sessao.upstream;
   } else {
     const partes = desempacotarRecurso(recurso);
-    // O recurso vem da URL, logo é entrada. Índice fora do intervalo não é
-    // "base 0 por padrão": é recusa. E um caminho que tente subir de diretório
-    // já foi recusado no desempacotamento.
-    if (!partes || partes.indiceDaBase >= sessao.bases.length) return negar();
-    alvoBruto = sessao.bases[partes.indiceDaBase] + partes.caminhoComQuery;
+    if (!partes) return negar();
+    const base = await resolverBase(env, partes.idDaBase);
+    // Base desconhecida é recusa, nunca um padrão. Com id determinístico, o
+    // pior caso deixou de ser "aponta para a base errada" e passou a ser "não
+    // encontrada" — o player rebusca o manifesto e a base é redescoberta.
+    if (!base) return negar();
+    alvoBruto = base + partes.caminhoComQuery;
   }
 
   const alvo = alvoAceitavel(alvoBruto, env.CDN_ALLOWLIST);
@@ -470,12 +583,15 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   // renovaria sozinha para sempre, sem passar pelo backend.
   const expManifesto = Math.min(exp, Math.floor(agora / 1000) + TTL_GRANT_S);
 
+  // As URLs novas são sempre assinadas com a geração **corrente**, mesmo quando
+  // o pedido chegou com a anterior dentro da grace. É isso que faz o handoff
+  // ser quase invisível: durante a janela, a URL antiga de manifesto continua
+  // respondendo, e devolve segmentos já da geração nova.
   const reescrito = await reescreverManifesto({
     manifesto: texto,
     urlDoManifesto: alvo.toString(),
     sessionId,
     baseDoEdge,
-    basesConhecidas: sessao.bases,
     expSegmento,
     expManifesto,
     assinar: (esc, rec, e) =>
@@ -484,20 +600,24 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
         { escopo: esc, sessionId, nonce: sessao.nonce, recurso: rec, exp: e },
         semanaDaChave(agora),
       ),
+    idDaBase: (base) => idDaBase(env, base, agora),
   });
 
   // Rede de segurança independente da lista de tags: se sobrou host de terceiro
   // no que ia sair, não sai. Prefere-se canal quebrado a CDN publicado.
   if (vazaUpstream(reescrito.manifesto, baseDoEdge)) return negar();
 
-  // Só escreve quando a reescrita descobriu base nova. Renova o TTL sempre: é
-  // a janela deslizante que mantém a sessão viva enquanto se assiste.
-  await gravarSessao(
-    env,
-    sessionId,
-    reescrito.basesMudaram ? { ...sessao, bases: reescrito.bases } : sessao,
-    TTL_SESSAO_S,
-  );
+  // **Antes** de servir. O manifesto já carrega os ids das bases; entregá-lo
+  // sem elas no Redis daria ao player um documento cujos segmentos respondem
+  // todos 403. Falhar aqui é 503, e o player tenta de novo.
+  try {
+    await persistirBases(env, reescrito.basesUsadas, agora);
+  } catch {
+    return indisponivel();
+  }
+
+  // Só agora, e best-effort: nada já servido depende disto.
+  await renovarTtlDaSessao(env, sessionId, sessao, TTL_SESSAO_S);
 
   saida.set("Content-Type", "application/vnd.apple.mpegurl");
   // Manifesto de live muda a cada segmento. Cache nenhum.
@@ -506,4 +626,10 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     status: 200,
     headers: saida,
   });
+}
+
+/** Só para teste: zera os caches de isolate entre cenários. */
+export function __limparCachesDeBase(): void {
+  cacheDeBases.clear();
+  basesPersistidasAte.clear();
 }
