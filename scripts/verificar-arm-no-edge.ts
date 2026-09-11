@@ -38,6 +38,11 @@
  * contagem. Colar a saída num chamado não vaza nada.
  */
 
+// Sem `import`, um arquivo `.ts` é script global e não módulo — e aí o `main`
+// daqui colide com o `main` de outro script no mesmo projeto. Isto o torna
+// módulo sem acrescentar dependência nenhuma.
+export {};
+
 const TENTATIVAS = 12;
 const INTERVALO_MS = 1500;
 

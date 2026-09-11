@@ -92,7 +92,8 @@ Android / Android TV / Electron
   Media edge (Cloudflare Worker)
         │  confere assinatura + expiração
         │  lê a sessão pelo id opaco (Redis REST)
-        │  ARMA (GET na página do player) e BUSCA — mesma invocação, mesmo egress
+        │  ARMA (GET na página do player) e BUSCA — mesma invocação
+        │    (o egress ser o mesmo é PREMISSA, provada por verificar-edge)
         │  reescreve o manifesto: nenhuma URL absoluta de upstream sobrevive
         ▼
   Aparelho
@@ -136,14 +137,22 @@ O script pede o manifesto doze vezes, cada uma uma invocação nova, e classific
 | parte 200, parte 403 | egress varia — ver saídas abaixo |
 | 0/12 | concessão vencida, allowlist vazia, ou canal fora do ar |
 
-**Se o egress variar**, as saídas, em ordem de preferência:
+**Se o egress variar, a ativação para.** Não há aqui uma saída já sabida — há
+candidatas, e cada uma precisa ser **testada com o mesmo `verificar-edge`** antes
+de ser adotada:
 
-1. **Reter o grant no edge.** Armar e servir a partir de um Durable Object
-   (instância única, IP estável durante a vida dela) em vez de invocação
-   qualquer. É a mudança menor que resolve de verdade.
-2. **IP de egress dedicado** da Cloudflare, se o plano permitir.
-3. **Proxy de saída próprio** com IP fixo, com o Worker falando com ele. Volta a
-   pagar banda, e é a opção que o `workers/media-proxy` existe para evitar.
+| Candidata | O que se sabe | O que **não** se sabe |
+|---|---|---|
+| **Dedicated CDN Egress IPs** (Cloudflare) | é o recurso que a Cloudflare documenta para egress dedicado de Workers | se está disponível no nosso plano, e o custo |
+| **Durable Object** armando e servindo | dá uma instância única com identidade lógica estável | **não é garantia contratual de IP público fixo.** Pode ajudar, pode não mudar nada — é hipótese a investigar, não solução |
+| **Proxy de saída próprio** com IP fixo | resolve o IP por construção | volta a pagar banda, que é o custo que o `workers/media-proxy` existe para evitar |
+
+A regra, escrita para não ser esquecida no calor do momento:
+
+1. `verificar-edge` intermitente → **parar a ativação**;
+2. escolher uma candidata e **testá-la**;
+3. **não** assumir que mover para Durable Object resolveu — só o
+   `verificar-edge` contra a implementação nova diz isso.
 
 Nenhuma delas é improviso em cima do player de filmes/séries, e nenhuma muda o
 contrato dos clientes — o aparelho continua vendo só a URL do nosso domínio.
@@ -209,24 +218,86 @@ sem deploy e sem tocar em filmes e séries.
 |---|---|---|
 | URL de manifesto (grant) | 5 min | URL capturada morre rápido |
 | URL de segmento | 90 s | link não sobrevive ao instante em que foi útil |
+| Grace de handoff | 60 s | janela em que as duas gerações convivem |
 | Sessão no Redis | 7 min, deslizante | sessão abandonada morre sozinha |
 | Vida máxima da sessão | 2 h | força re-resolução no provider |
+| Mapa id→base | 6 h | tabela imutável; perder uma entrada só custa redescoberta |
 
 O cliente volta a `POST /api/canais/{id}/play` a ~60% do grant, mandando
 `sessionId`. Essa volta é **reautorização de verdade**: reconfere sessão,
 entitlement e rate limit, e **rotaciona o nonce** da sessão. Como o nonce entra
-no material assinado e nunca viaja na URL, rotacioná-lo derruba na hora todas as
-URLs emitidas antes — inclusive uma que alguém tivesse capturado dentro da
-validade.
+no material assinado e nunca viaja na URL, rotacioná-lo derruba as URLs emitidas
+antes.
 
-A renovação **não** volta ao provider: reaproveita o upstream já resolvido. Um
-espectador de uma hora custaria doze buscas na página do player se
-re-resolvesse, e a proteção sairia cara no lugar errado.
+### O handoff, e por que ele precisa existir
+
+Rotacionar o nonce sem mais nada **mata a reprodução em curso**: no instante da
+renovação, o manifesto e os segmentos que o player está usando param de
+conferir. Foi assim que a primeira versão saiu, e é o defeito que o protocolo
+abaixo conserta.
+
+```text
+t=0        concessão A, player tocando por A
+t=0.6·V    renova ──► servidor gira o nonce
+                      A entra em grace (60 s)
+                      concessão B devolvida
+t=0.6·V    o cliente TROCA A FONTE do player para B
+t=0.6·V+60 A morre
+```
+
+Duas peças, e as duas são obrigatórias:
+
+- **No servidor**, a sessão guarda `nonce` e `noncePrevio`, e o edge aceita o
+  anterior só até `graceAte`. Durante a janela, servir a URL **antiga** de
+  manifesto devolve segmentos assinados com a geração **nova** — o que faz a
+  troca ser quase invisível.
+- **No cliente**, `trocarFonte` chama `hls.loadSource(url)` (React/Electron) ou
+  `setMediaItem` + `prepare` (Android TV). Guardar a URL numa variável **não é
+  migrar**, e era exatamente o que faltava.
+
+O protocolo vive em `src/lib/canais/handoff.ts` e em
+`HandoffDeCanal.kt`, testado dos dois lados. O teste de integração do edge
+(`src/lib/__tests__/canaisEdge.test.ts`) percorre A → B → grace → morte de A →
+revogação.
+
+**Apagar a sessão não tem grace.** Logout, revogação e entitlement perdido matam
+as duas gerações no mesmo instante.
 
 O que o edge **não** faz, e não pode: identificar quem está pedindo. A requisição
 do player não carrega credencial nossa. O `sub` da sessão é conferido pelo
 backend na renovação — é o que impede renovar a sessão de outra conta com um
 `sessionId` capturado —, e não no edge.
+
+## As bases, e o que a query **não** esconde
+
+Uma URL de segmento do edge é `…/s/<idDaBase>/<caminho+query>?e=&k=`.
+
+**`idDaBase` é opaco e determinístico** — `HMAC(chave, base)` truncado. Não é
+mais um índice em vetor, e a diferença é de correção: com índice guardado no
+documento da sessão, duas descobertas concorrentes disputavam o mesmo `SET`, e o
+índice 1 de um manifesto podia acabar apontando para a base do outro. Índice
+errado é pior do que ausente. Sendo derivado do conteúdo, o id não depende de
+ordem, gravar é idempotente, e o pior caso virou "não encontrada" — que o edge
+recusa e o player resolve rebuscando o manifesto.
+
+**Gravar a base é obrigatório antes de servir.** Se o Redis falhar, o edge
+responde **503** e não entrega o manifesto: entregá-lo daria ao player um
+documento cujos segmentos todos respondem 403 — falha que parece revogação e não
+é. A renovação de TTL da sessão, essa sim, continua best-effort, porque nada já
+servido depende dela.
+
+**A query do upstream não é secreta neste desenho.** Ela viaja
+percent-encodada, e `encodeURIComponent` é reversível por qualquer um:
+`seg.ts?token=abc` vira `seg.ts%3Ftoken%3Dabc` e decodificar é um clique. O que
+se esconde é o **host**, pelo id opaco.
+
+O provider medido na Fase A não põe nada na query, e por isso o caminho
+reversível é aceitável hoje. Mas fica a regra, e ela não é opcional:
+
+> Um provider futuro que traga **credencial ou token sensível na query** do
+> segmento **não pode usar este caminho como está**. Para ele, o valor precisa
+> ficar no servidor e a URL carregar só um identificador opaco — o mesmo padrão
+> que o `idDaBase` já aplica ao host, e que serve de molde.
 
 ## O que ficou de fora, e por quê
 
