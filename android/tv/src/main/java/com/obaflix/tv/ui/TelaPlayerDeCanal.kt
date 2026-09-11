@@ -3,14 +3,14 @@
 package com.obaflix.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,8 +44,10 @@ import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.catalogo.CanalTv
 import com.obaflix.tv.catalogo.Concessao
 import com.obaflix.tv.navegacao.Navegacao
+import com.obaflix.tv.player.HandoffDeCanal
 import com.obaflix.tv.sessao.SessaoTv
 import com.obaflix.tv.ui.componentes.focavel
+import kotlinx.coroutines.delay
 
 /**
  * Reproducao de canal ao vivo.
@@ -62,74 +64,105 @@ import com.obaflix.tv.ui.componentes.focavel
  * ## O que este composable conhece
  *
  * Uma URL de manifesto no dominio de midia do Obaflix, e so. Nao ve upstream,
- * provedor, host de CDN nem Referer — o edge e quem fala com o provedor, e e la
- * que qualquer cabecalho de terceiro seria injetado. A URL vive no estado da
- * composicao e morre com ela: nada e gravado em disco, porque a concessao e
- * curta e uma URL persistida seria uma copia sobrevivendo a sessao que a
- * autorizou.
+ * provedor, host de CDN nem Referer — o edge e quem fala com o provedor. A URL
+ * vive no estado da composicao e morre com ela: nada e gravado em disco.
  *
  * O unico cabecalho que sai daqui e o nosso `User-Agent`, o mesmo da sessao.
+ *
+ * ## A migracao entre concessoes e real
+ *
+ * O protocolo vive em `HandoffDeCanal`, testado a parte. Aqui esta a unica
+ * coisa que ele nao pode fazer sozinho: `trocarFonte` chama `setMediaItem` +
+ * `prepare` no ExoPlayer, para ele **passar a buscar** pela concessao nova.
+ *
+ * Guardar a URL numa variavel nao e migrar. Era o que a versao anterior fazia,
+ * e o resultado e 403 no meio da reproducao assim que a grace do servidor
+ * fecha. O corte da troca dura fracoes de segundo numa live, e acontece a cada
+ * ~3 min: e o preco de a concessao ser curta.
  */
 @Composable
 fun TelaPlayerDeCanal(canal: CanalTv) {
     val contexto = LocalContext.current
 
-    var concessao by remember { mutableStateOf<Concessao?>(null) }
+    var recusa by remember { mutableStateOf<Concessao?>(null) }
+    var tocando by remember { mutableStateOf(false) }
     var tentativa by remember { mutableStateOf(0) }
 
-    LaunchedEffect(canal.id, tentativa) {
-        concessao = null
-        concessao = ApiObaflix.concessaoDeCanal(canal.id)
+    val player = remember(tentativa) {
+        // O mesmo OkHttp do resto do aplicativo: um pool de conexoes, um
+        // timeout, um lugar para ajustar. O `User-Agent` e o da sessao — o edge
+        // nao exige nenhum outro cabecalho, e cabecalho de provedor, se um dia
+        // for preciso, e injetado la e nao aqui.
+        val fabrica = OkHttpDataSource.Factory(ObaflixApp.httpClient)
+            .setUserAgent(SessaoTv.userAgent)
+        ExoPlayer.Builder(contexto)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(fabrica))
+            .build()
+            .apply { playWhenReady = true }
     }
 
-    // ── Reautorizacao periodica ──────────────────────────────────────────────
-    //
-    // A concessao vale poucos minutos. Voltar ao backend antes de vencer nao e
-    // so renovar um link: o servidor reconfere sessao e entitlement e gira o
-    // nonce, o que derruba na hora toda URL emitida antes — inclusive uma que
-    // alguem tivesse capturado dentro da validade.
-    //
-    // A URL nova NAO e empurrada para o ExoPlayer em curso: trocar o MediaItem
-    // de um HLS ao vivo reinicia o buffer e da um solavanco visivel a cada
-    // poucos minutos. Ela fica guardada e entra em uso na proxima recarga. Quem
-    // mantem a reproducao viva e a sessao no Redis, que o edge revalida a cada
-    // manifesto.
-    val liberada = concessao as? Concessao.Liberado
-    LaunchedEffect(liberada?.sessionId) {
-        var atual = liberada ?: return@LaunchedEffect
-        while (true) {
-            // 60% da validade: cedo o bastante para uma falha ainda caber numa
-            // segunda tentativa antes de a atual vencer.
-            val esperaMs = (atual.validoPorSegundos.coerceAtLeast(60) * 600L)
-            kotlinx.coroutines.delay(esperaMs)
-            when (val nova = ApiObaflix.concessaoDeCanal(canal.id, atual.sessionId)) {
-                is Concessao.Liberado -> atual = nova
-                // Recusa definitiva (plano caiu, canal saiu do ar) para a
-                // reproducao na hora. Falha temporaria deixa o video seguir com
-                // a concessao atual ate vencer, e ai o erro do player assume.
-                is Concessao.PrecisaDeUpgrade, is Concessao.SemSessao, is Concessao.Indisponivel -> {
-                    concessao = nova
-                    return@LaunchedEffect
-                }
-                is Concessao.FalhaTemporaria -> kotlinx.coroutines.delay(30_000)
+    DisposableEffect(player) {
+        val ouvinte = object : Player.Listener {
+            override fun onPlayerError(erro: PlaybackException) {
+                // Falha fatal num canal ao vivo costuma ser a fonte caindo.
+                // Vira estado de erro com acao manual, e nao repeticao
+                // automatica: insistir sozinho contra um canal que saiu do ar
+                // vira tempestade no edge.
+                recusa = Concessao.FalhaTemporaria
             }
+        }
+        player.addListener(ouvinte)
+        onDispose {
+            player.removeListener(ouvinte)
+            player.release()
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        when (val c = concessao) {
-            null -> Mensagem("Conectando…", "", null) {}
+    // ── Concessao, renovacao e migracao ──────────────────────────────────────
+    //
+    // Sair da tela cancela o LaunchedEffect, e o ciclo morre junto.
+    LaunchedEffect(canal.id, tentativa) {
+        recusa = null
+        tocando = false
+        HandoffDeCanal(
+            canalId = canal.id,
+            pedir = { id, sessionId -> ApiObaflix.concessaoDeCanal(id, sessionId) },
+            trocarFonte = { url ->
+                // AQUI o player migra de verdade.
+                player.setMediaItem(
+                    MediaItem.Builder()
+                        .setUri(url)
+                        // Declarado, e nao adivinhado pela extensao: a rota do
+                        // edge termina em `.m3u8`, mas depender disso amarraria
+                        // o player ao formato da URL.
+                        .setMimeType(MimeTypes.APPLICATION_M3U8)
+                        .build(),
+                )
+                player.prepare()
+                tocando = true
+            },
+            aoPerder = { motivo -> recusa = motivo },
+            esperar = { millis -> delay(millis) },
+        ).executar()
+    }
 
-            is Concessao.Liberado -> Reproducao(
-                manifestUrl = c.manifestUrl,
-                aoFalhar = {
-                    // Falha fatal num canal ao vivo costuma ser a concessao
-                    // vencida ou a fonte caindo. Vira estado de erro com acao
-                    // manual, e nao repeticao automatica: insistir sozinho
-                    // contra um canal que saiu do ar vira tempestade no edge.
-                    concessao = Concessao.FalhaTemporaria
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (tocando) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        this.player = player
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    }
                 },
             )
+        }
+
+        when (val c = recusa) {
+            null -> if (!tocando) Mensagem("Conectando…", "", null) {}
 
             is Concessao.PrecisaDeUpgrade -> Mensagem(
                 titulo = "Canal não incluso no seu plano",
@@ -155,6 +188,9 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
                 detalhe = "A transmissão foi interrompida.",
                 rotuloAcao = "Tentar de novo",
             ) { tentativa++ }
+
+            // `Liberado` nunca chega aqui: `aoPerder` so recebe recusa.
+            is Concessao.Liberado -> Unit
         }
 
         Text(
@@ -170,63 +206,6 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
                 .padding(horizontal = 10.dp, vertical = 5.dp),
         )
     }
-}
-
-@Composable
-private fun Reproducao(manifestUrl: String, aoFalhar: () -> Unit) {
-    val contexto = LocalContext.current
-
-    val player = remember {
-        // O mesmo OkHttp do resto do aplicativo: um pool de conexoes, um
-        // timeout, um lugar para ajustar. O `User-Agent` e o da sessao — o edge
-        // nao exige nenhum outro cabecalho, e cabecalho de provedor, se um dia
-        // for preciso, e injetado la e nao aqui.
-        val fabrica = OkHttpDataSource.Factory(ObaflixApp.httpClient)
-            .setUserAgent(SessaoTv.userAgent)
-
-        ExoPlayer.Builder(contexto)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(fabrica))
-            .build()
-            .apply {
-                setMediaItem(
-                    MediaItem.Builder()
-                        .setUri(manifestUrl)
-                        // Declarado, e nao adivinhado pela extensao: a rota do
-                        // edge termina em `.m3u8`, mas depender disso amarraria
-                        // o player ao formato da URL.
-                        .setMimeType(MimeTypes.APPLICATION_M3U8)
-                        .build(),
-                )
-                // Ao vivo: entrar na borda, e nao no inicio do buffer.
-                playWhenReady = true
-                prepare()
-            }
-    }
-
-    DisposableEffect(player) {
-        val ouvinte = object : Player.Listener {
-            override fun onPlayerError(erro: PlaybackException) {
-                aoFalhar()
-            }
-        }
-        player.addListener(ouvinte)
-        onDispose {
-            player.removeListener(ouvinte)
-            player.release()
-        }
-    }
-
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                this.player = player
-                useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setShutterBackgroundColor(android.graphics.Color.BLACK)
-            }
-        },
-    )
 }
 
 /**

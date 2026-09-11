@@ -19,18 +19,19 @@ export interface RecursoAssinado {
   escopo: EscopoDeCanal;
   sessionId: string;
   /**
-   * Nonce **da sessão**, e não da URL.
+   * Nonce **da geração**, e não da URL.
    *
    * É o que transforma a assinatura em algo revogável. O nonce nunca viaja na
-   * URL: o edge o lê da sessão no Redis e recalcula o HMAC com ele. Consequência
-   * — no instante em que a sessão é renovada (nonce rotacionado) ou apagada,
-   * **toda** URL emitida antes para de conferir, mesmo dentro da validade.
+   * URL: o edge o lê da sessão no Redis e recalcula o HMAC com ele.
    *
-   * Sem isto, a assinatura só dependeria de `exp`, e uma URL capturada valeria
-   * até o relógio virar, sem forma de cortar antes.
+   * A sessão guarda dois: o corrente e o anterior, este último válido por uma
+   * janela curta (`graceAte`). Sem essa janela, rotacionar o nonce mataria o
+   * player em curso no mesmo instante — as URLs que ele já tinha parariam de
+   * conferir antes de ele receber as novas. Com ela, as duas gerações convivem
+   * o tempo do handoff e só isso. Ver `sessao.ts`.
    */
   nonce: string;
-  /** `"master"`, ou `"<índice da base>/<caminho+query percent-encoded>"`. */
+  /** `"master"`, ou `"<id da base>/<caminho+query percent-encoded>"`. */
   recurso: string;
   /** Expiração em segundos Unix. */
   exp: number;
@@ -61,6 +62,50 @@ export function chaveDaSessao(sessionId: string): string {
   return `canal:sessao:${sessionId}`;
 }
 
+// ── Identidade das bases ─────────────────────────────────────────────────────
+
+/**
+ * O material do id de uma base upstream.
+ *
+ * A base é a parte escondida de uma URL de mídia: esquema, host e diretório. O
+ * id é `HMAC(chave, material)` truncado — **determinístico e opaco**.
+ *
+ * ## Por que não é mais um índice
+ *
+ * A versão anterior numerava as bases na ordem em que apareciam e guardava o
+ * vetor dentro do documento da sessão. Dois manifestos filhos servidos ao mesmo
+ * tempo liam o mesmo vetor, cada um acrescentava a sua base na posição
+ * seguinte, e o `SET` do documento inteiro fazia last-write-wins: o índice 1 de
+ * um manifesto podia acabar apontando para a base do outro. Índice errado é
+ * pior do que índice ausente — o edge buscaria o host errado com assinatura
+ * válida.
+ *
+ * Sendo derivado do conteúdo, o id não depende de ordem, não colide entre
+ * descobertas concorrentes, e duas descobertas da mesma base gravam exatamente
+ * o mesmo par chave/valor. A gravação vira idempotente e o pior caso deixa de
+ * ser "aponta para outra base" e passa a ser "não encontrada" — que o edge
+ * recusa e o player resolve rebuscando o manifesto.
+ */
+export function materialDoIdDaBase(base: string): string {
+  return `canal:base:${base}`;
+}
+
+/** Comprimento do id de base na URL. 16 chars base64url ≈ 96 bits. */
+export const TAMANHO_DO_ID_DE_BASE = 16;
+
+/**
+ * Chave Redis de uma base.
+ *
+ * **Não** é escopada por sessão de propósito: o mapa id→base é imutável (o id
+ * deriva do valor), então compartilhá-lo entre sessões não confunde nada e
+ * evita reescrever a mesma linha a cada reprodução. Quem autoriza é a
+ * assinatura, que prende sessão e nonce — esta chave é só uma tabela de
+ * consulta.
+ */
+export function chaveDaBase(idDaBase: string): string {
+  return `canal:base:${idDaBase}`;
+}
+
 // ── Recurso: caminho + query dentro de um único segmento ─────────────────────
 
 /**
@@ -72,28 +117,38 @@ export function chaveDaSessao(sessionId: string): string {
  * `pathname` não conteria mais o que foi assinado — a assinatura não fecharia,
  * e a reconstrução do alvo perderia a query.
  *
- * `encodeURIComponent` resolve os dois de uma vez: `?`, `&`, `#` e `/` viram
- * escapes, então o valor atravessa como um segmento só e volta idêntico.
+ * ## Isto é transporte, não sigilo
  *
- * O provider medido na Fase A não usa query em segmento. Isto está aqui porque
- * o próximo pode usar, e o modo de falha seria assinatura quebrando em
- * produção para um provider novo — não em teste.
+ * `encodeURIComponent` é **reversível por qualquer um**: `seg.ts?token=abc`
+ * vira `seg.ts%3Ftoken%3Dabc`, e decodificar é um clique. A query do upstream
+ * **não é tratada como secreta neste desenho** — o que se esconde é o host,
+ * pelo id opaco da base.
+ *
+ * Consequência para o futuro, e é regra: **um provider que traga credencial ou
+ * token sensível na query do segmento não pode usar este caminho como está.**
+ * Para ele, o valor precisa ficar no servidor e a URL carregar só um
+ * identificador opaco — o mesmo padrão que `materialDoIdDaBase` já aplica ao
+ * host. O provider medido na Fase A não põe nada na query, e é por isso que o
+ * caminho reversível é aceitável hoje.
  */
-export function empacotarRecurso(indiceDaBase: number, caminhoComQuery: string): string {
-  return `${indiceDaBase}/${encodeURIComponent(caminhoComQuery)}`;
+export function empacotarRecurso(idDaBase: string, caminhoComQuery: string): string {
+  return `${idDaBase}/${encodeURIComponent(caminhoComQuery)}`;
 }
 
 export interface RecursoDesempacotado {
-  indiceDaBase: number;
+  idDaBase: string;
   caminhoComQuery: string;
 }
+
+const ID_DE_BASE = /^[A-Za-z0-9_-]{8,32}$/;
 
 /** Inverso de `empacotarRecurso`. `null` quando o formato não bate. */
 export function desempacotarRecurso(recurso: string): RecursoDesempacotado | null {
   const barra = recurso.indexOf("/");
   if (barra <= 0) return null;
-  const indiceDaBase = Number(recurso.slice(0, barra));
-  if (!Number.isInteger(indiceDaBase) || indiceDaBase < 0) return null;
+  const idDaBase = recurso.slice(0, barra);
+  if (!ID_DE_BASE.test(idDaBase)) return null;
+
   let caminhoComQuery: string;
   try {
     caminhoComQuery = decodeURIComponent(recurso.slice(barra + 1));
@@ -106,7 +161,7 @@ export function desempacotarRecurso(recurso: string): RecursoDesempacotado | nul
   if (caminhoComQuery.startsWith("/") || caminhoComQuery.split(/[?#]/)[0].includes("..")) {
     return null;
   }
-  return { indiceDaBase, caminhoComQuery };
+  return { idDaBase, caminhoComQuery };
 }
 
 // ── Origem ───────────────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@
  * ## As duas metades
  *
  * **Privada (Redis).** Tudo que serve para buscar a mídia — canal, upstream
- * resolvido, página que arma o grant, bases de segmento, dono da sessão. Nunca
- * sai numa resposta. Vive num id opaco e aleatório, com TTL curto.
+ * resolvido, página que arma o grant, dono da sessão. Nunca sai numa resposta.
+ * Vive num id opaco e aleatório, com TTL curto.
  *
  * **Pública (URL assinada).** O id opaco, uma expiração e um HMAC. Não carrega
  * upstream, nem provider, nem host de CDN, nem userId, nem o nonce — nada que
@@ -17,53 +17,77 @@
  * A chave sai de `CANAIS_MEDIA_SIGNING_SECRET`, que existe para isto e para
  * mais nada. O mesmo valor vive no backend e no Worker.
  *
- * Reaproveitar o `NEXTAUTH_SECRET` — como esta camada fazia antes — juntava dois
- * raios de impacto que não têm por que se tocar: o Worker roda em infra de
- * terceiro, com outra superfície de deploy e outra lista de quem pode ler
- * secrets, e um vazamento ali passaria a comprometer a assinatura de sessão de
- * autenticação do produto inteiro. Com chave própria, o pior caso de um
- * comprometimento do Worker é: emitir URL de mídia válida. Ruim, e limitado.
+ * Reaproveitar o `NEXTAUTH_SECRET` juntava dois raios de impacto que não têm
+ * por que se tocar: o Worker roda em infra de terceiro, com outra superfície de
+ * deploy e outra lista de quem pode ler secrets, e um vazamento ali passaria a
+ * comprometer a assinatura de sessão de autenticação do produto inteiro. Com
+ * chave própria, o pior caso de um comprometimento do Worker é: emitir URL de
+ * mídia válida. Ruim, e limitado.
  *
- * Trocar a chave invalida toda concessão em voo e nada além disso — é rotação
- * barata, e é outra coisa que o acoplamento anterior tirava.
+ * ## O handoff entre gerações
+ *
+ * Renovar rotaciona o nonce, e rotacionar o nonce derruba toda URL emitida
+ * antes. Feito sem mais nada, isso mata a reprodução em curso: no instante da
+ * renovação, o manifesto e os segmentos que o player está usando param de
+ * conferir, e ele recebe 403 antes de ver a concessão nova.
+ *
+ * Por isso a sessão guarda **duas gerações**:
+ *
+ * | Campo | O que é |
+ * |---|---|
+ * | `nonce` | geração corrente; toda URL nova é assinada com ele |
+ * | `noncePrevio` | geração anterior, aceita **só** enquanto `graceAte` não passou |
+ * | `graceAte` | fim da janela de handoff (`GRACE_HANDOFF_S`) |
+ *
+ * O que isso compra, em ordem:
+ *
+ *   1. a renovação devolve uma `manifestUrl` nova, assinada com o nonce novo;
+ *   2. o cliente migra o player para ela — de verdade, trocando a fonte, e não
+ *      guardando a URL numa variável;
+ *   3. enquanto ele migra, as URLs da geração anterior continuam valendo;
+ *   4. passada a janela, a geração anterior morre.
+ *
+ * E uma propriedade que faz o handoff quase invisível: durante a grace, servir
+ * a URL **antiga** de manifesto devolve segmentos assinados com o nonce
+ * **novo**. O player continua tocando mesmo antes de trocar a fonte.
+ *
+ * **Apagar a sessão não tem grace.** `encerrarSessao` remove a chave, e as duas
+ * gerações morrem no mesmo instante — é o caminho de logout, revogação e perda
+ * de entitlement.
  *
  * ## Por que Redis, e não KV
  *
  * O estado aqui decide autorização. KV da Cloudflare é eventualmente
  * consistente: uma revogação levaria até um minuto para valer em todos os
- * pontos, e é exatamente nesse minuto que um replay funciona. O Redis do
- * projeto já é a autoridade de uso único e limite de streams em
- * `playTokens.ts`, e o Worker o alcança pela API REST do Upstash. Se algum dia
- * for preciso estado fortemente consistente *dentro* da Cloudflare, o caminho é
+ * pontos, e é exatamente nesse minuto que um replay funciona. Se algum dia for
+ * preciso estado fortemente consistente *dentro* da Cloudflare, o caminho é
  * Durable Objects — não KV.
  *
- * ## As três validades, e o que cada uma segura
+ * ## As validades
  *
  * | | Quanto | Segura |
  * |---|---|---|
  * | `TTL_GRANT_S` | 5 min | URL de manifesto capturada morre rápido |
  * | `TTL_SEGMENTO_S` | 90 s | link de segmento não sobrevive ao instante em que foi útil |
+ * | `GRACE_HANDOFF_S` | 60 s | janela em que as duas gerações convivem |
  * | `VIDA_MAXIMA_DA_SESSAO_S` | 2 h | força re-resolução, e com ela o provider volta a ser consultado |
  *
- * O grant curto é o que obriga a **reautorização periódica pelo backend**: a
- * cada renovação, `/play` reconfere sessão, entitlement e rate limit, e rotaciona
- * o nonce. Rotacionar o nonce derruba na hora todas as URLs emitidas antes —
- * inclusive as que um capturador tivesse guardado dentro da validade.
- *
  * A renovação **não** re-resolve no provider: reaproveita o upstream da sessão.
- * Sem isso, um espectador de uma hora custaria doze buscas na página do player,
- * e a proteção sairia cara no lugar errado.
+ * Sem isso, um espectador de uma hora custaria doze buscas na página do player.
  */
 
 import crypto from "crypto";
 import { getRedis } from "../redis";
 import { audit } from "../auditLog";
 import {
+  chaveDaBase,
   chaveDaSessao,
   materialAssinado,
   materialDaChave,
+  materialDoIdDaBase,
   semanaDaChave,
   TAMANHO_DA_ASSINATURA,
+  TAMANHO_DO_ID_DE_BASE,
   type RecursoAssinado,
 } from "./assinatura";
 import type { FonteDeCanalResolvida } from "./resolver";
@@ -77,9 +101,19 @@ export const TTL_GRANT_S = 5 * 60;
 export const TTL_SEGMENTO_S = 90;
 
 /**
- * TTL da sessão no Redis. Um pouco maior que o grant, para a renovação ter
- * folga: o cliente pede a próxima antes de a atual vencer, e a sessão precisa
- * estar viva nesse instante.
+ * Janela em que a geração anterior ainda é aceita, após uma renovação.
+ *
+ * Precisa cobrir o tempo entre o servidor girar o nonce e o player estar
+ * tocando pela concessão nova — incluindo os segmentos que ele já tinha na
+ * fila. Um minuto é folga larga para os dois; mais do que isso só aumentaria a
+ * janela em que uma URL capturada antes da renovação continua servindo.
+ */
+export const GRACE_HANDOFF_S = 60;
+
+/**
+ * TTL da sessão no Redis. Maior que o grant, para a renovação ter folga: o
+ * cliente pede a próxima antes de a atual vencer, e a sessão precisa estar viva
+ * nesse instante.
  */
 export const TTL_SESSAO_S = 7 * 60;
 
@@ -91,6 +125,13 @@ export const TTL_SESSAO_S = 7 * 60;
  * também pega o caso de o provider ter trocado a mídia do canal.
  */
 export const VIDA_MAXIMA_DA_SESSAO_S = 2 * 3600;
+
+/**
+ * TTL do mapa id→base. Generoso porque o mapa é imutável e compartilhado: o id
+ * deriva do valor, então reescrever é idempotente e perder uma entrada só custa
+ * uma redescoberta.
+ */
+export const TTL_BASE_S = 6 * 3600;
 
 // ── Chave e assinatura (o mesmo dos dois lados) ──────────────────────────────
 
@@ -134,10 +175,25 @@ export function assinaturaConfere(
   return false;
 }
 
+/** Id determinístico e opaco de uma base upstream. Ver `assinatura.ts`. */
+export function idDaBase(base: string): string {
+  return crypto
+    .createHmac("sha256", derivarChave(semanaDaChave(Date.now())))
+    .update(materialDoIdDaBase(base))
+    .digest("base64url")
+    .slice(0, TAMANHO_DO_ID_DE_BASE);
+}
+
 // ── Estado privado da sessão ─────────────────────────────────────────────────
 
 /**
  * O que vive no Redis. Nenhum campo daqui tem caminho para uma resposta HTTP.
+ *
+ * **As bases não moram mais aqui.** Elas têm chave própria
+ * (`canal:base:<id>`), porque guardá-las neste documento fazia duas descobertas
+ * concorrentes disputarem o mesmo `SET` — e o perdedor sumia, ou pior, um
+ * índice passava a apontar para a base do outro. Com chave própria e id
+ * determinístico, escrever é idempotente e independente.
  */
 export interface SessaoDeCanal {
   canalId: string;
@@ -159,16 +215,12 @@ export interface SessaoDeCanal {
   paginaDoPlayer: string;
   referer: string | null;
   userAgent: string | null;
-  /**
-   * Bases de URL dos segmentos, na ordem em que foram descobertas. A URL
-   * pública carrega só o índice e o caminho; o host fica aqui.
-   */
-  bases: string[];
-  /**
-   * Entra no material assinado, sem nunca viajar na URL. Rotaciona a cada
-   * renovação, e rotacionar derruba toda URL emitida antes.
-   */
+  /** Geração corrente. Toda URL nova é assinada com este. */
   nonce: string;
+  /** Geração anterior, aceita só até `graceAte`. `null` antes da 1ª renovação. */
+  noncePrevio: string | null;
+  /** Fim da janela de handoff, em ms. `0` quando não há geração anterior. */
+  graceAte: number;
   criadaEm: number;
   /** Fim da janela deslizante. */
   expiraEm: number;
@@ -226,8 +278,9 @@ export async function criarSessaoDeCanal(entrada: {
     paginaDoPlayer: fonte.paginaDoPlayer,
     referer: fonte.referer,
     userAgent: fonte.userAgent,
-    bases: [],
     nonce,
+    noncePrevio: null,
+    graceAte: 0,
     criadaEm: agora,
     expiraEm: agora + TTL_SESSAO_S * 1000,
     expiraDefinitivamenteEm: agora + VIDA_MAXIMA_DA_SESSAO_S * 1000,
@@ -241,7 +294,7 @@ export async function criarSessaoDeCanal(entrada: {
 }
 
 /**
- * Renova uma concessão sem voltar ao provider.
+ * Renova uma concessão sem voltar ao provider, abrindo a janela de handoff.
  *
  * Devolve `null` — e quem chamou resolve do zero — quando a sessão sumiu, é de
  * outra conta, é de outro canal, ou passou do teto absoluto. Nenhum desses
@@ -268,12 +321,14 @@ export async function renovarSessaoDeCanal(entrada: {
   const agora = Date.now();
   if (agora >= sessao.expiraDefinitivamenteEm) return null;
 
-  // Nonce novo: as URLs emitidas na concessão anterior param de conferir neste
-  // instante, mesmo as que ainda estariam dentro do `exp`.
+  // Geração nova, e a anterior entra em grace. Sem a grace, as URLs que o
+  // player está usando neste exato instante parariam de conferir.
   const nonce = crypto.randomBytes(8).toString("base64url");
   const renovada: SessaoDeCanal = {
     ...sessao,
     nonce,
+    noncePrevio: sessao.nonce,
+    graceAte: agora + GRACE_HANDOFF_S * 1000,
     expiraEm: agora + TTL_SESSAO_S * 1000,
   };
 
@@ -300,7 +355,30 @@ export async function lerSessao(sessionId: string): Promise<SessaoDeCanal | null
   }
 }
 
-/** Encerra a sessão. Usado no logout, na revogação e ao trocar de canal. */
+/**
+ * Encerra a sessão. Logout, revogação, troca de canal, entitlement perdido.
+ *
+ * **Sem grace.** Apagar a chave mata as duas gerações no mesmo instante: a
+ * janela de handoff existe para a renovação, que é um evento nosso e esperado,
+ * e não para a revogação, que é o oposto disso.
+ */
 export async function encerrarSessao(sessionId: string): Promise<void> {
   await getRedis().del(chaveDaSessao(sessionId));
+}
+
+/**
+ * Persiste o mapa id→base. Idempotente: o id deriva do valor.
+ *
+ * Existe no backend para testes e para uma eventual pré-carga; em produção quem
+ * grava é o edge, no momento em que reescreve o manifesto — e lá a gravação é
+ * **obrigatória**, não best-effort. Ver `workers/media-proxy/src/canais.ts`.
+ */
+export async function registrarBase(base: string): Promise<string> {
+  const id = idDaBase(base);
+  await getRedis().set(chaveDaBase(id), base, { ex: TTL_BASE_S });
+  return id;
+}
+
+export async function lerBase(id: string): Promise<string | null> {
+  return getRedis().get(chaveDaBase(id));
 }
