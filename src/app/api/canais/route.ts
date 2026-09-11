@@ -21,6 +21,10 @@ import {
  * para manter em dia — a forma clássica de um campo privado escapar por só um
  * dos dois caminhos.
  *
+ * A lista traz **somente o que esta conta pode abrir** — o filtro por
+ * entitlement acontece na consulta, em `listarCanais`. Uma conta gratuita não
+ * recebe nem os metadados dos canais premium.
+ *
  * O que a resposta **não** contém, em nenhuma circunstância: `.m3u8`, URL da
  * página do player, provider, `providerChannelId`, Referer, User-Agent, cookie.
  * Nada disso é lido aqui — `listarCanais` consulta apenas `Canal`, e a fonte
@@ -38,7 +42,7 @@ export interface DependenciasDeCatalogo {
   getUserFromRequest: (req: NextRequest) => Promise<{ userId: string } | null>;
   nivelDaConta: (userId: string) => Promise<string>;
   listarCanais: (o: { categoria?: string; nivelDaConta: string }) => Promise<ItemDeCanal[]>;
-  categoriasComCanais: () => Promise<CategoriaDeCanal[]>;
+  categoriasComCanais: (nivelDaConta: string) => Promise<CategoriaDeCanal[]>;
 }
 
 export function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
@@ -72,7 +76,7 @@ export function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
     try {
       const [canais, categorias] = await Promise.all([
         d.listarCanais({ categoria, nivelDaConta: nivel }),
-        d.categoriasComCanais(),
+        d.categoriasComCanais(nivel),
       ]);
 
       return NextResponse.json(
@@ -93,6 +97,6 @@ export const GET = createCanaisCatalogoHandler({
   isIpBlocked,
   getUserFromRequest,
   nivelDaConta: async (userId) => (await entitlementsDoUsuario(userId)).direitos.canaisNivel,
-  listarCanais: (o) => listarCanais({ categoria: o.categoria, nivelDaConta: o.nivelDaConta as never }),
+  listarCanais,
   categoriasComCanais,
 });

@@ -35,7 +35,7 @@
 
 import { readFileSync } from "fs";
 import { prisma } from "../src/lib/prisma";
-import { CANAIS_NIVEIS } from "../src/lib/planos";
+import { NIVEIS_MINIMOS_DE_CANAL } from "../src/lib/canais/acesso";
 import { CATEGORIAS_DE_CANAL, ehCategoriaDeCanal } from "../src/lib/canais/catalogo";
 
 function arg(nome: string): string | undefined {
@@ -46,7 +46,16 @@ function flag(nome: string): boolean {
   return process.argv.includes(`--${nome}`);
 }
 
-const NIVEIS = CANAIS_NIVEIS as readonly string[];
+/**
+ * Os três níveis que um canal pode exigir. **`"nenhum"` não está aqui.**
+ *
+ * O nível de uma CONTA inclui `"nenhum"` — "não tem direito a canal algum". O
+ * nível mínimo de um CANAL, não: "canal que exige nenhum" não quer dizer nada, e
+ * aceitá-lo abria um buraco real, porque a comparação por índice fazia
+ * `"nenhum"` alcançar `"nenhum"`. O CHECK do banco recusa, e esta ferramenta
+ * recusa antes de tentar.
+ */
+const NIVEIS = NIVEIS_MINIMOS_DE_CANAL as readonly string[];
 
 async function listar(categoria?: string) {
   const canais = await prisma.canal.findMany({

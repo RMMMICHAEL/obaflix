@@ -70,12 +70,21 @@ ALTER TABLE "CanalFonte" ADD CONSTRAINT "CanalFonte_canalId_fkey"
     FOREIGN KEY ("canalId") REFERENCES "Canal"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- ── CHECK ────────────────────────────────────────────────────────────────────
--- Espelho de CANAIS_NIVEIS em src/lib/planos.ts. O mesmo dominio fechado que
--- `Plano.canaisNivel` usa: o nivel exigido por um canal e o nivel concedido por
--- um plano sao comparados entre si, entao tem de vir do mesmo conjunto.
+-- Espelho de NIVEIS_MINIMOS_DE_CANAL em src/lib/canais/acesso.ts.
+--
+-- **Tres valores, e nao os quatro de `Plano.canaisNivel`.** Os dois dominios se
+-- parecem e nao sao o mesmo: o nivel de uma CONTA inclui 'nenhum', que quer
+-- dizer "esta conta nao tem direito a canal algum"; o nivel minimo de um CANAL
+-- nao, porque "canal que exige nenhum" nao quer dizer nada.
+--
+-- Aceitar 'nenhum' aqui abria um buraco real: a comparacao por indice da escala
+-- fazia 'nenhum' alcancar 'nenhum' (0 >= 0), e uma conta sem direito a canal
+-- algum recebia autorizacao para um canal marcado assim. O CHECK e a primeira
+-- das tres camadas que fecham isso; as outras duas estao em `nivelAlcanca` e em
+-- `autorizarCanal`.
 ALTER TABLE "Canal" DROP CONSTRAINT IF EXISTS "Canal_nivelMinimo_dominio";
 ALTER TABLE "Canal" ADD CONSTRAINT "Canal_nivelMinimo_dominio"
-    CHECK ("nivelMinimo" IN ('nenhum', 'gratuito', 'plus', 'premium'));
+    CHECK ("nivelMinimo" IN ('gratuito', 'plus', 'premium'));
 
 -- Um canal so pode estar no catalogo se alguem decidiu o nivel dele na mao.
 -- Sem isto, `ativo = true` num canal ainda nao revisado dependeria de ninguem

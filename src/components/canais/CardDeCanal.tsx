@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { Lock, Tv } from "lucide-react";
+import { Tv } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
 
 /**
  * Um canal na grade.
  *
- * ## O cadeado é desenho, não autorização
+ * ## Não há cadeado, porque não há canal bloqueado na lista
  *
- * `canal.liberado` vem calculado do servidor e só decide o que aparece. Quem
- * decide se toca é `POST /api/canais/[id]/play`, do zero, a cada vez. Um
- * cliente adulterado que force `liberado` ganha um card sem cadeado e um 403 ao
- * apertar Play — que é exatamente o comportamento desejado.
+ * `GET /api/canais` devolve **só o que esta conta pode abrir** — o filtro é por
+ * entitlement, na consulta. Então todo card aqui é abrível, e não existe estado
+ * de "bloqueado" para desenhar.
+ *
+ * Isso não dispensa a checagem no Play: `POST /api/canais/[id]/play` decide do
+ * zero a cada vez, porque um id pode chegar por outro caminho e um plano pode
+ * cair entre a listagem e o toque.
  *
  * ## Sem EPG
  *
@@ -38,24 +41,11 @@ export function CardDeCanal({
       // `min-h` em vez de altura fixa: o nome de canal longo cresce para baixo
       // em vez de ser cortado, e o alvo de toque continua confortável no retrato.
       className="group relative flex min-h-[8.5rem] w-full flex-col items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center transition hover:border-zinc-600 hover:bg-zinc-800/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
-      aria-label={
-        canal.liberado
-          ? `Assistir ${canal.nome}, ao vivo`
-          : `${canal.nome}, requer plano ${canal.nivelMinimo}`
-      }
+      aria-label={`Assistir ${canal.nome}, ao vivo`}
     >
       <span className="absolute left-2 top-2 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
         AO VIVO
       </span>
-
-      {!canal.liberado && (
-        <span
-          className="absolute right-2 top-2 rounded bg-black/70 p-1 text-zinc-300"
-          title={`Requer plano ${canal.nivelMinimo}`}
-        >
-          <Lock className="h-3.5 w-3.5" aria-hidden />
-        </span>
-      )}
 
       <span className="flex h-14 w-full items-center justify-center">
         {mostrarLogo ? (

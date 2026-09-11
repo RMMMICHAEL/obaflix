@@ -5,23 +5,35 @@
  * algo que sai numa resposta. Toda rota de catálogo passa por aqui; nenhuma
  * monta o objeto na mão.
  *
+ * ## O cliente recebe só o que pode abrir
+ *
+ * O filtro por entitlement acontece **na consulta**, em `nivelMinimo IN (...)`,
+ * e não em memória depois. Uma conta gratuita não recebe nem os metadados dos
+ * canais premium: nem nome, nem logo, nem categoria, nem o fato de existirem.
+ *
+ * A versão anterior devolvia o catálogo inteiro marcando `liberado: false` no
+ * que a conta não podia abrir. Funcionava como cadeado na interface e falhava
+ * como regra: a lista é a superfície mais fácil de ler de todas, e "o que existe
+ * no produto" vazava inteiro para qualquer conta autenticada.
+ *
+ * Se um dia mostrar canal bloqueado for desejado — vitrine de upgrade —, isso é
+ * decisão comercial explícita e ganha um parâmetro próprio (`incluirBloqueados`)
+ * com projeção própria. Não pode voltar a ser o padrão por omissão.
+ *
  * ## O que nunca sai
  *
- * `CanalFonte` não é consultada aqui, e o `select` abaixo é explícito em vez de
+ * `CanalFonte` não é consultada aqui, e o `select` é explícito em vez de
  * `include` justamente para que acrescentar uma coluna sensível a `Canal` no
- * futuro não a publique sozinha. Não saem: provider, `providerChannelId`, URL
- * da página do player, URL de mídia, Referer, User-Agent, cookie.
+ * futuro não a publique sozinha. Não saem: provider, `providerChannelId`, URL da
+ * página do player, URL de mídia, Referer, User-Agent, cookie.
  *
- * `nivelMinimo` **sai**, e é uma decisão, não um descuido: o cliente precisa
- * distinguir "canal que você pode abrir" de "canal que exige upgrade" para
- * desenhar o cadeado e a chamada de assinatura. Saber que um canal é `premium`
- * não aproxima ninguém de reproduzi-lo — quem decide é `POST /api/canais/[id]/play`,
- * no servidor, e o campo já é público na página de planos.
+ * `nivelMinimo` também não sai mais. Com o filtro acima, todo canal da lista é
+ * abrível por quem pediu, então o campo não tem uso na interface — e o que não
+ * tem uso não viaja.
  */
 
 import { prisma } from "../prisma";
-import type { CanaisNivel } from "../planos";
-import { nivelAlcanca } from "./acesso";
+import { niveisAlcancadosPor } from "./acesso";
 
 /**
  * As categorias do produto, na ordem em que aparecem nos chips.
@@ -68,7 +80,10 @@ export function ehCategoriaDeCanal(v: string): v is CategoriaDeCanal {
 
 /**
  * O canal como o cliente o recebe. Este tipo é copiado — não importado — no
- * Kotlin da TV e no Kotlin do app; mudar um campo aqui é mudar três clientes.
+ * Kotlin da TV; mudar um campo aqui é mudar três clientes.
+ *
+ * Todo canal que chega aqui é abrível por quem pediu. Não há `liberado` e não há
+ * `nivelMinimo`: o que a conta não alcança não entra na lista.
  */
 export interface ItemDeCanal {
   id: string;
@@ -78,17 +93,6 @@ export interface ItemDeCanal {
   logoUrl: string | null;
   /** Sempre `true` nesta fase: não existe canal sob demanda no catálogo. */
   aoVivo: boolean;
-  /** Nível exigido, para o cliente desenhar cadeado e chamada de upgrade. */
-  nivelMinimo: string;
-  /**
-   * Se **esta conta** alcança o canal. Calculado no servidor a partir dos
-   * entitlements — o cliente não refaz a comparação, só desenha o resultado.
-   *
-   * Não é autorização: é dica de interface. A autorização acontece de novo, do
-   * zero, no playback grant. Um cliente adulterado que force `liberado: true`
-   * ganha um card sem cadeado e um 403 ao apertar OK.
-   */
-  liberado: boolean;
 }
 
 /**
@@ -100,7 +104,6 @@ const CAMPOS_PUBLICOS = {
   nome: true,
   categoria: true,
   logoUrl: true,
-  nivelMinimo: true,
 } as const;
 
 /**
@@ -117,16 +120,24 @@ export interface OpcoesDeCatalogo {
   /** `undefined` ou `"todos"` não filtram. */
   categoria?: string;
   /** Nível de `canaisNivel` desta conta, vindo de `entitlementsDoUsuario`. */
-  nivelDaConta: CanaisNivel;
+  nivelDaConta: string;
 }
 
 export async function listarCanais(opcoes: OpcoesDeCatalogo): Promise<ItemDeCanal[]> {
   const { categoria, nivelDaConta } = opcoes;
+
+  const niveis = niveisAlcancadosPor(nivelDaConta);
+  // Lista vazia quer dizer catálogo vazio, não catálogo inteiro. É o caso de
+  // `canaisNivel = "nenhum"` e o de um nível fora do domínio — e sair aqui evita
+  // que um `IN ()` mal formado vire "sem filtro" no Prisma.
+  if (niveis.length === 0) return [];
+
   const filtraCategoria = categoria && categoria !== "todos" && ehCategoriaDeCanal(categoria);
 
   const linhas = await prisma.canal.findMany({
     where: {
       ...SOMENTE_PUBLICAVEIS,
+      nivelMinimo: { in: niveis },
       ...(filtraCategoria ? { categoria } : {}),
     },
     select: CAMPOS_PUBLICOS,
@@ -140,21 +151,23 @@ export async function listarCanais(opcoes: OpcoesDeCatalogo): Promise<ItemDeCana
     categoria: l.categoria,
     logoUrl: l.logoUrl,
     aoVivo: true,
-    nivelMinimo: l.nivelMinimo,
-    liberado: nivelAlcanca(nivelDaConta, l.nivelMinimo),
   }));
 }
 
 /**
- * As categorias que têm ao menos um canal publicável, na ordem do produto.
+ * As categorias que têm ao menos um canal **que esta conta pode abrir**.
  *
- * Existe para a UI não desenhar um chip que abre numa lista vazia. `todos`
- * entra sempre que houver qualquer canal.
+ * Recebe o nível pelo mesmo motivo de `listarCanais`: um chip "Esportes" que
+ * abre vazio para a conta gratuita contaria, pela ausência, exatamente o que o
+ * filtro acima esconde.
  */
-export async function categoriasComCanais(): Promise<CategoriaDeCanal[]> {
+export async function categoriasComCanais(nivelDaConta: string): Promise<CategoriaDeCanal[]> {
+  const niveis = niveisAlcancadosPor(nivelDaConta);
+  if (niveis.length === 0) return [];
+
   const grupos = await prisma.canal.groupBy({
     by: ["categoria"],
-    where: SOMENTE_PUBLICAVEIS,
+    where: { ...SOMENTE_PUBLICAVEIS, nivelMinimo: { in: niveis } },
     _count: { _all: true },
   });
   const presentes = new Set(grupos.map((g) => g.categoria));

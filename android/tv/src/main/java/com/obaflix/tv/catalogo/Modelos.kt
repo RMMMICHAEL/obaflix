@@ -96,6 +96,12 @@ data class Pagina(val itens: List<Item>, val pagina: Int, val paginas: Int) {
  * so metadado publico; o endereco de midia aparece uma vez, na concessao, ja
  * apontando para o dominio de midia do Obaflix — nunca para o provedor.
  *
+ * Tambem nao ha nivel nem cadeado. `/api/canais` devolve so o que esta conta
+ * pode abrir — o recorte por entitlement e feito na consulta —, entao nao existe
+ * canal bloqueado na grade para desenhar. Isso nao dispensa a checagem no OK: a
+ * concessao decide do zero, porque um plano pode cair entre a listagem e o
+ * toque.
+ *
  * Tambem nao ha programa atual, proximo, horario nem progresso: nao existe
  * fonte confiavel de EPG nesta fase, e um horario inventado erra na tela de
  * quem esta olhando.
@@ -106,16 +112,6 @@ data class CanalTv(
     val nome: String,
     val categoria: String,
     val logoUrl: String?,
-    /** Nivel exigido, para desenhar o cadeado. Nao autoriza nada. */
-    val nivelMinimo: String,
-    /**
-     * Se esta conta alcanca o canal, calculado no servidor.
-     *
-     * Dica de interface, nao permissao: quem decide e o pedido de concessao, do
-     * zero, a cada OK. Um aparelho adulterado que force este campo ganha um
-     * card sem cadeado e uma recusa ao apertar OK.
-     */
-    val liberado: Boolean,
 )
 
 /** Uma categoria, com o rotulo que o servidor mandou. */
@@ -134,7 +130,22 @@ data class CatalogoDeCanais(
  * nenhuma delas carrega motivo tecnico, host ou status do provedor.
  */
 sealed interface Concessao {
-    data class Liberado(val manifestUrl: String, val expiraEm: Long) : Concessao
+    /**
+     * `sessionId` volta no corpo da proxima chamada, para renovar sem o servidor
+     * precisar buscar o provedor de novo. Nao e credencial: sozinho nao abre
+     * nada, porque a URL de midia exige assinatura e renovar exige a sessao
+     * autenticada do dono.
+     *
+     * `validoPorSegundos` e curto de proposito. O aparelho volta ao backend
+     * antes de vencer, e nessa volta o servidor reconfere entitlement e gira o
+     * nonce — o que derruba na hora as URLs emitidas antes.
+     */
+    data class Liberado(
+        val manifestUrl: String,
+        val sessionId: String,
+        val expiraEm: Long,
+        val validoPorSegundos: Int,
+    ) : Concessao
     /** Plano nao alcanca. `nivelExigido` e o que a tela mostra. */
     data class PrecisaDeUpgrade(val nivelExigido: String?) : Concessao
     /** Sessao caiu. A raiz volta ao pareamento. */

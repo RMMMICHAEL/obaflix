@@ -16,11 +16,12 @@ import { PlayerDeCanal } from "./PlayerDeCanal";
  * ## O filtro acontece aqui, a permissão não
  *
  * Categoria e busca filtram a lista **em memória**, sobre o que o servidor já
- * devolveu. Nada disso é permissão: o servidor já removeu o que esta conta não
- * pode nem ver, e marcou `liberado` no que ela pode ver mas não abrir.
+ * devolveu — e o que o servidor devolveu é só o que esta conta pode abrir. O
+ * recorte por entitlement é feito na consulta, em `/api/canais`, e por isso não
+ * existe card bloqueado nesta tela: o que a conta não alcança não chega aqui.
  *
- * Buscar em memória evita uma requisição por tecla digitada. São 136 canais —
- * a lista inteira cabe numa resposta e o filtro é instantâneo.
+ * Buscar em memória evita uma requisição por tecla digitada. São dezenas de
+ * canais — a lista cabe numa resposta e o filtro é instantâneo.
  */
 
 interface Categoria {

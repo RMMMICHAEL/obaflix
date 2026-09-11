@@ -72,7 +72,12 @@ import com.obaflix.tv.ui.componentes.focavel
  * escala menor: e filtro em memoria, mas trocar de categoria move o foco para a
  * grade, e atravessar onze categorias saltaria o cursor onze vezes.
  *
- * ## Sem EPG
+ * ## Sem cadeado, e sem EPG
+ *
+ * O catalogo ja vem recortado por entitlement, entao todo card aqui e abrivel e
+ * nao ha estado de "bloqueado" para desenhar. Isso nao dispensa a checagem no
+ * OK: a concessao decide do zero, porque um plano pode cair entre a listagem e
+ * o toque.
  *
  * Nao ha programa, horario nem progresso — nao existe fonte confiavel nesta
  * fase. O selo AO VIVO e o que se sabe.
@@ -254,13 +259,13 @@ private fun CardDeCanal(
             )
         }
 
+        // Sem cadeado: `/api/canais` ja devolve so o que esta conta pode abrir,
+        // entao nao existe card bloqueado nesta grade.
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
         ) {
             Selo("AO VIVO", Color(0xFFDC2626), Color.White)
-            // O cadeado e desenho. Quem decide e a concessao, ao apertar OK.
-            if (!canal.liberado) Selo(canal.nivelMinimo.uppercase(), Color(0xFF27272A), Color(0xFFD4D4D8))
         }
     }
 }

@@ -620,7 +620,13 @@ model Canal {
   logoUrl   String?
 
   /// Nível MÍNIMO de `canaisNivel` exigido para reproduzir.
-  /// "nenhum" | "gratuito" | "plus" | "premium" — ordenado, igual a `Plano`.
+  /// "gratuito" | "plus" | "premium" — ordenado.
+  ///
+  /// **Três valores, e não os quatro de `Plano.canaisNivel`.** O nível de uma
+  /// conta inclui "nenhum" ("não tem direito a canal algum"); o nível mínimo de
+  /// um canal não, porque "canal que exige nenhum" não quer dizer nada — e
+  /// aceitá-lo fazia uma conta em "nenhum" alcançar o canal pela comparação de
+  /// índice. Ver `NIVEIS_MINIMOS_DE_CANAL` em `src/lib/canais/acesso.ts`.
   ///
   /// Default `premium` por decisão de política: um canal importado sem
   /// curadoria é o mais restrito que existe, nunca o mais aberto. Import novo
