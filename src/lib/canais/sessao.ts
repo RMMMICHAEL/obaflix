@@ -215,6 +215,20 @@ export interface SessaoDeCanal {
   paginaDoPlayer: string;
   referer: string | null;
   userAgent: string | null;
+  /**
+   * Número da geração, monotônico e crescente. Começa em 0 e sobe 1 a cada
+   * renovação.
+   *
+   * Existe para o **cliente** poder recusar uma concessão antiga que chegou
+   * atrasada. Duas renovações disparadas juntas produzem N+1 e N+2, e nada
+   * garante que as respostas voltem nessa ordem: sem um número para comparar, o
+   * cliente adotaria a que chegasse por último e **regrediria** para uma
+   * geração que o servidor já aposentou — cuja URL morre na grace seguinte.
+   *
+   * O nonce não serve para isso: é opaco e aleatório de propósito, então não se
+   * pode ordenar dois deles.
+   */
+  geracao: number;
   /** Geração corrente. Toda URL nova é assinada com este. */
   nonce: string;
   /** Geração anterior, aceita só até `graceAte`. `null` antes da 1ª renovação. */
@@ -238,16 +252,27 @@ export function derivarSub(userId: string): string {
 
 export interface Concessao {
   sessionId: string;
+  /**
+   * Geração desta concessão. O cliente só adota uma concessão com geração
+   * **maior** do que a que está usando — ver `handoff.ts`.
+   */
+  geracao: number;
   exp: number;
   sig: string;
   /** Segundos até a URL vencer. O cliente renova antes disso. */
   validoPorSegundos: number;
 }
 
-function assinarMaster(sessionId: string, nonce: string, agoraMs: number): Concessao {
+function assinarMaster(
+  sessionId: string,
+  nonce: string,
+  geracao: number,
+  agoraMs: number,
+): Concessao {
   const exp = Math.floor(agoraMs / 1000) + TTL_GRANT_S;
   return {
     sessionId,
+    geracao,
     exp,
     sig: assinar({ escopo: "m", sessionId, nonce, recurso: "master", exp }),
     validoPorSegundos: TTL_GRANT_S,
@@ -278,6 +303,7 @@ export async function criarSessaoDeCanal(entrada: {
     paginaDoPlayer: fonte.paginaDoPlayer,
     referer: fonte.referer,
     userAgent: fonte.userAgent,
+    geracao: 0,
     nonce,
     noncePrevio: null,
     graceAte: 0,
@@ -290,7 +316,7 @@ export async function criarSessaoDeCanal(entrada: {
 
   audit("canal_sessao_criada", { userId, detail: `canal ${canalId}` });
 
-  return assinarMaster(sessionId, nonce, agora);
+  return assinarMaster(sessionId, nonce, sessao.geracao, agora);
 }
 
 /**
@@ -326,6 +352,8 @@ export async function renovarSessaoDeCanal(entrada: {
   const nonce = crypto.randomBytes(8).toString("base64url");
   const renovada: SessaoDeCanal = {
     ...sessao,
+    // Monotônico: é o que deixa o cliente ordenar duas respostas concorrentes.
+    geracao: (sessao.geracao ?? 0) + 1,
     nonce,
     noncePrevio: sessao.nonce,
     graceAte: agora + GRACE_HANDOFF_S * 1000,
@@ -334,7 +362,7 @@ export async function renovarSessaoDeCanal(entrada: {
 
   await getRedis().set(chaveDaSessao(sessionId), JSON.stringify(renovada), { ex: TTL_SESSAO_S });
 
-  return assinarMaster(sessionId, nonce, agora);
+  return assinarMaster(sessionId, nonce, renovada.geracao, agora);
 }
 
 export async function lerSessao(sessionId: string): Promise<SessaoDeCanal | null> {
@@ -344,6 +372,7 @@ export async function lerSessao(sessionId: string): Promise<SessaoDeCanal | null
     const s = JSON.parse(bruto) as SessaoDeCanal;
     if (typeof s.upstream !== "string" || typeof s.sub !== "string") return null;
     if (typeof s.nonce !== "string" || !s.nonce) return null;
+    if (typeof s.geracao !== "number" || !Number.isInteger(s.geracao)) return null;
     const agora = Date.now();
     if (s.expiraEm < agora) return null;
     if (typeof s.expiraDefinitivamenteEm !== "number" || s.expiraDefinitivamenteEm < agora) {

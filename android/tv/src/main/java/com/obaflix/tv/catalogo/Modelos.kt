@@ -143,6 +143,15 @@ sealed interface Concessao {
     data class Liberado(
         val manifestUrl: String,
         val sessionId: String,
+        /**
+         * Numero da geracao, monotonico, vindo do servidor.
+         *
+         * E o que permite recusar uma resposta antiga que chegou atrasada: duas
+         * renovacoes concorrentes nao tem ordem de chegada garantida, e adotar
+         * a que chegar por ultimo faria o aparelho REGREDIR para uma geracao
+         * que o servidor ja aposentou.
+         */
+        val geracao: Int,
         val expiraEm: Long,
         val validoPorSegundos: Int,
     ) : Concessao

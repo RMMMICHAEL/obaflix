@@ -1,7 +1,11 @@
 package com.obaflix.tv.player
 
 import com.obaflix.tv.catalogo.Concessao
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -26,6 +30,7 @@ class HandoffDeCanalTest {
     private fun liberado(n: Int, validoPorSegundos: Int = 300) = Concessao.Liberado(
         manifestUrl = "https://media.example.test/canal/sid/master.m3u8?e=$n&k=sig$n",
         sessionId = "sessao-1",
+        geracao = n,
         expiraEm = 0L,
         validoPorSegundos = validoPorSegundos,
     )
@@ -184,5 +189,116 @@ class HandoffDeCanalTest {
 
         assertEquals(0, handoff.trocas)
         assertTrue(perdida is Concessao.PrecisaDeUpgrade)
+    }
+
+    // ── Concorrencia e ordem de chegada ──────────────────────────────────────
+
+    /**
+     * O caso que a revisao pediu: geracao mais nova chega primeiro, e depois
+     * chega uma antiga.
+     *
+     * Sem a guarda monotonica, o aparelho adotaria a ultima a chegar e
+     * REGREDIRIA para uma geracao que o servidor ja aposentou — cuja URL morre
+     * na grace seguinte, com o 403 aparecendo minutos depois, longe da causa.
+     */
+    @Test
+    fun `resposta atrasada nao faz a geracao regredir`() = runBlocking {
+        val fontes = mutableListOf<String>()
+        // Ordem de CHEGADA: primeiro a inicial, depois a geracao 3, depois a 2.
+        val respostas = ArrayDeque(listOf(liberado(1), liberado(3), liberado(2)))
+
+        val handoff = HandoffDeCanal(
+            canalId = "canal-1",
+            pedir = { _, _ -> respostas.removeFirst() },
+            trocarFonte = { fontes += it },
+            aoPerder = {},
+            esperar = {},
+        )
+
+        handoff.renovarAgora() // sem concessao ainda: nao faz nada
+        handoff.executarPrimeira()
+        assertEquals(1, handoff.atual!!.geracao)
+
+        handoff.renovarAgora()
+        assertEquals("a geracao 3 tem de ser adotada", 3, handoff.atual!!.geracao)
+
+        handoff.renovarAgora() // chega a geracao 2, atrasada
+        assertEquals("nao pode voltar para a 2", 3, handoff.atual!!.geracao)
+        assertEquals(1, handoff.recusasPorRegressao)
+
+        // A fonte do player nao pode ter sido trocada pela atrasada.
+        assertEquals(2, fontes.size)
+        assertEquals(2, handoff.trocas)
+        assertTrue(fontes.last().contains("e=3"))
+    }
+
+    /** A mesma geracao chegando de novo tambem nao troca a fonte. */
+    @Test
+    fun `geracao repetida nao conta como troca`() = runBlocking {
+        val fontes = mutableListOf<String>()
+        val respostas = ArrayDeque(listOf(liberado(1), liberado(2), liberado(2)))
+
+        val handoff = HandoffDeCanal(
+            canalId = "canal-1",
+            pedir = { _, _ -> respostas.removeFirst() },
+            trocarFonte = { fontes += it },
+            aoPerder = {},
+            esperar = {},
+        )
+        handoff.executarPrimeira()
+        handoff.renovarAgora()
+        handoff.renovarAgora()
+
+        assertEquals(2, handoff.atual!!.geracao)
+        assertEquals(2, fontes.size)
+        assertEquals(1, handoff.recusasPorRegressao)
+    }
+
+    /**
+     * Single-flight: tres renovacoes disparadas juntas gastam UM pedido.
+     *
+     * Sem isso, o ciclo somado a uma retomada de rede giraria o nonce tres vezes
+     * a toa — e cada giro encurta a vida da geracao anterior.
+     */
+    @Test
+    fun `renovacoes simultaneas gastam um pedido so`() = runBlocking {
+        var pedidos = 0
+        val portao = CompletableDeferred<Unit>()
+        val fontes = mutableListOf<String>()
+
+        val handoff = HandoffDeCanal(
+            canalId = "canal-1",
+            pedir = { _, sessionId ->
+                pedidos++
+                // A primeira renovacao fica presa ate o portao abrir; as outras
+                // chegam enquanto ela esta em voo.
+                if (sessionId != null) portao.await()
+                liberado(pedidos)
+            },
+            trocarFonte = { fontes += it },
+            aoPerder = {},
+            esperar = {},
+        )
+
+        handoff.executarPrimeira()
+        assertEquals(1, pedidos)
+
+        coroutineScope {
+            val a = async { handoff.renovarAgora() }
+            val b = async { handoff.renovarAgora() }
+            val c = async { handoff.renovarAgora() }
+            // `async` so agenda; os corpos rodam quando esta corrotina suspende.
+            // Sem o `yield`, o portao abriria antes de qualquer uma comecar, e
+            // as tres rodariam em sequencia — o teste passaria sem concorrencia
+            // nenhuma, que e o oposto do que ele existe para provar.
+            yield()
+            portao.complete(Unit)
+            a.await(); b.await(); c.await()
+        }
+
+        // Uma renovacao de verdade. As outras duas esperaram a mesma.
+        assertEquals("tres chamadas, um pedido", 2, pedidos)
+        assertEquals(2, handoff.trocas)
+        assertEquals(2, fontes.size)
     }
 }

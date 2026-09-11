@@ -646,6 +646,7 @@ object ApiObaflix {
                 Concessao.Liberado(
                     manifestUrl = url,
                     sessionId = texto(raiz, "sessionId") ?: "",
+                    geracao = raiz.optInt("geracao", 0),
                     expiraEm = raiz.optLong("expiraEm"),
                     validoPorSegundos = raiz.optInt("validoPorSegundos", 300),
                 )

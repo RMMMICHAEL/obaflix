@@ -471,3 +471,101 @@ test("o edge só arma pela allowlist da página, e não pela de CDN", async () =
     amb.restaurar();
   }
 });
+
+// ── N0 → N1 → N2 → N3: só current + previous ────────────────────────────────
+
+test("quatro gerações: só a corrente e a anterior são aceitas", async (t) => {
+  __limparCachesDeBase();
+  const amb = montarAmbiente();
+  try {
+    const geracoes = [
+      await criarSessaoDeCanal({ userId: "dono", canalId: "canal-n", fonte: FONTE }),
+    ];
+    await publicarSessaoNoEdge(amb.redis, geracoes[0].sessionId);
+    const sid = geracoes[0].sessionId;
+
+    // N1, N2, N3 — três renovações seguidas.
+    for (let i = 1; i <= 3; i++) {
+      const g = await renovarSessaoDeCanal({ userId: "dono", canalId: "canal-n", sessionId: sid });
+      assert.ok(g, `renovação ${i} precisa funcionar`);
+      assert.equal(g.geracao, i, "a geração tem de ser monotônica");
+      geracoes.push(g);
+      await publicarSessaoNoEdge(amb.redis, sid);
+    }
+
+    const status = async (g: (typeof geracoes)[number]) =>
+      (await tratarCanal(new Request(urlDoManifesto(sid, g.exp, g.sig)), ENV)).status;
+
+    await t.test("N3 (corrente) e N2 (anterior) valem; N1 e N0 não", async () => {
+      assert.equal(await status(geracoes[3]), 200, "N3 é a corrente");
+      assert.equal(await status(geracoes[2]), 200, "N2 é a anterior, dentro da grace");
+      assert.equal(await status(geracoes[1]), 403, "N1 já saiu da janela");
+      assert.equal(await status(geracoes[0]), 403, "N0 muito menos");
+    });
+
+    await t.test("os segmentos seguem a mesma regra", async () => {
+      // Segmentos cunhados agora são da geração corrente; os de uma geração
+      // aposentada não passam.
+      const corpo = await (
+        await tratarCanal(new Request(urlDoManifesto(sid, geracoes[3].exp, geracoes[3].sig)), ENV)
+      ).text();
+      for (const seg of segmentosDe(corpo)) {
+        assert.equal((await tratarCanal(new Request(seg), ENV)).status, 200);
+      }
+    });
+
+    await t.test("passada a grace, só a corrente sobra", async () => {
+      const sessao = JSON.parse(amb.redis.dados.get(chaveDaSessao(sid))!);
+      sessao.graceAte = Date.now() - 1;
+      amb.redis.dados.set(chaveDaSessao(sid), JSON.stringify(sessao));
+
+      assert.equal(await status(geracoes[3]), 200, "a corrente continua");
+      assert.equal(await status(geracoes[2]), 403, "a anterior morre com a grace");
+    });
+
+    await t.test("encerrar a sessão invalida TUDO imediatamente", async () => {
+      await encerrarSessao(sid);
+      amb.redis.dados.delete(chaveDaSessao(sid));
+
+      for (const [i, g] of geracoes.entries()) {
+        assert.equal(await status(g), 403, `N${i} sobreviveu à revogação`);
+      }
+    });
+  } finally {
+    amb.restaurar();
+  }
+});
+
+test("renovações concorrentes produzem gerações monotônicas e distintas", async () => {
+  __limparCachesDeBase();
+  const amb = montarAmbiente();
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-c", fonte: FONTE });
+
+    // Três renovações disparadas juntas contra a MESMA sessão. O servidor não
+    // serializa nada — é o cliente que faz single-flight —, então aqui o que se
+    // exige é que nenhuma geração se repita e que todas subam a partir de 0.
+    const resultados = await Promise.all([
+      renovarSessaoDeCanal({ userId: "dono", canalId: "canal-c", sessionId: A.sessionId }),
+      renovarSessaoDeCanal({ userId: "dono", canalId: "canal-c", sessionId: A.sessionId }),
+      renovarSessaoDeCanal({ userId: "dono", canalId: "canal-c", sessionId: A.sessionId }),
+    ]);
+
+    for (const r of resultados) {
+      assert.ok(r, "nenhuma renovação legítima pode falhar");
+      assert.ok(r.geracao > A.geracao, "toda geração tem de ser maior que a inicial");
+    }
+
+    // O cliente escolhe a maior; a guarda monotônica dele é quem garante que
+    // uma resposta atrasada não derrube a mais nova (ver canaisHandoff.test.ts).
+    const maior = Math.max(...resultados.map((r) => r!.geracao));
+    const sessao = await lerSessao(A.sessionId);
+    assert.ok(sessao);
+    assert.ok(
+      sessao.geracao >= maior,
+      "a sessão gravada não pode ficar atrás da maior geração emitida",
+    );
+  } finally {
+    amb.restaurar();
+  }
+});

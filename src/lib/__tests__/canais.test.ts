@@ -149,6 +149,7 @@ function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, 
       chamadas.sessoes++;
       return {
         sessionId: "s".repeat(32),
+        geracao: 0,
         exp: 2_000_000_000,
         sig: "a".repeat(22),
         validoPorSegundos: TTL_GRANT_S,
@@ -266,6 +267,7 @@ test("renovação reautoriza e não volta ao provider", async () => {
       chamadas.renovacoes++;
       return {
         sessionId: "S".repeat(32),
+        geracao: 1,
         exp: 2_000_000_000,
         sig: "b".repeat(22),
         validoPorSegundos: TTL_GRANT_S,
@@ -301,7 +303,7 @@ test("renovação não escapa da checagem de entitlement", async () => {
     lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
     renovarSessao: async () => {
       renovou++;
-      return { sessionId: "x", exp: 1, sig: "y", validoPorSegundos: 1 };
+      return { sessionId: "x", geracao: 1, exp: 1, sig: "y", validoPorSegundos: 1 };
     },
   });
   const r = await run();

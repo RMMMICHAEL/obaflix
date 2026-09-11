@@ -38,11 +38,34 @@
  * Durante a grace, o edge responde a URL antiga de manifesto devolvendo
  * segmentos já assinados com a geração nova — então, mesmo que a troca demore,
  * a reprodução não corta. A grace é rede, não o mecanismo.
+ *
+ * ## Concorrência: duas defesas, e as duas são necessárias
+ *
+ * **Single-flight.** Enquanto um pedido está em voo, outro não começa. Evita o
+ * caso comum — um timer que disparou duas vezes, uma retomada de rede somada ao
+ * timer — gastar duas renovações e girar o nonce duas vezes à toa.
+ *
+ * **Guarda monotônica.** Se, apesar disso, duas respostas chegarem fora de
+ * ordem (a de geração 2 antes da de geração 1, por exemplo), `adotar` recusa a
+ * mais antiga. Sem ela, o cliente **regrediria** para uma geração que o servidor
+ * já aposentou, cuja URL morre na grace seguinte — e o 403 apareceria minutos
+ * depois, longe da causa.
+ *
+ * Single-flight sozinho não basta: ele fecha a janela que o nosso código abre,
+ * não a que a rede abre. A guarda monotônica é a que responde pelo resto.
  */
 
 export interface ConcessaoDeCanal {
   sessionId: string;
   manifestUrl: string;
+  /**
+   * Número da geração, monotônico, vindo do servidor.
+   *
+   * É o que permite recusar uma resposta antiga que chegou atrasada. Sem ele, a
+   * ordem de adoção seria a ordem de chegada — e duas renovações concorrentes
+   * não têm ordem de chegada garantida.
+   */
+  geracao: number;
   /** Segundos de validade da `manifestUrl`. */
   validoPorSegundos: number;
   expiraEm: number;
@@ -92,6 +115,15 @@ export interface Handoff {
   atual: () => ConcessaoDeCanal | null;
   /** Quantas vezes a fonte do player foi efetivamente trocada. */
   trocas: () => number;
+  /** Quantas concessões chegaram atrasadas e foram recusadas por regressão. */
+  recusasPorRegressao: () => number;
+  /**
+   * Força uma renovação agora, sem esperar o timer.
+   *
+   * Existe para o teste poder disparar concorrência de verdade, e para um
+   * cliente que volta do background poder revalidar sem reiniciar o ciclo.
+   */
+  renovarAgora: () => Promise<void>;
 }
 
 const FRACAO_PADRAO = 0.6;
@@ -113,8 +145,11 @@ export function criarHandoff(o: OpcoesDeHandoff): Handoff {
 
   let concessao: ConcessaoDeCanal | null = null;
   let trocas = 0;
+  let recusasPorRegressao = 0;
   let timer: number | null = null;
   let vivo = true;
+  /** Pedido em voo. Single-flight: enquanto houver um, não começa outro. */
+  let emVoo: Promise<ResultadoDePedido> | null = null;
 
   function cancelarTimer() {
     if (timer !== null) {
@@ -127,11 +162,31 @@ export function criarHandoff(o: OpcoesDeHandoff): Handoff {
    * Adota uma concessão: guarda **e** troca a fonte, nesta ordem e sempre
    * juntas. Separar as duas é o bug que este módulo conserta, então elas não
    * têm caminho separado.
+   *
+   * Devolve `false` quando recusa por regressão — a concessão é de uma geração
+   * que não é mais nova do que a atual. Nesse caso **nada** muda: nem o estado,
+   * nem a fonte do player.
    */
-  function adotar(nova: ConcessaoDeCanal) {
+  function adotar(nova: ConcessaoDeCanal): boolean {
+    if (concessao && nova.geracao <= concessao.geracao) {
+      recusasPorRegressao++;
+      return false;
+    }
     concessao = nova;
     trocas++;
     o.trocarFonte(nova.manifestUrl);
+    return true;
+  }
+
+  /** Single-flight: um pedido por vez; quem chegar junto espera o mesmo. */
+  async function pedirUmaVez(sessionId?: string): Promise<ResultadoDePedido> {
+    if (emVoo) return emVoo;
+    emVoo = o.pedir(o.canalId, sessionId);
+    try {
+      return await emVoo;
+    } finally {
+      emVoo = null;
+    }
   }
 
   function agendarProxima(validoPorSegundos: number) {
@@ -143,12 +198,16 @@ export function criarHandoff(o: OpcoesDeHandoff): Handoff {
   async function renovar(): Promise<void> {
     if (!vivo) return;
     const anterior = concessao;
-    const r = await o.pedir(o.canalId, anterior?.sessionId);
+    const r = await pedirUmaVez(anterior?.sessionId);
     if (!vivo) return;
 
     if (r.ok) {
-      adotar(r.concessao);
-      agendarProxima(r.concessao.validoPorSegundos);
+      // Recusada por regressão: a fonte fica como está, e o ciclo continua pela
+      // concessão que já está em uso — que é mais nova do que a que chegou.
+      const adotou = adotar(r.concessao);
+      agendarProxima(
+        (adotou ? r.concessao : concessao!).validoPorSegundos,
+      );
       return;
     }
 
@@ -170,7 +229,7 @@ export function criarHandoff(o: OpcoesDeHandoff): Handoff {
 
   return {
     async iniciar() {
-      const r = await o.pedir(o.canalId);
+      const r = await pedirUmaVez();
       if (!vivo) return;
       if (!r.ok) {
         vivo = false;
@@ -186,5 +245,7 @@ export function criarHandoff(o: OpcoesDeHandoff): Handoff {
     },
     atual: () => concessao,
     trocas: () => trocas,
+    recusasPorRegressao: () => recusasPorRegressao,
+    renovarAgora: () => renovar(),
   };
 }

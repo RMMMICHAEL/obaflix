@@ -223,6 +223,13 @@ export function createPlayCanalHandler(d: DependenciasDePlay) {
          * assinatura, e renovar exige a sessão autenticada do dono.
          */
         sessionId: concessao.sessionId,
+        /**
+         * Geração monotônica. O cliente só adota uma concessão com geração
+         * maior do que a que está usando — sem isso, duas renovações
+         * concorrentes que voltassem fora de ordem fariam o player regredir
+         * para uma geração já aposentada.
+         */
+        geracao: concessao.geracao,
         manifestUrl:
           `${baseDoEdge.replace(/\/+$/, "")}/canal/${concessao.sessionId}/master.m3u8` +
           `?e=${concessao.exp}&k=${concessao.sig}`,

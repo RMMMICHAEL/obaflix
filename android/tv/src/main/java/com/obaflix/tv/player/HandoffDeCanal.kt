@@ -1,6 +1,9 @@
 package com.obaflix.tv.player
 
 import com.obaflix.tv.catalogo.Concessao
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * O protocolo de handoff entre concessoes, do lado da televisao.
@@ -23,7 +26,7 @@ import com.obaflix.tv.catalogo.Concessao
  * 403 no meio da reproducao.
  *
  * Guardar a URL nao e migrar. Migrar e trocar o `MediaItem`, e e isso que
- * `trocarFonte` faz.
+ * `trocarFonte` faz — via `TrocaDeFonte`, que preserva a posicao.
  *
  * ## A linha do tempo
  *
@@ -37,15 +40,31 @@ import com.obaflix.tv.catalogo.Concessao
  * Renova bem antes de vencer por dois motivos somados: dar espaco para uma
  * segunda tentativa, e trocar no meio da janela em que as duas geracoes
  * convivem, nunca na borda.
+ *
+ * ## Concorrencia: duas defesas, e as duas sao necessarias
+ *
+ * **Single-flight de verdade.** Enquanto um pedido esta em voo, quem chegar
+ * junto **espera o mesmo resultado** em vez de disparar outro. Um `Mutex`
+ * sozinho nao serve: ele serializa, e serializar tres chamadas ainda gasta tres
+ * pedidos — e cada pedido gira o nonce, encurtando a vida da geracao anterior.
+ *
+ * **Guarda monotonica.** Se, apesar disso, duas respostas chegarem fora de
+ * ordem, `adotar` recusa a mais antiga pelo numero da geracao. Sem ela, o
+ * aparelho REGREDIRIA para uma geracao que o servidor ja aposentou, cuja URL
+ * morre na grace seguinte — e o 403 apareceria minutos depois, longe da causa.
+ *
+ * Single-flight fecha a janela que o nosso codigo abre; a guarda monotonica
+ * responde pela que a rede abre.
  */
 class HandoffDeCanal(
     private val canalId: String,
     /** `sessionId` presente renova; ausente resolve do zero. */
     private val pedir: suspend (canalId: String, sessionId: String?) -> Concessao,
     /**
-     * Faz o player realmente passar a usar esta URL: `setMediaItem` +
-     * `prepare`. Nao pode ser "guardar numa variavel" — e essa confusao que
-     * esta classe existe para impedir.
+     * Faz o player realmente passar a usar esta URL: `TrocaDeFonte.aplicar`,
+     * que chama `setMediaItem(item, resetPosition = false)` + `prepare`. Nao
+     * pode ser "guardar numa variavel" — e essa confusao que esta classe existe
+     * para impedir.
      */
     private val trocarFonte: (manifestUrl: String) -> Unit,
     /** Recusa definitiva: a reproducao para e a tela explica. */
@@ -63,15 +82,91 @@ class HandoffDeCanal(
     var trocas: Int = 0
         private set
 
+    /** Quantas concessoes chegaram atrasadas e foram recusadas por regressao. */
+    var recusasPorRegressao: Int = 0
+        private set
+
+    private val trava = Mutex()
+
+    /** Pedido em voo, compartilhado por quem chegar durante ele. */
+    private var emVoo: CompletableDeferred<Concessao>? = null
+
     /**
      * Adota uma concessao: guarda **e** troca a fonte, nesta ordem e sempre
      * juntas. Separar as duas e o bug que esta classe conserta, entao elas nao
      * tem caminho separado.
+     *
+     * Devolve `false` quando recusa por regressao. Nesse caso **nada** muda: nem
+     * o estado, nem a fonte do player.
      */
-    private fun adotar(nova: Concessao.Liberado) {
+    private fun adotar(nova: Concessao.Liberado): Boolean {
+        val emUso = atual
+        if (emUso != null && nova.geracao <= emUso.geracao) {
+            recusasPorRegressao++
+            return false
+        }
         atual = nova
         trocas++
         trocarFonte(nova.manifestUrl)
+        return true
+    }
+
+    /**
+     * Um pedido por vez, e quem chegar junto recebe **o mesmo resultado**.
+     *
+     * A diferenca para um `Mutex.withLock` em volta do pedido e o ponto: aquilo
+     * serializa e ainda dispara N pedidos; isto dispara um.
+     */
+    private suspend fun pedirUmaVez(sessionId: String?): Concessao {
+        var meu: CompletableDeferred<Concessao>? = null
+        val existente = trava.withLock {
+            val voo = emVoo
+            if (voo == null) {
+                val novo = CompletableDeferred<Concessao>()
+                emVoo = novo
+                meu = novo
+                null
+            } else {
+                voo
+            }
+        }
+        if (existente != null) return existente.await()
+
+        val prometido = meu!!
+        try {
+            val r = pedir(canalId, sessionId)
+            prometido.complete(r)
+            return r
+        } catch (e: Throwable) {
+            prometido.completeExceptionally(e)
+            throw e
+        } finally {
+            trava.withLock { if (emVoo === prometido) emVoo = null }
+        }
+    }
+
+    /**
+     * Pede a primeira concessao e a adota. Separada de `executar` para o teste
+     * poder chegar ao estado "tocando" sem entrar no laco.
+     */
+    suspend fun executarPrimeira(): Concessao {
+        val primeira = pedirUmaVez(null)
+        if (primeira is Concessao.Liberado) adotar(primeira) else aoPerder(primeira)
+        return primeira
+    }
+
+    /**
+     * Renova agora, sem esperar o ciclo.
+     *
+     * Existe para dois casos reais — o aparelho voltando do background e o teste
+     * disparando concorrencia. A concessao que chega **nao** e necessariamente a
+     * que passa a valer: se vier atrasada, a guarda monotonica a recusa.
+     */
+    suspend fun renovarAgora(): Concessao {
+        val emUso = atual ?: return Concessao.FalhaTemporaria
+        val nova = pedirUmaVez(emUso.sessionId)
+        if (nova is Concessao.Liberado) adotar(nova)
+        return nova
     }
 
     /**
@@ -81,19 +176,13 @@ class HandoffDeCanal(
      * junto.
      */
     suspend fun executar() {
-        when (val primeira = pedir(canalId, null)) {
-            is Concessao.Liberado -> adotar(primeira)
-            else -> {
-                aoPerder(primeira)
-                return
-            }
-        }
+        if (executarPrimeira() !is Concessao.Liberado) return
 
         while (true) {
             val emUso = atual ?: return
             esperar(atrasoDeRenovacaoMs(emUso.validoPorSegundos, fracaoDeRenovacao))
 
-            when (val nova = pedir(canalId, emUso.sessionId)) {
+            when (val nova = pedirUmaVez(emUso.sessionId)) {
                 is Concessao.Liberado -> adotar(nova)
 
                 // Passageiro: o video segue pela concessao atual ate vencer, e
