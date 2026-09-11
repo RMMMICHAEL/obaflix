@@ -57,6 +57,7 @@ export const BASE_BLACKCAT_PADRAO = "https://api.blackcatoficial.com/api";
 
 /** Tempo máximo esperando a Blackcat. Ver a nota sobre timeout adiante. */
 export const TIMEOUT_MS = 15_000;
+export const TIMEOUT_CONFIRMACAO_MS = 8_000;
 
 /** O HTTP que a documentação promete para uma criação bem-sucedida. */
 export const STATUS_DE_SUCESSO = 201;
@@ -227,6 +228,40 @@ export function interpretarVenda(
  */
 export function classificarStatus(status: number): "recusado" | "indisponivel" {
   return status >= 500 ? "indisponivel" : "recusado";
+}
+
+export type StatusBlackcat = "PENDING" | "PAID" | "CANCELLED" | "REFUNDED";
+export type ConfirmacaoBlackcat = { transactionId: string; status: StatusBlackcat; amount: number; paidAt: Date | null };
+export type ResultadoConfirmacaoBlackcat =
+  | { ok: true; confirmacao: ConfirmacaoBlackcat }
+  | { ok: false; falha: "timeout" | "rede" | "nao_encontrada" | "recusada" | "indisponivel" | "resposta_invalida" };
+
+/** Contrato documentado de GET /sales/{transactionId}/status; nada cru sai daqui. */
+export function interpretarConfirmacao(bruto: unknown): ConfirmacaoBlackcat | null {
+  if (!bruto || typeof bruto !== "object") return null;
+  const raiz = bruto as Record<string, unknown>;
+  if (raiz.success !== true) return null;
+  const data = raiz.data;
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const transactionId = typeof d.transactionId === "string" ? d.transactionId.trim() : "";
+  const amount = d.amount;
+  if (!transactionId || !["PENDING", "PAID", "CANCELLED", "REFUNDED"].includes(String(d.status)) || typeof amount !== "number" || !Number.isInteger(amount)) return null;
+  let paidAt: Date | null = null;
+  if (d.paidAt !== undefined) { if (typeof d.paidAt !== "string") return null; paidAt = new Date(d.paidAt); if (Number.isNaN(paidAt.getTime())) return null; }
+  return { transactionId, status: d.status as StatusBlackcat, amount, paidAt };
+}
+
+export function criarConfirmadorBlackcat(env: Record<string, string | undefined> = process.env, buscar: typeof fetch = fetch) {
+  const config = lerConfiguracao(env); if (!config) return null;
+  return async (transactionId: string): Promise<ResultadoConfirmacaoBlackcat> => {
+    let resposta: Response;
+    try { resposta = await buscar(`${config.baseUrl}/sales/${encodeURIComponent(transactionId)}/status`, { method: "GET", headers: { "X-API-Key": config.apiKey }, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_CONFIRMACAO_MS) }); }
+    catch (erro) { return { ok: false, falha: erro instanceof Error && (erro.name === "TimeoutError" || erro.name === "AbortError") ? "timeout" : "rede" }; }
+    if (!resposta.ok) return { ok: false, falha: resposta.status === 404 ? "nao_encontrada" : [401, 403, 422].includes(resposta.status) ? "recusada" : "indisponivel" };
+    try { const confirmacao = interpretarConfirmacao(await resposta.json()); return confirmacao ? { ok: true, confirmacao } : { ok: false, falha: "resposta_invalida" }; }
+    catch { return { ok: false, falha: "resposta_invalida" }; }
+  };
 }
 
 // ── O provedor ───────────────────────────────────────────────────────────────

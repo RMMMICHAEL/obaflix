@@ -799,6 +799,16 @@ assinaturas.**
 
 ### 14.2 A regra: o webhook é um *aviso*, nunca uma *prova*
 
+A Fase 5 implementa a confirmação por `GET /sales/{transactionId}/status` com
+`X-API-Key`. Só `data.status`, `data.transactionId`, `data.amount` (centavos) e
+`data.paidAt` dessa consulta autorizada podem mudar direitos. O webhook usa
+segmento secreto apenas para reduzir varredura; sem HMAC, assinatura ou allowlist
+documentada, não autentica o emissor.
+
+No Vercel Hobby/Free, a reconciliação nativa roda uma vez por dia, às `15 4 * * *`.
+Webhook e polling são os caminhos normais em tempo real; esse cron é apenas fallback.
+Em Vercel Pro, a mesma rota pode usar `*/10 * * * *`, sem mudar sua lógica.
+
 ```mermaid
 sequenceDiagram
     participant BC as Blackcat

@@ -8,6 +8,8 @@ import {
   STATUS_DE_CRIACAO_ACEITO,
   lerConfiguracao,
   provedorComConfiguracao,
+  criarConfirmadorBlackcat,
+  interpretarConfirmacao,
 } from "../billing/blackcat";
 import type { PedidoParaProvedor } from "../billing/pedidos";
 
@@ -37,6 +39,22 @@ const PEDIDO: PedidoParaProvedor = {
     documento: { numero: "12345678901", tipo: "cpf" },
   },
 };
+
+const respostaStatus = (data: Record<string, unknown>) => new Response(JSON.stringify({ success: true, data }), { status: 200 });
+
+describe("confirmação autoritativa", () => {
+  test("GET codifica a transação, usa chave e no-store", async () => {
+    let url = ""; let init: RequestInit | undefined;
+    const confirmar = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "teste" }, async (u, i) => { url=String(u); init=i; return respostaStatus({transactionId:"a/b",status:"PAID",amount:100}); });
+    const r=await confirmar!("a/b"); assert.equal(r.ok,true); assert.match(url,/a%2Fb\/status$/); assert.equal((init?.headers as Record<string,string>)["X-API-Key"],"teste"); assert.equal(init?.cache,"no-store"); assert.ok(init?.signal);
+  });
+  for (const status of ["PENDING","PAID","CANCELLED","REFUNDED"] as const) test(`${status} é aceito`,()=>assert.equal(interpretarConfirmacao({success:true,data:{transactionId:"t",status,amount:100}})?.status,status));
+  test("success falso e formatos inválidos são recusados",()=>{
+    for(const body of [{success:false,data:{transactionId:"t",status:"PAID",amount:1}},{success:true},{success:true,data:{status:"PAID",amount:1}},{success:true,data:{transactionId:"t",status:"X",amount:1}},{success:true,data:{transactionId:"t",status:"PAID",amount:"1"}},{success:true,data:{transactionId:"t",status:"PAID",amount:1.1}},{success:true,data:{transactionId:"t",status:"PAID",amount:1,paidAt:"x"}}]) assert.equal(interpretarConfirmacao(body),null);
+  });
+  test("status HTTP é fechado",async()=>{ for(const [http,falha] of [[401,"recusada"],[403,"recusada"],[404,"nao_encontrada"],[422,"recusada"],[429,"indisponivel"],[500,"indisponivel"]] as const){ const c=criarConfirmadorBlackcat({BLACKCAT_API_KEY:"x"},async()=>new Response("{}",{status:http})); const r=await c!("t"); assert.deepEqual(r,{ok:false,falha}); } });
+  test("timeout e rede não confirmam",async()=>{ for(const e of [Object.assign(new Error(),{name:"TimeoutError"}),new Error("rede")]){const c=criarConfirmadorBlackcat({BLACKCAT_API_KEY:"x"},async()=>{throw e});const r=await c!("t");assert.equal(r.ok,false);} });
+});
 
 /** O corpo que a documentação da Blackcat descreve para uma criação bem-sucedida. */
 /**
