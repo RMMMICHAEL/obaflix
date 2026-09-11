@@ -48,12 +48,15 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 |----------|-----------|--------|
 | `MONETIZACAO_ATIVA` | Enforcement comercial em `POST /api/player/fontes`. **Só a string exata `"true"` liga** | desligado |
 | `BLACKCAT_PIX_ATIVO` | Criação real de PIX em `POST /api/billing/orders`. **Só a string exata `"true"` liga** | desligado |
+| `BLACKCAT_CONFIRMACAO_ATIVA` | Consulta autoritativa, webhook, reconciliação e alteração de direitos. **Só `"true"` liga** | desligado |
+| `BLACKCAT_WEBHOOK_PATH_SECRET` | Segmento aleatório e URL-safe da rota de aviso Blackcat; não é autenticação | — |
 | `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
 | `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
 
-**Duas flags, de propósito.** `MONETIZACAO_ATIVA` decide se o enforcement nega
+**Três flags, de propósito.** `MONETIZACAO_ATIVA` decide se o enforcement nega
 conteúdo; `BLACKCAT_PIX_ATIVO` decide se é possível cobrar. Precisam ser
-acionáveis em separado — cobrar antes de restringir é o rollout normal, e
+acionáveis em separado — a confirmação pode ficar desligada enquanto PIX e
+enforcement seguem com seus próprios rollouts; cobrar antes de restringir é normal, e
 desligar a cobrança durante um incidente do gateway não pode derrubar o acesso de
 quem já pagou.
 

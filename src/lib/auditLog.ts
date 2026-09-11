@@ -47,7 +47,13 @@ export type AuditEvent =
   // `refExterna` ou qualquer parte do payload do provedor. `pedidoId` e o código
   // do motivo bastam para investigar, e `pedidoId` é identificador nosso.
   | "billing_order_created"
-  | "billing_order_failed";
+  | "billing_order_failed"
+  | "billing_webhook_received"
+  | "billing_payment_confirmed"
+  | "billing_payment_review"
+  | "billing_payment_refunded"
+  | "billing_reconcile_failed"
+  | "billing_entitlements_invalidation_failed";
 
 interface AuditMeta {
   userId?: string;

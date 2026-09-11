@@ -570,10 +570,29 @@ model PedidoPagamento {
   /// No máximo uma — `Assinatura.pedidoId` é único. A relação é o lado inverso
   /// da FK criada na Fase 4; nenhuma linha é criada por esta fase.
   assinatura Assinatura?
+  eventos    EventoPagamento[]
 
   /// "os pedidos desta conta, do mais novo para o mais velho" — a listagem de
   /// suporte e a trava de retentativa.
   @@index([userId, status, criadoEm])
   /// A varredura da reconciliação: pedidos parados por estado e vencimento.
   @@index([status, expiraEm])
+}
+
+/// Aviso mínimo do gateway. Não armazena payload e nunca concede direito sozinho.
+model EventoPagamento {
+  id              String @id @default(cuid())
+  provedor        String
+  transacaoId     String
+  evento          String
+  statusInformado String
+  pedidoId        String?
+  pedido          PedidoPagamento? @relation(fields: [pedidoId], references: [id], onDelete: SetNull)
+  resultado       String
+  recebidoEm      DateTime @default(now())
+  processadoEm    DateTime?
+
+  @@unique([provedor, transacaoId, evento, statusInformado])
+  @@index([pedidoId, recebidoEm])
+  @@index([resultado, recebidoEm])
 }
