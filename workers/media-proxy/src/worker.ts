@@ -17,13 +17,22 @@
  * nossa origem. Quatro controles independentes — nenhum deles é opcional.
  */
 
-export interface Env {
-  /** Mesmo segredo do backend (NEXTAUTH_SECRET). Só como secret do Wrangler. */
-  ASSINATURA_SECRET: string;
-  /** Sufixos de host permitidos como alvo, separados por vírgula. */
-  CDN_ALLOWLIST: string;
-  /** Origem do app, única autorizada no CORS. Ex.: https://obaflix.vercel.app */
-  APP_ORIGIN: string;
+import { ehRotaDeCanal, tratarCanal, type EnvCanais } from "./canais";
+
+export interface Env extends EnvCanais {
+  /**
+   * Os campos vêm de `EnvCanais`:
+   *
+   *   ASSINATURA_SECRET       mesmo segredo do backend (NEXTAUTH_SECRET)
+   *   CDN_ALLOWLIST           sufixos de host permitidos como alvo
+   *   APP_ORIGIN              origem do app, única autorizada no CORS
+   *   CANAIS_MEDIA_BASE       base pública deste Worker, para reescrever HLS
+   *   UPSTASH_REDIS_REST_*    sessão de canal (ver `canais.ts`)
+   *
+   * Os três primeiros já eram usados pelo caminho de filmes/séries; os dois
+   * últimos só pelo de canais. Um deploy sem eles mantém filmes/séries
+   * funcionando e devolve 403 em canal — que é a falha correta.
+   */
 }
 
 /** Resposta única para toda recusa: o cliente nunca aprende o motivo nem o alvo. */
@@ -125,6 +134,12 @@ export default {
         },
       });
     }
+    // Canais ao vivo têm regra própria e saem antes: lá o cliente não escolhe
+    // o alvo, aqui escolhe (dentro do que o backend assinou). São dois
+    // contratos opostos, e juntá-los num `if` adiante seria pedir para um dia
+    // um deles herdar a permissividade do outro.
+    if (ehRotaDeCanal(new URL(req.url).pathname)) return tratarCanal(req, env);
+
     if (req.method !== "GET" && req.method !== "HEAD") return negar();
 
     const params = new URL(req.url).searchParams;
