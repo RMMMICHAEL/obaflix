@@ -40,6 +40,20 @@ export interface RedisClient {
    * adquirido por outra requisição entre os dois comandos.
    */
   compareAndDelete(key: string, expectedValue: string): Promise<number>;
+  /**
+   * Persiste uma sessão somente enquanto o chamador ainda detém o lock e o
+   * estado persistido ainda é a geração que ele leu. As duas verificações e o
+   * SET formam uma única operação atômica.
+   */
+  compareLockAndSetSession(input: {
+    lockKey: string;
+    lockToken: string;
+    sessionKey: string;
+    expectedGeneration: number;
+    expectedNonce: string;
+    value: string;
+    ttlSeconds: number;
+  }): Promise<boolean>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   ttl(key: string): Promise<number>;
@@ -88,6 +102,27 @@ class MemoryStore implements RedisClient {
     if (entry.value !== expectedValue) return 0;
     this.kv.delete(key);
     return 1;
+  }
+
+  async compareLockAndSetSession(input: {
+    lockKey: string; lockToken: string; sessionKey: string; expectedGeneration: number;
+    expectedNonce: string; value: string; ttlSeconds: number;
+  }): Promise<boolean> {
+    const lock = this.kv.get(input.lockKey);
+    if (!lock || this.isExpired(lock) || lock.value !== input.lockToken) return false;
+    const session = this.kv.get(input.sessionKey);
+    if (!session || this.isExpired(session)) return false;
+    try {
+      const atual = JSON.parse(session.value) as { geracao?: unknown; nonce?: unknown };
+      if (atual.geracao !== input.expectedGeneration || atual.nonce !== input.expectedNonce) return false;
+    } catch {
+      return false;
+    }
+    this.kv.set(input.sessionKey, {
+      value: input.value,
+      expiresAt: Date.now() + input.ttlSeconds * 1000,
+    });
+    return true;
   }
 
   async incr(key: string): Promise<number> {
@@ -188,6 +223,14 @@ function buildUpstashClient(): RedisClient | null {
         [key],
         [expectedValue],
       );
+    },
+    async compareLockAndSetSession(input) {
+      const result = await client.eval<[string, string, string, string, string], number>(
+        "local lock = redis.call('get', KEYS[1]); if lock ~= ARGV[1] then return 0 end; local raw = redis.call('get', KEYS[2]); if not raw then return 0 end; local ok, current = pcall(cjson.decode, raw); if not ok or current.geracao ~= tonumber(ARGV[2]) or current.nonce ~= ARGV[3] then return 0 end; redis.call('set', KEYS[2], ARGV[4], 'EX', ARGV[5]); return 1",
+        [input.lockKey, input.sessionKey],
+        [input.lockToken, String(input.expectedGeneration), input.expectedNonce, input.value, String(input.ttlSeconds)],
+      );
+      return result === 1;
     },
     incr: (key) => client.incr(key),
     expire: (key, seconds) => client.expire(key, seconds),

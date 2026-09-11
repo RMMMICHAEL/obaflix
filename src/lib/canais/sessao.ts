@@ -340,8 +340,10 @@ export async function renovarSessaoDeCanal(entrada: {
   userId: string;
   canalId: string;
   sessionId: string;
+  /** Gancho de orquestração usado exclusivamente pelo teste de lock expirado. */
+  antesDePersistirParaTeste?: () => Promise<void>;
 }): Promise<Concessao | null> {
-  const { userId, canalId, sessionId } = entrada;
+  const { userId, canalId, sessionId, antesDePersistirParaTeste } = entrada;
   const confereDonoECanal = (sessao: SessaoDeCanal | null): sessao is SessaoDeCanal =>
     !!sessao &&
     sessao.canalId === canalId &&
@@ -400,7 +402,23 @@ export async function renovarSessaoDeCanal(entrada: {
       expiraEm: agora + TTL_SESSAO_S * 1000,
     };
 
-    await redis.set(chaveDaSessao(sessionId), JSON.stringify(renovada), { ex: TTL_SESSAO_S });
+    await antesDePersistirParaTeste?.();
+    const persistiu = await redis.compareLockAndSetSession({
+      lockKey: chaveDoLock,
+      lockToken: tokenDoLock,
+      sessionKey: chaveDaSessao(sessionId),
+      expectedGeneration: sessao.geracao,
+      expectedNonce: sessao.nonce,
+      value: JSON.stringify(renovada),
+      ttlSeconds: TTL_SESSAO_S,
+    });
+    if (!persistiu) {
+      // O lock venceu ou outra requisição escreveu a geração seguinte. Em vez
+      // de tentar nova rotação, leia e devolva exatamente a concessão vigente.
+      const vigente = await lerSessao(sessionId);
+      if (!confereDonoECanal(vigente)) return null;
+      return assinarMaster(sessionId, vigente.nonce, vigente.geracao, Date.now());
+    }
     return assinarMaster(sessionId, nonce, renovada.geracao, agora);
   } finally {
     // Nunca trocar isto por GET + DEL: se o TTL vencer, uma liberação atrasada

@@ -688,6 +688,52 @@ test("lock expirado recupera o renew e unlock atrasado não apaga novo dono", as
   await redis.compareAndDelete(lock, "token-da-b");
 });
 
+test("write tardio de lock vencido não sobrescreve a rotação do novo dono", async () => {
+  const c = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-race", fonte: FONTE });
+  const redis = getRedis();
+  const lock = chaveDoLockDeRenovacao(c.sessionId);
+  let liberarA!: () => void;
+  let aAdquiriuLock!: () => void;
+  const aPausada = new Promise<void>((resolve) => { liberarA = resolve; });
+  const aAdquiriu = new Promise<void>((resolve) => { aAdquiriuLock = resolve; });
+
+  // A adquire o lock e para imediatamente antes do commit atômico.
+  const A = renovarSessaoDeCanal({
+    userId: "dono", canalId: "canal-race", sessionId: c.sessionId,
+    antesDePersistirParaTeste: async () => {
+      aAdquiriuLock();
+      await aPausada;
+    },
+  });
+  await aAdquiriu;
+
+  // Simula o Redis removendo a chave porque o TTL de A venceu. B adquire seu
+  // próprio lock, escreve N+1/nonce-B e encerra normalmente.
+  await redis.del(lock);
+  const B = await renovarSessaoDeCanal({ userId: "dono", canalId: "canal-race", sessionId: c.sessionId });
+  assert.ok(B);
+  const depoisDeB = await lerSessao(c.sessionId);
+  assert.ok(depoisDeB);
+
+  // Quando A volta, o EVAL vê que token-A não é mais dono e recusa o SET.
+  liberarA();
+  const concessaoA = await A;
+  assert.ok(concessaoA);
+  const final = await lerSessao(c.sessionId);
+  assert.ok(final);
+  assert.equal(final.geracao, c.geracao + 1, "a geração final só sobe uma vez");
+  assert.equal(final.nonce, depoisDeB.nonce, "o write tardio de A não troca o nonce de B");
+  assert.equal(final.expiraDefinitivamenteEm, depoisDeB.expiraDefinitivamenteEm);
+
+  for (const concessao of [B, concessaoA]) {
+    assert.equal(concessao.geracao, final.geracao);
+    assert.ok(assinaturaConfere({
+      escopo: "m", sessionId: c.sessionId, nonce: final.nonce,
+      recurso: "master", exp: concessao.exp,
+    }, concessao.sig), "as concessões de A e B permanecem válidas");
+  }
+});
+
 // ── 7. HLS: o upstream não sobrevive à reescrita ─────────────────────────────
 
 const assinadorFalso = async (escopo: "m" | "s", recurso: string, exp: number) =>
