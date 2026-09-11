@@ -12,6 +12,7 @@ import {
   PLANO_PREMIUM,
   RESOLUCOES,
   TV_NIVEIS,
+  inversoesDeDireito,
   semearPlano,
   semearPlanosComerciais,
   type PlanoSemeado,
@@ -251,13 +252,36 @@ describe("gratuito não é afetado pela matriz", () => {
     assert.equal([PLANO_GRATUITO, ...PLANOS_COMERCIAIS].filter((p) => p.ehPadrao).length, 1);
   });
 
-  test("gratuito continua sendo a fotografia de hoje, não um degrau da matriz", () => {
-    // Se alguém "alinhar" o gratuito à matriz sem decisão explícita, toda conta
-    // sem assinatura perde telas e canais de uma vez. Restringir o gratuito é o
-    // interruptor comercial real, e tem fluxo próprio.
-    assert.equal(PLANO_GRATUITO.telasMax, 5);
-    assert.equal(PLANO_GRATUITO.downloads, true);
+  /**
+   * O gratuito passou a ser o degrau mais baixo da matriz, por decisão
+   * aprovada. O que este teste guarda agora é a **coerência da escada**: ele
+   * precisa ficar em todo direito abaixo ou igual ao Basic, nunca acima.
+   *
+   * Editar a constante não muda produção — o seed nunca sobrescreve. Quem aplica
+   * à linha existente é `scripts/ajustar-plano-gratuito.ts`.
+   */
+  test("gratuito é o degrau mais baixo, e não supera o Basic em nada", () => {
+    assert.equal(PLANO_GRATUITO.telasMax, 1);
+    assert.equal(PLANO_GRATUITO.downloads, false);
     assert.equal(PLANO_GRATUITO.canaisNivel, "nenhum");
+    assert.equal(PLANO_GRATUITO.resolucaoMax, "sd");
+    assert.equal(PLANO_GRATUITO.tvNivel, "limitado");
+
+    assert.deepEqual(
+      inversoesDeDireito(PLANO_GRATUITO),
+      [],
+      "com estes valores não pode sobrar nenhuma inversão contra os planos pagos",
+    );
+  });
+
+  /**
+   * O contraponto: `filmes` e `series` continuam liberados. A diferenciação
+   * comercial está em telas, download, canais e qualidade — não em cortar
+   * catálogo de quem não paga.
+   */
+  test("o gratuito não perde acesso a filmes e séries", () => {
+    assert.equal(PLANO_GRATUITO.filmes, true);
+    assert.equal(PLANO_GRATUITO.series, true);
   });
 
   test("os quatro ids são distintos", () => {

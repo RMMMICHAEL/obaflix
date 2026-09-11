@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  PLANO_BASIC,
   PLANO_GRATUITO,
   TELAS_SIMULTANEAS_HOJE,
   CANAIS_NIVEIS,
@@ -37,30 +38,46 @@ const migracao = readFileSync(
   "utf8",
 );
 
-describe("plano padrão: fotografia do comportamento atual", () => {
+/**
+ * O plano padrão deixou de ser a fotografia do comportamento atual.
+ *
+ * Era, até a matriz comercial ser aprovada: reproduzia o que toda conta tem hoje
+ * para que a Fase 1 não mudasse o comportamento de ninguém. Agora é o degrau
+ * mais baixo da matriz e precisa ficar **abaixo** do Basic pago — senão vender
+ * Basic seria oferecer menos por dinheiro do que a conta já tem de graça.
+ */
+describe("plano padrão: o degrau mais baixo da matriz", () => {
   test("é o plano padrão, e está ativo", () => {
     assert.equal(PLANO_GRATUITO.id, "gratuito");
     assert.equal(PLANO_GRATUITO.ehPadrao, true);
     assert.equal(PLANO_GRATUITO.ativo, true);
   });
 
-  test("não exige anúncio — hoje ninguém vê anúncio", () => {
-    assert.equal(PLANO_GRATUITO.anunciosObrigatorios, false);
+  /**
+   * Ligado por decisão comercial, e **sem enforcement hoje**: nenhuma rota lê
+   * este campo, e a interface não simula anúncio nenhum. É intenção registrada,
+   * que passa a valer quando a fase de anúncios existir.
+   */
+  test("exige anúncio, sem contador pendurado até a fase de anúncios", () => {
+    assert.equal(PLANO_GRATUITO.anunciosObrigatorios, true);
     assert.equal(PLANO_GRATUITO.episodiosPorAnuncio, null);
   });
 
-  test("libera filmes, séries e downloads — como hoje", () => {
+  test("mantém filmes e séries — a diferenciação não é cortar catálogo", () => {
     assert.equal(PLANO_GRATUITO.filmes, true);
     assert.equal(PLANO_GRATUITO.series, true);
-    assert.equal(PLANO_GRATUITO.downloads, true);
   });
 
-  test("não limita resolução nem TV — como hoje", () => {
-    assert.equal(PLANO_GRATUITO.resolucaoMax, "4k");
-    assert.equal(PLANO_GRATUITO.tvNivel, "completo");
+  test("sem downloads: empata com Basic e fica abaixo de Plus e Premium", () => {
+    assert.equal(PLANO_GRATUITO.downloads, false);
   });
 
-  test("canais em 'nenhum': o produto ainda não os tem, então não tira nada", () => {
+  test("qualidade e TV no piso da escala", () => {
+    assert.equal(PLANO_GRATUITO.resolucaoMax, "sd");
+    assert.equal(PLANO_GRATUITO.tvNivel, "limitado");
+  });
+
+  test("canais em 'nenhum': canal é direito de Plus e Premium", () => {
     assert.equal(PLANO_GRATUITO.canaisNivel, "nenhum");
   });
 
@@ -69,18 +86,17 @@ describe("plano padrão: fotografia do comportamento atual", () => {
   });
 
   /**
-   * O teste que trava a regressão mais cara desta fase.
+   * `TELAS_SIMULTANEAS_HOJE` continua espelhando `MAX_CONCURRENT`, e o teste
+   * continua lendo o arquivo em vez de repetir o número.
    *
-   * `telasMax` é o campo que vai substituir `MAX_CONCURRENT` quando a
-   * autorização for ligada. Semeado abaixo do valor real, toda conta perderia
-   * streams simultâneos de uma vez — e o sintoma ("parou de tocar na segunda
-   * tela") não apontaria para um seed escrito fases antes.
-   *
-   * Lê o valor direto de `playTokens.ts` em vez de repetir o número: aquele
-   * arquivo não exporta a constante, e exportá-la seria tocar num arquivo que
-   * esta fase não pode alterar.
+   * O que mudou foi o **significado**: aquela constante não é mais o `telasMax`
+   * do plano padrão. Ela é o limite que vale enquanto `MONETIZACAO_ATIVA`
+   * estiver desligada — o mesmo valor que `limiteDeTelas` devolve no bypass da
+   * flag. As duas coisas respondem a perguntas diferentes desde a matriz
+   * comercial, e a segunda asserção deste teste (que exigia os dois iguais) saiu
+   * por isso, não por conveniência.
    */
-  test("telasMax acompanha o MAX_CONCURRENT real de playTokens.ts", () => {
+  test("TELAS_SIMULTANEAS_HOJE acompanha o MAX_CONCURRENT real de playTokens.ts", () => {
     const fonte = readFileSync(join(raiz, "src/lib/playTokens.ts"), "utf8");
     const achado = fonte.match(/const\s+MAX_CONCURRENT\s*=\s*(\d+)/);
 
@@ -90,16 +106,26 @@ describe("plano padrão: fotografia do comportamento atual", () => {
         "nome ou de forma, esta comparação precisa acompanhar em vez de sumir",
     );
 
-    const real = Number(achado[1]);
     assert.equal(
       TELAS_SIMULTANEAS_HOJE,
-      real,
+      Number(achado[1]),
       "TELAS_SIMULTANEAS_HOJE saiu de sincronia com MAX_CONCURRENT",
     );
-    assert.equal(
-      PLANO_GRATUITO.telasMax,
-      real,
-      "o plano padrão daria ao usuário menos (ou mais) telas do que ele tem hoje",
+  });
+
+  /**
+   * Uma tela, e o campo mais visível desta decisão.
+   *
+   * É o único direito do gratuito com enforcement real hoje: no dia em que
+   * `MONETIZACAO_ATIVA` ligar, toda conta sem assinatura cai de 5 para 1 stream
+   * simultâneo. Está travado aqui para que a queda seja sempre uma decisão
+   * escrita, e nunca efeito colateral de alguém "arredondando" o valor.
+   */
+  test("telasMax é 1, e está abaixo do Basic pago", () => {
+    assert.equal(PLANO_GRATUITO.telasMax, 1);
+    assert.ok(
+      PLANO_GRATUITO.telasMax < PLANO_BASIC.telasMax,
+      "o gratuito não pode dar mais telas que o Basic pago",
     );
   });
 });
@@ -161,13 +187,13 @@ describe("domínio: código e banco não podem divergir", () => {
     }
   });
 
-  test("o seed concede explicitamente, em vez de herdar default", () => {
-    // O contraponto do teste acima: com defaults fechados, o comportamento de
-    // hoje só se preserva porque o Gratuito escreve cada liberação.
+  test("o seed escreve cada direito, em vez de herdar default", () => {
+    // O contraponto do teste acima: com defaults fechados, o que o gratuito
+    // concede só existe porque está escrito. Depois da matriz comercial ele
+    // concede pouco — mas continua escrevendo, e é isso que este teste guarda:
+    // `filmes` e `series` são liberações explícitas sobre um default `false`.
     assert.equal(PLANO_GRATUITO.filmes, true);
     assert.equal(PLANO_GRATUITO.series, true);
-    assert.equal(PLANO_GRATUITO.downloads, true);
-    assert.equal(PLANO_GRATUITO.anunciosObrigatorios, false);
   });
 
   test("números do seed respeitam os CHECK de limite", () => {
@@ -282,11 +308,16 @@ describe("seed: cria se faltar, nunca sobrescreve", () => {
 });
 
 describe("diferencas: relata sem agir", () => {
+  /**
+   * Os valores usados aqui são os que a linha de produção realmente tem: ela
+   * nasceu antes da matriz comercial, com 5 telas e sem anúncio. É exatamente
+   * essa divergência que o seed precisa relatar sem agir sobre ela.
+   */
   test("aponta cada direito que o banco tem diferente da fotografia", () => {
     const noBanco = {
       ...PLANO_GRATUITO,
-      anunciosObrigatorios: true,
-      telasMax: 1,
+      anunciosObrigatorios: false,
+      telasMax: 5,
     };
 
     const d = diferencas(noBanco, PLANO_GRATUITO);

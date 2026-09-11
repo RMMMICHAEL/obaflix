@@ -362,15 +362,15 @@ cada valor.
 
 | Direito | Gratuito | Basic | Plus | Premium |
 |---|---|---|---|---|
-| `anunciosObrigatorios` | não | não | não | não |
+| `anunciosObrigatorios` | **sim** | não | não | não |
 | `filmes` | sim | sim | sim | sim |
 | `series` | sim | sim | sim | sim |
 | `canaisNivel` | `nenhum` | `nenhum` | `plus` | `premium` |
-| `downloads` | sim | **não** | sim | sim |
-| `telasMax` | 5 | 2 | 2 | 2 |
+| `downloads` | não | não | sim | sim |
+| `telasMax` | **1** | 2 | 2 | 2 |
 | `perfisMax` | 1 | 1 | 1 | 1 |
-| `resolucaoMax` | `4k` | `hd` | `hd` | `4k` |
-| `tvNivel` | `completo` | `completo` | `completo` | `completo` |
+| `resolucaoMax` | `sd` | `hd` | `hd` | `4k` |
+| `tvNivel` | `limitado` | `completo` | `completo` | `completo` |
 | `ehPadrao` | **sim** | não | não | não |
 | `PlanoPreco` | — (não comprável) | **nenhum ainda** | **nenhum ainda** | **nenhum ainda** |
 
@@ -379,35 +379,56 @@ Observações:
 - O plano **Gratuito é uma linha na tabela `Plano`**, não um caso especial no
   código. Usuário sem assinatura ativa resolve para o plano marcado
   `ehPadrao = true`. Isso elimina todos os `if (!assinatura)` espalhados.
-- **A coluna Gratuito não é um degrau desta matriz.** Ela continua sendo a
-  *fotografia do comportamento de hoje* — 5 telas, download liberado, 4K — e por
-  isso aparece acima de Basic em vários campos. Restringir o gratuito é o
-  interruptor comercial real e tem fluxo próprio; alinhá-lo à matriz sem decisão
-  explícita rebaixaria toda conta sem assinatura de uma vez.
+- **Gratuito é o degrau mais baixo da matriz**, e fica abaixo ou igual ao Basic
+  em todo direito. Era a fotografia do comportamento de hoje — 5 telas, download,
+  4K — até a matriz ser aprovada; manter aquilo faria o Basic pago valer menos
+  que a conta gratuita.
+- `anunciosObrigatorios: true`, `resolucaoMax: sd` e `tvNivel: limitado` no
+  gratuito são **intenção registrada sem enforcement**: nenhuma rota lê esses
+  três campos, e a interface **não simula** anúncio, degradação de qualidade nem
+  restrição de TV. Passam a valer quando as fases correspondentes existirem. Ver
+  5.1 e `src/lib/direitosAplicados.ts`.
 - **Os três comerciais nascem sem preço**, e portanto não compráveis:
   `resolverPreco` recusa com `preco_inexistente` antes de tocar o provedor. Os
   valores entram quando estiverem fechados.
 
 > ### ⚠ Bloqueador para `seed:planos:apply`
 >
-> **O gratuito hoje entrega mais que o Basic pago**: 5 telas contra 2, download
-> contra nenhum, 4K contra HD. Criar as linhas nesse estado colocaria à venda um
-> plano pior do que a conta já tem de graça.
+> **A LINHA de `gratuito` no banco ainda entrega mais que o Basic pago**: 5 telas
+> contra 2, download contra nenhum, 4K contra HD. Criar as linhas comerciais
+> nesse estado colocaria à venda um plano pior do que a conta já tem de graça.
 >
-> `npm run seed:planos:apply` **recusa** enquanto a inversão existir —
-> `inversoesDeDireito` (`src/lib/planos.ts`) a detecta e o script sai com código
-> 1 sem gravar nada. O dry-run continua mostrando tudo, porque é o que ajuda a
-> decidir. **Não há flag para pular**, pelo mesmo motivo de não existir
-> `--force` ali.
+> A constante `PLANO_GRATUITO` **já está com os valores aprovados** — 1 tela, sem
+> download, `sd`, `limitado`, com anúncio. A linha do banco não, porque o seed
+> **nunca sobrescreve**. Os dois estados coexistem até alguém rodar o ajuste.
 >
-> A trava **se levanta sozinha**: no dia em que os direitos do `gratuito` forem
-> restringidos por decisão comercial, a inversão deixa de existir e o apply
-> passa. Restringir o gratuito não é feito por este script nem por esta matriz —
-> é o interruptor comercial real, e tem fluxo próprio.
+> Por isso a trava compara a **linha**, lida por `planoDaLinhaCrua`, e nunca a
+> constante: comparar a constante faria a trava se levantar no commit em que o
+> código mudou, enquanto produção continuasse invertida — verde falso no único
+> ponto em que o verde importa. Se a linha não puder ser interpretada, o script
+> **para**: não conseguir ler o plano padrão não é motivo para liberar.
 >
-> As seis inversões de hoje: `basic` em `telasMax`, `downloads` e
+> **A ordem correta é:**
+>
+> ```bash
+> npm run planos:gratuito        # dry-run do ajuste
+> npm run planos:gratuito:apply  # grava a decisão na linha existente
+> npm run seed:planos            # confirma zero inversões
+> npm run seed:planos:apply      # só então cria basic/plus/premium
+> ```
+>
+> `seed:planos:apply` **recusa** enquanto a inversão existir e sai com código 1
+> sem gravar nada. O dry-run continua mostrando tudo, porque é o que ajuda a
+> decidir. **Não há flag para pular**, pelo mesmo motivo de não existir `--force`
+> ali. A trava **se levanta sozinha** quando a linha for ajustada.
+>
+> As seis inversões da linha atual: `basic` em `telasMax`, `downloads` e
 > `resolucaoMax`; `plus` em `telasMax` e `resolucaoMax`; `premium` em
 > `telasMax`.
+>
+> **Ajustar o gratuito não muda nada enquanto `MONETIZACAO_ATIVA` estiver
+> desligada** — ver 5.1. O efeito chega quando a flag ligar, e aí é imediato para
+> toda conta sem assinatura ativa.
 
 ### 5.1 O que desta matriz o backend aplica hoje
 

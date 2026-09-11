@@ -56,34 +56,51 @@ export interface PlanoSemeado extends DireitosDoPlano {
 }
 
 /**
- * O limite de streams simultâneos que vale hoje, em `MAX_CONCURRENT` de
- * `src/lib/playTokens.ts`.
+ * O limite de streams simultâneos que vale com o enforcement **desligado** —
+ * o `MAX_CONCURRENT` de `src/lib/playTokens.ts`.
  *
  * Duplicado aqui de propósito, e não importado: `playTokens.ts` não exporta a
- * constante, e exportá-la seria mexer num arquivo que esta fase não pode tocar.
- * A cópia tem um teste que a compara com o valor real, então divergir quebra o
- * CI em vez de virar surpresa quando a autorização for ligada.
+ * constante. A cópia tem um teste que a compara com o valor real, então divergir
+ * quebra o CI em vez de virar surpresa quando a autorização for ligada.
+ *
+ * **Deixou de ser o `telasMax` do plano padrão.** Era, enquanto o gratuito
+ * precisava reproduzir exatamente o comportamento de hoje; com a matriz
+ * comercial aprovada o gratuito passou a `telasMax: 1`, e os 5 continuam
+ * valendo só enquanto `MONETIZACAO_ATIVA` estiver desligada. Os dois números
+ * respondem a perguntas diferentes agora, e por isso não são mais o mesmo campo.
  */
 export const TELAS_SIMULTANEAS_HOJE = 5;
 
 /**
  * O plano de quem não tem assinatura ativa.
  *
- * **Estes valores são uma fotografia do comportamento atual do Obaflix, não a
- * matriz comercial.** Hoje toda conta autenticada tem acesso integral, sem
- * anúncio, com download, em qualquer resolução, na TV inteira, limitada apenas
- * a 5 streams simultâneos. É isso que está escrito abaixo, campo a campo.
+ * **Deixou de ser a fotografia do comportamento atual e virou o degrau mais
+ * baixo da matriz comercial**, por decisão aprovada junto de Basic, Plus e
+ * Premium. Antes reproduzia o que toda conta tem hoje — 5 telas, download, 4K,
+ * TV integral, sem anúncio — porque a Fase 1 não podia mudar o comportamento de
+ * ninguém. Agora precisa ficar **abaixo** do Basic pago, ou vender Basic seria
+ * oferecer menos por dinheiro do que a conta já tem de graça.
  *
- * A razão é a regra da Fase 1: a migration não pode mudar o comportamento de
- * ninguém. Restringir o gratuito — ligar anúncio, cortar download, baixar
- * `telasMax` — é a edição da **linha no banco**, depois, quando a decisão
- * comercial estiver tomada e a camada de autorização existir. Não é um deploy,
- * e não é aqui.
+ * ## Editar esta constante NÃO muda produção
  *
- * Editar esta constante depois disso **não** muda produção, e é assim de
- * propósito: o seed cria se faltar e nunca sobrescreve
- * ([semearPlanoPadrao]). Esta constante é o valor de partida da linha, e para
- * de ter efeito no instante em que a linha nasce.
+ * E isto é o ponto mais importante deste bloco. O seed **cria se faltar e nunca
+ * sobrescreve** (ver `semearPlano`), e a linha `gratuito` já existe no banco com
+ * os valores antigos. Esta constante é o valor de partida de uma linha que
+ * nasce; para uma linha que já nasceu, ela é documentação.
+ *
+ * Quem aplica a decisão à linha existente é `scripts/ajustar-plano-gratuito.ts`,
+ * um comando separado, explícito e com dry-run por padrão. Separado de propósito:
+ * misturar um caminho de sobrescrita dentro do seed destruiria a garantia que
+ * faz o seed ser seguro de rodar.
+ *
+ * ## O que muda para quem já usa, e quando
+ *
+ * **Nada muda enquanto `MONETIZACAO_ATIVA` estiver desligada.** Os três pontos
+ * que leem direitos — `autorizarCatalogo`, `limiteDeTelas` e
+ * `direitosDoCliente` — retornam o comportamento antigo *antes* de consultar o
+ * banco. Trocar esta linha com a flag off não altera uma única tela, download ou
+ * reprodução. O efeito chega no instante em que a flag for ligada, e aí é
+ * imediato para toda conta sem assinatura ativa.
  */
 export const PLANO_GRATUITO: PlanoSemeado = {
   id: "gratuito",
@@ -93,35 +110,38 @@ export const PLANO_GRATUITO: PlanoSemeado = {
   ativo: true,
   ehPadrao: true,
 
-  // Hoje ninguém vê anúncio. Ligar isto é decisão comercial, não migration.
-  anunciosObrigatorios: false,
-  // Sem anúncio, não há o que contar.
+  // Ligado por decisão comercial. **Sem enforcement hoje**: nenhuma rota lê este
+  // campo, e a interface não simula anúncio nenhum. É intenção registrada, que
+  // passa a valer quando a fase de anúncios existir. Ver `direitosAplicados.ts`.
+  anunciosObrigatorios: true,
+  // O `N` da regra de séries entra junto da fase de anúncios; até lá, null.
   episodiosPorAnuncio: null,
-  // Irrelevante enquanto `anunciosObrigatorios` for false; fica no default do
-  // banco para não parecer que 24 h significa alguma coisa hoje.
   janelaAnuncioHoras: 24,
 
+  // O gratuito continua vendo o catálogo. A diferenciação comercial está em
+  // telas, download, canais e qualidade — não em cortar filmes e séries.
   filmes: true,
   series: true,
 
-  // Canais ainda não existem no produto. "nenhum" não tira nada de ninguém.
+  // Igual ao Basic: canal nenhum. Quem tem canal é Plus e Premium.
   canaisNivel: "nenhum",
 
-  // Electron e Android já baixam hoje.
-  downloads: true,
+  // Abaixo do Basic exigiria "menos que nenhum"; aqui os dois empatam, e a
+  // diferença entre gratuito e Basic fica em telas e qualidade.
+  downloads: false,
 
-  // Precisa bater com MAX_CONCURRENT. Semear 1 faria toda conta cair de 5 para
-  // 1 stream no dia em que a autorização passar a ler este campo.
-  telasMax: TELAS_SIMULTANEAS_HOJE,
+  // Uma tela. **Aplicado de verdade** assim que a flag ligar — é o campo desta
+  // linha com o efeito mais visível para quem usa hoje.
+  telasMax: 1,
 
-  // Perfis não existem no schema.
+  // Perfis não existem no schema (D-5).
   perfisMax: 1,
 
-  // Não há limitação de resolução hoje.
-  resolucaoMax: "4k",
+  // SD. **Sem enforcement hoje**: nenhuma rota limita qualidade.
+  resolucaoMax: "sd",
 
-  // A TV é integral hoje.
-  tvNivel: "completo",
+  // TV limitada. **Sem enforcement hoje**: nenhuma rota lê `tvNivel`.
+  tvNivel: "limitado",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +406,64 @@ export async function semearPlanosComerciais(
 // Inversão comercial — o plano padrão não pode valer mais que um plano pago
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Converte uma linha crua de `Plano` no formato que `inversoesDeDireito` compara.
+ *
+ * Devolve `null` quando a linha não tem a forma esperada — coluna faltando, tipo
+ * errado, domínio fora da escala. Nesse caso quem chama **não** deve concluir
+ * "sem inversão": não conseguir ler o plano padrão é motivo para parar, não para
+ * liberar.
+ */
+export function planoDaLinhaCrua(
+  linha: Record<string, unknown> | null,
+): ({ id: string } & DireitosDoPlano) | null {
+  if (!linha) return null;
+
+  const texto = (v: unknown) => (typeof v === "string" ? v : null);
+  const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+  const inteiro = (v: unknown) => (typeof v === "number" && Number.isInteger(v) ? v : null);
+
+  const id = texto(linha.id);
+  const canaisNivel = texto(linha.canaisNivel);
+  const resolucaoMax = texto(linha.resolucaoMax);
+  const tvNivel = texto(linha.tvNivel);
+  const telasMax = inteiro(linha.telasMax);
+  const perfisMax = inteiro(linha.perfisMax);
+  const janelaAnuncioHoras = inteiro(linha.janelaAnuncioHoras);
+  const filmes = bool(linha.filmes);
+  const series = bool(linha.series);
+  const downloads = bool(linha.downloads);
+  const anunciosObrigatorios = bool(linha.anunciosObrigatorios);
+
+  if (
+    id === null || canaisNivel === null || resolucaoMax === null || tvNivel === null ||
+    telasMax === null || perfisMax === null || janelaAnuncioHoras === null ||
+    filmes === null || series === null || downloads === null || anunciosObrigatorios === null
+  ) return null;
+
+  if (!(CANAIS_NIVEIS as readonly string[]).includes(canaisNivel)) return null;
+  if (!(RESOLUCOES as readonly string[]).includes(resolucaoMax)) return null;
+  if (!(TV_NIVEIS as readonly string[]).includes(tvNivel)) return null;
+
+  const episodiosPorAnuncio = linha.episodiosPorAnuncio;
+  if (episodiosPorAnuncio !== null && !Number.isInteger(episodiosPorAnuncio)) return null;
+
+  return {
+    id,
+    anunciosObrigatorios,
+    episodiosPorAnuncio: episodiosPorAnuncio as number | null,
+    janelaAnuncioHoras,
+    filmes,
+    series,
+    canaisNivel: canaisNivel as CanaisNivel,
+    downloads,
+    telasMax,
+    perfisMax,
+    resolucaoMax: resolucaoMax as Resolucao,
+    tvNivel: tvNivel as TvNivel,
+  };
+}
+
 /** Um direito em que o plano padrão entrega mais do que um plano pago. */
 export interface InversaoDeDireito {
   planoPago: string;
@@ -421,7 +499,17 @@ const ORDEM_CANAIS: readonly CanaisNivel[] = CANAIS_NIVEIS;
  * junto de `anunciosObrigatorios`, que já é comparado.
  */
 export function inversoesDeDireito(
-  padrao: PlanoSemeado,
+  /**
+   * O plano padrão **como ele está**, não como a constante o descreve.
+   *
+   * Aceita qualquer coisa com id e direitos justamente para receber a linha do
+   * banco. Passar `PLANO_GRATUITO` aqui seria a armadilha central desta trava:
+   * a constante é editada num commit, a linha só muda quando alguém roda o
+   * script de ajuste, e comparar a constante deixaria a trava se levantar
+   * enquanto produção continua invertida — um verde falso, exatamente no ponto
+   * em que o verde importa.
+   */
+  padrao: { id: string } & DireitosDoPlano,
   comerciais: readonly PlanoSemeado[] = PLANOS_COMERCIAIS,
 ): InversaoDeDireito[] {
   const saida: InversaoDeDireito[] = [];

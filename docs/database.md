@@ -390,17 +390,26 @@ cada um.
 |---|---|---|---|---|
 | `ehPadrao` | **sim** | não | não | não |
 | `filmes` / `series` | sim | sim | sim | sim |
-| `anunciosObrigatorios` | não | não | não | não |
+| `anunciosObrigatorios` | **sim** | não | não | não |
 | `canaisNivel` | `nenhum` | `nenhum` | `plus` | `premium` |
-| `downloads` | sim | **não** | sim | sim |
-| `telasMax` | 5 | 2 | 2 | 2 |
+| `downloads` | não | não | sim | sim |
+| `telasMax` | **1** | 2 | 2 | 2 |
 | `perfisMax` | 1 | 1 | 1 | 1 |
-| `resolucaoMax` | `4k` | `hd` | `hd` | `4k` |
-| `tvNivel` | `completo` | `completo` | `completo` | `completo` |
+| `resolucaoMax` | `sd` | `hd` | `hd` | `4k` |
+| `tvNivel` | `limitado` | `completo` | `completo` | `completo` |
 
-`gratuito` **não é o degrau mais baixo da matriz** — é a fotografia do
-comportamento atual, e por isso aparece acima de `basic` em telas, downloads e
-resolução. Restringi-lo é o interruptor comercial real, com fluxo próprio.
+`gratuito` é o **degrau mais baixo** da matriz: fica abaixo ou igual ao `basic`
+em todo direito, e `inversoesDeDireito(PLANO_GRATUITO)` devolve vazio. Ele era a
+fotografia do comportamento atual até a matriz ser aprovada; agora precisa ficar
+abaixo do Basic pago, senão vender Basic seria oferecer menos por dinheiro do que
+a conta já tem de graça.
+
+> **A constante e a linha do banco são coisas diferentes.** O seed **cria se
+> faltar e nunca sobrescreve**, e a linha `gratuito` já existe em produção com os
+> valores antigos (5 telas, download, 4K). Editar `PLANO_GRATUITO` **não muda
+> produção** — quem aplica à linha existente é
+> `npm run planos:gratuito:apply` (`scripts/ajustar-plano-gratuito.ts`), um
+> comando separado, com dry-run por padrão.
 
 **Os três comerciais nascem sem `PlanoPreco`**, logo não são compráveis:
 `resolverPreco` recusa com `preco_inexistente`. É o estado pretendido enquanto os
@@ -420,10 +429,13 @@ Gravados sem consumidor: `resolucaoMax`, `tvNivel`, `perfisMax`,
 a seção 5.1 de `docs/monetizacao-arquitetura.md`, inclusive para a ressalva sobre
 `downloads` ser decisão de servidor obedecida no cliente.
 
-**Semear a matriz está bloqueado.** O `gratuito` entrega mais que o Basic pago
-(5 telas, download, 4K contra 2, nenhum, HD), e `seed:planos:apply` recusa
-enquanto isso for verdade. A trava se levanta sozinha quando os direitos do
-gratuito forem ajustados. Ver o bloco de bloqueador na seção 5 da arquitetura.
+**Semear a matriz está bloqueado enquanto a LINHA do banco estiver invertida.**
+A trava compara `inversoesDeDireito` contra a linha real de `gratuito`, lida pelo
+`planoDaLinhaCrua` — **não** contra a constante. A distinção é o ponto: a
+constante já está com os valores aprovados, a linha ainda não, e comparar a
+constante faria a trava se levantar enquanto produção continuasse invertida.
+Ordem correta: `planos:gratuito:apply` primeiro, `seed:planos:apply` depois. Ver
+o bloco de bloqueador na seção 5 da arquitetura.
 
 ### Seed dos planos
 

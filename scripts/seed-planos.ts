@@ -41,6 +41,7 @@ import {
   PLANOS_COMERCIAIS,
   diferencas,
   inversoesDeDireito,
+  planoDaLinhaCrua,
   semearPlanoPadrao,
   semearPlanosComerciais,
   type PlanoSemeado,
@@ -118,13 +119,33 @@ async function main() {
   //
   // O dry-run continua mostrando tudo: ver o que seria criado não depende de a
   // matriz estar coerente, e é justamente o que ajuda a decidir.
-  const inversoes = inversoesDeDireito(PLANO_GRATUITO);
+  // **A linha do banco, não a constante.** A constante muda num commit; a linha
+  // só muda quando alguém roda `planos:gratuito:apply`. Comparar a constante
+  // deixaria a trava se levantar assim que o código fosse editado, enquanto
+  // produção continuasse invertida — verde falso no único ponto em que o verde
+  // importa. Quando a linha ainda não existe, a constante é o que ela vai ser.
+  const linhaPadrao = await repositorio.buscar(PLANO_GRATUITO.id);
+  const padraoReal = linhaPadrao ? planoDaLinhaCrua(linhaPadrao) : PLANO_GRATUITO;
+
+  if (!padraoReal) {
+    console.log(
+      "\n── PARADA ────────────────────────────────────────────────\n" +
+      'A linha "gratuito" existe mas não pôde ser interpretada (coluna faltando,\n' +
+      "tipo errado ou valor fora do domínio). Não dá para afirmar que não há\n" +
+      "inversão sem conseguir ler o plano padrão, e não conseguir ler não é\n" +
+      "motivo para liberar.\n",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const inversoes = inversoesDeDireito(padraoReal);
   if (inversoes.length) {
     console.log("\n── BLOQUEADOR COMERCIAL ──────────────────────────────────");
     console.log("O plano padrão entrega MAIS que um plano pago nestes direitos:\n");
     for (const i of inversoes) {
       console.log(
-        `  ${i.planoPago.padEnd(8)} ${i.campo.padEnd(22)} gratuito=${String(i.noPadrao).padEnd(8)} ${i.planoPago}=${String(i.noPago)}`,
+        `  ${i.planoPago.padEnd(8)} ${i.campo.padEnd(22)} gratuito(banco)=${String(i.noPadrao).padEnd(8)} ${i.planoPago}=${String(i.noPago)}`,
       );
     }
     console.log(

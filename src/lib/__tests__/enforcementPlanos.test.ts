@@ -8,7 +8,13 @@ import {
   direitosDoCliente,
   limiteDeTelas,
 } from "../playbackAuthorization";
-import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PREMIUM, inversoesDeDireito } from "../planos";
+import {
+  PLANO_BASIC,
+  PLANO_GRATUITO,
+  PLANO_PREMIUM,
+  inversoesDeDireito,
+  planoDaLinhaCrua,
+} from "../planos";
 import type { Entitlements } from "../entitlements";
 import type { DireitosDoPlano, PlanoSemeado } from "../planos";
 
@@ -82,12 +88,22 @@ describe("limiteDeTelas", () => {
     assert.equal(r.situacao === "definido" && r.via, "direito");
   });
 
-  test("o gratuito continua com cinco, mesmo com a flag ligada", async () => {
+  /**
+   * O efeito mais visível da matriz aprovada: com a flag ligada, quem não assina
+   * cai de 5 para 1 stream simultâneo. Com a flag desligada continua em 5 (teste
+   * acima) — é a diferença entre a decisão estar gravada e estar valendo.
+   */
+  test("o gratuito aprovado dá UMA tela quando a flag liga", async () => {
     const { resolver } = resolverFalso(entitlementsDe(PLANO_GRATUITO));
 
     const r = await limiteDeTelas("u1", { ativa: true, resolver });
 
-    assert.equal(r.situacao === "definido" && r.limite, 5);
+    assert.equal(r.situacao === "definido" && r.limite, 1);
+    assert.notEqual(
+      r.situacao === "definido" && r.limite,
+      TELAS_SEM_ENFORCEMENT,
+      "ligar a flag precisa mudar o limite — senão o enforcement não existe",
+    );
   });
 
   /** Fail-closed: não saber quantas telas a conta tem não pode virar "cinco". */
@@ -262,65 +278,137 @@ describe("a rota /fontes devolve o direito, e o player obedece", () => {
 
 // ── Bloqueador comercial ─────────────────────────────────────────────────────
 
+// ── Bloqueador comercial ─────────────────────────────────────────────────────
+
+/**
+ * O `gratuito` **como a linha de produção está hoje**, antes do ajuste
+ * aprovado: 5 telas, download liberado, 4K, TV integral, sem anúncio.
+ *
+ * Fica escrito aqui, e não lido de `PLANO_GRATUITO`, porque a constante já foi
+ * atualizada para os valores aprovados. Os dois estados coexistem de verdade —
+ * o código diz um, o banco diz outro, e só o script de ajuste reconcilia. É
+ * exatamente essa distância que a trava precisa enxergar.
+ */
+const GRATUITO_NO_BANCO = {
+  ...PLANO_GRATUITO,
+  anunciosObrigatorios: false,
+  downloads: true,
+  telasMax: 5,
+  resolucaoMax: "4k" as const,
+  tvNivel: "completo" as const,
+};
+
 describe("inversoesDeDireito: o gratuito não pode valer mais que um plano pago", () => {
   /**
-   * O estado de hoje, e a razão do bloqueador: o gratuito entrega 5 telas,
-   * download e 4K; o Basic pago entrega 2, sem download, em HD.
+   * O estado que motivou a trava: a linha em produção supera o Basic pago em
+   * três direitos, o Plus em dois e o Premium em um.
    */
-  test("a matriz atual TEM inversão, e ela é detectada", () => {
-    const inv = inversoesDeDireito(PLANO_GRATUITO);
-    assert.ok(inv.length > 0, "a inversão de hoje precisa ser detectada");
+  test("o gratuito de produção TEM inversão, e ela é detectada", () => {
+    const inv = inversoesDeDireito(GRATUITO_NO_BANCO);
+    assert.ok(inv.length > 0, "a inversão da linha atual precisa ser detectada");
 
     const doBasic = inv.filter((i) => i.planoPago === "basic").map((i) => i.campo).sort();
     assert.deepEqual(doBasic, ["downloads", "resolucaoMax", "telasMax"]);
   });
 
-  test("premium só é superado em telas — o resto já é coerente", () => {
-    const doPremium = inversoesDeDireito(PLANO_GRATUITO)
+  test("premium só é superado em telas — o resto já era coerente", () => {
+    const doPremium = inversoesDeDireito(GRATUITO_NO_BANCO)
       .filter((i) => i.planoPago === "premium")
       .map((i) => i.campo);
     assert.deepEqual(doPremium, ["telasMax"]);
   });
 
-  /** A trava precisa se levantar sozinha quando o gratuito for ajustado. */
-  test("um gratuito restringido zera as inversões", () => {
-    const restringido: PlanoSemeado = {
-      ...PLANO_GRATUITO,
-      telasMax: 1,
-      downloads: false,
-      resolucaoMax: "hd",
-      canaisNivel: "nenhum",
-      tvNivel: "limitado",
-    };
-
-    assert.deepEqual(inversoesDeDireito(restringido), []);
+  /**
+   * O outro lado da trava, e a razão de ela se levantar sozinha: os valores
+   * aprovados zeram as inversões. Quando a linha do banco receber estes valores,
+   * `seed:planos:apply` passa a ser permitido sem que ninguém edite a trava.
+   */
+  test("os valores APROVADOS zeram as inversões", () => {
+    assert.deepEqual(inversoesDeDireito(PLANO_GRATUITO), []);
   });
 
   test("compara pela escala, não pela string", () => {
-    const comQuatroK: PlanoSemeado = { ...PLANO_GRATUITO, telasMax: 1, downloads: false };
-    const inv = inversoesDeDireito(comQuatroK, [{ ...PLANO_BASIC, resolucaoMax: "sd" }]);
+    const base = { ...PLANO_GRATUITO, resolucaoMax: "4k" as const };
+    const inv = inversoesDeDireito(base, [{ ...PLANO_BASIC, resolucaoMax: "sd" }]);
     assert.deepEqual(inv.map((i) => i.campo), ["resolucaoMax"]);
   });
 
   /** `anunciosObrigatorios` é o campo invertido: `false` entrega mais. */
   test("anúncio obrigatório num plano pago conta como inversão", () => {
-    const pago: PlanoSemeado = {
-      ...PLANO_BASIC,
-      telasMax: 5,
-      downloads: true,
-      resolucaoMax: "4k",
-      anunciosObrigatorios: true,
-    };
+    const pago: PlanoSemeado = { ...PLANO_BASIC, anunciosObrigatorios: true };
+    const padraoSemAnuncio = { ...PLANO_GRATUITO, anunciosObrigatorios: false };
 
-    const inv = inversoesDeDireito(PLANO_GRATUITO, [pago]);
+    const inv = inversoesDeDireito(padraoSemAnuncio, [pago]);
     assert.deepEqual(inv.map((i) => i.campo), ["anunciosObrigatorios"]);
   });
 
-  test("o seed recusa --apply enquanto houver inversão", () => {
-    const script = readFileSync(join(raiz, "scripts/seed-planos.ts"), "utf8");
-    // Sem comentário de linha NEM de bloco: o cabeçalho do script cita `--force`
-    // exatamente para dizer que ele não existe, e leria como se existisse.
-    const codigo = script
+  /**
+   * O gratuito aprovado exige anúncio e o Basic não — essa direção está certa e
+   * **não** é inversão. O teste existe porque é fácil errar o sinal do campo.
+   */
+  test("gratuito com anúncio e pago sem anúncio NÃO é inversão", () => {
+    const inv = inversoesDeDireito(PLANO_GRATUITO).filter(
+      (i) => i.campo === "anunciosObrigatorios",
+    );
+    assert.deepEqual(inv, []);
+  });
+});
+
+describe("planoDaLinhaCrua: a trava lê o banco, não a constante", () => {
+  /**
+   * A armadilha que este par de funções existe para evitar: editar a constante
+   * num commit e a trava se levantar, enquanto a linha de produção continua
+   * invertida. Verde falso no único ponto em que o verde importa.
+   */
+  test("uma linha crua vira o formato comparável", () => {
+    const lido = planoDaLinhaCrua({ ...GRATUITO_NO_BANCO, criadoEm: new Date() });
+    assert.ok(lido);
+    assert.equal(lido?.telasMax, 5);
+    assert.equal(lido?.downloads, true);
+  });
+
+  test("a linha crua de produção ainda acusa inversão, mesmo com a constante já ajustada", () => {
+    const lido = planoDaLinhaCrua(GRATUITO_NO_BANCO);
+    assert.ok(lido);
+    assert.ok(
+      inversoesDeDireito(lido!).length > 0,
+      "a trava precisa continuar fechada enquanto o banco não for ajustado",
+    );
+    // E a constante, no mesmo instante, já está limpa. As duas coisas convivem.
+    assert.deepEqual(inversoesDeDireito(PLANO_GRATUITO), []);
+  });
+
+  const invalidas: [string, Record<string, unknown> | null][] = [
+    ["null", null],
+    ["sem id", { ...GRATUITO_NO_BANCO, id: undefined }],
+    ["telasMax não inteiro", { ...GRATUITO_NO_BANCO, telasMax: 2.5 }],
+    ["telasMax string", { ...GRATUITO_NO_BANCO, telasMax: "5" }],
+    ["downloads ausente", { ...GRATUITO_NO_BANCO, downloads: undefined }],
+    ["canaisNivel fora do domínio", { ...GRATUITO_NO_BANCO, canaisNivel: "ouro" }],
+    ["resolucaoMax fora do domínio", { ...GRATUITO_NO_BANCO, resolucaoMax: "8k" }],
+    ["tvNivel fora do domínio", { ...GRATUITO_NO_BANCO, tvNivel: "parcial" }],
+  ];
+
+  for (const [nome, linha] of invalidas) {
+    /**
+     * Devolver `null` importa: quem chama não pode concluir "sem inversão" a
+     * partir de uma linha que não conseguiu ler. Não conseguir ler o plano
+     * padrão é motivo para parar, não para liberar.
+     */
+    test(`recusa: ${nome}`, () => {
+      assert.equal(planoDaLinhaCrua(linha), null);
+    });
+  }
+
+  test("episodiosPorAnuncio nulo é válido; texto não é", () => {
+    assert.ok(planoDaLinhaCrua({ ...GRATUITO_NO_BANCO, episodiosPorAnuncio: null }));
+    assert.equal(planoDaLinhaCrua({ ...GRATUITO_NO_BANCO, episodiosPorAnuncio: "3" }), null);
+  });
+});
+
+describe("o seed e o script de ajuste, como código", () => {
+  const semComentarios = (arquivo: string) =>
+    readFileSync(join(raiz, arquivo), "utf8")
       .split("\n")
       .filter((l) => {
         const t = l.trimStart();
@@ -328,9 +416,51 @@ describe("inversoesDeDireito: o gratuito não pode valer mais que um plano pago"
       })
       .join("\n");
 
-    assert.ok(codigo.includes("inversoesDeDireito(PLANO_GRATUITO)"));
-    assert.match(codigo, /if \(aplicar\)[\s\S]{0,200}RECUSADO/);
-    // Sem escotilha de fuga, pelo mesmo motivo de não existir `--force`.
-    assert.equal(/--ignorar|--forcar|--force/.test(codigo), false);
+  const seed = semComentarios("scripts/seed-planos.ts");
+  const ajuste = semComentarios("scripts/ajustar-plano-gratuito.ts");
+
+  test("o seed compara a LINHA DO BANCO, não a constante", () => {
+    assert.ok(seed.includes("planoDaLinhaCrua(linhaPadrao)"));
+    assert.ok(seed.includes("inversoesDeDireito(padraoReal)"));
+    assert.equal(
+      seed.includes("inversoesDeDireito(PLANO_GRATUITO)"),
+      false,
+      "comparar a constante deixaria a trava se levantar antes de o banco mudar",
+    );
+  });
+
+  test("o seed recusa --apply enquanto houver inversão", () => {
+    assert.match(seed, /if \(aplicar\)[\s\S]{0,200}RECUSADO/);
+    assert.equal(/--ignorar|--forcar|--force/.test(seed), false);
+  });
+
+  test("linha ilegível para o seed, em vez de liberar", () => {
+    assert.ok(seed.includes("if (!padraoReal)"));
+    assert.match(seed, /PARADA[\s\S]{0,600}exitCode = 1/);
+  });
+
+  /**
+   * O seed nunca sobrescreve — é o que o torna seguro de rodar. Então a
+   * sobrescrita mora num script com nome próprio, e é lá que o `update` existe.
+   */
+  test("o seed não atualiza plano; o script de ajuste atualiza só o gratuito", () => {
+    assert.equal(/plano\.update|plano\.upsert/.test(seed), false);
+
+    const updates = ajuste.match(/prisma\.\w+\.(update|upsert|create|delete)\w*/g) ?? [];
+    assert.deepEqual(updates, ["prisma.plano.update"], "uma escrita, e só em Plano");
+    assert.ok(ajuste.includes('where: { id: PLANO_GRATUITO.id }'));
+  });
+
+  test("o ajuste exige --apply e recusa se sobrar inversão", () => {
+    assert.ok(ajuste.includes('process.argv.includes("--apply")'));
+    assert.match(ajuste, /RECUSADO/);
+    assert.ok(ajuste.includes("inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS })"));
+  });
+
+  /** Não toca em ehPadrao: mudar isso poderia deixar o sistema sem plano padrão. */
+  test("o ajuste não mexe em ehPadrao, ativo, Assinatura nem Canal", () => {
+    for (const proibido of ["ehPadrao:", "ativo:", "assinatura.update", "assinatura.create", "canal."]) {
+      assert.equal(ajuste.includes(proibido), false, `${proibido} não pertence ao ajuste`);
+    }
   });
 });
