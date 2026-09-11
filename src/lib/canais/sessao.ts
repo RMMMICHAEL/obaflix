@@ -133,6 +133,13 @@ export const VIDA_MAXIMA_DA_SESSAO_S = 2 * 3600;
  */
 export const TTL_BASE_S = 6 * 3600;
 
+/** Lock curto que protege uma única rotação da sessão no Redis. */
+export const TTL_LOCK_DE_RENOVACAO_S = 5;
+
+export function chaveDoLockDeRenovacao(sessionId: string): string {
+  return `canal:sessao:lock:${sessionId}`;
+}
+
 // ── Chave e assinatura (o mesmo dos dois lados) ──────────────────────────────
 
 function derivarChave(semanaN: number): Buffer {
@@ -335,34 +342,71 @@ export async function renovarSessaoDeCanal(entrada: {
   sessionId: string;
 }): Promise<Concessao | null> {
   const { userId, canalId, sessionId } = entrada;
-  const sessao = await lerSessao(sessionId);
-  if (!sessao) return null;
-  if (sessao.canalId !== canalId) return null;
+  const confereDonoECanal = (sessao: SessaoDeCanal | null): sessao is SessaoDeCanal =>
+    !!sessao &&
+    sessao.canalId === canalId &&
+    // Sem comparação em tempo constante de propósito: `sub` não é segredo, é
+    // derivado de um id que o dono já conhece.
+    sessao.sub === derivarSub(userId) &&
+    Date.now() < sessao.expiraDefinitivamenteEm;
 
-  // Sem comparação em tempo constante de propósito: `sub` não é segredo, é
-  // derivado de um id que o dono já conhece. O que ele impede é renovar a
-  // sessão de outra conta com um `sessionId` capturado.
-  if (sessao.sub !== derivarSub(userId)) return null;
+  // A geração observada antes de disputar o lock é importante: se outra
+  // requisição concluir a rotação antes de nós adquirirmos o lock, esta deixa
+  // de ser uma renovação nova e apenas devolve a concessão vigente. Sem essa
+  // guarda, quem espera o lock poderia rotacionar N+1 em seguida para N+2.
+  const observada = await lerSessao(sessionId);
+  if (!confereDonoECanal(observada)) return null;
 
-  const agora = Date.now();
-  if (agora >= sessao.expiraDefinitivamenteEm) return null;
+  const redis = getRedis();
+  const tokenDoLock = crypto.randomBytes(24).toString("base64url");
+  const chaveDoLock = chaveDoLockDeRenovacao(sessionId);
+  let adquiriu = await redis.set(chaveDoLock, tokenDoLock, { nx: true, ex: TTL_LOCK_DE_RENOVACAO_S });
 
-  // Geração nova, e a anterior entra em grace. Sem a grace, as URLs que o
-  // player está usando neste exato instante parariam de conferir.
-  const nonce = crypto.randomBytes(8).toString("base64url");
-  const renovada: SessaoDeCanal = {
-    ...sessao,
-    // Monotônico: é o que deixa o cliente ordenar duas respostas concorrentes.
-    geracao: (sessao.geracao ?? 0) + 1,
-    nonce,
-    noncePrevio: sessao.nonce,
-    graceAte: agora + GRACE_HANDOFF_S * 1000,
-    expiraEm: agora + TTL_SESSAO_S * 1000,
-  };
+  // Numa disputa normal, o vencedor termina em poucos milissegundos. Esperar
+  // uma vez evita devolver a geração antiga enquanto ele ainda está gravando;
+  // se ele morrer, o lock com TTL continua sendo a recuperação definitiva.
+  if (adquiriu !== "OK") {
+    await new Promise<void>((resolve) => setTimeout(resolve, 15));
+    adquiriu = await redis.set(chaveDoLock, tokenDoLock, { nx: true, ex: TTL_LOCK_DE_RENOVACAO_S });
+  }
 
-  await getRedis().set(chaveDaSessao(sessionId), JSON.stringify(renovada), { ex: TTL_SESSAO_S });
+  if (adquiriu !== "OK") {
+    // O vencedor pode ainda estar dentro da seção crítica. A concessão lida
+    // aqui é corrente neste instante e, se a rotação terminar logo depois,
+    // continua aceita durante a grace; portanto nunca devolvemos algo que
+    // morra imediatamente.
+    const vigente = await lerSessao(sessionId);
+    if (!confereDonoECanal(vigente)) return null;
+    return assinarMaster(sessionId, vigente.nonce, vigente.geracao, Date.now());
+  }
 
-  return assinarMaster(sessionId, nonce, renovada.geracao, agora);
+  try {
+    // Releia após adquirir: a sessão pode ter sido renovada entre a primeira
+    // leitura e o SET NX, inclusive por alguém cujo lock acabou de expirar.
+    const sessao = await lerSessao(sessionId);
+    if (!confereDonoECanal(sessao)) return null;
+    if (sessao.geracao !== observada.geracao) {
+      return assinarMaster(sessionId, sessao.nonce, sessao.geracao, Date.now());
+    }
+
+    const agora = Date.now();
+    const nonce = crypto.randomBytes(8).toString("base64url");
+    const renovada: SessaoDeCanal = {
+      ...sessao,
+      geracao: sessao.geracao + 1,
+      nonce,
+      noncePrevio: sessao.nonce,
+      graceAte: agora + GRACE_HANDOFF_S * 1000,
+      expiraEm: agora + TTL_SESSAO_S * 1000,
+    };
+
+    await redis.set(chaveDaSessao(sessionId), JSON.stringify(renovada), { ex: TTL_SESSAO_S });
+    return assinarMaster(sessionId, nonce, renovada.geracao, agora);
+  } finally {
+    // Nunca trocar isto por GET + DEL: se o TTL vencer, uma liberação atrasada
+    // poderia apagar o lock já pertencente a outra requisição.
+    await redis.compareAndDelete(chaveDoLock, tokenDoLock);
+  }
 }
 
 export async function lerSessao(sessionId: string): Promise<SessaoDeCanal | null> {

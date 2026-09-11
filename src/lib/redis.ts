@@ -32,6 +32,14 @@ export interface RedisClient {
   set(key: string, value: string | number, opts?: { ex?: number; nx?: boolean }): Promise<"OK" | null>;
   get(key: string): Promise<string | null>;
   del(key: string): Promise<number>;
+  /**
+   * Apaga `key` somente se ela ainda pertencer a `expectedValue`.
+   *
+   * Esta operação é atômica. É necessária para soltar locks com TTL: um
+   * `get` seguido de `del` poderia apagar um lock que expirou e já foi
+   * adquirido por outra requisição entre os dois comandos.
+   */
+  compareAndDelete(key: string, expectedValue: string): Promise<number>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   ttl(key: string): Promise<number>;
@@ -69,6 +77,17 @@ class MemoryStore implements RedisClient {
 
   async del(key: string): Promise<number> {
     return this.kv.delete(key) ? 1 : 0;
+  }
+
+  async compareAndDelete(key: string, expectedValue: string): Promise<number> {
+    const entry = this.kv.get(key);
+    if (!entry || this.isExpired(entry)) {
+      this.kv.delete(key);
+      return 0;
+    }
+    if (entry.value !== expectedValue) return 0;
+    this.kv.delete(key);
+    return 1;
   }
 
   async incr(key: string): Promise<number> {
@@ -163,6 +182,13 @@ function buildUpstashClient(): RedisClient | null {
       return typeof valor === "string" ? valor : JSON.stringify(valor);
     },
     del: (key) => client.del(key),
+    async compareAndDelete(key, expectedValue) {
+      return await client.eval<[string], number>(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        [key],
+        [expectedValue],
+      );
+    },
     incr: (key) => client.incr(key),
     expire: (key, seconds) => client.expire(key, seconds),
     async zadd(key, score, member) {

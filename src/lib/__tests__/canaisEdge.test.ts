@@ -28,6 +28,7 @@ import {
   renovarSessaoDeCanal,
   encerrarSessao,
   lerSessao,
+  assinaturaConfere,
   GRACE_HANDOFF_S,
 } from "../canais/sessao";
 import { chaveDaBase, chaveDaSessao } from "../canais/assinatura";
@@ -536,15 +537,15 @@ test("quatro gerações: só a corrente e a anterior são aceitas", async (t) =>
   }
 });
 
-test("renovações concorrentes produzem gerações monotônicas e distintas", async () => {
+test("renovações concorrentes fazem uma só rotação e devolvem a concessão vigente", async () => {
   __limparCachesDeBase();
   const amb = montarAmbiente();
   try {
     const A = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-c", fonte: FONTE });
+    const tetoAbsoluto = (await lerSessao(A.sessionId))!.expiraDefinitivamenteEm;
 
-    // Três renovações disparadas juntas contra a MESMA sessão. O servidor não
-    // serializa nada — é o cliente que faz single-flight —, então aqui o que se
-    // exige é que nenhuma geração se repita e que todas subam a partir de 0.
+    // Três renovações disparadas juntas contra a MESMA sessão. O lock no
+    // servidor precisa fazer uma só rotação; as perdedoras reutilizam N+1.
     const resultados = await Promise.all([
       renovarSessaoDeCanal({ userId: "dono", canalId: "canal-c", sessionId: A.sessionId }),
       renovarSessaoDeCanal({ userId: "dono", canalId: "canal-c", sessionId: A.sessionId }),
@@ -553,18 +554,22 @@ test("renovações concorrentes produzem gerações monotônicas e distintas", a
 
     for (const r of resultados) {
       assert.ok(r, "nenhuma renovação legítima pode falhar");
-      assert.ok(r.geracao > A.geracao, "toda geração tem de ser maior que a inicial");
+      assert.equal(r.geracao, A.geracao + 1, "todas recebem a única geração renovada");
     }
 
-    // O cliente escolhe a maior; a guarda monotônica dele é quem garante que
-    // uma resposta atrasada não derrube a mais nova (ver canaisHandoff.test.ts).
-    const maior = Math.max(...resultados.map((r) => r!.geracao));
     const sessao = await lerSessao(A.sessionId);
     assert.ok(sessao);
-    assert.ok(
-      sessao.geracao >= maior,
-      "a sessão gravada não pode ficar atrás da maior geração emitida",
-    );
+    assert.equal(sessao.geracao, A.geracao + 1, "a geração final sobe uma vez");
+    assert.equal(sessao.expiraDefinitivamenteEm, tetoAbsoluto, "a renovação não move o teto absoluto");
+    for (const concessao of resultados) {
+      assert.ok(
+        assinaturaConfere({
+          escopo: "m", sessionId: A.sessionId, nonce: sessao.nonce,
+          recurso: "master", exp: concessao!.exp,
+        }, concessao!.sig),
+        "nenhuma resposta concorrente fica inválida imediatamente",
+      );
+    }
   } finally {
     amb.restaurar();
   }

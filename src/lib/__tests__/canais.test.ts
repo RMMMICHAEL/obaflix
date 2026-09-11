@@ -46,8 +46,11 @@ import {
   derivarSub,
   lerSessao,
   renovarSessaoDeCanal,
+  chaveDoLockDeRenovacao,
+  TTL_LOCK_DE_RENOVACAO_S,
   TTL_GRANT_S,
 } from "../canais/sessao";
+import { getRedis } from "../redis";
 import { createPlayCanalHandler, type CanalDoBanco } from "../../app/api/canais/[id]/play/route";
 import { createCanaisCatalogoHandler } from "../../app/api/canais/route";
 
@@ -661,6 +664,28 @@ test("o teto absoluto não se move com renovação", async () => {
   // O grant entregue ao cliente é curto — é o que força a volta ao backend.
   assert.equal(c.validoPorSegundos, TTL_GRANT_S);
   assert.ok(TTL_GRANT_S <= 10 * 60, "grant longo demais para ser reautorização");
+});
+
+test("lock expirado recupera o renew e unlock atrasado não apaga novo dono", async () => {
+  const c = await criarSessaoDeCanal({ userId: "dono", canalId: "canal-lock", fonte: FONTE });
+  const redis = getRedis();
+  const lock = chaveDoLockDeRenovacao(c.sessionId);
+
+  // Requisição A "morre" depois de adquirir: não há release, só o TTL.
+  assert.equal(await redis.set(lock, "token-da-a", { nx: true, ex: 1 }), "OK");
+  await new Promise((resolve) => setTimeout(resolve, 1_050));
+
+  const recuperada = await renovarSessaoDeCanal({
+    userId: "dono", canalId: "canal-lock", sessionId: c.sessionId,
+  });
+  assert.ok(recuperada, "depois do TTL uma nova requisição consegue renovar");
+  assert.equal(recuperada.geracao, 1);
+
+  // B já é dono de um lock novo. O unlock atrasado de A não pode apagá-lo.
+  assert.equal(await redis.set(lock, "token-da-b", { nx: true, ex: TTL_LOCK_DE_RENOVACAO_S }), "OK");
+  assert.equal(await redis.compareAndDelete(lock, "token-da-a"), 0);
+  assert.equal(await redis.get(lock), "token-da-b");
+  await redis.compareAndDelete(lock, "token-da-b");
 });
 
 // ── 7. HLS: o upstream não sobrevive à reescrita ─────────────────────────────
