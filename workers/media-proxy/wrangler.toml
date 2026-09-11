@@ -10,20 +10,14 @@ compatibility_date = "2026-08-30"
 # qualquer site que descobrisse uma URL assinada.
 APP_ORIGIN = "https://obaflix.vercel.app"
 
-# Sufixos de host que o Worker aceita como alvo. Manter curto e revisar quando
-# um provedor trocar de CDN — host que não está aqui é recusado mesmo com
-# assinatura válida.
-CDN_ALLOWLIST = ""
+# CDN_ALLOWLIST, CANAIS_PLAYER_ALLOWLIST e CANAIS_MEDIA_BASE vivem somente na
+# configuração remota do Worker. Publique sempre com `wrangler deploy --keep-vars`.
 
 # Sufixos permitidos para a PÁGINA que arma o grant de canal. Lista própria, e
 # não a de CDN: são papéis diferentes, com hosts diferentes. Juntá-las daria a um
 # host de CDN comprometido o direito de ser buscado como página de arm.
 # Vazia recusa o arm — nunca o libera.
-CANAIS_PLAYER_ALLOWLIST = ""
-
 # Base pública deste Worker. O mesmo valor de CANAIS_MEDIA_BASE no backend.
-CANAIS_MEDIA_BASE = ""
-
 # ASSINATURA_SECRET NÃO vai aqui. É o CANAIS_MEDIA_SIGNING_SECRET do backend —
 # um segredo próprio, criado só para isto, e NÃO o NEXTAUTH_SECRET: este Worker
 # roda em infra de terceiro, e um vazamento aqui não pode alcançar a assinatura
