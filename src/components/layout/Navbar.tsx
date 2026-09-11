@@ -16,6 +16,17 @@ const NAV_LINKS = [
   { href: "/melhores", label: "Melhores" },
 ];
 
+/**
+ * Canais ao vivo existem **só dentro dos aplicativos**.
+ *
+ * Esta navbar é compartilhada entre o site público e o renderer do Electron, e
+ * é por isso que a entrada não está em `NAV_LINKS`: acrescentá-la ali a
+ * publicaria no site, que é justamente o produto que esta fase não cria. A
+ * rota `/canais` continua exigindo sessão e entitlement de qualquer forma —
+ * esconder o link é decisão de produto, não a proteção.
+ */
+const LINK_DE_CANAIS = { href: "/canais", label: "Canais" };
+
 export function Navbar() {
   const { data: session } = useSession();
   const router = useRouter();
@@ -28,6 +39,18 @@ export function Navbar() {
   // Mesmo contexto que o AndroidShell consulta: em modo app esta navbar sai da
   // árvore, em vez de ficar renderizada e apenas escondida por CSS.
   const appMode = useAppMode();
+
+  // `isDesktop` vem do preload do Electron (`contextBridge`), então só é
+  // verdade no aplicativo. Num `useEffect` porque no SSR não existe `window`, e
+  // ler no primeiro render deixaria o HTML do servidor diferente do cliente.
+  const [noAplicativo, setNoAplicativo] = useState(false);
+  useEffect(() => {
+    setNoAplicativo(
+      (window as { obaflixDesktop?: { isDesktop?: boolean } }).obaflixDesktop?.isDesktop === true,
+    );
+  }, []);
+
+  const links = noAplicativo ? [...NAV_LINKS, LINK_DE_CANAIS] : NAV_LINKS;
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
@@ -57,7 +80,7 @@ export function Navbar() {
 
         {/* Desktop nav links */}
         <div className="hidden md:flex items-center gap-1 flex-1">
-          {NAV_LINKS.map(({ href, label }) => {
+          {links.map(({ href, label }) => {
             const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
             return (
               <Link
@@ -149,7 +172,7 @@ export function Navbar() {
       {/* Mobile menu */}
       {menuOpen && (
         <div className="md:hidden bg-zinc-950 border-t border-zinc-800 px-4 py-4 flex flex-col gap-1 text-sm">
-          {NAV_LINKS.map(({ href, label }) => {
+          {links.map(({ href, label }) => {
             const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
             return (
               <Link
