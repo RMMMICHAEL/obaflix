@@ -387,26 +387,72 @@ Observações:
 - **Os três comerciais nascem sem preço**, e portanto não compráveis:
   `resolverPreco` recusa com `preco_inexistente` antes de tocar o provedor. Os
   valores entram quando estiverem fechados.
-- `telasMax = 2` nos três é decisão comercial, **não** limite em vigor — ver
-  5.1.
+
+> ### ⚠ Bloqueador para `seed:planos:apply`
+>
+> **O gratuito hoje entrega mais que o Basic pago**: 5 telas contra 2, download
+> contra nenhum, 4K contra HD. Criar as linhas nesse estado colocaria à venda um
+> plano pior do que a conta já tem de graça.
+>
+> `npm run seed:planos:apply` **recusa** enquanto a inversão existir —
+> `inversoesDeDireito` (`src/lib/planos.ts`) a detecta e o script sai com código
+> 1 sem gravar nada. O dry-run continua mostrando tudo, porque é o que ajuda a
+> decidir. **Não há flag para pular**, pelo mesmo motivo de não existir
+> `--force` ali.
+>
+> A trava **se levanta sozinha**: no dia em que os direitos do `gratuito` forem
+> restringidos por decisão comercial, a inversão deixa de existir e o apply
+> passa. Restringir o gratuito não é feito por este script nem por esta matriz —
+> é o interruptor comercial real, e tem fluxo próprio.
+>
+> As seis inversões de hoje: `basic` em `telasMax`, `downloads` e
+> `resolucaoMax`; `plus` em `telasMax` e `resolucaoMax`; `premium` em
+> `telasMax`.
 
 ### 5.1 O que desta matriz o backend aplica hoje
 
 A distinção importa: um direito gravado e não aplicado é promessa de vitrine,
-não trava.
+não trava. **A fonte de verdade desta tabela é
+`src/lib/direitosAplicados.ts`** — um registro em código, lido por
+`src/lib/__tests__/direitosAplicados.test.ts`, que falha quando um direito novo
+fica sem classificação, quando uma entrada vira órfã, ou quando algo marcado
+`aplicado` aponta para um arquivo que não menciona o campo. Documentação
+envelhece em silêncio; o registro não.
 
 | Direito | Estado | Onde |
 |---|---|---|
 | `filmes` / `series` | **aplicado** | `POST /api/player/fontes` via `playbackAuthorization.ts`, atrás de `MONETIZACAO_ATIVA` |
-| `canaisNivel` | **aplicado** | `src/lib/canais/acesso.ts`, consumido por `/api/canais` e `/api/canais/[id]/play`, comparado com `Canal.nivelMinimo`. Ainda fora de `main` |
-| `telasMax` | gravado, **não aplicado** | o limite real é `MAX_CONCURRENT = 5` em `src/lib/playTokens.ts` |
-| `downloads` | gravado, **não aplicado** | o botão do `CustomPlayer` aparece por existir ponte de desktop, não por direito |
+| `telasMax` | **aplicado** | `limiteDeTelas` resolve o teto; `registerStream` (`playTokens.ts`) conta contra ele. Enforcement de servidor puro |
+| `downloads` | **aplicado** | `direitosDoCliente` decide, `/api/player/fontes` devolve, `CustomPlayer` obedece. Ver a ressalva abaixo |
+| `canaisNivel` | gravado, **não aplicado em `main`** | a camada existe (`src/lib/canais/acesso.ts`) mas vive em `feat/canais-todas-plataformas` |
 | `resolucaoMax` | gravado, **não aplicado** | nenhuma rota limita qualidade |
-| `tvNivel` / `perfisMax` / `anunciosObrigatorios` | gravados, **não aplicados** | — |
+| `tvNivel` / `perfisMax` / `anunciosObrigatorios` / `episodiosPorAnuncio` / `janelaAnuncioHoras` | gravados, **não aplicados** | — |
 
-Substituir `MAX_CONCURRENT` por `telasMax` é o pendente de maior efeito prático:
-enquanto não acontecer, Basic, Plus e Premium têm as mesmas 5 telas simultâneas
-que todo mundo.
+**`telasMax`.** `MAX_CONCURRENT` deixou de ser *o* limite e virou o *default*:
+com `MONETIZACAO_ATIVA` desligada, `limiteDeTelas` devolve os mesmos 5 **sem
+consultar nada**, e o comportamento fica idêntico ao anterior — nenhuma conta
+perde tela por causa desta mudança. Com a flag ligada, o teto sai de
+`Plano.telasMax`. Falha ao resolver vira 503 (`entitlements_indisponiveis`),
+distinto do 429 de limite atingido: são situações diferentes e pedem ações
+diferentes de quem está assistindo. É enforcement real — a contagem vive no
+sorted set do Redis e o cliente não participa da decisão.
+
+**`downloads` — decisão de servidor obedecida no cliente, e não uma fronteira
+criptográfica.** Isto precisa estar escrito porque a diferença é real: no
+Electron a extração é nativa (o app fala com o provedor pelo IP residencial do
+usuário) e o download vai do app **direto ao CDN**. Nosso servidor não está em
+nenhuma das duas pontas e não tem onde negar depois. O que ele faz é decidir
+antes — `/api/player/fontes` devolve `direitos.downloads`, e o player só oferece
+e só executa quando vem `true`, com checagem na UI e de novo na ação. Um cliente
+modificado ainda consegue salvar o que já está reproduzindo; quem tem a mídia
+tocando tem os bytes, e isso vale para qualquer serviço sem DRM. Fechar mais
+exigiria gatear o IPC em `desktop/electron/main.js` (e publicar EXE novo), o que
+sobe o custo do contorno sem eliminá-lo. Mesmo critério que o projeto já aplica a
+ofuscação e detecção de DevTools: dissuasão declarada, não proteção principal.
+
+Android não baixa mídia (não há caminho de download no app), e a Web também não
+— o botão exige a ponte de desktop. Então o gate acima cobre o único ambiente
+onde a função existe.
 
 ### 5.2 Canais: a escada, e o que Basic significa
 

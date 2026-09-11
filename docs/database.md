@@ -411,11 +411,19 @@ valores comerciais não estiverem fechados.
 não alcança canal algum, nem os marcados `gratuito`; `plus` não alcança
 `premium`; `premium` alcança os três.
 
-**Nem todo direito da tabela é aplicado hoje.** `filmes`/`series` e `canaisNivel`
-são; `telasMax`, `downloads`, `resolucaoMax`, `tvNivel`, `perfisMax` e
-`anunciosObrigatorios` ficam gravados e sem consumidor. O limite real de telas
-continua sendo `MAX_CONCURRENT = 5` em `src/lib/playTokens.ts`. Ver a seção 5.1
-de `docs/monetizacao-arquitetura.md`.
+**Nem todo direito da tabela é aplicado hoje**, e a classificação vive em
+`src/lib/direitosAplicados.ts` — registro em código, com teste que impede a
+marcação de envelhecer. Aplicados: `filmes`, `series`, `telasMax` e `downloads`.
+Gravados sem consumidor: `resolucaoMax`, `tvNivel`, `perfisMax`,
+`anunciosObrigatorios`, `episodiosPorAnuncio`, `janelaAnuncioHoras` — e
+`canaisNivel`, cuja camada de aplicação existe mas ainda não está em `main`. Ver
+a seção 5.1 de `docs/monetizacao-arquitetura.md`, inclusive para a ressalva sobre
+`downloads` ser decisão de servidor obedecida no cliente.
+
+**Semear a matriz está bloqueado.** O `gratuito` entrega mais que o Basic pago
+(5 telas, download, 4K contra 2, nenhum, HD), e `seed:planos:apply` recusa
+enquanto isso for verdade. A trava se levanta sozinha quando os direitos do
+gratuito forem ajustados. Ver o bloco de bloqueador na seção 5 da arquitetura.
 
 ### Seed dos planos
 

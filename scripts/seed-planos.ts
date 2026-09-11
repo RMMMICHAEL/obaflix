@@ -40,6 +40,7 @@ import {
   PLANO_GRATUITO,
   PLANOS_COMERCIAIS,
   diferencas,
+  inversoesDeDireito,
   semearPlanoPadrao,
   semearPlanosComerciais,
   type PlanoSemeado,
@@ -102,6 +103,42 @@ async function main() {
   if (faltando === 0) {
     console.log("\nNada a fazer: os quatro planos já existem.\n");
     return;
+  }
+
+  // ── Bloqueador comercial ──────────────────────────────────────────────────
+  //
+  // O gratuito atual entrega 5 telas, download e 4K; o Basic pago entrega 2
+  // telas, sem download, em HD. Criar as linhas nesse estado colocaria à venda
+  // um plano pior do que a conta já tem de graça.
+  //
+  // O script recusa o `--apply` enquanto a inversão existir. **A trava se levanta
+  // sozinha**: no dia em que o gratuito for restringido por decisão comercial,
+  // `inversoesDeDireito` devolve vazio e o apply passa. Não há flag para pular,
+  // pelo mesmo motivo de não existir `--force` aqui.
+  //
+  // O dry-run continua mostrando tudo: ver o que seria criado não depende de a
+  // matriz estar coerente, e é justamente o que ajuda a decidir.
+  const inversoes = inversoesDeDireito(PLANO_GRATUITO);
+  if (inversoes.length) {
+    console.log("\n── BLOQUEADOR COMERCIAL ──────────────────────────────────");
+    console.log("O plano padrão entrega MAIS que um plano pago nestes direitos:\n");
+    for (const i of inversoes) {
+      console.log(
+        `  ${i.planoPago.padEnd(8)} ${i.campo.padEnd(22)} gratuito=${String(i.noPadrao).padEnd(8)} ${i.planoPago}=${String(i.noPago)}`,
+      );
+    }
+    console.log(
+      "\nVender um plano pago pior do que o gratuito é decisão que ninguém tomou.\n" +
+      "Ajuste os direitos do plano `gratuito` no banco (decisão comercial, fluxo\n" +
+      "próprio) e rode de novo — esta trava se levanta sozinha quando a inversão\n" +
+      "deixar de existir.",
+    );
+    if (aplicar) {
+      console.log("\n--apply RECUSADO. Nada foi gravado.\n");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("\n(dry-run: a listagem acima continua valendo, mas --apply seria recusado)\n");
   }
 
   if (!aplicar) {

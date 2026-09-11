@@ -382,6 +382,81 @@ export async function semearPlanosComerciais(
   return saida;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Inversão comercial — o plano padrão não pode valer mais que um plano pago
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Um direito em que o plano padrão entrega mais do que um plano pago. */
+export interface InversaoDeDireito {
+  planoPago: string;
+  campo: keyof DireitosDoPlano;
+  noPadrao: unknown;
+  noPago: unknown;
+}
+
+/** A escala de `resolucaoMax`, do menor para o maior. Índice = quanto entrega. */
+const ORDEM_RESOLUCAO: readonly Resolucao[] = RESOLUCOES;
+/** Idem para `tvNivel` e `canaisNivel`. */
+const ORDEM_TV: readonly TvNivel[] = TV_NIVEIS;
+const ORDEM_CANAIS: readonly CanaisNivel[] = CANAIS_NIVEIS;
+
+/**
+ * Detecta onde o plano padrão entrega **mais** que um plano pago.
+ *
+ * Existe porque a matriz comercial e a fotografia do gratuito foram escritas em
+ * momentos diferentes, e hoje se contradizem: o gratuito dá 5 telas, download e
+ * 4K; o Basic pago dá 2 telas, sem download, em HD. Vender Basic nesse estado é
+ * oferecer menos por dinheiro do que a conta já tem de graça.
+ *
+ * Função pura e total. Compara só os direitos em que "mais" tem significado
+ * inequívoco:
+ *
+ *   - `telasMax` — número, mais é mais;
+ *   - `downloads` — `true` entrega mais que `false`;
+ *   - `resolucaoMax`, `tvNivel`, `canaisNivel` — escalas ordenadas;
+ *   - `anunciosObrigatorios` — **invertido**: `false` entrega mais.
+ *
+ * `perfisMax`, `episodiosPorAnuncio` e `janelaAnuncioHoras` ficam de fora:
+ * o primeiro está reservado e igual em todos, e os outros dois só fazem sentido
+ * junto de `anunciosObrigatorios`, que já é comparado.
+ */
+export function inversoesDeDireito(
+  padrao: PlanoSemeado,
+  comerciais: readonly PlanoSemeado[] = PLANOS_COMERCIAIS,
+): InversaoDeDireito[] {
+  const saida: InversaoDeDireito[] = [];
+
+  const registrar = (
+    planoPago: string,
+    campo: keyof DireitosDoPlano,
+    noPadrao: unknown,
+    noPago: unknown,
+  ) => saida.push({ planoPago, campo, noPadrao, noPago });
+
+  for (const pago of comerciais) {
+    if (padrao.telasMax > pago.telasMax) {
+      registrar(pago.id, "telasMax", padrao.telasMax, pago.telasMax);
+    }
+    if (padrao.downloads && !pago.downloads) {
+      registrar(pago.id, "downloads", padrao.downloads, pago.downloads);
+    }
+    if (!padrao.anunciosObrigatorios && pago.anunciosObrigatorios) {
+      registrar(pago.id, "anunciosObrigatorios", padrao.anunciosObrigatorios, pago.anunciosObrigatorios);
+    }
+    if (ORDEM_RESOLUCAO.indexOf(padrao.resolucaoMax) > ORDEM_RESOLUCAO.indexOf(pago.resolucaoMax)) {
+      registrar(pago.id, "resolucaoMax", padrao.resolucaoMax, pago.resolucaoMax);
+    }
+    if (ORDEM_TV.indexOf(padrao.tvNivel) > ORDEM_TV.indexOf(pago.tvNivel)) {
+      registrar(pago.id, "tvNivel", padrao.tvNivel, pago.tvNivel);
+    }
+    if (ORDEM_CANAIS.indexOf(padrao.canaisNivel) > ORDEM_CANAIS.indexOf(pago.canaisNivel)) {
+      registrar(pago.id, "canaisNivel", padrao.canaisNivel, pago.canaisNivel);
+    }
+  }
+
+  return saida;
+}
+
 /**
  * Os direitos da linha existente que diferem da fotografia.
  *

@@ -15,6 +15,7 @@ import {
   recordAbuseAttempt,
 } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import { limiteDeTelas } from "@/lib/playbackAuthorization";
 import {
   resolverFonte, acrescentarFontes, projetarPublica, type FontePublica,
 } from "@/lib/fontes";
@@ -1425,6 +1426,28 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // ── Telas simultâneas (matriz comercial) ────────────────────────────────
+    //
+    // O teto sai do plano, e não mais de uma constante. Resolvido aqui, no
+    // último instante antes de reservar o slot, para não gastar a consulta numa
+    // extração que ainda pode falhar.
+    //
+    // Com MONETIZACAO_ATIVA desligada, `limiteDeTelas` devolve o valor de
+    // sempre sem consultar nada — mesmo caminho, mesmo custo e mesmo resultado
+    // de antes desta mudança.
+    //
+    // `indeterminado` é fail-closed: não saber quantas telas a conta tem não
+    // pode virar "cinco". Vira 503, distinto do 429 de limite atingido, porque
+    // as duas coisas pedem ações diferentes de quem está assistindo.
+    const telas = await limiteDeTelas(userId);
+    if (telas.situacao === "indeterminado") {
+      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/extract: telasMax" });
+      return NextResponse.json(
+        { error: "Serviço temporariamente indisponível", codigo: "entitlements_indisponiveis" },
+        { status: 503, headers: NO_STORE },
+      );
+    }
+
     const { token: streamToken, accepted } = await createStreamToken(
       userId,
       result.stream,
@@ -1432,6 +1455,7 @@ export async function GET(req: NextRequest) {
       ip,
       ua,
       result.manifest,
+      telas.limite,
     );
 
     if (!accepted) {
