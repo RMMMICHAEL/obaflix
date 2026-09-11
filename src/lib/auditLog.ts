@@ -48,6 +48,18 @@ export type AuditEvent =
   // do motivo bastam para investigar, e `pedidoId` é identificador nosso.
   | "billing_order_created"
   | "billing_order_failed"
+  // Canais ao vivo. Eventos próprios pelo mesmo motivo de todos os anteriores:
+  // `canal_resolucao_falhou` mede a saúde do provider e `canal_negado` mede
+  // recusa comercial. Somados a `stream_rejected`, que mede token, os três
+  // perderiam sentido — e é justamente `canal_resolucao_falhou` subindo sozinho
+  // que diz "o provider mudou", o alarme mais útil desta fase.
+  //
+  // **O que nunca entra no `detail` destes:** URL de mídia, host de CDN,
+  // `providerChannelId`, a página do player, ou o `sessionId` inteiro. O id do
+  // canal e o motivo bastam para investigar, e o id do canal é nosso.
+  | "canal_negado"
+  | "canal_sessao_criada"
+  | "canal_resolucao_falhou"
   | "billing_webhook_received"
   | "billing_payment_confirmed"
   | "billing_payment_review"
