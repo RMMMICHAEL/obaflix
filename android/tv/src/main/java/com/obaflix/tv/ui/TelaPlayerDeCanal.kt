@@ -1,0 +1,279 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
+package com.obaflix.tv.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import androidx.tv.material3.Text
+import com.obaflix.ObaflixApp
+import com.obaflix.tv.catalogo.ApiObaflix
+import com.obaflix.tv.catalogo.CanalTv
+import com.obaflix.tv.catalogo.Concessao
+import com.obaflix.tv.navegacao.Navegacao
+import com.obaflix.tv.player.HandoffDeCanal
+import com.obaflix.tv.player.PlayerDeMidia
+import com.obaflix.tv.player.TrocaDeFonte
+import com.obaflix.tv.sessao.SessaoTv
+import com.obaflix.tv.ui.componentes.focavel
+import kotlinx.coroutines.delay
+
+/**
+ * Reproducao de canal ao vivo.
+ *
+ * ## Por que nao e a `TelaPlayer`
+ *
+ * Aquela e a area mais sensivel do modulo: failover entre fontes, extracao,
+ * legendas, faixas de audio, gravacao de progresso e proximo episodio. Canal ao
+ * vivo nao tem nada disso — nao ha linha do tempo, nao ha de onde retomar e nao
+ * ha proximo. Encaixar canais la dentro significaria mexer no caminho de
+ * filmes e series para servir um caso que nao compartilha nenhuma regra com
+ * ele; e a regressao apareceria num filme, nao num canal.
+ *
+ * ## O que este composable conhece
+ *
+ * Uma URL de manifesto no dominio de midia do Obaflix, e so. Nao ve upstream,
+ * provedor, host de CDN nem Referer — o edge e quem fala com o provedor. A URL
+ * vive no estado da composicao e morre com ela: nada e gravado em disco.
+ *
+ * O unico cabecalho que sai daqui e o nosso `User-Agent`, o mesmo da sessao.
+ *
+ * ## A migracao entre concessoes e real
+ *
+ * O protocolo vive em `HandoffDeCanal`, testado a parte. Aqui esta a unica
+ * coisa que ele nao pode fazer sozinho: `trocarFonte` chama `setMediaItem` +
+ * `prepare` no ExoPlayer, para ele **passar a buscar** pela concessao nova.
+ *
+ * Guardar a URL numa variavel nao e migrar. Era o que a versao anterior fazia,
+ * e o resultado e 403 no meio da reproducao assim que a grace do servidor
+ * fecha. O corte da troca dura fracoes de segundo numa live, e acontece a cada
+ * ~3 min: e o preco de a concessao ser curta.
+ */
+@Composable
+fun TelaPlayerDeCanal(canal: CanalTv) {
+    val contexto = LocalContext.current
+
+    var recusa by remember { mutableStateOf<Concessao?>(null) }
+    var tocando by remember { mutableStateOf(false) }
+    var tentativa by remember { mutableStateOf(0) }
+
+    val player = remember(tentativa) {
+        // O mesmo OkHttp do resto do aplicativo: um pool de conexoes, um
+        // timeout, um lugar para ajustar. O `User-Agent` e o da sessao — o edge
+        // nao exige nenhum outro cabecalho, e cabecalho de provedor, se um dia
+        // for preciso, e injetado la e nao aqui.
+        val fabrica = OkHttpDataSource.Factory(ObaflixApp.httpClient)
+            .setUserAgent(SessaoTv.userAgent)
+        ExoPlayer.Builder(contexto)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(fabrica))
+            .build()
+            .apply { playWhenReady = true }
+    }
+
+    DisposableEffect(player) {
+        val ouvinte = object : Player.Listener {
+            override fun onPlayerError(erro: PlaybackException) {
+                // Falha fatal num canal ao vivo costuma ser a fonte caindo.
+                // Vira estado de erro com acao manual, e nao repeticao
+                // automatica: insistir sozinho contra um canal que saiu do ar
+                // vira tempestade no edge.
+                recusa = Concessao.FalhaTemporaria
+            }
+        }
+        player.addListener(ouvinte)
+        onDispose {
+            player.removeListener(ouvinte)
+            player.release()
+        }
+    }
+
+    /**
+     * A ponte entre `TrocaDeFonte` e o ExoPlayer.
+     *
+     * Fina de proposito: uma linha por membro. `TrocaDeFonte` tem a regra que
+     * importa — preservar a posicao na troca — e e testada em JVM; aqui so se
+     * liga a interface ao player real, que nao instancia fora do Android.
+     */
+    val troca = remember(player) {
+        TrocaDeFonte(object : PlayerDeMidia {
+            override val posicaoMs: Long get() = player.currentPosition
+            override val temItem: Boolean get() = player.mediaItemCount > 0
+
+            override fun definirFonte(url: String, manterPosicao: Boolean) {
+                val item = MediaItem.Builder()
+                    .setUri(url)
+                    // Declarado, e nao adivinhado pela extensao: a rota do edge
+                    // termina em `.m3u8`, mas depender disso amarraria o player
+                    // ao formato da URL.
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build()
+                // `resetPosition = !manterPosicao`. A sobrecarga de um argumento
+                // so reseta sempre — usa-la aqui faria cada renovacao reiniciar
+                // o conteudo.
+                player.setMediaItem(item, !manterPosicao)
+            }
+
+            override fun preparar() = player.prepare()
+        })
+    }
+
+    // ── Concessao, renovacao e migracao ──────────────────────────────────────
+    //
+    // Sair da tela cancela o LaunchedEffect, e o ciclo morre junto.
+    LaunchedEffect(canal.id, tentativa) {
+        recusa = null
+        tocando = false
+        HandoffDeCanal(
+            canalId = canal.id,
+            pedir = { id, sessionId -> ApiObaflix.concessaoDeCanal(id, sessionId) },
+            // AQUI o player migra de verdade, preservando a posicao.
+            trocarFonte = { url ->
+                troca.aplicar(url)
+                tocando = true
+            },
+            aoPerder = { motivo -> recusa = motivo },
+            esperar = { millis -> delay(millis) },
+        ).executar()
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (tocando) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        this.player = player
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    }
+                },
+            )
+        }
+
+        when (val c = recusa) {
+            null -> if (!tocando) Mensagem("Conectando…", "", null) {}
+
+            is Concessao.PrecisaDeUpgrade -> Mensagem(
+                titulo = "Canal não incluso no seu plano",
+                detalhe = c.nivelExigido?.let { "Este canal faz parte do plano $it." }
+                    ?: "Seu plano não inclui este canal.",
+                rotuloAcao = "Voltar",
+            ) { Navegacao.voltar() }
+
+            is Concessao.SemSessao -> Mensagem(
+                titulo = "Sessão expirada",
+                detalhe = "Faça o pareamento novamente para continuar.",
+                rotuloAcao = "Voltar",
+            ) { Navegacao.voltar() }
+
+            is Concessao.Indisponivel -> Mensagem(
+                titulo = "Canal indisponível",
+                detalhe = "Este canal não está no ar agora.",
+                rotuloAcao = "Voltar",
+            ) { Navegacao.voltar() }
+
+            is Concessao.FalhaTemporaria -> Mensagem(
+                titulo = "Não foi possível reproduzir",
+                detalhe = "A transmissão foi interrompida.",
+                rotuloAcao = "Tentar de novo",
+            ) { tentativa++ }
+
+            // `Liberado` nunca chega aqui: `aoPerder` so recebe recusa.
+            is Concessao.Liberado -> Unit
+        }
+
+        Text(
+            text = canal.nome + "   ·   AO VIVO",
+            color = Color(0xFFD4D4D8),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(32.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0x99000000))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/**
+ * Estado sem video: conectando, recusa ou falha.
+ *
+ * Sempre com um alvo focavel quando ha acao — numa televisao, uma tela sem nada
+ * focavel prende o cursor e deixa o BACK como unica saida.
+ */
+@Composable
+private fun Mensagem(
+    titulo: String,
+    detalhe: String,
+    rotuloAcao: String?,
+    aoAgir: () -> Unit,
+) {
+    val requisitor = remember { FocusRequester() }
+    LaunchedEffect(rotuloAcao) {
+        if (rotuloAcao != null) runCatching { requisitor.requestFocus() }
+    }
+
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(titulo, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            if (detalhe.isNotBlank()) {
+                Text(detalhe, color = Color(0xFF8A8A92), fontSize = 14.sp)
+            }
+            if (rotuloAcao != null) {
+                val interacao = remember { MutableInteractionSource() }
+                val focado by interacao.collectIsFocusedAsState()
+                Text(
+                    text = rotuloAcao,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .focusRequester(requisitor)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (focado) Color(0xFFDC2626) else Color(0xFF27272A))
+                        .focavel(interacao = interacao, aoClicar = aoAgir)
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                )
+            }
+        }
+    }
+}

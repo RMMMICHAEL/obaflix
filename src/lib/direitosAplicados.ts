@@ -87,14 +87,20 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
   },
 
   canaisNivel: {
-    estado: "nao_aplicado",
-    onde: "",
+    estado: "aplicado",
+    onde: "src/lib/canais/acesso.ts",
     nota:
-      "A camada que aplica existe (src/lib/canais/acesso.ts, consumida por " +
-      "/api/canais e /api/canais/[id]/play) mas vive na branch " +
-      "feat/canais-todas-plataformas e ainda não está em main. Enquanto não " +
-      "estiver, o valor é gravado e ninguém o lê. Promover a `aplicado` quando a " +
-      "branch entrar.",
+      "`nivelAlcanca` compara o nível da conta com `Canal.nivelMinimo` e " +
+      "`autorizarCanal` decide. Consumido por GET /api/canais — o catálogo só " +
+      "lista o que o nível alcança — e por /api/canais/[id]/play, que nega antes " +
+      "de resolver fonte. Enforcement de servidor real: o cliente não participa " +
+      "da decisão nem consegue contorná-la. " +
+      "**É o único direito que NÃO passa por MONETIZACAO_ATIVA**, e vale sempre. " +
+      "Não é descuido: canais nasceram monetizados, então nunca existiu um " +
+      "estado anterior de 'todo mundo tinha canal' a preservar, e a flag existe " +
+      "para não mudar comportamento estabelecido. Conta em `nenhum` recebe " +
+      "catálogo vazio — `listarCanais` sai antes da consulta, em vez de deixar " +
+      "um `IN ()` virar 'sem filtro'.",
   },
 
   resolucaoMax: {

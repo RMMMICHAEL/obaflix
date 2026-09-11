@@ -596,3 +596,85 @@ model EventoPagamento {
   @@index([pedidoId, recebidoEm])
   @@index([resultado, recebidoEm])
 }
+
+// ── Canais ao vivo ───────────────────────────────────────────────────────────
+
+/// Um canal ao vivo, na parte que pode ser vista por um cliente.
+///
+/// A separação em duas tabelas (`Canal` e `CanalFonte`) não é normalização por
+/// gosto: é a barreira que faz o vazamento da fonte privada exigir uma decisão
+/// explícita em vez de um esquecimento. A rota de catálogo consulta `Canal` e
+/// não tem como devolver `playerUrlTemplate` por acidente — a coluna não está
+/// no `select` porque não está na tabela.
+///
+/// Ver `src/lib/canais/catalogo.ts`, que é a única camada autorizada a projetar
+/// estas linhas para o cliente.
+model Canal {
+  id   String @id @default(cuid())
+  /// Identificador estável do canal na URL e no cliente. Opaco de propósito:
+  /// não carrega o id do provider (ver `CanalFonte.providerChannelId`).
+  slug String @unique
+
+  nome      String
+  categoria String
+  logoUrl   String?
+
+  /// Nível MÍNIMO de `canaisNivel` exigido para reproduzir.
+  /// "gratuito" | "plus" | "premium" — ordenado.
+  ///
+  /// **Três valores, e não os quatro de `Plano.canaisNivel`.** O nível de uma
+  /// conta inclui "nenhum" ("não tem direito a canal algum"); o nível mínimo de
+  /// um canal não, porque "canal que exige nenhum" não quer dizer nada — e
+  /// aceitá-lo fazia uma conta em "nenhum" alcançar o canal pela comparação de
+  /// índice. Ver `NIVEIS_MINIMOS_DE_CANAL` em `src/lib/canais/acesso.ts`.
+  ///
+  /// Default `premium` por decisão de política: um canal importado sem
+  /// curadoria é o mais restrito que existe, nunca o mais aberto. Import novo
+  /// não rebaixa nível, e nunca sobrescreve linha com `nivelRevisado = true`.
+  nivelMinimo String @default("premium")
+
+  /// `true` só depois de alguém decidir o nível na mão. O importador usa esta
+  /// coluna para saber o que ele não pode tocar.
+  nivelRevisado Boolean @default(false)
+
+  /// Fora do catálogo enquanto `false`. Import nasce desativado.
+  ativo Boolean @default(false)
+
+  /// Conteúdo adulto. Enquanto não existir perfil/PIN parental, uma linha com
+  /// `adulto = true` fica fora do catálogo mesmo com `ativo = true` — a
+  /// checagem é feita na consulta, não confiada ao importador.
+  adulto Boolean @default(false)
+
+  ordem Int @default(0)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  fonte CanalFonte?
+
+  @@index([ativo, adulto, categoria, ordem])
+}
+
+/// A fonte privada de um canal. **Nunca sai numa resposta de API.**
+///
+/// Não guarda `.m3u8`. A Fase A provou que a URL de mídia deste provider é
+/// permanente e sem assinatura: gravá-la seria criar, no nosso banco, o mesmo
+/// link eterno que estamos tentando não entregar. O que se guarda é como
+/// *chegar* nela — a página do player — e a resolução acontece a cada sessão.
+model CanalFonte {
+  canalId String @id
+  canal   Canal  @relation(fields: [canalId], references: [id], onDelete: Cascade)
+
+  /// Chave do provider em `src/lib/canais/providers.ts`. Nome interno, não o
+  /// domínio real.
+  provider String
+
+  /// O id do canal no provider. Sensível: é metade do que alguém precisa para
+  /// montar a URL do player sozinho.
+  providerChannelId String
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  @@index([provider])
+}

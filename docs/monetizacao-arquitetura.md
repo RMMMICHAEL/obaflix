@@ -445,9 +445,17 @@ envelhece em silêncio; o registro não.
 | `filmes` / `series` | **aplicado** | `POST /api/player/fontes` via `playbackAuthorization.ts`, atrás de `MONETIZACAO_ATIVA` |
 | `telasMax` | **aplicado** | `limiteDeTelas` resolve o teto; `registerStream` (`playTokens.ts`) conta contra ele. Enforcement de servidor puro |
 | `downloads` | **aplicado** | `direitosDoCliente` decide, `/api/player/fontes` devolve, `CustomPlayer` obedece. Ver a ressalva abaixo |
-| `canaisNivel` | gravado, **não aplicado em `main`** | a camada existe (`src/lib/canais/acesso.ts`) mas vive em `feat/canais-todas-plataformas` |
+| `canaisNivel` | **aplicado** | `src/lib/canais/acesso.ts`, consumido por `GET /api/canais` e `/api/canais/[id]/play`, comparado com `Canal.nivelMinimo`. **Único que não passa por `MONETIZACAO_ATIVA`** |
 | `resolucaoMax` | gravado, **não aplicado** | nenhuma rota limita qualidade |
 | `tvNivel` / `perfisMax` / `anunciosObrigatorios` / `episodiosPorAnuncio` / `janelaAnuncioHoras` | gravados, **não aplicados** | — |
+
+**`canaisNivel` vale sempre, com a flag ligada ou desligada.** É a única exceção
+da tabela, e é deliberada: a flag existe para não mudar comportamento
+estabelecido, e canais nasceram já monetizados — nunca houve um estado de "todo
+mundo tinha canal" a preservar. Uma conta em `nenhum` recebe catálogo **vazio**,
+porque `listarCanais` sai antes da consulta em vez de deixar um `IN ()` degenerar
+em "sem filtro". Consequência prática: ligar `MONETIZACAO_ATIVA` um dia não muda
+nada para canais, porque já está valendo.
 
 **`telasMax`.** `MAX_CONCURRENT` deixou de ser *o* limite e virou o *default*:
 com `MONETIZACAO_ATIVA` desligada, `limiteDeTelas` devolve os mesmos 5 **sem

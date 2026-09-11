@@ -3,10 +3,25 @@ import test from "node:test";
 import { ANDROID_NAV_ITEMS } from "@/components/layout/androidNav";
 import { paraHero, paraTrilha } from "@/lib/androidHome";
 
-test("a barra Android contém as seis seções solicitadas na ordem final", () => {
+/**
+ * A barra ganhou "Canais" como sétima entrada, e este teste foi atualizado de
+ * propósito junto com ela: a ordem é decisão de produto, e o teste existe para
+ * uma mudança nela ser sempre deliberada — nunca um efeito colateral.
+ *
+ * As seis originais continuam todas presentes e na mesma ordem relativa.
+ * Nenhuma seção foi removida para abrir espaço.
+ */
+test("a barra Android contém as sete seções na ordem final", () => {
   assert.deepEqual(ANDROID_NAV_ITEMS.map((item) => item.label), [
-    "Início", "Buscar", "Séries", "Filmes", "Animes", "Kids",
+    "Início", "Buscar", "Séries", "Filmes", "Canais", "Animes", "Kids",
   ]);
+});
+
+test("a barra Android não perdeu nenhuma das seis seções originais", () => {
+  const rotulos = ANDROID_NAV_ITEMS.map((item) => item.label);
+  for (const original of ["Início", "Buscar", "Séries", "Filmes", "Animes", "Kids"]) {
+    assert.ok(rotulos.includes(original), `sumiu a seção "${original}"`);
+  }
 });
 
 test("a home preserva logo de cards e todos os destaques com background", () => {

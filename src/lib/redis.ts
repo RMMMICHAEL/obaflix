@@ -32,6 +32,28 @@ export interface RedisClient {
   set(key: string, value: string | number, opts?: { ex?: number; nx?: boolean }): Promise<"OK" | null>;
   get(key: string): Promise<string | null>;
   del(key: string): Promise<number>;
+  /**
+   * Apaga `key` somente se ela ainda pertencer a `expectedValue`.
+   *
+   * Esta operação é atômica. É necessária para soltar locks com TTL: um
+   * `get` seguido de `del` poderia apagar um lock que expirou e já foi
+   * adquirido por outra requisição entre os dois comandos.
+   */
+  compareAndDelete(key: string, expectedValue: string): Promise<number>;
+  /**
+   * Persiste uma sessão somente enquanto o chamador ainda detém o lock e o
+   * estado persistido ainda é a geração que ele leu. As duas verificações e o
+   * SET formam uma única operação atômica.
+   */
+  compareLockAndSetSession(input: {
+    lockKey: string;
+    lockToken: string;
+    sessionKey: string;
+    expectedGeneration: number;
+    expectedNonce: string;
+    value: string;
+    ttlSeconds: number;
+  }): Promise<boolean>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   ttl(key: string): Promise<number>;
@@ -69,6 +91,38 @@ class MemoryStore implements RedisClient {
 
   async del(key: string): Promise<number> {
     return this.kv.delete(key) ? 1 : 0;
+  }
+
+  async compareAndDelete(key: string, expectedValue: string): Promise<number> {
+    const entry = this.kv.get(key);
+    if (!entry || this.isExpired(entry)) {
+      this.kv.delete(key);
+      return 0;
+    }
+    if (entry.value !== expectedValue) return 0;
+    this.kv.delete(key);
+    return 1;
+  }
+
+  async compareLockAndSetSession(input: {
+    lockKey: string; lockToken: string; sessionKey: string; expectedGeneration: number;
+    expectedNonce: string; value: string; ttlSeconds: number;
+  }): Promise<boolean> {
+    const lock = this.kv.get(input.lockKey);
+    if (!lock || this.isExpired(lock) || lock.value !== input.lockToken) return false;
+    const session = this.kv.get(input.sessionKey);
+    if (!session || this.isExpired(session)) return false;
+    try {
+      const atual = JSON.parse(session.value) as { geracao?: unknown; nonce?: unknown };
+      if (atual.geracao !== input.expectedGeneration || atual.nonce !== input.expectedNonce) return false;
+    } catch {
+      return false;
+    }
+    this.kv.set(input.sessionKey, {
+      value: input.value,
+      expiresAt: Date.now() + input.ttlSeconds * 1000,
+    });
+    return true;
   }
 
   async incr(key: string): Promise<number> {
@@ -163,6 +217,21 @@ function buildUpstashClient(): RedisClient | null {
       return typeof valor === "string" ? valor : JSON.stringify(valor);
     },
     del: (key) => client.del(key),
+    async compareAndDelete(key, expectedValue) {
+      return await client.eval<[string], number>(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        [key],
+        [expectedValue],
+      );
+    },
+    async compareLockAndSetSession(input) {
+      const result = await client.eval<[string, string, string, string, string], number>(
+        "local lock = redis.call('get', KEYS[1]); if lock ~= ARGV[1] then return 0 end; local raw = redis.call('get', KEYS[2]); if not raw then return 0 end; local ok, current = pcall(cjson.decode, raw); if not ok or current.geracao ~= tonumber(ARGV[2]) or current.nonce ~= ARGV[3] then return 0 end; redis.call('set', KEYS[2], ARGV[4], 'EX', ARGV[5]); return 1",
+        [input.lockKey, input.sessionKey],
+        [input.lockToken, String(input.expectedGeneration), input.expectedNonce, input.value, String(input.ttlSeconds)],
+      );
+      return result === 1;
+    },
     incr: (key) => client.incr(key),
     expire: (key, seconds) => client.expire(key, seconds),
     async zadd(key, score, member) {

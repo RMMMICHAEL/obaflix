@@ -422,12 +422,14 @@ não alcança canal algum, nem os marcados `gratuito`; `plus` não alcança
 
 **Nem todo direito da tabela é aplicado hoje**, e a classificação vive em
 `src/lib/direitosAplicados.ts` — registro em código, com teste que impede a
-marcação de envelhecer. Aplicados: `filmes`, `series`, `telasMax` e `downloads`.
-Gravados sem consumidor: `resolucaoMax`, `tvNivel`, `perfisMax`,
-`anunciosObrigatorios`, `episodiosPorAnuncio`, `janelaAnuncioHoras` — e
-`canaisNivel`, cuja camada de aplicação existe mas ainda não está em `main`. Ver
-a seção 5.1 de `docs/monetizacao-arquitetura.md`, inclusive para a ressalva sobre
-`downloads` ser decisão de servidor obedecida no cliente.
+marcação de envelhecer. Aplicados: `filmes`, `series`, `telasMax`, `downloads` e
+`canaisNivel`. Gravados sem consumidor: `resolucaoMax`, `tvNivel`, `perfisMax`,
+`anunciosObrigatorios`, `episodiosPorAnuncio`, `janelaAnuncioHoras`.
+
+`canaisNivel` é o único que **não** passa por `MONETIZACAO_ATIVA`: vale sempre, e
+uma conta em `nenhum` recebe catálogo de canais vazio. Ver a seção 5.1 de
+`docs/monetizacao-arquitetura.md`, inclusive para a ressalva sobre `downloads`
+ser decisão de servidor obedecida no cliente.
 
 **Semear a matriz está bloqueado enquanto a LINHA do banco estiver invertida.**
 A trava compara `inversoesDeDireito` contra a linha real de `gratuito`, lida pelo

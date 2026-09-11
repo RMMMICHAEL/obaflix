@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
+import com.obaflix.tv.catalogo.CanalTv
 import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.player.Pedido
 
@@ -21,6 +22,7 @@ enum class Aba(val rotulo: String) {
     Series("SÉRIES"),
     Animes("ANIMES"),
     Kids("KIDS"),
+    Canais("CANAIS"),
     Busca("BUSCAR"),
 }
 
@@ -43,6 +45,19 @@ sealed interface Camada {
 
     /** Reproducao em tela cheia. */
     data class Player(val pedido: Pedido) : Camada
+
+    /**
+     * Canal ao vivo em tela cheia.
+     *
+     * Camada propria, e nao `Player` com um `Pedido` fabricado: aquele carrega
+     * temporada, episodio, progresso e lista de episodios, e canal ao vivo nao
+     * tem nenhum dos quatro. Inventar um `Pedido` vazio faria o gravador de
+     * progresso e o proximo-episodio rodarem sobre dados falsos.
+     *
+     * Guarda o canal, nunca a URL: a concessao e pedida dentro da tela, ao
+     * entrar, e morre com ela.
+     */
+    data class PlayerDeCanal(val canal: CanalTv) : Camada
 
     /** Area de perfil: conta, favoritos, historico, continuar assistindo. */
     data object Perfil : Camada

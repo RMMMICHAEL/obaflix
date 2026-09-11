@@ -122,13 +122,29 @@ describe("o que esta entrega aplica, e o que deixou marcado", () => {
   });
 
   /**
-   * `canaisNivel` é o caso sutil: a camada que aplica existe e está escrita, mas
-   * na branch de canais. Em `main` o direito é gravado e ninguém lê, e o
-   * registro precisa dizer isso em vez de contar a intenção como realidade.
+   * `canaisNivel` era o caso sutil: a camada existia, escrita, mas fora de
+   * `main` — o direito era gravado e ninguém lia. Com a integração da branch de
+   * canais ela passou a existir aqui, e o registro acompanha.
+   *
+   * O teste de ponteiro acima é o que sustenta a promoção: `onde` precisa
+   * apontar para um arquivo que mencione o campo, então marcar `aplicado` sem
+   * enforcement de verdade falharia.
    */
-  test("canaisNivel está não-aplicado enquanto a branch de canais não entra", () => {
-    assert.equal(APLICACAO_DOS_DIREITOS.canaisNivel.estado, "nao_aplicado");
-    assert.match(APLICACAO_DOS_DIREITOS.canaisNivel.nota, /branch|main/i);
+  test("canaisNivel passou a ser aplicado pela camada de canais", () => {
+    assert.equal(APLICACAO_DOS_DIREITOS.canaisNivel.estado, "aplicado");
+    assert.equal(APLICACAO_DOS_DIREITOS.canaisNivel.onde, "src/lib/canais/acesso.ts");
+  });
+
+  /**
+   * A diferença que separa `canaisNivel` dos outros aplicados, e que vale estar
+   * travada: ele **não** passa por `MONETIZACAO_ATIVA`.
+   *
+   * Canais nasceram monetizados — nunca houve um estado de "todo mundo tinha
+   * canal" a preservar, que é a razão de a flag existir para os demais. Quem
+   * ligar a flag um dia não deve descobrir por acidente que canais já valia.
+   */
+  test("a nota registra que canais não passa pela flag", () => {
+    assert.match(APLICACAO_DOS_DIREITOS.canaisNivel.nota, /MONETIZACAO_ATIVA/);
   });
 
   test("a nota de downloads diz que não é fronteira criptográfica", () => {

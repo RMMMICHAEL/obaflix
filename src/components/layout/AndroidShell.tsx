@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
-import { Film, Home, Search, Smile, Sparkles, Tv, UserRound, X } from "lucide-react";
+import { Film, Home, Radio, Search, Smile, Sparkles, Tv, UserRound, X } from "lucide-react";
 import { isPlayerRoute, useAppMode } from "./AppMode";
 import { ANDROID_NAV_ITEMS, ROTA_CONTA, abaAtiva, mostrarBuscaNaTopbar, rotaDeBusca, type NomeIcone } from "./androidNav";
 
-const ICONES: Record<NomeIcone, typeof Home> = { home: Home, search: Search, film: Film, tv: Tv, sparkles: Sparkles, smile: Smile };
+const ICONES: Record<NomeIcone, typeof Home> = { home: Home, search: Search, film: Film, tv: Tv, sparkles: Sparkles, smile: Smile, radio: Radio };
 
 export function AndroidShell() {
   const pathname = usePathname();

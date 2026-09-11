@@ -1069,7 +1069,13 @@ function setupWebContents() {
     if (input.type !== "keyDown") return;
     if (input.key === "F11") { mainWindow.setFullScreen(!mainWindow.isFullScreen()); event.preventDefault(); }
     else if (input.key === "F5") { wc.reload(); event.preventDefault(); }
-    else if (input.key === "F12") { wc.openDevTools({ mode: "detach" }); event.preventDefault(); }
+    // F12 so abre o DevTools fora do pacote. No build empacotado ele fica
+    // fechado como reducao de analise casual — e **so isso**: quem controla a
+    // maquina ainda instrumenta o processo, e nenhuma protecao de canal depende
+    // disto. A protecao real e o servidor nao devolver o upstream: a URL de
+    // midia que o renderer conhece e a do nosso dominio, ja assinada e curta, e
+    // abrir o DevTools nao revela nada alem dela.
+    else if (input.key === "F12" && !app.isPackaged) { wc.openDevTools({ mode: "detach" }); event.preventDefault(); }
     // Ctrl+Shift+L abre a pasta de logs — é o que pedimos ao usuário quando algo falha.
     else if (input.key === "L" && input.control && input.shift) {
       const dir = log.getLogDir();
