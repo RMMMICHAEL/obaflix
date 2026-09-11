@@ -353,35 +353,171 @@ o custo no Supabase cresce.
 
 ---
 
-## 5. Matriz dos planos (para aprovação)
+## 5. Matriz dos planos — **aprovada (D-4)**
 
-Estrutura, não os planos definitivos. Nenhum preço do Webcine foi copiado.
+A matriz comercial real. Vive em `src/lib/planos.ts` (`PLANO_BASIC`,
+`PLANO_PLUS`, `PLANO_PREMIUM`, agrupados em `PLANOS_COMERCIAIS`) e é semeada por
+`npm run seed:planos:apply`. `src/lib/__tests__/matrizComercial.test.ts` trava
+cada valor.
 
-| Direito | Gratuito | Básico | Plus | Premium |
+| Direito | Gratuito | Basic | Plus | Premium |
 |---|---|---|---|---|
 | `anunciosObrigatorios` | **sim** | não | não | não |
 | `filmes` | sim | sim | sim | sim |
 | `series` | sim | sim | sim | sim |
-| `canaisNivel` | `gratuito` (com anúncio) | `nenhum` | `plus` | `premium` |
+| `canaisNivel` | `nenhum` | `nenhum` | `plus` | `premium` |
 | `downloads` | não | não | sim | sim |
-| `telasMax` | 1 | 2 | 2 | 4 |
-| `perfisMax` | 1 | 2 | 3 | 4 |
-| `resolucaoMax` | `hd` | `fhd` | `4k` | `4k` |
+| `telasMax` | **1** | 2 | 2 | 2 |
+| `perfisMax` | 1 | 1 | 1 | 1 |
+| `resolucaoMax` | `sd` | `hd` | `hd` | `4k` |
 | `tvNivel` | `limitado` | `completo` | `completo` | `completo` |
+| `ehPadrao` | **sim** | não | não | não |
+| `PlanoPreco` | — (não comprável) | **nenhum ainda** | **nenhum ainda** | **nenhum ainda** |
 
 Observações:
 
 - O plano **Gratuito é uma linha na tabela `Plano`**, não um caso especial no
   código. Usuário sem assinatura ativa resolve para o plano marcado
   `ehPadrao = true`. Isso elimina todos os `if (!assinatura)` espalhados.
-- Preços vivem em `PlanoPreco` (mensal / semestral / anual), como no exemplo
-  que você mandou — a flexibilidade é útil, os valores são seus.
+- **Gratuito é o degrau mais baixo da matriz**, e fica abaixo ou igual ao Basic
+  em todo direito. Era a fotografia do comportamento de hoje — 5 telas, download,
+  4K — até a matriz ser aprovada; manter aquilo faria o Basic pago valer menos
+  que a conta gratuita.
+- `anunciosObrigatorios: true`, `resolucaoMax: sd` e `tvNivel: limitado` no
+  gratuito são **intenção registrada sem enforcement**: nenhuma rota lê esses
+  três campos, e a interface **não simula** anúncio, degradação de qualidade nem
+  restrição de TV. Passam a valer quando as fases correspondentes existirem. Ver
+  5.1 e `src/lib/direitosAplicados.ts`.
+- **Os três comerciais nascem sem preço**, e portanto não compráveis:
+  `resolverPreco` recusa com `preco_inexistente` antes de tocar o provedor. Os
+  valores entram quando estiverem fechados.
 
-> **[D-4]** aprovar esta matriz, ou me dizer os direitos e níveis reais.
+> ### ⚠ Bloqueador para `seed:planos:apply`
+>
+> **A LINHA de `gratuito` no banco ainda entrega mais que o Basic pago**: 5 telas
+> contra 2, download contra nenhum, 4K contra HD. Criar as linhas comerciais
+> nesse estado colocaria à venda um plano pior do que a conta já tem de graça.
+>
+> A constante `PLANO_GRATUITO` **já está com os valores aprovados** — 1 tela, sem
+> download, `sd`, `limitado`, com anúncio. A linha do banco não, porque o seed
+> **nunca sobrescreve**. Os dois estados coexistem até alguém rodar o ajuste.
+>
+> Por isso a trava compara a **linha**, lida por `planoDaLinhaCrua`, e nunca a
+> constante: comparar a constante faria a trava se levantar no commit em que o
+> código mudou, enquanto produção continuasse invertida — verde falso no único
+> ponto em que o verde importa. Se a linha não puder ser interpretada, o script
+> **para**: não conseguir ler o plano padrão não é motivo para liberar.
+>
+> **A ordem correta é:**
+>
+> ```bash
+> npm run planos:gratuito        # dry-run do ajuste
+> npm run planos:gratuito:apply  # grava a decisão na linha existente
+> npm run seed:planos            # confirma zero inversões
+> npm run seed:planos:apply      # só então cria basic/plus/premium
+> ```
+>
+> `seed:planos:apply` **recusa** enquanto a inversão existir e sai com código 1
+> sem gravar nada. O dry-run continua mostrando tudo, porque é o que ajuda a
+> decidir. **Não há flag para pular**, pelo mesmo motivo de não existir `--force`
+> ali. A trava **se levanta sozinha** quando a linha for ajustada.
+>
+> As seis inversões da linha atual: `basic` em `telasMax`, `downloads` e
+> `resolucaoMax`; `plus` em `telasMax` e `resolucaoMax`; `premium` em
+> `telasMax`.
+>
+> **Ajustar o gratuito não muda nada enquanto `MONETIZACAO_ATIVA` estiver
+> desligada** — ver 5.1. O efeito chega quando a flag ligar, e aí é imediato para
+> toda conta sem assinatura ativa.
+
+### 5.1 O que desta matriz o backend aplica hoje
+
+A distinção importa: um direito gravado e não aplicado é promessa de vitrine,
+não trava. **A fonte de verdade desta tabela é
+`src/lib/direitosAplicados.ts`** — um registro em código, lido por
+`src/lib/__tests__/direitosAplicados.test.ts`, que falha quando um direito novo
+fica sem classificação, quando uma entrada vira órfã, ou quando algo marcado
+`aplicado` aponta para um arquivo que não menciona o campo. Documentação
+envelhece em silêncio; o registro não.
+
+| Direito | Estado | Onde |
+|---|---|---|
+| `filmes` / `series` | **aplicado** | `POST /api/player/fontes` via `playbackAuthorization.ts`, atrás de `MONETIZACAO_ATIVA` |
+| `telasMax` | **aplicado** | `limiteDeTelas` resolve o teto; `registerStream` (`playTokens.ts`) conta contra ele. Enforcement de servidor puro |
+| `downloads` | **aplicado** | `direitosDoCliente` decide, `/api/player/fontes` devolve, `CustomPlayer` obedece. Ver a ressalva abaixo |
+| `canaisNivel` | **aplicado** | `src/lib/canais/acesso.ts`, consumido por `GET /api/canais` e `/api/canais/[id]/play`, comparado com `Canal.nivelMinimo`. **Único que não passa por `MONETIZACAO_ATIVA`** |
+| `resolucaoMax` | gravado, **não aplicado** | nenhuma rota limita qualidade |
+| `tvNivel` / `perfisMax` / `anunciosObrigatorios` / `episodiosPorAnuncio` / `janelaAnuncioHoras` | gravados, **não aplicados** | — |
+
+**`canaisNivel` vale sempre, com a flag ligada ou desligada.** É a única exceção
+da tabela, e é deliberada: a flag existe para não mudar comportamento
+estabelecido, e canais nasceram já monetizados — nunca houve um estado de "todo
+mundo tinha canal" a preservar. Uma conta em `nenhum` recebe catálogo **vazio**,
+porque `listarCanais` sai antes da consulta em vez de deixar um `IN ()` degenerar
+em "sem filtro". Consequência prática: ligar `MONETIZACAO_ATIVA` um dia não muda
+nada para canais, porque já está valendo.
+
+**`telasMax`.** `MAX_CONCURRENT` deixou de ser *o* limite e virou o *default*:
+com `MONETIZACAO_ATIVA` desligada, `limiteDeTelas` devolve os mesmos 5 **sem
+consultar nada**, e o comportamento fica idêntico ao anterior — nenhuma conta
+perde tela por causa desta mudança. Com a flag ligada, o teto sai de
+`Plano.telasMax`. Falha ao resolver vira 503 (`entitlements_indisponiveis`),
+distinto do 429 de limite atingido: são situações diferentes e pedem ações
+diferentes de quem está assistindo. É enforcement real — a contagem vive no
+sorted set do Redis e o cliente não participa da decisão.
+
+**`downloads` — decisão de servidor obedecida no cliente, e não uma fronteira
+criptográfica.** Isto precisa estar escrito porque a diferença é real: no
+Electron a extração é nativa (o app fala com o provedor pelo IP residencial do
+usuário) e o download vai do app **direto ao CDN**. Nosso servidor não está em
+nenhuma das duas pontas e não tem onde negar depois. O que ele faz é decidir
+antes — `/api/player/fontes` devolve `direitos.downloads`, e o player só oferece
+e só executa quando vem `true`, com checagem na UI e de novo na ação. Um cliente
+modificado ainda consegue salvar o que já está reproduzindo; quem tem a mídia
+tocando tem os bytes, e isso vale para qualquer serviço sem DRM. Fechar mais
+exigiria gatear o IPC em `desktop/electron/main.js` (e publicar EXE novo), o que
+sobe o custo do contorno sem eliminá-lo. Mesmo critério que o projeto já aplica a
+ofuscação e detecção de DevTools: dissuasão declarada, não proteção principal.
+
+Android não baixa mídia (não há caminho de download no app), e a Web também não
+— o botão exige a ponte de desktop. Então o gate acima cobre o único ambiente
+onde a função existe.
+
+### 5.2 Canais: a escada, e o que Basic significa
+
+`canaisNivel` é ordenado — `nenhum < gratuito < plus < premium` — e a decisão
+**nunca** sai do nome ou da categoria do canal: quem decide é `Canal.nivelMinimo`,
+definido pela curadoria, canal a canal.
+
+- **Basic** recebe `nenhum` e não alcança canal algum, nem os marcados
+  `gratuito`. `nivelAlcanca` nega explicitamente antes de qualquer comparação de
+  índice — não é "o canal mais barato", é canal nenhum.
+- **Plus** alcança `gratuito` e `plus`. **Não** alcança `premium`.
+- **Premium** alcança os três. "Catálogo completo" é o nível, **não um número**:
+  fixar "2.000 canais" criaria promessa que o banco não sustenta.
+
+Os canais já importados não são tocados por esta matriz. `Canal.nivelMinimo`
+nasce `premium` por política (o mais restrito), `nivelRevisado` marca o que a
+curadoria já decidiu, e o seed de planos não sabe nada sobre canais.
+
+### 5.3 O que ficou como requisito futuro, em vez de fingido
+
+- **"Servidor VIP" para Premium.** Não existe separação de fontes por plano no
+  backend: `src/lib/fontes.ts` monta a mesma lista para todo mundo. O único
+  "VIP" no código é rótulo de interface (`MediaHero`) ou conceito do provedor
+  externo (`cinevs.ts`) — nenhum dos dois é autorização nossa. Para virar real,
+  precisa de uma coluna de nível de fonte em `Plano` e de filtro em `fontes.ts`.
+  **Até lá, Premium recebe a mesma lista que Basic**, e nenhum campo foi criado
+  para simular a diferença.
+- **Suporte prioritário.** Processo de atendimento, não direito técnico. Não
+  vira coluna.
+- **Qualidade por fonte.** `resolucaoMax: "4k"` no Premium é teto, não garantia:
+  deixa de ser o limitante, mas não cria 4K onde a fonte não tem.
+
 > **[D-5]** `perfisMax` só faz sentido se existirem perfis. **Perfis não
-> existem hoje no schema.** Entram no escopo agora ou ficam para depois?
-> Recomendo **depois**: perfis tocam histórico, watchlist e continuar
-> assistindo — é um projeto próprio, e adiar não custa nada a este desenho.
+> existem hoje no schema.** Decidido: ficam para depois — tocam histórico,
+> watchlist e continuar assistindo, é projeto próprio. Os quatro planos ficam
+> com `perfisMax = 1`.
 
 ---
 
@@ -1189,10 +1325,16 @@ porque atravessam tudo:
 | # | Pergunta | Bloqueia |
 |---|---|---|
 | **D-1** | **Onde está o trabalho de Unity Ads?** Não está neste repositório nem em nenhuma branch. Precisa ser localizado, ou confirmado que a integração será feita do zero | a fase de anúncios do Android |
-| **D-4** | **Matriz comercial definitiva**: quais planos existem, com quais direitos e quais preços. A matriz da seção 5 é modelo inicial, não a real | criar `Básico`/`Plus`/`Premium` e o checkout |
+| **D-4b** | **Preços** de Basic, Plus e Premium. Os *direitos* foram aprovados (D-4, seção 5) e as três linhas existem; falta `PlanoPreco`. Sem preço ativo, `resolverPreco` recusa e os planos não são compráveis | o checkout (Fase 6) |
 
 Nenhuma das duas bloqueia as fases de entitlements e autorização: elas operam
 sobre o plano padrão, que já existe.
+
+**D-4 (direitos) foi decidido** e está na seção 5: Basic, Plus e Premium, com
+`canaisNivel` em `nenhum`/`plus`/`premium`, `downloads` só a partir de Plus,
+`telasMax = 2` nos três e `resolucaoMax` em `hd`/`hd`/`4k`. O que sobrou é
+preço, acima, e os dois itens de enforcement registrados em 5.1 e 5.3 —
+`MAX_CONCURRENT` → `telasMax`, e fonte por plano para o "servidor VIP".
 
 ---
 

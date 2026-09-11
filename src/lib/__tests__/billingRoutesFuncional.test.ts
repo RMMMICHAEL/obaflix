@@ -57,6 +57,8 @@ test("webhook desconhecido ou duplicado não cria direito e armazena apenas even
 test("webhook forjado só delega ao GET autoritativo e aguarda sua tentativa", async () => {
   for (const resultado of ["PENDING", "timeout", "network", "500"]) {
     let aguardado = false;
+    // `const`: o contador nunca é reatribuído — é justamente o ponto do teste,
+    // que nenhum destes quatro resultados cria assinatura.
     const assinaturas = 0;
     const handler = createWebhookBlackcatHandler({
       env: { BLACKCAT_CONFIRMACAO_ATIVA: "true", BLACKCAT_WEBHOOK_PATH_SECRET: "s" }, clientIp: () => "ip", checkRateLimit: async () => ({ allowed: true }),

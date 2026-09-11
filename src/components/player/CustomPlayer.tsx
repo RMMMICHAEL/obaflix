@@ -365,6 +365,15 @@ export function CustomPlayer({
   }, []);
   const extractAbortRef = useRef<AbortController | null>(null);
   const isProxiedRef = useRef(false);
+  /**
+   * O plano desta conta permite baixar?
+   *
+   * Vem de `/api/player/fontes` — decisão do servidor, não do cliente. Nasce
+   * `false` e só sobe quando a resposta diz `true`: enquanto a sessão não abriu,
+   * não há direito confirmado, e oferecer o botão antes disso seria mostrar e
+   * depois tirar.
+   */
+  const [podeBaixarPeloPlano, setPodeBaixarPeloPlano] = useState(false);
   const directStreamRef = useRef<string | null>(null);
   const streamRefererRef = useRef<string | null>(null);
   const reExtractCountRef = useRef(0); // falhas consecutivas de renovação por fonte (reseta a cada play bem-sucedido)
@@ -1425,7 +1434,12 @@ export function CustomPlayer({
   // ── Download da mídia atual ─────────────────────────────────────────────────
   // Só no app desktop: o navegador não consegue mandar o Referer que os CDNs
   // exigem, e os segmentos vêm de dezenas de hosts que barrariam por CORS.
-  const podeBaixar = !!desktopBridge?.downloadMedia &&
+  // `podeBaixarPeloPlano` primeiro, e é a condição nova: as outras três dizem se
+  // o download é tecnicamente possível (app desktop, mídia resolvida, tipo
+  // suportado); esta diz se a conta tem direito. Sem ela, `Plano.downloads` era
+  // coluna sem consumidor.
+  const podeBaixar = podeBaixarPeloPlano &&
+    !!desktopBridge?.downloadMedia &&
     !!directStreamRef.current &&
     (streamTipo === "hls" || streamTipo === "mp4");
 
@@ -1479,6 +1493,11 @@ export function CustomPlayer({
   const iniciarDownload = useCallback(async (modo: "completo" | "trecho", duracaoSeg?: number) => {
     const stream = directStreamRef.current;
     if (!stream || !desktopBridge?.downloadMedia) return;
+    // Segunda checagem do mesmo direito, e não redundância inútil: `podeBaixar`
+    // decide se o botão aparece, isto decide se a ação acontece. Uma UI
+    // desatualizada — sessão reaberta com plano diferente, painel já montado —
+    // não deve conseguir disparar o download.
+    if (!podeBaixarPeloPlano) return;
 
     setShowDownload(false);
     setDownloadResultado(null);
@@ -1506,7 +1525,7 @@ export function CustomPlayer({
       setDownloadResultado({ caminho: "", erro: e?.message || "Falha no download" });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamTipo, titulo, temporada, numeroEp, recorteInicio, recorteFim]);
+  }, [streamTipo, titulo, temporada, numeroEp, recorteInicio, recorteFim, podeBaixarPeloPlano]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -1543,6 +1562,10 @@ export function CustomPlayer({
     if (!res.ok) throw new Error("Não foi possível carregar os servidores");
     const data = await res.json();
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
+    // Direito de download, decidido no servidor. Comparação estrita com `true`:
+    // resposta sem o campo, `undefined` ou qualquer outro valor deixa o botão
+    // fora. Quem decide é `direitosDoCliente` em playbackAuthorization.ts.
+    setPodeBaixarPeloPlano(data?.direitos?.downloads === true);
     sessaoFontesRef.current = data?.sessao ?? null;
     // Os ids mudam a cada sessão: o cache de URL nativa da anterior não vale.
     urlNativaRef.current.clear();
