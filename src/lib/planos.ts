@@ -124,6 +124,173 @@ export const PLANO_GRATUITO: PlanoSemeado = {
   tvNivel: "completo",
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A matriz comercial — Basic, Plus, Premium
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// As três linhas compráveis do produto. Como `PLANO_GRATUITO`, são **bootstrap**:
+// o seed cria se faltar e nunca sobrescreve, e a partir do instante em que a
+// linha nasce o Postgres é a fonte de verdade. Editar estas constantes depois
+// disso não muda produção.
+//
+// ## Nenhuma delas tem preço, e isso é modelado, não esquecido
+//
+// `PlanoPreco` não é criado aqui. Sem uma linha de preço ativa, a Fase 4 recusa
+// a compra em `resolverPreco` (`preco_inexistente`), então os três planos
+// existem, são consultáveis e **não são vendáveis** — que é exatamente o estado
+// pedido enquanto os valores comerciais não chegam. Criar preço fictício para
+// "destravar" o fluxo seria inventar número que alguém acabaria cobrando.
+//
+// ## O que destes direitos o backend REALMENTE aplica hoje
+//
+// Vale dizer com precisão, porque a diferença entre "gravado" e "aplicado" é o
+// tipo de coisa que se descobre tarde:
+//
+//   - `filmes` / `series` — **aplicados**, em `POST /api/player/fontes`, via
+//     `playbackAuthorization.ts`, atrás de `MONETIZACAO_ATIVA`;
+//   - `canaisNivel` — **aplicado** pela camada de canais (`src/lib/canais/
+//     acesso.ts`, consumida por `/api/canais` e `/api/canais/[id]/play`), que o
+//     compara com `Canal.nivelMinimo`. Essa camada ainda não está em `main`;
+//   - `telasMax` — **gravado, não aplicado**. O limite real continua sendo a
+//     constante `MAX_CONCURRENT = 5` de `src/lib/playTokens.ts`. Os três planos
+//     dizem 2, e nenhum deles limita nada até aquela constante ser substituída;
+//   - `downloads`, `resolucaoMax`, `tvNivel`, `perfisMax` e
+//     `anunciosObrigatorios` — **gravados, não aplicados**. Nenhuma rota os lê
+//     para negar. O botão de download do `CustomPlayer` aparece por existir
+//     ponte de desktop, não por direito.
+//
+// Registrar isso é deliberado: os valores abaixo são a decisão comercial e ficam
+// prontos para quando o enforcement chegar, mas ninguém deve ler esta constante
+// e concluir que uma conta Basic hoje não baixa.
+
+/**
+ * **Basic** — filmes e séries, sem canais e sem download.
+ *
+ * `canaisNivel: "nenhum"` é o que separa Basic dos outros dois, e o valor tem
+ * significado forte: `nivelAlcanca` nega **antes** de qualquer comparação de
+ * índice quando o nível concedido é `"nenhum"`. Uma conta Basic não alcança nem
+ * um canal marcado `gratuito` — não é "o canal mais barato", é nenhum.
+ */
+export const PLANO_BASIC: PlanoSemeado = {
+  id: "basic",
+  nome: "Basic",
+  descricao: "Filmes e séries, sem anúncios. Sem canais ao vivo e sem downloads.",
+  ordem: 1,
+  ativo: true,
+  // Só `gratuito` é padrão. Quem não tem assinatura ativa continua resolvendo
+  // para ele, e não para Basic — o índice único parcial do banco garante no
+  // máximo um plano padrão, então marcar `true` aqui quebraria o seed.
+  ehPadrao: false,
+
+  anunciosObrigatorios: false,
+  episodiosPorAnuncio: null,
+  janelaAnuncioHoras: 24,
+
+  filmes: true,
+  series: true,
+
+  canaisNivel: "nenhum",
+  downloads: false,
+
+  telasMax: 2,
+  perfisMax: 1,
+
+  resolucaoMax: "hd",
+  tvNivel: "completo",
+};
+
+/**
+ * **Plus** — acrescenta downloads e os canais até o nível Plus.
+ *
+ * `canaisNivel: "plus"` alcança canais marcados `gratuito` e `plus`, e **não**
+ * alcança `premium`. A comparação é por nível, nunca por nome ou categoria do
+ * canal: quem decide é `Canal.nivelMinimo`, definido pela curadoria.
+ */
+export const PLANO_PLUS: PlanoSemeado = {
+  id: "plus",
+  nome: "Plus",
+  descricao: "Filmes, séries e canais até o nível Plus, com downloads.",
+  ordem: 2,
+  ativo: true,
+  ehPadrao: false,
+
+  anunciosObrigatorios: false,
+  episodiosPorAnuncio: null,
+  janelaAnuncioHoras: 24,
+
+  filmes: true,
+  series: true,
+
+  canaisNivel: "plus",
+  downloads: true,
+
+  telasMax: 2,
+  perfisMax: 1,
+
+  resolucaoMax: "hd",
+  tvNivel: "completo",
+};
+
+/**
+ * **Premium** — catálogo completo de canais e a melhor qualidade disponível.
+ *
+ * "Catálogo completo" é `canaisNivel: "premium"`, o topo da escala: alcança
+ * `gratuito`, `plus` e `premium`. **Não é um número de canais.** Quantos canais
+ * existem é consequência da curadoria e do import, e fixar "2.000" numa
+ * constante criaria uma promessa que o banco não sustenta.
+ *
+ * `resolucaoMax: "4k"` é o teto do domínio — "melhor qualidade disponível
+ * conforme a fonte". Ele não força 4K onde a fonte não tem; apenas deixa de ser
+ * o limitante.
+ *
+ * **"Servidor VIP" não está modelado, e não deve ser fingido.** Não existe hoje
+ * nenhuma separação de fontes por plano no backend: `src/lib/fontes.ts` monta a
+ * mesma lista para todo mundo, e o único "VIP" no código é rótulo de interface
+ * (`MediaHero`) ou conceito do provedor externo em `cinevs.ts` — nenhum dos dois
+ * é autorização nossa. Enquanto `Plano` não tiver uma coluna de nível de fonte e
+ * `fontes.ts` não filtrar por ela, Premium recebe a mesma lista que Basic.
+ * Requisito futuro, registrado em `docs/monetizacao-arquitetura.md`.
+ *
+ * Suporte prioritário também não é direito técnico: é processo de atendimento, e
+ * não vira coluna.
+ */
+export const PLANO_PREMIUM: PlanoSemeado = {
+  id: "premium",
+  nome: "Premium",
+  descricao: "Filmes, séries e o catálogo completo de canais, com downloads.",
+  ordem: 3,
+  ativo: true,
+  ehPadrao: false,
+
+  anunciosObrigatorios: false,
+  episodiosPorAnuncio: null,
+  janelaAnuncioHoras: 24,
+
+  filmes: true,
+  series: true,
+
+  canaisNivel: "premium",
+  downloads: true,
+
+  telasMax: 2,
+  perfisMax: 1,
+
+  resolucaoMax: "4k",
+  tvNivel: "completo",
+};
+
+/**
+ * Os planos compráveis, na ordem da vitrine.
+ *
+ * `PLANO_GRATUITO` fica de fora de propósito: ele não é comprável e tem caminho
+ * de seed próprio, com a garantia de plano padrão único.
+ */
+export const PLANOS_COMERCIAIS: readonly PlanoSemeado[] = [
+  PLANO_BASIC,
+  PLANO_PLUS,
+  PLANO_PREMIUM,
+];
+
 /**
  * O mínimo do banco que o seed precisa. Existe para o seed ser exercitado de
  * verdade nos testes — sem Postgres e sem simular o Prisma inteiro.
@@ -164,11 +331,55 @@ export async function semearPlanoPadrao(
   repo: RepositorioDePlanos,
   plano: PlanoSemeado = PLANO_GRATUITO,
 ): Promise<ResultadoDoSeed> {
+  return semearPlano(repo, plano);
+}
+
+/**
+ * O mesmo contrato, com o nome certo para um plano qualquer.
+ *
+ * `semearPlanoPadrao` já era genérico — recebia o plano por parâmetro — e
+ * continuou existindo porque script e testes a chamam. Mas semear Premium
+ * através de uma função chamada "semearPlanoPadrao" leria como se Premium
+ * virasse o plano de quem não assina, que é justamente o contrário do que
+ * acontece. As duas são a mesma coisa; muda só o nome que quem lê encontra.
+ *
+ * **Cria se faltar, nunca sobrescreve** — vale igual para os comerciais. Um
+ * `seed:planos:apply` rodado depois de a matriz estar ajustada em produção não
+ * pode devolver Basic para os valores deste arquivo.
+ */
+export async function semearPlano(
+  repo: RepositorioDePlanos,
+  plano: PlanoSemeado,
+): Promise<ResultadoDoSeed> {
   const existente = await repo.buscar(plano.id);
   if (existente) return { acao: "mantido", existente };
 
   await repo.criar(plano);
   return { acao: "criado", plano };
+}
+
+/** O resultado de semear um plano, junto do plano que o originou. */
+export interface ResultadoPorPlano {
+  plano: PlanoSemeado;
+  resultado: ResultadoDoSeed;
+}
+
+/**
+ * Semeia a matriz comercial inteira, em ordem, com a mesma disciplina.
+ *
+ * Sequencial e não `Promise.all`: a saída do script é lida por gente, e
+ * intercalar três relatórios em ordem imprevisível não ajuda ninguém. Três
+ * linhas não justificam paralelismo.
+ */
+export async function semearPlanosComerciais(
+  repo: RepositorioDePlanos,
+  planos: readonly PlanoSemeado[] = PLANOS_COMERCIAIS,
+): Promise<ResultadoPorPlano[]> {
+  const saida: ResultadoPorPlano[] = [];
+  for (const plano of planos) {
+    saida.push({ plano, resultado: await semearPlano(repo, plano) });
+  }
+  return saida;
 }
 
 /**
