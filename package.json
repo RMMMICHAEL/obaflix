@@ -13,6 +13,8 @@
     "db:studio": "prisma studio",
     "seed:planos": "tsx scripts/seed-planos.ts",
     "seed:planos:apply": "tsx scripts/seed-planos.ts --apply",
+    "canais:importar": "tsx scripts/importar-canais.ts",
+    "canais:curadoria": "tsx scripts/canais-curadoria.ts",
     "import": "tsx scripts/import.ts",
     "sync": "tsx scripts/sync-megaflix.ts",
     "sync-app": "tsx scripts/sync-app.ts",
