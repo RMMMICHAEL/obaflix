@@ -57,7 +57,7 @@ test("webhook desconhecido ou duplicado não cria direito e armazena apenas even
 test("webhook forjado só delega ao GET autoritativo e aguarda sua tentativa", async () => {
   for (const resultado of ["PENDING", "timeout", "network", "500"]) {
     let aguardado = false;
-    let assinaturas = 0;
+    const assinaturas = 0;
     const handler = createWebhookBlackcatHandler({
       env: { BLACKCAT_CONFIRMACAO_ATIVA: "true", BLACKCAT_WEBHOOK_PATH_SECRET: "s" }, clientIp: () => "ip", checkRateLimit: async () => ({ allowed: true }),
       readJsonBody: async () => ({ transactionId: "tx", status: "PAID", amount: 100 }),
