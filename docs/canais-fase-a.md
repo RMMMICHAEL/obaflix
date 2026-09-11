@@ -111,6 +111,43 @@ depois não entender o 403.
 o arm resolve) e canal fora do ar (que não resolve). Um laço transformaria a
 segunda numa tempestade contra o provider.
 
+## O egress do Worker precisa ser provado, não presumido
+
+O desenho depende de a página do player e a mídia saírem do **mesmo IP**. "Mesma
+invocação" **não é promessa contratual de IP de egress estável na Cloudflare** —
+IP de egress dedicado é recurso à parte, e a plataforma pode sair por endereços
+diferentes.
+
+Se sair, o sintoma não é vazamento: é 403 teimoso, ou canal que só toca de vez
+em quando — o tipo de falha que se descobre tarde e se debuga mal.
+
+Por isso, **antes de ativar**, contra o Worker que vai servir o Obaflix:
+
+```powershell
+# 1. chame POST /api/canais/{id}/play autenticado e copie `manifestUrl`
+npm run canais:verificar-edge -- "<manifestUrl>"
+```
+
+O script pede o manifesto doze vezes, cada uma uma invocação nova, e classifica:
+
+| Resultado | O que quer dizer |
+|---|---|
+| 12/12 com manifesto | aprovado, arm + fetch funciona |
+| parte 200, parte 403 | egress varia — ver saídas abaixo |
+| 0/12 | concessão vencida, allowlist vazia, ou canal fora do ar |
+
+**Se o egress variar**, as saídas, em ordem de preferência:
+
+1. **Reter o grant no edge.** Armar e servir a partir de um Durable Object
+   (instância única, IP estável durante a vida dela) em vez de invocação
+   qualquer. É a mudança menor que resolve de verdade.
+2. **IP de egress dedicado** da Cloudflare, se o plano permitir.
+3. **Proxy de saída próprio** com IP fixo, com o Worker falando com ele. Volta a
+   pagar banda, e é a opção que o `workers/media-proxy` existe para evitar.
+
+Nenhuma delas é improviso em cima do player de filmes/séries, e nenhuma muda o
+contrato dos clientes — o aparelho continua vendo só a URL do nosso domínio.
+
 ## Configuração necessária
 
 Backend (Vercel):
@@ -119,18 +156,28 @@ Backend (Vercel):
 |---|---|
 | `CANAIS_MEDIA_BASE` | Base pública do Worker. Sem ela, `/play` devolve 503. |
 | `CANAIS_CDN_ALLOWLIST` | Sufixos de host de mídia, separados por vírgula. **Sem ela nada passa** — allowlist vazia que nega é um canal fora do ar; que libera é um SSRF. |
+| `CANAIS_MEDIA_SIGNING_SECRET` | **Segredo próprio, criado só para isto.** Gere com `openssl rand -base64 32`. |
 | `CANAIS_PLAYER_HOST` | Opcional. Sobrescreve o host da página do player. |
-| `NEXTAUTH_SECRET` | Já existe. É de onde sai a chave de assinatura. |
 
 Worker (`wrangler secret put` / `vars`):
 
 | Variável | O que é |
 |---|---|
-| `ASSINATURA_SECRET` | O mesmo valor de `NEXTAUTH_SECRET`. |
+| `ASSINATURA_SECRET` | O mesmo valor de `CANAIS_MEDIA_SIGNING_SECRET`. |
 | `CDN_ALLOWLIST` | Os mesmos sufixos de `CANAIS_CDN_ALLOWLIST`. |
+| `CANAIS_PLAYER_ALLOWLIST` | Sufixos permitidos para a **página que arma o grant**. Lista própria, não a de CDN. Vazia recusa o arm. |
 | `CANAIS_MEDIA_BASE` | A própria base pública, para reescrever o manifesto. |
 | `APP_ORIGIN` | Origem do app — a mesma `OBAFLIX_URL` que Android e Electron carregam. É o CORS que deixa o `hls.js` do renderer buscar o manifesto. O player nativo da TV não passa por CORS. |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | A sessão de canal. |
+
+### Por que a chave de canais não é o `NEXTAUTH_SECRET`
+
+Porque o Worker roda em infra de terceiro, com outra superfície de deploy e
+outra lista de quem pode ler secrets. Com a chave compartilhada, um vazamento lá
+comprometeria também a assinatura de sessão de autenticação do produto inteiro.
+Com chave própria, o pior caso passa a ser "emitir URL de mídia válida" — ruim,
+e limitado. E rotacionar a chave de canais invalida as concessões em voo e nada
+além disso, que é rotação barata.
 
 Os hosts de CDN **não estão no repositório** por decisão: domínio de CDN em diff
 é bloqueador pela regra de vazamento do projeto, e é metade do que falta para
@@ -138,18 +185,48 @@ alguém montar a URL sozinho.
 
 ## Ordem de ativação
 
-1. Aplicar `prisma/migrations/20260911_canais/` e conferir com o `VERIFICACAO.sql`.
-2. `npm run canais:importar -- <arquivo.json>` (simulação), depois `--aplicar`.
+1. Gerar `CANAIS_MEDIA_SIGNING_SECRET` (`openssl rand -base64 32`). É o mesmo
+   valor nos dois lados, e **não** é o `NEXTAUTH_SECRET`.
+2. Aplicar `prisma/migrations/20260911_canais/` e conferir com o `VERIFICACAO.sql`.
+3. `npm run canais:importar -- <arquivo.json>` (simulação), depois `--aplicar`.
    Tudo entra `premium` e desativado.
-3. Publicar o Worker com os secrets e a allowlist.
-4. Configurar `CANAIS_MEDIA_BASE` e `CANAIS_CDN_ALLOWLIST` no backend.
-5. Liberar **poucos** canais para teste:
+4. Publicar o Worker com os secrets, `CDN_ALLOWLIST` e `CANAIS_PLAYER_ALLOWLIST`.
+5. Configurar `CANAIS_MEDIA_BASE` e `CANAIS_CDN_ALLOWLIST` no backend.
+6. Liberar **poucos** canais para teste:
    `npm run canais:curadoria -- --slug globosp --nivel gratuito --ativar --aplicar`
-6. Só então abrir a curadoria completa — `--exportar` / `--importar` levam a
+7. **Rodar `npm run canais:verificar-edge -- "<manifestUrl>"`** contra o Worker
+   publicado, com uma concessão fresca. **Sem APROVADO, não seguir** — é aqui
+   que se descobre se o egress do Worker sustenta o arm.
+8. Só então abrir a curadoria completa — `--exportar` / `--importar` levam a
    matriz para fora do código.
 
 Rollback: tirar `CANAIS_MEDIA_BASE` derruba só canais (`/play` passa a 503),
 sem deploy e sem tocar em filmes e séries.
+
+## As validades, e o que cada uma segura
+
+| | Quanto | Segura |
+|---|---|---|
+| URL de manifesto (grant) | 5 min | URL capturada morre rápido |
+| URL de segmento | 90 s | link não sobrevive ao instante em que foi útil |
+| Sessão no Redis | 7 min, deslizante | sessão abandonada morre sozinha |
+| Vida máxima da sessão | 2 h | força re-resolução no provider |
+
+O cliente volta a `POST /api/canais/{id}/play` a ~60% do grant, mandando
+`sessionId`. Essa volta é **reautorização de verdade**: reconfere sessão,
+entitlement e rate limit, e **rotaciona o nonce** da sessão. Como o nonce entra
+no material assinado e nunca viaja na URL, rotacioná-lo derruba na hora todas as
+URLs emitidas antes — inclusive uma que alguém tivesse capturado dentro da
+validade.
+
+A renovação **não** volta ao provider: reaproveita o upstream já resolvido. Um
+espectador de uma hora custaria doze buscas na página do player se
+re-resolvesse, e a proteção sairia cara no lugar errado.
+
+O que o edge **não** faz, e não pode: identificar quem está pedindo. A requisição
+do player não carrega credencial nossa. O `sub` da sessão é conferido pelo
+backend na renovação — é o que impede renovar a sessão de outra conta com um
+`sessionId` capturado —, e não no edge.
 
 ## O que ficou de fora, e por quê
 
