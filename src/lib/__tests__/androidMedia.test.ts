@@ -6,6 +6,7 @@ import {
   alvoDoHref,
   decidirAcaoDoHero,
   fontesCandidatas,
+  linhaDiagDownload,
   mensagemDeFalha,
   midiaDaFonte,
   pidDeEpisodio,
@@ -523,4 +524,64 @@ test("a mídia é classificada como no Android: tipo declarado manda, depois a e
   assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/v/arquivo.MP4" }), "direta");
   assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/playlist" }), "hls");
   assert.equal(midiaDaFonte({ stream: "isto nao e url" }), "hls");
+});
+
+// ── Download: diagnóstico mascarado ──────────────────────────────────────────
+
+test("o diagnóstico registra classificação e servidor genérico, nunca URL ou token", async () => {
+  const eventos: string[] = [];
+  const hls = { ...HLS, servidor: "Servidor 2", via: "aparelho" };
+  const mp4 = { ...MP4, servidor: "Servidor 5", via: "servidor" };
+  await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => [hls, mp4][tentativa] ?? null,
+    sondar: async (): Promise<Resp> => ({ ok: true, sondagemId: "s4" }),
+    registrar: (evento) => eventos.push(linhaDiagDownload(evento)),
+  });
+  assert.deepEqual(eventos, [
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=0 resultado=pulada_hls midia=hls via=aparelho servidor=Servidor_2",
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=1 resultado=aceita midia=direta via=servidor servidor=Servidor_5",
+  ]);
+  for (const linha of eventos) {
+    assert.ok(!/https?:|cdn-|token|referer|\.m3u8|\.mp4/i.test(linha), `vazou dado de fonte: ${linha}`);
+  }
+});
+
+test("rótulo com cara de URL é mascarado e espaço vira _ no diagnóstico", () => {
+  const linha = linhaDiagDownload({
+    tentativa: 0,
+    resultado: "recusada",
+    midia: "direta",
+    servidor: "https://provedor.exemplo.com/x?token=abc",
+    motivo: "sessao do navegador",
+  });
+  assert.ok(linha.includes("servidor=mascarado"), linha);
+  assert.ok(linha.includes("motivo=sessao_do_navegador"), linha);
+  assert.ok(!/https?:|token|provedor/i.test(linha), linha);
+});
+
+test("fim de lista e falha de servidor também aparecem no diagnóstico", async () => {
+  const eventos: string[] = [];
+  await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => {
+      if (tentativa === 0) throw new Error("fonte_falhou");
+      return null;
+    },
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+    registrar: (evento) => eventos.push(linhaDiagDownload(evento)),
+  });
+  assert.deepEqual(eventos, [
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=0 resultado=falhou",
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=1 resultado=fim",
+  ]);
+});
+
+test("um registrador que falha não interrompe a procura", async () => {
+  const r = await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => (tentativa === 0 ? MP4 : null),
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+    registrar: () => {
+      throw new Error("log quebrado");
+    },
+  });
+  assert.equal(r.ok, true);
 });

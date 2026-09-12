@@ -37,6 +37,8 @@ type Fonte = {
   iframeDireto?: boolean;
   iframeDesafio?: boolean;
   superflixLocal?: unknown;
+  /** Rótulo genérico que o usuário comum já vê ("Servidor 3"). */
+  rotulo?: string;
 };
 
 type Resolvido = {
@@ -47,6 +49,10 @@ type Resolvido = {
   userAgent?: string | null;
   expiresAt?: number | null;
   error?: string;
+  /** Só para diagnóstico: rótulo genérico do servidor. */
+  servidor?: string;
+  /** Só para diagnóstico: "servidor" (API resolveu) ou "aparelho" (app extraiu). */
+  via?: string;
 };
 
 type Ponte = { extractStream?: (embedUrl: string) => Promise<Resolvido> };
@@ -111,6 +117,10 @@ export function useFonteParaMidia({
     if (!res.ok) throw new Error("fonte_falhou");
     const nativa = await res.json();
 
+    // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
+    // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
+    const servidor = alvo.rotulo || `Servidor ${tentativa + 1}`;
+
     // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
     // devolvem o embed para o aparelho extrair (`embedUrl`). São os dois
     // formatos que o próprio player já trata.
@@ -119,7 +129,15 @@ export function useFonteParaMidia({
         origem: "nativo",
         stream: nativa.streamUrl,
         referer: nativa.referer ?? null,
-        tipo: String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
+        // O servidor declara o formato quando o conhece. Adivinhar pela URL
+        // errava nos dois sentidos: ".m4v" virava HLS, e um HLS com ".mp4" na
+        // query virava MP4. A adivinhação fica só para quando não houver tipo.
+        tipo:
+          nativa.tipo === "mp4" || nativa.tipo === "hls"
+            ? nativa.tipo
+            : String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
+        servidor,
+        via: "servidor",
       };
     }
     if (!nativa?.embedUrl) throw new Error("fonte_falhou");
@@ -129,6 +147,6 @@ export function useFonteParaMidia({
 
     // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
     // nativo comum — os caminhos de sessão foram filtrados acima.
-    return { ...dados, origem: "nativo" };
+    return { ...dados, origem: "nativo", servidor, via: "aparelho" };
   }, [abrirSessao]);
 }

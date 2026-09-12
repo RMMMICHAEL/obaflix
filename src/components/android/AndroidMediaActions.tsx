@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Cast, Check, Download, Loader2, X } from "lucide-react";
 import { DownloadQualityModal, type Qualidade } from "./DownloadQualityModal";
-import { mensagemDeFalha, pontesDeMidia, procurarFonteDeDownload } from "@/lib/androidMedia";
+import { linhaDiagDownload, mensagemDeFalha, pontesDeMidia, procurarFonteDeDownload } from "@/lib/androidMedia";
 
 /**
  * Botões de Baixar e Transmitir do aplicativo Android.
@@ -161,6 +161,9 @@ export function AndroidMediaActions({
     const resultado = await procurarFonteDeDownload<FonteResolvida, Resposta>({
       resolverFonte,
       sondar: (fonte) => inspecionar({ ...fonte, pid, titulo }),
+      // Diagnóstico por tentativa (mídia, caminho, servidor genérico, motivo)
+      // no canal [diag/etapa], que chega ao logcat do APK. Sem URL nem token.
+      registrar: (evento) => console.warn(linhaDiagDownload(evento)),
     });
 
     if (!resultado.ok) {

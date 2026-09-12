@@ -280,14 +280,24 @@ export type ResultadoDaProcura<R> = { ok: true; resposta: R } | { ok: false; mot
  * é decisão de quem chama (no player, só a fonte atual).
  */
 export async function procurarFonteDeDownload<
-  F extends { stream?: string; tipo?: string | null },
+  F extends { stream?: string; tipo?: string | null; servidor?: string; via?: string },
   R extends RespostaDeSondagem,
 >(params: {
   resolverFonte: (tentativa: number) => Promise<F | null>;
   sondar: (fonte: F) => Promise<R>;
   maxTentativas?: number;
+  /** Diagnóstico de cada tentativa. Ver [EventoDeProcura] e [linhaDiagDownload]. */
+  registrar?: (evento: EventoDeProcura) => void;
 }): Promise<ResultadoDaProcura<R>> {
   const { resolverFonte, sondar, maxTentativas = MAX_TENTATIVAS_DE_DOWNLOAD } = params;
+  // Log que quebra não pode derrubar o download.
+  const registrar = (evento: EventoDeProcura) => {
+    try {
+      params.registrar?.(evento);
+    } catch {
+      /* diagnóstico é acessório */
+    }
+  };
   let viuHls = false;
   let ultimo: R | null = null;
 
@@ -297,12 +307,19 @@ export async function procurarFonteDeDownload<
       fonte = await resolverFonte(tentativa);
     } catch {
       // Este servidor falhou; os próximos ainda podem servir.
+      registrar({ tentativa, resultado: "falhou" });
       continue;
     }
-    if (!fonte) break;
+    if (!fonte) {
+      registrar({ tentativa, resultado: "fim" });
+      break;
+    }
 
-    if (midiaDaFonte(fonte) === "hls") {
+    const identidade = { servidor: fonte.servidor, via: fonte.via };
+    const midia = midiaDaFonte(fonte);
+    if (midia === "hls") {
       viuHls = true;
+      registrar({ tentativa, resultado: "pulada_hls", midia, ...identidade });
       continue;
     }
 
@@ -312,11 +329,65 @@ export async function procurarFonteDeDownload<
     } catch {
       r = { ok: false } as R;
     }
-    if (r.ok) return { ok: true, resposta: r };
+    if (r.ok) {
+      registrar({ tentativa, resultado: "aceita", midia, ...identidade });
+      return { ok: true, resposta: r };
+    }
+    registrar({ tentativa, resultado: "recusada", midia, motivo: r.motivo, ...identidade });
     ultimo = r;
     // Só insiste quando o Android disse que outra fonte pode servir.
     if (!r.tentarOutraFonte) break;
   }
 
   return { ok: false, motivo: viuHls ? "download_indisponivel" : ultimo?.motivo };
+}
+
+/**
+ * Um passo da procura de download, para diagnóstico.
+ *
+ * Só classificação e identificação genérica: nunca URL, token, Referer nem nome
+ * real de provedor. `servidor` é o rótulo que o usuário comum já vê ("Servidor 3").
+ */
+export type EventoDeProcura = {
+  tentativa: number;
+  resultado: "aceita" | "recusada" | "pulada_hls" | "falhou" | "fim";
+  midia?: MidiaDaFonte;
+  motivo?: string;
+  servidor?: string;
+  /** "servidor" quando a mídia veio resolvida da API; "aparelho" quando o app extraiu. */
+  via?: string;
+};
+
+/** Valor seguro para log: só letras, números, `_`, `.` e `-`; o que parecer URL vira "mascarado". */
+function valorDeLog(valor: string | undefined, limite = 32): string | undefined {
+  if (!valor) return undefined;
+  if (/https?:|\/\/|[?&=]/i.test(valor)) return "mascarado";
+  const limpo = valor
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return limpo ? limpo.slice(0, limite) : undefined;
+}
+
+/**
+ * A linha de diagnóstico de um passo da procura.
+ *
+ * Usa o canal `[diag/etapa]`, o único que o `MainActivity` repassa ao logcat
+ * mesmo num APK de release (vira `diag_etapa` com os campos `chave=valor`).
+ */
+export function linhaDiagDownload(evento: EventoDeProcura): string {
+  const campos: Array<[string, string | number | undefined]> = [
+    ["etapa", "DOWNLOAD_FONTE"],
+    ["tentativa", evento.tentativa],
+    ["resultado", evento.resultado],
+    ["midia", evento.midia],
+    ["via", valorDeLog(evento.via)],
+    ["servidor", valorDeLog(evento.servidor)],
+    ["motivo", valorDeLog(evento.motivo)],
+  ];
+  const partes = campos
+    .filter(([, valor]) => valor !== undefined && valor !== "")
+    .map(([chave, valor]) => `${chave}=${valor}`);
+  return `[diag/etapa] ${partes.join(" ")}`;
 }
