@@ -9,6 +9,7 @@ import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
+import type { AlvoDeConcessao } from "@/lib/ads/concessoes";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
   diagnosticarSessao, diagFonte,
@@ -158,6 +159,10 @@ interface Corpo {
   sessao?: unknown;
   concessao?: unknown;
   alternativas?: unknown;
+  /** reproducao | download | transmissao. Ausente: reprodução. */
+  finalidade?: unknown;
+  /** `true`: cobrar download/transmissão da fonte que já toca, numa sessão existente. */
+  acao?: unknown;
 }
 
 function normalizarAmbiente(valor: unknown): Ambiente {
@@ -202,6 +207,25 @@ export async function POST(req: NextRequest) {
   const temporada = Number.isFinite(Number(corpo.temporada)) ? Number(corpo.temporada) : null;
   const numeroEp = Number.isFinite(Number(corpo.numeroEp)) ? Number(corpo.numeroEp) : null;
 
+  // Para que a fonte vai servir. Ausente é reprodução — é o que todo cliente
+  // anterior pede, inclusive o app de TV. Qualquer outro valor é pedido inválido
+  // e nunca vira "reprodução" por engano.
+  const finalidade =
+    corpo.finalidade === undefined || corpo.finalidade === null
+      ? "reproducao"
+      : corpo.finalidade === "reproducao" || corpo.finalidade === "download" || corpo.finalidade === "transmissao"
+        ? corpo.finalidade
+        : null;
+
+  // O conteúdo pedido, na mesma forma em que `/playback/authorize` prende a
+  // concessão e o passe. Filme ignora temporada e episódio.
+  const alvo: AlvoDeConcessao = {
+    tipo: conteudoTipo,
+    conteudoId,
+    temporada: conteudoTipo === "serie" ? temporada : null,
+    episodio: conteudoTipo === "serie" ? numeroEp : null,
+  };
+
   // O role só é confirmado no banco, nunca a partir do JWT: é ele que decide se
   // a resposta carrega provider real, host e embedUrl.
   const ehAdmin = await (async () => {
@@ -230,6 +254,41 @@ export async function POST(req: NextRequest) {
   // direito segue utilizável pelo TTL dela, e `/api/player/token` também
   // consome sessão existente sem nova checagem comercial. Esta fase impede
   // sessões NOVAS; revogação imediata pertence à fase de concessões.
+  // ── Ação patrocinada sobre a reprodução em curso ───────────────────────────
+  //
+  // Baixar ou transmitir de dentro do player usa a mídia que já toca, então não
+  // há sessão nova a abrir. Mesmo assim a ação não pode ser liberada só no React:
+  // aqui a concessão da finalidade é consumida contra uma sessão viva desta
+  // conta. Reprodução não passa por este ramo — ela nunca é "ação sobre sessão".
+  if (typeof corpo.sessao === "string" && corpo.acao === true) {
+    if (finalidade !== "download" && finalidade !== "transmissao") {
+      return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+    }
+    const sessao = corpo.sessao;
+    const estado = await diagnosticarSessao(sessao, userId);
+    if (!estado.ok) {
+      return NextResponse.json(
+        { error: "Sessão de reprodução expirada", codigo: "sessao_invalida" },
+        { status: 410, headers: NO_STORE },
+      );
+    }
+    const liberacao = await autorizarPorAnuncio({
+      userId,
+      tipo: conteudoTipo,
+      concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
+      finalidade,
+      alvo,
+    });
+    if (!liberacao.liberado) {
+      audit("playback_negado", { userId, ip, ua, detail: `/fontes acao: ${liberacao.motivo} finalidade:${finalidade}` });
+      return NextResponse.json(
+        { error: "É necessário assistir a um anúncio", codigo: "anuncio_necessario" },
+        { status: 403, headers: NO_STORE },
+      );
+    }
+    return NextResponse.json({ sessao, liberado: true }, { headers: NO_STORE });
+  }
+
   if (typeof corpo.sessao === "string" && corpo.alternativas === true) {
     const sessao = corpo.sessao;
     const estado = await diagnosticarSessao(sessao, userId);
@@ -342,13 +401,23 @@ export async function POST(req: NextRequest) {
   // Quem não precisa de anúncio é liberado sem tocar no Redis de anúncio: o
   // assinante não paga por esta camada. Para quem precisa, a concessão é apagada
   // agora — reenviar o mesmo id não abre uma segunda sessão.
+  //
+  // A concessão (depois de um anúncio) e o passe de cota (episódio que a política
+  // deixou passar sem anúncio) são consumidos pela mesma regra: mesma conta, mesma
+  // finalidade, mesmo conteúdo. Uma sessão de download não nasce de uma concessão
+  // de reprodução, e o passe do 1º episódio não abre o 3º.
+  if (!finalidade) {
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
   const anuncio = await autorizarPorAnuncio({
     userId,
     tipo: conteudoTipo,
     concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
+    finalidade,
+    alvo,
   });
   if (!anuncio.liberado) {
-    audit("playback_negado", { userId, ip, ua, detail: `/fontes: ${anuncio.motivo}` });
+    audit("playback_negado", { userId, ip, ua, detail: `/fontes: ${anuncio.motivo} finalidade:${finalidade}` });
     return NextResponse.json(
       { error: "É necessário assistir a um anúncio", codigo: "anuncio_necessario" },
       { status: 403, headers: NO_STORE },

@@ -1,26 +1,29 @@
 /**
- * O enforcement do anúncio no ponto onde a sessão de reprodução nasce.
+ * O enforcement do anúncio no ponto onde a fonte de uma ação é entregue.
  *
- * Uma função, chamada de `POST /api/player/fontes`. Mora aqui, e não na rota,
- * pelo mesmo motivo que `playbackAuthorization.ts` existe: a regra precisa ser
- * exercitável sem `NextRequest`, sem banco e sem Redis, e a rota precisa
- * continuar fina.
+ * Uma função, chamada de `POST /api/player/fontes` — na criação da sessão de
+ * reprodução e, com finalidade `download` ou `transmissao`, na sessão que serve a
+ * essas ações. Mora aqui, e não na rota, pelo mesmo motivo que
+ * `playbackAuthorization.ts` existe: a regra precisa ser exercitável sem
+ * `NextRequest`, sem banco e sem Redis, e a rota precisa continuar fina.
  *
  * ## A diferença entre esta função e `/api/playback/authorize`
  *
- * A rota de autorização **pergunta** e abre desafio; esta função **cobra**. São
- * dois momentos distintos, e separá-los é o que impede o cliente de virar
- * autoridade: entre um e outro o usuário viu (ou não) o anúncio, e o único
- * vestígio disso que o servidor aceita é a concessão que ele mesmo emitiu.
+ * A rota de autorização **pergunta** e emite desafio ou passe; esta função
+ * **cobra**. São dois momentos distintos, e separá-los é o que impede o cliente
+ * de virar autoridade: o único vestígio que o servidor aceita é o id que ele
+ * mesmo emitiu — concessão depois do anúncio, ou passe quando a política deixou
+ * passar sem anúncio.
  *
  * Um cliente que pule `/authorize` e chame `/fontes` direto cai aqui sem
- * concessão, e é recusado. Um cliente que reenvie a mesma concessão cai aqui com
- * um id já apagado, e é recusado.
+ * concessão, e é recusado. Um cliente que reenvie o mesmo id cai aqui com um id
+ * já apagado, e é recusado. Um id de outra finalidade ou de outro conteúdo não
+ * casa, e é recusado sem ser queimado.
  */
 
 import { entitlementsDoUsuario } from "../entitlements";
 import { monetizacaoAtiva } from "../playbackAuthorization";
-import { consumirConcessao } from "./concessoes";
+import { consumirConcessao, type AlvoDeConcessao, type FinalidadeDeConcessao } from "./concessoes";
 import { exigeAnuncio, type ConteudoDeAnuncio } from "./politica";
 import type { Entitlements } from "../entitlements";
 
@@ -38,7 +41,7 @@ export interface OpcoesDeEnforcement {
 }
 
 /**
- * Esta reprodução pode começar?
+ * Esta ação pode receber a fonte?
  *
  * Ordem, e cada passo evita um custo ou um erro:
  *
@@ -46,17 +49,27 @@ export interface OpcoesDeEnforcement {
  *     `autorizarCatalogo` e `limiteDeTelas`. Enquanto o enforcement não está
  *     ligado, esta camada não está no caminho de ninguém;
  *  2. **quem não vê anúncio é liberado sem tocar no Redis de anúncio** — o
- *     assinante não paga por uma consulta que existe para o gratuito;
+ *     assinante não paga por uma consulta que existe para o gratuito, em
+ *     nenhuma das três finalidades;
  *  3. **sem concessão, recusa** — inclusive quando o cliente não mandou nada. É
  *     o caso de quem pulou `/authorize`;
- *  4. **consumir decide** — e consumir apaga. Reenviar o mesmo id não repete.
+ *  4. **consumir decide** — para a finalidade e o alvo pedidos, e consumir
+ *     apaga. Reenviar o mesmo id não repete.
  *
  * Falha ao resolver direito vira `indeterminado`, que **recusa**. Fail-closed
  * pelo mesmo critério do resto: não saber se a conta precisa de anúncio não pode
  * virar "não precisa".
  */
 export async function autorizarPorAnuncio(
-  entrada: { userId: string; tipo: ConteudoDeAnuncio; concessao: string | null },
+  entrada: {
+    userId: string;
+    tipo: ConteudoDeAnuncio;
+    concessao: string | null;
+    /** Para que a fonte vai servir. Ausente: reprodução. */
+    finalidade?: FinalidadeDeConcessao;
+    /** O conteúdo pedido. Concessão com alvo só é aceita para o mesmo alvo. */
+    alvo?: AlvoDeConcessao | null;
+  },
   opcoes: OpcoesDeEnforcement = {},
 ): Promise<ResultadoDeAnuncio> {
   const ativa = opcoes.ativa ?? monetizacaoAtiva();
@@ -75,7 +88,10 @@ export async function autorizarPorAnuncio(
 
   if (!entrada.concessao) return { liberado: false, motivo: "sem_concessao" };
 
-  const consumir = opcoes.consumir ?? ((id, userId) => consumirConcessao(id, userId, "reproducao"));
+  const finalidade = entrada.finalidade ?? "reproducao";
+  const consumir =
+    opcoes.consumir ??
+    ((id, userId) => consumirConcessao(id, userId, finalidade, entrada.alvo ?? null));
 
   let ok = false;
   try {

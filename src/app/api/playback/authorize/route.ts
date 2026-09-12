@@ -9,29 +9,51 @@ import { monetizacaoAtiva } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
-  concessaoValida,
+  emitirPasse,
+  estaPago,
+  normalizarFinalidade,
   normalizarPlataforma,
   registrarEpisodioDistinto,
+  type AlvoDeConcessao,
 } from "@/lib/ads/concessoes";
 import { decidirAnuncio, exigeAnuncio, meioDeExibicao } from "@/lib/ads/politica";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 
 /**
- * `POST /api/playback/authorize` — "posso reproduzir isto agora?"
+ * `POST /api/playback/authorize` — "posso reproduzir, baixar ou transmistir isto agora?"
  *
  * A porta do fluxo de anúncio, e o único lugar que decide. O cliente pergunta
- * antes de abrir o player; o servidor responde `PERMITIDO` ou
- * `ANUNCIO_NECESSARIO` com um desafio.
+ * antes da ação; o servidor responde `PERMITIDO` ou `ANUNCIO_NECESSARIO` com um
+ * desafio.
  *
- * **Esta rota não libera reprodução.** Ela responde uma decisão e, no caminho
- * permitido, emite a concessão que `/api/player/fontes` vai **consumir**. Quem
- * abre sessão continua sendo aquela rota, e o enforcement continua lá — nada
- * disto entra no extractor nem no player.
+ * **Esta rota não libera a mídia.** Ela responde uma decisão e emite a prova que
+ * a rota da ação — `/api/player/fontes` — vai **consumir**: o desafio leva a uma
+ * concessão depois do anúncio, e o caminho permitido para uma conta sujeita a
+ * anúncio devolve um **passe de cota** junto do `PERMITIDO`. O enforcement
+ * continua lá — nada disto entra no extractor nem no player.
+ *
+ * ## Por que PERMITIDO carrega passe
+ *
+ * Antes, o 1º e o 2º episódio do ciclo recebiam `PERMITIDO` sem nada, e
+ * `/fontes` recusava toda conta sujeita a anúncio sem concessão. A política e o
+ * enforcement discordavam: o episódio que pagou anúncio abria, e o seguinte
+ * falhava com "não foi possível carregar os servidores". O passe é a prova
+ * server-side, curta e de uso único, de que a política deixou passar — `/fontes`
+ * não passa a confiar em nada vindo do cliente.
+ *
+ * ## Finalidades
+ *
+ *   - **reprodução** — segue a política: filme pede anúncio; série conta
+ *     episódios distintos e o N-ésimo pede. Um alvo já pago na janela recebe
+ *     passe, então retry, sessão expirada ou voltar ao 3º episódio não pedem um
+ *     segundo anúncio e não somam no contador;
+ *   - **download** e **transmissão** — liberação pontual: a conta sujeita a
+ *     anúncio assiste um por ação. Não contam episódio e não recebem marca de pago.
  *
  * ## Quem nunca chega ao fluxo publicitário
  *
- * Conta com `anunciosObrigatorios !== true` sai em `decidirAnuncio` no primeiro
- * `if`, e a resposta nem carrega campo de anúncio. Não é interface escondendo
+ * Conta com `anunciosObrigatorios !== true` sai antes de qualquer decisão, e a
+ * resposta nem carrega campo de anúncio nem passe. Não é interface escondendo
  * botão: é ausência na resposta. Nenhuma decisão aqui olha nome ou id de plano.
  *
  * ## Com `MONETIZACAO_ATIVA` desligada
@@ -44,7 +66,7 @@ import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
-/** Corpo pequeno: dois identificadores, um tipo e a plataforma. */
+/** Corpo pequeno: dois identificadores, um tipo, a plataforma e a finalidade. */
 const LIMITE_DO_CORPO = 1024;
 
 interface Corpo {
@@ -53,8 +75,7 @@ interface Corpo {
   temporada?: unknown;
   numeroEp?: unknown;
   plataforma?: unknown;
-  /** Concessão que o cliente já tem, se tiver. Não é prova — é uma dica. */
-  concessao?: unknown;
+  finalidade?: unknown;
 }
 
 function identificador(v: unknown): string | null {
@@ -78,7 +99,8 @@ export interface DependenciasDeAutorizacao {
   monetizacaoAtiva?: () => boolean;
   entitlementsDoUsuario?: typeof entitlementsDoUsuario;
   registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
-  concessaoValida?: typeof concessaoValida;
+  emitirPasse?: typeof emitirPasse;
+  estaPago?: typeof estaPago;
   abrirDesafio?: typeof abrirDesafio;
   resolverDirectLink?: typeof resolverDirectLink;
   isIpBlocked?: typeof isIpBlocked;
@@ -90,7 +112,8 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
   const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
-  const verificarConcessao = deps.concessaoValida ?? concessaoValida;
+  const criarPasse = deps.emitirPasse ?? emitirPasse;
+  const jaPago = deps.estaPago ?? estaPago;
   const criarDesafio = deps.abrirDesafio ?? abrirDesafio;
   const lerDirectLink = deps.resolverDirectLink ?? resolverDirectLink;
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
@@ -141,6 +164,13 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
+  // Ausente é reprodução; valor desconhecido é pedido inválido, e nunca vira
+  // reprodução por engano.
+  const finalidade = normalizarFinalidade(corpo.finalidade);
+  if (!finalidade) {
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+
   // Qualquer coisa que não seja `android` ou `electron` vira `"web"` — a
   // plataforma sem meio de exibição. O desconhecido cai no caso mais restritivo.
   const plataforma = normalizarPlataforma(corpo.plataforma);
@@ -154,7 +184,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   //
   // Fail-closed em cima do que dá para falhar com segurança: não conseguir
   // resolver direito não pode virar "assiste de graça sem anúncio" nem
-  // "bloqueado". 503 é o mesmo tratamento que `/fontes` já dá — a reprodução não
+  // "bloqueado". 503 é o mesmo tratamento que `/fontes` já dá — a ação não
   // começa, e o usuário recebe indisponibilidade temporária em vez de uma
   // decisão comercial tomada no escuro.
   let direitos;
@@ -169,62 +199,96 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   }
 
   // ── Quem não vê anúncio sai aqui, sem tocar em Redis de anúncio ───────────
+  //
+  // Sem passe: `/fontes` libera essas contas por direito, sem consumir nada.
   if (!exigeAnuncio(direitos)) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 
-  // ── Contador de séries ────────────────────────────────────────────────────
+  // ── O alvo ────────────────────────────────────────────────────────────────
   //
-  // Registrado ANTES de decidir, porque registrar e contar são o mesmo passo: é
-  // o `SET NX` de `registrarEpisodioDistinto` que faz reabrir o mesmo episódio
-  // devolver o contador sem somar. Um contador lido antes e escrito depois
-  // abriria a janela em que dois pedidos paralelos leem o mesmo valor.
-  let distintos: number | undefined;
+  // Série sem temporada/episódio é pedido inválido em qualquer finalidade: é o
+  // alvo que prende a concessão e o passe a um conteúdo só.
+  let temporada: number | null = null;
+  let numeroEp: number | null = null;
   if (conteudoTipo === "serie") {
-    const temporada = inteiroPositivo(corpo.temporada);
-    const numeroEp = inteiroPositivo(corpo.numeroEp);
+    temporada = inteiroPositivo(corpo.temporada);
+    numeroEp = inteiroPositivo(corpo.numeroEp);
     if (temporada === null || numeroEp === null) {
       return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
     }
+  }
+  const alvo: AlvoDeConcessao = { tipo: conteudoTipo, conteudoId, temporada, episodio: numeroEp };
+
+  /**
+   * PERMITIDO com passe. Falhar ao emitir é 503: sem passe, `/fontes` recusaria,
+   * e responder PERMITIDO assim mesmo seria recriar a divergência que esta rota
+   * existe para fechar.
+   */
+  const permitirComPasse = async (via: string) => {
+    let passe: string;
     try {
-      distintos = await registrarEpisodio({
-        userId, conteudoId, temporada, episodio: numeroEp, direitos,
-      });
+      passe = await criarPasse({ userId, finalidade, alvo });
     } catch {
-      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: contador" });
+      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: passe" });
       return NextResponse.json(
         { error: "Serviço temporariamente indisponível", codigo: "entitlements_indisponiveis" },
         { status: 503, headers: NO_STORE },
       );
     }
-  }
-
-  // Concessão que o cliente já tenha em mãos. `concessaoValida` não consome —
-  // quem consome é `/fontes`. Aqui ela só evita pedir um anúncio a quem acabou
-  // de ver um.
-  const concessaoDica = identificador(corpo.concessao);
-  let temConcessao = false;
-  try {
-    temConcessao = await verificarConcessao(concessaoDica, userId);
-  } catch {
-    // Redis instável não deve travar a decisão: sem concessão confirmada, o
-    // caminho é pedir anúncio. Custa um anúncio a mais, nunca acesso indevido.
-    temConcessao = false;
-  }
-
-  const decisao = decidirAnuncio({
-    direitos,
-    tipo: conteudoTipo,
-    temConcessao,
-    episodiosDistintosNaJanela: distintos,
-  });
-
-  if (decisao.decisao === "permitido") {
     audit("playback_negado", {
       userId, ip, ua,
-      detail: `authorize permitido (${decisao.via}) tipo:${conteudoTipo}`,
+      detail: `authorize permitido (${via}) finalidade:${finalidade} tipo:${conteudoTipo}`,
     });
-    return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
+    return NextResponse.json({ decisao: "PERMITIDO", passe }, { headers: NO_STORE });
+  };
+
+  // ── Reprodução: política de anúncio ───────────────────────────────────────
+  //
+  // Download e transmissão não entram aqui: são liberações pontuais, exigem
+  // anúncio por ação e não contam episódio.
+  if (finalidade === "reproducao") {
+    // Alvo já pago nesta janela — retry, sessão expirada, voltar ao episódio que
+    // pagou. Consultar antes de contar é o que evita um segundo anúncio para o
+    // mesmo conteúdo. Redis instável cai no caminho normal: custa, no pior caso,
+    // um anúncio a mais, nunca acesso indevido.
+    let pago = false;
+    try {
+      pago = await jaPago({ userId, finalidade, alvo });
+    } catch {
+      pago = false;
+    }
+    if (pago) return permitirComPasse("ja_pago");
+
+    // ── Contador de séries ──────────────────────────────────────────────────
+    //
+    // Registrado ANTES de decidir, porque registrar e contar são o mesmo passo:
+    // é o `SET NX` de `registrarEpisodioDistinto` que faz reabrir o mesmo
+    // episódio devolver o contador sem somar. Um contador lido antes e escrito
+    // depois abriria a janela em que dois pedidos paralelos leem o mesmo valor.
+    let distintos: number | undefined;
+    if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null) {
+      try {
+        distintos = await registrarEpisodio({
+          userId, conteudoId, temporada, episodio: numeroEp, direitos,
+        });
+      } catch {
+        audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: contador" });
+        return NextResponse.json(
+          { error: "Serviço temporariamente indisponível", codigo: "entitlements_indisponiveis" },
+          { status: 503, headers: NO_STORE },
+        );
+      }
+    }
+
+    const decisao = decidirAnuncio({
+      direitos,
+      tipo: conteudoTipo,
+      temConcessao: false,
+      episodiosDistintosNaJanela: distintos,
+    });
+
+    if (decisao.decisao === "permitido") return permitirComPasse(decisao.via);
   }
 
   // ── Anúncio necessário: existe meio de exibi-lo? ──────────────────────────
@@ -247,7 +311,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     // que ninguém tem como cumprir, e cada desafio inútil é uma chave no Redis.
     audit("playback_negado", {
       userId, ip, ua,
-      detail: `anuncio indisponivel plataforma:${plataforma}`,
+      detail: `anuncio indisponivel plataforma:${plataforma} finalidade:${finalidade}`,
     });
     return NextResponse.json(
       {
@@ -258,11 +322,15 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     );
   }
 
+  // O desafio grava finalidade e alvo. `/api/ads/complete` os lê daqui, e não
+  // do corpo dele: a concessão sai presa ao que o servidor decidiu cobrar.
   const desafioId = await criarDesafio({
     userId,
     tipo: conteudoTipo,
     // `meio` já provou que é uma das duas plataformas com exibição.
     plataforma: plataforma === "android" ? "android" : "electron",
+    finalidade,
+    alvo,
   });
 
   const corpoResposta: Record<string, unknown> = {
@@ -276,10 +344,10 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     corpoResposta.directLink = link.url;
     audit("playback_negado", {
       userId, ip, ua,
-      detail: `anuncio necessario electron host:${hostParaLog(link.url)}`,
+      detail: `anuncio necessario electron finalidade:${finalidade} host:${hostParaLog(link.url)}`,
     });
   } else {
-    audit("playback_negado", { userId, ip, ua, detail: "anuncio necessario android" });
+    audit("playback_negado", { userId, ip, ua, detail: `anuncio necessario android finalidade:${finalidade}` });
   }
 
   return NextResponse.json(corpoResposta, { headers: NO_STORE });

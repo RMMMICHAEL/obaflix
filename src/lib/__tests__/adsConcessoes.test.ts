@@ -2,15 +2,22 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  FINALIDADES,
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   TTL_CONCESSAO_S,
+  TTL_PASSE_S,
   abrirDesafio,
+  chaveDoAlvo,
   chaveDoEpisodio,
   concessaoValida,
   consumirConcessao,
   consumirDesafio,
   emitirConcessao,
+  emitirPasse,
   episodiosDistintosNaJanela,
+  estaPago,
+  marcarPago,
+  normalizarFinalidade,
   registrarEpisodioDistinto,
 } from "../ads/concessoes";
 import { PLANO_GRATUITO } from "../planos";
@@ -308,5 +315,108 @@ describe("contador: só episódios distintos contam", () => {
     // Determinística — é o que faz o mesmo episódio reencontrar a própria chave.
     assert.equal(chave, chaveDoEpisodio("u1", "conteudo-secreto", 1, 1));
     assert.notEqual(chave, chaveDoEpisodio("u2", "conteudo-secreto", 1, 1));
+  });
+});
+
+// ── Finalidade, alvo, passe e marca de pago ──────────────────────────────────
+
+const ALVO_FILME = { tipo: "filme" as const, conteudoId: "f1", temporada: null, episodio: null };
+const alvoEp = (temporada: number, episodio: number) => ({
+  tipo: "serie" as const,
+  conteudoId: "s1",
+  temporada,
+  episodio,
+});
+
+describe("finalidade e alvo: cada concessão abre uma coisa só", () => {
+  test("as três finalidades existem e são fechadas", () => {
+    assert.deepEqual([...FINALIDADES], ["reproducao", "download", "transmissao"]);
+    assert.equal(normalizarFinalidade(undefined), "reproducao", "cliente antigo pede reprodução");
+    assert.equal(normalizarFinalidade("download"), "download");
+    assert.equal(normalizarFinalidade("canais"), null, "valor desconhecido não vira reprodução");
+  });
+
+  test("reprodução, download e transmissão não se autorizam entre si", async () => {
+    for (const emitida of FINALIDADES) {
+      for (const pedida of FINALIDADES) {
+        const userId = novoUsuario();
+        const id = await emitirConcessao({ userId, finalidade: emitida, verificacao: "soft", alvo: ALVO_FILME });
+        assert.equal(
+          await consumirConcessao(id, userId, pedida, ALVO_FILME),
+          emitida === pedida,
+          `${emitida} → ${pedida}`,
+        );
+      }
+    }
+  });
+
+  test("concessão presa a um alvo não abre outro conteúdo, e a tentativa não a queima", async () => {
+    const userId = novoUsuario();
+    const id = await emitirConcessao({ userId, finalidade: "reproducao", verificacao: "soft", alvo: alvoEp(1, 3) });
+
+    assert.equal(await consumirConcessao(id, userId, "reproducao", alvoEp(1, 4)), false);
+    assert.equal(await consumirConcessao(id, userId, "reproducao", null), false, "sem alvo não abre concessão com alvo");
+    assert.equal(await consumirConcessao(id, userId, "reproducao", alvoEp(1, 3)), true);
+  });
+
+  test("filme ignora temporada e episódio ao comparar o alvo", () => {
+    assert.equal(chaveDoAlvo({ tipo: "filme", conteudoId: "f1", temporada: 2, episodio: 9 }), chaveDoAlvo(ALVO_FILME));
+    assert.notEqual(chaveDoAlvo(alvoEp(1, 1)), chaveDoAlvo(alvoEp(1, 2)));
+  });
+
+  test("o desafio carrega finalidade e alvo; o antigo vira reprodução sem alvo", async () => {
+    const userId = novoUsuario();
+    const id = await abrirDesafio({
+      userId, tipo: "serie", plataforma: "android", finalidade: "download", alvo: alvoEp(2, 5),
+    });
+    const d = await consumirDesafio(id, userId);
+    assert.equal(d?.finalidade, "download");
+    assert.deepEqual(d?.alvo, alvoEp(2, 5));
+
+    const antigo = await abrirDesafio({ userId, tipo: "filme", plataforma: "android" });
+    const a = await consumirDesafio(antigo, userId);
+    assert.equal(a?.finalidade, "reproducao");
+    assert.equal(a?.alvo, null);
+  });
+});
+
+describe("passe de cota: prova server-side do que a política deixou passar", () => {
+  test("é de uso único", async () => {
+    const userId = novoUsuario();
+    const passe = await emitirPasse({ userId, finalidade: "reproducao", alvo: alvoEp(1, 1) });
+    assert.equal(await consumirConcessao(passe, userId, "reproducao", alvoEp(1, 1)), true);
+    assert.equal(await consumirConcessao(passe, userId, "reproducao", alvoEp(1, 1)), false);
+  });
+
+  test("vale pouco: TTL curto, menor que o da concessão de anúncio", async () => {
+    const userId = novoUsuario();
+    const passe = await emitirPasse({ userId, finalidade: "reproducao", alvo: alvoEp(1, 1) });
+    const ttl = await getRedis().ttl(`ads:concessao:${passe}`);
+    assert.ok(ttl > 0 && ttl <= TTL_PASSE_S, `ttl ${ttl}`);
+    assert.ok(TTL_PASSE_S < TTL_CONCESSAO_S);
+  });
+
+  test("não serve a outra conta, outra finalidade nem outro episódio — e nada disso o queima", async () => {
+    const userId = novoUsuario();
+    const passe = await emitirPasse({ userId, finalidade: "reproducao", alvo: alvoEp(1, 1) });
+    assert.equal(await consumirConcessao(passe, novoUsuario(), "reproducao", alvoEp(1, 1)), false);
+    assert.equal(await consumirConcessao(passe, userId, "download", alvoEp(1, 1)), false);
+    assert.equal(await consumirConcessao(passe, userId, "reproducao", alvoEp(1, 3)), false);
+    assert.equal(await consumirConcessao(passe, userId, "reproducao", alvoEp(1, 1)), true);
+  });
+});
+
+describe("marca de pago: reabrir não pede um segundo anúncio", () => {
+  test("presa a conta, finalidade e alvo", async () => {
+    const userId = novoUsuario();
+    const alvo = { tipo: "filme" as const, conteudoId: "f9", temporada: null, episodio: null };
+
+    assert.equal(await estaPago({ userId, finalidade: "reproducao", alvo }), false);
+    await marcarPago({ userId, finalidade: "reproducao", alvo });
+
+    assert.equal(await estaPago({ userId, finalidade: "reproducao", alvo }), true);
+    assert.equal(await estaPago({ userId, finalidade: "download", alvo }), false);
+    assert.equal(await estaPago({ userId: novoUsuario(), finalidade: "reproducao", alvo }), false);
+    assert.equal(await estaPago({ userId, finalidade: "reproducao", alvo: { ...alvo, conteudoId: "f10" } }), false);
   });
 });

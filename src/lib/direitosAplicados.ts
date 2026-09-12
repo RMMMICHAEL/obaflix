@@ -136,11 +136,14 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
       "`decidirAnuncio` sai no primeiro `if` para quem tem `false`, e é isso que " +
       "mantém Basic, Plus e Premium fora do fluxo publicitário — por direito, " +
       "nunca por nome de plano. Para quem tem `true`, `/api/playback/authorize` " +
-      "responde ANUNCIO_NECESSARIO e `/api/player/fontes` recusa a sessão sem " +
-      "concessão consumida (`ads/enforcement.ts`). Atrás de MONETIZACAO_ATIVA. " +
-      "A concessão é de uso único, presa à conta e à finalidade, com TTL de 30 " +
-      "min; o anúncio em si tem verificação SOFT — ver docs, nenhuma das duas " +
-      "redes desta fase confirma servidor→servidor.",
+      "decide por finalidade: reprodução segue a política (filme pede anúncio; " +
+      "série, o N-ésimo episódio distinto) e o que passa sem anúncio recebe um " +
+      "passe de uso único; download e transmissão pedem anúncio por ação. " +
+      "`/api/player/fontes` só entrega fonte consumindo concessão ou passe da " +
+      "mesma conta, finalidade e conteúdo (`ads/enforcement.ts`). Atrás de " +
+      "MONETIZACAO_ATIVA. Concessão: uso único, TTL de 30 min; passe: uso único, " +
+      "TTL de 5 min. O anúncio em si tem verificação SOFT — ver docs, nenhuma das " +
+      "duas redes desta fase confirma servidor→servidor.",
   },
   episodiosPorAnuncio: {
     estado: "aplicado",

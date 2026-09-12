@@ -10,6 +10,7 @@ import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   consumirDesafio,
   emitirConcessao,
+  marcarPago,
   type NivelDeVerificacao,
 } from "@/lib/ads/concessoes";
 
@@ -78,6 +79,7 @@ export interface DependenciasDeConclusao {
   checkRateLimit?: typeof checkRateLimit;
   consumirDesafio?: typeof consumirDesafio;
   emitirConcessao?: typeof emitirConcessao;
+  marcarPago?: typeof marcarPago;
   isIpBlocked?: typeof isIpBlocked;
   recordAbuseAttempt?: typeof recordAbuseAttempt;
   agora?: () => number;
@@ -89,6 +91,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const consumir = deps.consumirDesafio ?? consumirDesafio;
   const emitir = deps.emitirConcessao ?? emitirConcessao;
+  const marcarPagoDoAlvo = deps.marcarPago ?? marcarPago;
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
   const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
   const agora = deps.agora ?? Date.now;
@@ -193,11 +196,32 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // propósito — um campo no corpo que elevasse o nível seria o próprio buraco.
   const verificacao: NivelDeVerificacao = "soft";
 
-  const concessao = await emitir({ userId, finalidade: "reproducao", verificacao });
+  // Finalidade e alvo vêm do DESAFIO, gravado pelo servidor quando decidiu cobrar
+  // o anúncio — nunca do corpo desta requisição. Um anúncio visto para baixar não
+  // vira concessão de reprodução, nem de outro conteúdo.
+  const concessao = await emitir({
+    userId,
+    finalidade: desafio.finalidade,
+    verificacao,
+    alvo: desafio.alvo,
+  });
+
+  // Reprodução paga fica paga para aquele alvo durante a janela da concessão:
+  // reabrir o mesmo filme ou episódio (retry, sessão expirada, voltar ao 3º
+  // episódio) recebe passe sem outro anúncio. Download e transmissão são
+  // pontuais e não recebem marca. Falhar ao marcar custa, no pior caso, um
+  // anúncio a mais — nunca acesso indevido — e por isso não derruba a resposta.
+  if (desafio.finalidade === "reproducao" && desafio.alvo) {
+    try {
+      await marcarPagoDoAlvo({ userId, finalidade: desafio.finalidade, alvo: desafio.alvo });
+    } catch {
+      /* conveniência, não autorização */
+    }
+  }
 
   audit("play_token_issued", {
     userId, ip, ua,
-    detail: `concessao de anuncio (${verificacao}) plataforma:${desafio.plataforma} tipo:${desafio.tipo}`,
+    detail: `concessao de anuncio (${verificacao}) finalidade:${desafio.finalidade} plataforma:${desafio.plataforma} tipo:${desafio.tipo}`,
   });
 
   return NextResponse.json({ concessao }, { headers: NO_STORE });
