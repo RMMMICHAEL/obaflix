@@ -83,7 +83,7 @@ export interface DependenciasDeConclusao {
   agora?: () => number;
 }
 
-export function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
+function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
@@ -204,4 +204,5 @@ export function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   };
 }
 
-export const POST = createAdsCompleteHandler();
+/** Next só aceita exports de método em route.ts; o teste usa a mesma fábrica. */
+export const POST = Object.assign(createAdsCompleteHandler(), { createForTest: createAdsCompleteHandler });

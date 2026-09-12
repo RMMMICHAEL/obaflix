@@ -725,7 +725,9 @@ Redis:
 O `SET NX` é atômico: só o **primeiro** pedido daquele episódio na janela
 incrementa. Refresh, retry, erro de rede e reabertura do app não contam duas
 vezes. A cada `N` episódios (`N` configurável, hoje 3) a decisão vira
-`ANUNCIO_NECESSARIO`, e o contador só zera quando a concessão é emitida.
+`ANUNCIO_NECESSARIO`. O contador não zera ao emitir ou consumir a concessão:
+assim a cadência segue em 3, 6, 9… dentro da mesma janela; só o TTL da janela
+reinicia o ciclo.
 
 > **[D-6]** janela de 24 h ou por sessão? E `N = 3` fica configurável no
 > `Plano` (por exemplo, `episodiosPorAnuncio`) ou global?

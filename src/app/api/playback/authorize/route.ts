@@ -85,7 +85,7 @@ export interface DependenciasDeAutorizacao {
   recordAbuseAttempt?: typeof recordAbuseAttempt;
 }
 
-export function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
+function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
@@ -286,4 +286,5 @@ export function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   };
 }
 
-export const POST = createAuthorizeHandler();
+/** Next só aceita exports de método em route.ts; o teste usa a mesma fábrica. */
+export const POST = Object.assign(createAuthorizeHandler(), { createForTest: createAuthorizeHandler });

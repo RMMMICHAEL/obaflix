@@ -1,8 +1,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { createAuthorizeHandler } from "@/app/api/playback/authorize/route";
-import { createAdsCompleteHandler } from "@/app/api/ads/complete/route";
+import { POST as authorizePost } from "@/app/api/playback/authorize/route";
+import { POST as completePost } from "@/app/api/ads/complete/route";
 import { autorizarPorAnuncio } from "../ads/enforcement";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
@@ -74,6 +74,9 @@ function portasComuns(userId: string, plano: PlanoSemeado) {
     recordAbuseAttempt: async () => {},
   };
 }
+
+const createAuthorizeHandler = authorizePost.createForTest;
+const createAdsCompleteHandler = completePost.createForTest;
 
 function autorizador(
   userId: string,
@@ -261,6 +264,10 @@ describe("concessão: uso único, dono, finalidade, validade", () => {
     ]);
 
     assert.equal(resultados.filter((r) => r.liberado).length, 1);
+    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, concessao), {
+      liberado: false,
+      motivo: "concessao_invalida",
+    }, "depois do único vencedor, toda tentativa posterior é recusada");
   });
 
   /** Cenário 9. */
@@ -270,8 +277,8 @@ describe("concessão: uso único, dono, finalidade, validade", () => {
     const concessao = await emitirConcessao({ userId: dono, finalidade: "reproducao", verificacao: "soft" });
 
     assert.equal((await portaDeFontes(intruso, PLANO_GRATUITO, concessao)).liberado, false);
-    // E continua válida para o dono: a tentativa alheia não a queima.
-    assert.equal(await concessaoValida(concessao, dono), true);
+    // A prova importante não é só o GET: o dono ainda consegue consumi-la.
+    assert.equal((await portaDeFontes(dono, PLANO_GRATUITO, concessao)).liberado, true);
   });
 
   /** Cenário 10. */
@@ -283,6 +290,8 @@ describe("concessão: uso único, dono, finalidade, validade", () => {
       await consumirConcessao(concessao, userId, "canais" as unknown as "reproducao"),
       false,
     );
+    // Finalidade inválida tampouco pode queimar a concessão legítima.
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, concessao)).liberado, true);
   });
 
   /** Cenário 11: expirada é o mesmo que inexistente. */
@@ -463,6 +472,8 @@ describe("séries, pela rota", () => {
       liberado: true,
       via: "concessao",
     });
+    // A concessão foi consumida; o quarto distinto inicia o próximo grupo.
+    assert.equal((await pedirEpisodio(userId, 1, 4)).decisao, "PERMITIDO");
   });
 });
 
