@@ -200,6 +200,9 @@ export function mensagemDeFalha(motivo?: string): string {
       return "O link expirou. Tente de novo";
     case "indisponivel":
       return "Indisponível neste aparelho";
+    case "download_indisponivel":
+    case "hls_sem_arquivo_unico":
+      return "Download indisponível para este título";
     default:
       return "Não foi possível concluir";
   }
@@ -226,4 +229,94 @@ export function fontesCandidatas<
   return fontes.filter(
     (f) => !!f.disponivel && !!f.nativo && !f.iframeDireto && !f.iframeDesafio && !f.superflixLocal,
   );
+}
+
+/**
+ * Que mídia uma fonte resolvida entrega, pelo mesmo critério do
+ * `DownloadSourceResolver.classificar` do Android: o tipo declarado manda, e só
+ * "mp4" é arquivo direto; sem tipo, só um caminho terminado em `.mp4` é direto.
+ * Todo o resto é HLS — inclusive uma URL que nem dá para ler.
+ *
+ * Classifica pela mídia resolvida, nunca pela posição ou pelo nome do servidor.
+ */
+export type MidiaDaFonte = "direta" | "hls";
+
+export function midiaDaFonte(fonte: { stream?: string; tipo?: string | null }): MidiaDaFonte {
+  if (fonte.tipo && fonte.tipo.trim() !== "") {
+    return fonte.tipo.toLowerCase() === "mp4" ? "direta" : "hls";
+  }
+  try {
+    return new URL(fonte.stream ?? "").pathname.toLowerCase().endsWith(".mp4") ? "direta" : "hls";
+  } catch {
+    return "hls";
+  }
+}
+
+/**
+ * Teto de servidores tentados num toque em Baixar. Cada tentativa fora do
+ * player custa uma chamada a `/api/player/fonte-nativa`; a extração em si roda
+ * no aparelho.
+ */
+export const MAX_TENTATIVAS_DE_DOWNLOAD = 6;
+
+export type RespostaDeSondagem = { ok: boolean; motivo?: string; tentarOutraFonte?: boolean };
+
+export type ResultadoDaProcura<R> = { ok: true; resposta: R } | { ok: false; motivo?: string };
+
+/**
+ * Procura a fonte de download: arquivo direto antes de HLS.
+ *
+ * Ordem: MP4/direta aceita pelo Android → próxima fonte direta → só então HLS.
+ * Nesta versão o HLS não tem vez: baixá-lo gravava dezenas de `.ts` e um
+ * `index.m3u8`, e ainda não há remux seguro para um arquivo único. Uma fonte HLS
+ * é pulada sem sequer ser sondada, e se só houver HLS a resposta é
+ * "Download indisponível para este título".
+ *
+ * `resolverFonte` devolve `null` quando as fontes acabaram e lança quando um
+ * servidor específico falhou — a procura segue para o próximo em vez de
+ * desistir no primeiro servidor quebrado.
+ *
+ * Não resolve nem troca a fonte que está tocando: o que cada tentativa devolve
+ * é decisão de quem chama (no player, só a fonte atual).
+ */
+export async function procurarFonteDeDownload<
+  F extends { stream?: string; tipo?: string | null },
+  R extends RespostaDeSondagem,
+>(params: {
+  resolverFonte: (tentativa: number) => Promise<F | null>;
+  sondar: (fonte: F) => Promise<R>;
+  maxTentativas?: number;
+}): Promise<ResultadoDaProcura<R>> {
+  const { resolverFonte, sondar, maxTentativas = MAX_TENTATIVAS_DE_DOWNLOAD } = params;
+  let viuHls = false;
+  let ultimo: R | null = null;
+
+  for (let tentativa = 0; tentativa < maxTentativas; tentativa++) {
+    let fonte: F | null;
+    try {
+      fonte = await resolverFonte(tentativa);
+    } catch {
+      // Este servidor falhou; os próximos ainda podem servir.
+      continue;
+    }
+    if (!fonte) break;
+
+    if (midiaDaFonte(fonte) === "hls") {
+      viuHls = true;
+      continue;
+    }
+
+    let r: R;
+    try {
+      r = await sondar(fonte);
+    } catch {
+      r = { ok: false } as R;
+    }
+    if (r.ok) return { ok: true, resposta: r };
+    ultimo = r;
+    // Só insiste quando o Android disse que outra fonte pode servir.
+    if (!r.tentarOutraFonte) break;
+  }
+
+  return { ok: false, motivo: viuHls ? "download_indisponivel" : ultimo?.motivo };
 }

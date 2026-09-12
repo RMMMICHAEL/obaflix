@@ -154,7 +154,7 @@ class MediaActionsBridge(
             return
         }
 
-        when (val elegibilidade = DownloadSourceResolver.classificar(payload)) {
+        when (val elegibilidade = DownloadSourceResolver.paraDownload(payload)) {
             is DownloadElegibilidade.Inelegivel -> {
                 ObaLog.alerta(
                     "download", "download_failed",

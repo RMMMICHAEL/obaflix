@@ -87,7 +87,13 @@ export function useFonteParaMidia({
     candidatasRef.current = fontesCandidatas(lista);
   }, [conteudoId, conteudoTipo, temporada, numeroEp]);
 
-  /** A n-ésima fonte candidata, já resolvida. `null` quando acabaram. */
+  /**
+   * A n-ésima fonte candidata, já resolvida.
+   *
+   * `null` só quando as fontes acabaram. Quando **este** servidor falha, lança:
+   * assim quem procura download segue para o próximo em vez de confundir um
+   * servidor quebrado com o fim da lista (ver `procurarFonteDeDownload`).
+   */
   return useCallback(async (tentativa: number): Promise<Resolvido | null> => {
     await abrirSessao();
     const sessao = sessaoRef.current;
@@ -102,7 +108,7 @@ export function useFonteParaMidia({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessao, fonteId: alvo.id }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error("fonte_falhou");
     const nativa = await res.json();
 
     // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
@@ -116,10 +122,10 @@ export function useFonteParaMidia({
         tipo: String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
       };
     }
-    if (!nativa?.embedUrl) return null;
+    if (!nativa?.embedUrl) throw new Error("fonte_falhou");
 
     const dados = await ponte.extractStream(nativa.embedUrl);
-    if (dados?.error || !dados?.stream) return null;
+    if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
 
     // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
     // nativo comum — os caminhos de sessão foram filtrados acima.

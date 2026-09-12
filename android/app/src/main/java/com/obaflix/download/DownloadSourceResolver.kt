@@ -42,6 +42,16 @@ enum class MotivoInelegivel {
 
     /** URL malformada. */
     URL_INVALIDA,
+
+    /**
+     * HLS nao vira arquivo unico nesta versao.
+     *
+     * Baixar HLS gravava dezenas de segmentos .ts e um index.m3u8 na pasta da
+     * pessoa — nao e um video que ela consiga abrir. Juntar os segmentos num
+     * arquivo unico exige remux confiavel, que fica para depois. So o download
+     * recusa: a transmissao continua aceitando HLS (ver [DownloadSourceResolver.paraDownload]).
+     */
+    HLS_SEM_ARQUIVO_UNICO,
 }
 
 sealed class DownloadElegibilidade {
@@ -173,4 +183,25 @@ object DownloadSourceResolver {
             )
         )
     }
+
+    /**
+     * [classificar] mais a regra de download: so arquivo direto (MP4) vira
+     * download nesta versao.
+     *
+     * HLS e recusado com [MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO] e o lado web
+     * tenta a proxima fonte. E a defesa do lado nativo: mesmo um site antigo, que
+     * ainda mande HLS para sondagem, nao produz mais dezenas de `.ts` na pasta.
+     *
+     * A transmissao continua em [classificar] — o app de cast toca HLS.
+     */
+    fun paraDownload(payload: JSONObject, agora: Long = System.currentTimeMillis()): DownloadElegibilidade =
+        when (val base = classificar(payload, agora)) {
+            is DownloadElegibilidade.Inelegivel -> base
+            is DownloadElegibilidade.Elegivel ->
+                if (base.source.kind == MediaKind.HLS) {
+                    DownloadElegibilidade.Inelegivel(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO)
+                } else {
+                    base
+                }
+        }
 }

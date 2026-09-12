@@ -86,6 +86,10 @@ object CastSourceResolver {
                     MotivoInelegivel.NAO_HTTPS -> MotivoSemCast.NAO_HTTPS
                     MotivoInelegivel.EXPIRADA -> MotivoSemCast.EXPIRADA
                     MotivoInelegivel.URL_INVALIDA -> MotivoSemCast.URL_INVALIDA
+                    // Inalcancavel aqui: so DownloadSourceResolver.paraDownload produz
+                    // este motivo, e o cast usa classificar, que aceita HLS. O ramo
+                    // existe porque o when e exaustivo.
+                    MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO -> MotivoSemCast.SEM_STREAM
                 }
             )
         }

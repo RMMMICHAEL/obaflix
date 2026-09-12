@@ -172,4 +172,38 @@ class DownloadSourceResolverTest {
         assertEquals(null, r.source.referer)
         assertEquals(null, r.source.userAgent)
     }
+
+    // -- Download so de arquivo unico --------------------------------------------
+
+    @Test
+    fun `hls nao vira download, mesmo servindo para transmissao`() {
+        val json = payload("stream" to "https://cdn.exemplo.com/x/master.m3u8", "tipo" to "hls")
+        assertTrue(DownloadSourceResolver.classificar(json, AGORA) is DownloadElegibilidade.Elegivel)
+        val r = DownloadSourceResolver.paraDownload(json, AGORA) as DownloadElegibilidade.Inelegivel
+        assertEquals(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO, r.motivo)
+    }
+
+    @Test
+    fun `hls sem tipo declarado tambem e recusado para download`() {
+        val r = DownloadSourceResolver.paraDownload(payload("stream" to "https://cdn.exemplo.com/x/playlist"), AGORA)
+        assertEquals(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO, (r as DownloadElegibilidade.Inelegivel).motivo)
+    }
+
+    @Test
+    fun `mp4 continua virando download`() {
+        val r = DownloadSourceResolver.paraDownload(
+            payload("stream" to "https://cdn.exemplo.com/v.mp4", "tipo" to "mp4"),
+            AGORA,
+        )
+        assertEquals(MediaKind.MP4, (r as DownloadElegibilidade.Elegivel).source.kind)
+    }
+
+    @Test
+    fun `recusa de sessao vem antes da regra de hls`() {
+        val r = DownloadSourceResolver.paraDownload(
+            payload("origem" to "superflix", "stream" to "https://cdn.exemplo.com/x.m3u8"),
+            AGORA,
+        )
+        assertEquals(MotivoInelegivel.SESSAO_DO_NAVEGADOR, (r as DownloadElegibilidade.Inelegivel).motivo)
+    }
 }

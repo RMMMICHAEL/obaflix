@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Cast, Check, Download, Loader2, X } from "lucide-react";
 import { DownloadQualityModal, type Qualidade } from "./DownloadQualityModal";
-import { mensagemDeFalha, pontesDeMidia } from "@/lib/androidMedia";
+import { mensagemDeFalha, pontesDeMidia, procurarFonteDeDownload } from "@/lib/androidMedia";
 
 /**
  * Botões de Baixar e Transmitir do aplicativo Android.
@@ -154,40 +154,31 @@ export function AndroidMediaActions({
     setDownload("trabalhando");
     setAviso(null);
 
-    // Até três servidores. Além disso a espera incomoda mais do que a chance de
-    // sucesso ajuda — e cada tentativa custa uma extração.
-    let ultimo: Resposta | null = null;
-    for (let tentativa = 0; tentativa < 3; tentativa++) {
-      let fonte: FonteResolvida | null = null;
-      try {
-        fonte = await resolverFonte(tentativa);
-      } catch {
-        fonte = null;
-      }
-      if (!fonte) break;
+    // Arquivo direto primeiro: um HLS atual não vence um MP4 disponível em
+    // outro servidor, e HLS não vira download enquanto não houver remux seguro
+    // para um arquivo único. A regra e os testes vivem em procurarFonteDeDownload.
+    const inspecionar = p.inspectDownloadSource;
+    const resultado = await procurarFonteDeDownload<FonteResolvida, Resposta>({
+      resolverFonte,
+      sondar: (fonte) => inspecionar({ ...fonte, pid, titulo }),
+    });
 
-      const r = await p
-        .inspectDownloadSource({ ...fonte, pid, titulo })
-        .catch(() => ({ ok: false }) as Resposta);
-      ultimo = r;
-
-      if (r.ok) {
-        if (r.jaNaFila) {
-          setAviso("Já está na fila");
-          concluir(setDownload);
-          return;
-        }
-        if (r.sondagemId && r.qualidades?.length) {
-          setModal({ sondagemId: r.sondagemId, qualidades: r.qualidades });
-          setDownload("ocioso");
-          return;
-        }
-        break;
-      }
-      // Só insiste quando o Android disse que outra fonte pode servir.
-      if (!r.tentarOutraFonte) break;
+    if (!resultado.ok) {
+      falhar(setDownload, resultado.motivo);
+      return;
     }
-    falhar(setDownload, ultimo?.motivo);
+    const r = resultado.resposta;
+    if (r.jaNaFila) {
+      setAviso("Já está na fila");
+      concluir(setDownload);
+      return;
+    }
+    if (r.sondagemId && r.qualidades?.length) {
+      setModal({ sondagemId: r.sondagemId, qualidades: r.qualidades });
+      setDownload("ocioso");
+      return;
+    }
+    falhar(setDownload, r.motivo);
   }, [pid, titulo, resolverFonte, concluir, falhar]);
 
   // -- Baixar: etapa 2, escolha ---------------------------------------------
