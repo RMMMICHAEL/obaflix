@@ -10,7 +10,7 @@ export default function ContaPage() {
   const { data: session, status } = useSession();
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [historico, setHistorico] = useState<any[]>([]);
-  const [comercial, setComercial] = useState<{ plano: { id: string }; assinatura: { terminaEm: string } | null } | null>(null);
+  const [comercial, setComercial] = useState<{ plano: { id: string; nome: string }; assinatura: { terminaEm: string } | null } | null>(null);
 
   useEffect(() => {
     if (status === "unauthenticated") redirect("/login");
@@ -40,7 +40,7 @@ export default function ContaPage() {
 
       <section className="mb-10 rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <h2 className="text-lg font-semibold text-white">Meu plano</h2>
-        <p className="mt-1 text-sm text-zinc-400">Plano atual: {comercial?.plano.id ?? "Carregando…"}</p>
+        <p className="mt-1 text-sm text-zinc-400">Plano atual: {comercial?.plano.nome ?? "Carregando…"}</p>
         {comercial?.assinatura && <p className="mt-1 text-sm text-zinc-400">Válido até {new Date(comercial.assinatura.terminaEm).toLocaleDateString("pt-BR")}</p>}
         <Link href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</Link>
       </section>

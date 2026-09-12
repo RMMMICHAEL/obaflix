@@ -4,8 +4,10 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /** Catálogo comercial público, deliberadamente sem qualquer dado do gateway. */
-export async function GET() {
-  const planos = await prisma.plano.findMany({
+export function createPlansHandler(deps: any = {}) {
+  const banco = deps.prisma ?? prisma;
+  return async function GET() {
+  const planos = await banco.plano.findMany({
     where: { ativo: true }, orderBy: { ordem: "asc" },
     select: {
       id: true, nome: true, descricao: true, ehPadrao: true,
@@ -16,5 +18,8 @@ export async function GET() {
       } },
     },
   });
-  return NextResponse.json({ planos: planos.map((plano) => ({ ...plano, compravel: plano.precos.length > 0 })) }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ planos: planos.map((plano: any) => ({ ...plano, compravel: plano.precos.length > 0 })) }, { headers: { "Cache-Control": "no-store" } });
+  };
 }
+
+export const GET = createPlansHandler();
