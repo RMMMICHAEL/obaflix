@@ -328,6 +328,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun injectBridgeShim(view: WebView) {
+        // Este aparelho consegue conduzir um desafio "nao sou robo"?
+        //
+        // Mesmo predicado que a TV ja usa em `ApiObaflix.desafioInterativoSuportado`:
+        // abaixo da WebView 118 o `X-Requested-With` vaza o pacote do aplicativo e o
+        // provedor recusa, entao oferecer a fonte so entregaria uma tela de erro.
+        // Quem sabe disso e o aplicativo, nao o servidor - por isso desce como
+        // capacidade declarada na ponte, e o site nunca deduz isto de User-Agent.
+        val suportaSuperflix = podeEsconderRequestedWith()
+        ObaLog.evento(
+            ObaLog.Fase.SESSAO, "app_desafio_suportado",
+            "suportado" to suportaSuperflix,
+        )
         val script = """
             (function() {
                 document.documentElement.classList.add('obaflix-android-app');
@@ -347,6 +359,10 @@ class MainActivity : AppCompatActivity() {
                 window.obaflixDesktop = {
                     platform: 'android',
                     isAndroid: true,
+                    // Capacidade, nao preferencia: o site pede a fonte de
+                    // desafio interativo somente quando isto e true. Ver
+                    // suportaSuperflix acima e src/lib/superflixCapability.ts.
+                    suportaSuperflix: $suportaSuperflix,
                     extractStream: function(embedUrl) {
                         return new Promise(function(resolve, reject) {
                             var id = Math.random().toString(36).slice(2) + Date.now();

@@ -2,6 +2,7 @@
 
 import { useCallback, useRef } from "react";
 import { fontesCandidatas } from "@/lib/androidMedia";
+import { desafioInterativoDisponivel } from "@/lib/superflixCapability";
 
 /**
  * Resolve fontes para baixar ou transmitir, fora do player.
@@ -77,6 +78,13 @@ export function useFonteParaMidia({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         ambiente: "android",
+        // Mesma capacidade que o player envia, lida da ponte nativa. Aqui ela
+        // não muda o que baixa ou transmite — `fontesCandidatas` descarta a
+        // fonte de desafio de qualquer forma —, mas mantém a lista igual à do
+        // player para o mesmo conteúdo. Sem isto, "Servidor 3" seria um
+        // provedor diferente em cada caminho, e é essa numeração que aparece no
+        // diagnóstico do usuário.
+        desafioInterativo: desafioInterativoDisponivel(),
       }),
     });
     if (!res.ok) throw new Error("servidores indisponíveis");

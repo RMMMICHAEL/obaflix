@@ -24,6 +24,7 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
+import { desafioInterativoDisponivel } from "@/lib/superflixCapability";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import {
@@ -1596,6 +1597,10 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         ambiente,
+        // Capacidade do aparelho, lida da ponte nativa — nunca deduzida do
+        // ambiente. Sem isto a fonte de desafio interativo era filtrada no
+        // aplicativo móvel, que sabe conduzir o desafio e nunca dizia.
+        desafioInterativo: desafioInterativoDisponivel(),
         ...(fluxo.concessao ? { concessao: fluxo.concessao } : {}),
       }),
       signal,
