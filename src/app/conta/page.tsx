@@ -1,6 +1,6 @@
 "use client";
 
-import { useSession } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
@@ -66,6 +66,20 @@ export default function ContaPage() {
             );
           })}
         </div>
+      </section>
+
+      {/*
+        Logout do NextAuth, o mesmo da Navbar, voltando para /login. Não apaga
+        nada do aparelho: downloads vivem no armazenamento nativo do app.
+      */}
+      <section>
+        <button
+          type="button"
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
+        >
+          Sair da conta
+        </button>
       </section>
     </div>
   );
