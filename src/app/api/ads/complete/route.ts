@@ -71,28 +71,50 @@ interface Corpo {
   concluido?: unknown;
 }
 
-export async function POST(req: NextRequest) {
+/** As portas desta rota. Mesmo padrao de `createAuthorizeHandler`. */
+export interface DependenciasDeConclusao {
+  getUserFromRequest?: typeof getUserFromRequest;
+  monetizacaoAtiva?: () => boolean;
+  checkRateLimit?: typeof checkRateLimit;
+  consumirDesafio?: typeof consumirDesafio;
+  emitirConcessao?: typeof emitirConcessao;
+  isIpBlocked?: typeof isIpBlocked;
+  recordAbuseAttempt?: typeof recordAbuseAttempt;
+  agora?: () => number;
+}
+
+export function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
+  const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
+  const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
+  const limitar = deps.checkRateLimit ?? checkRateLimit;
+  const consumir = deps.consumirDesafio ?? consumirDesafio;
+  const emitir = deps.emitirConcessao ?? emitirConcessao;
+  const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
+  const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
+  const agora = deps.agora ?? Date.now;
+
+  return async function POST(req: NextRequest) {
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
     "unknown";
   const ua = req.headers.get("user-agent") || "unknown";
 
-  if (await isIpBlocked(ip)) {
+  if (await ipBloqueado(ip)) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 429, headers: NO_STORE });
   }
 
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !headerMatchesHost(origin, host)) {
-    await recordAbuseAttempt(ip);
+    await registrarAbuso(ip);
     audit("origin_rejected", { ip, ua, detail: "/ads/complete" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  const usuario = await getUserFromRequest(req);
+  const usuario = await usuarioDaRequisicao(req);
   if (!usuario) {
-    await recordAbuseAttempt(ip);
+    await registrarAbuso(ip);
     audit("auth_failure", { ip, ua, detail: "/ads/complete sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
@@ -101,12 +123,12 @@ export async function POST(req: NextRequest) {
   // Com o enforcement desligado ninguém deveria chegar aqui — `/authorize`
   // responde PERMITIDO sem abrir desafio. Recusar em vez de emitir concessão
   // fecha a porta de pré-fabricar concessões antes de a monetização ligar.
-  if (!monetizacaoAtiva()) {
+  if (!flagAtiva()) {
     return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
   }
 
   try {
-    const limite = await checkRateLimit(`ads:complete:${userId}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS);
+    const limite = await limitar(`ads:complete:${userId}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS);
     if (!limite.allowed) {
       audit("rate_limited", { userId, ip, ua, detail: "/ads/complete" });
       return NextResponse.json(
@@ -138,12 +160,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  const desafio = await consumirDesafio(desafioId, userId);
+  const desafio = await consumir(desafioId, userId);
   if (!desafio) {
     // Inexistente, expirado, já usado, ou de outra conta. Uma resposta só para
     // os quatro: distinguir daria a quem estiver sondando um oráculo sobre
     // desafios alheios.
-    await recordAbuseAttempt(ip);
+    await registrarAbuso(ip);
     audit("play_token_rejected", { userId, ip, ua, detail: "/ads/complete: desafio inválido" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
@@ -154,7 +176,7 @@ export async function POST(req: NextRequest) {
   // anúncio caber no intervalo não é um anúncio assistido — é automação, ou um
   // cliente que pulou a etapa. O desafio já foi consumido acima, então a
   // tentativa custa: quem tentar de novo precisa de um desafio novo.
-  const decorrido = Date.now() - desafio.criadoEm;
+  const decorrido = agora() - desafio.criadoEm;
   if (decorrido < TEMPO_MINIMO_DE_ANUNCIO_MS) {
     audit("playback_negado", {
       userId, ip, ua,
@@ -171,7 +193,7 @@ export async function POST(req: NextRequest) {
   // propósito — um campo no corpo que elevasse o nível seria o próprio buraco.
   const verificacao: NivelDeVerificacao = "soft";
 
-  const concessao = await emitirConcessao({ userId, finalidade: "reproducao", verificacao });
+  const concessao = await emitir({ userId, finalidade: "reproducao", verificacao });
 
   audit("play_token_issued", {
     userId, ip, ua,
@@ -179,4 +201,7 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ concessao }, { headers: NO_STORE });
+  };
 }
+
+export const POST = createAdsCompleteHandler();

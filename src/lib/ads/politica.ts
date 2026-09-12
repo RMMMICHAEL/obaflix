@@ -32,6 +32,48 @@ import type { DireitosDoPlano } from "../planos";
 /** O que o usuário está tentando abrir. */
 export type ConteudoDeAnuncio = "filme" | "serie";
 
+/**
+ * Onde o cliente diz estar. **Não é autoridade de direito.**
+ *
+ * A plataforma decide **como** o anúncio aparece, nunca **se** ele é exigido —
+ * quem decide isso é `anunciosObrigatorios`, resolvido no servidor. A
+ * consequência que importa está travada por teste: **nenhum valor de plataforma
+ * produz `permitido` para uma conta que deve anúncio.** Declarar `web` ou omitir
+ * o campo torna a situação mais restritiva (não há como exibir, logo não há
+ * reprodução), nunca mais permissiva.
+ *
+ * É o que impede o `ambiente` declarado pelo cliente de virar caminho de fuga.
+ */
+export type PlataformaDeExibicao = "android" | "electron" | "web";
+
+/**
+ * Como o anúncio seria exibido nesta plataforma, ou `null` quando não há meio.
+ *
+ * Os dois meios desta fase, e só eles:
+ *
+ *   - **`unity`** — interstitial nativo, no aplicativo Android móvel;
+ *   - **`direct_link`** — URL aberta no navegador externo, no Electron, e só
+ *     quando `ANUNCIO_DIRECT_LINK_URL` está configurada e é `https:`.
+ *
+ * `null` em três casos, todos tratados igual: navegador comum (não é superfície
+ * de reprodução desta fase — ver `src/config/site-mode.ts`, o streaming web
+ * nasce fechado), plataforma omitida, e Electron sem Direct Link configurado.
+ *
+ * **`null` não libera nada.** Ele leva a `ANUNCIO_INDISPONIVEL`, que é recusa —
+ * a alternativa seria liberar conteúdo justamente quando a monetização não
+ * funciona, e é exatamente esse fail-open que esta função existe para fechar.
+ */
+export type MeioDeExibicao = "unity" | "direct_link";
+
+export function meioDeExibicao(
+  plataforma: PlataformaDeExibicao | null,
+  temDirectLink: boolean,
+): MeioDeExibicao | null {
+  if (plataforma === "android") return "unity";
+  if (plataforma === "electron") return temDirectLink ? "direct_link" : null;
+  return null;
+}
+
 export type DecisaoDeAnuncio =
   /** Pode reproduzir agora. `via` diz por quê — serve ao log, não ao cliente. */
   | { decisao: "permitido"; via: "sem_anuncios" | "concessao" | "dentro_da_cota" }

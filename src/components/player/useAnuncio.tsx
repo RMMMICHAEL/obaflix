@@ -30,6 +30,24 @@ export class AnuncioRecusado extends Error {
 }
 
 /**
+ * O servidor exige anúncio e não há meio de exibi-lo nesta plataforma.
+ *
+ * Electron sem `ANUNCIO_DIRECT_LINK_URL` configurada, ou navegador comum. É
+ * estado do sistema, não do usuário — e é por isso que tem classe própria: a
+ * mensagem fala de indisponibilidade temporária, não de erro nem de recusa.
+ *
+ * A sessão de fontes **não** é aberta. Ela recusaria de qualquer forma (é a
+ * autoridade final e não há concessão), e o usuário veria "não foi possível
+ * carregar os servidores" — um erro genérico para uma causa que sabemos qual é.
+ */
+export class AnuncioIndisponivel extends Error {
+  constructor() {
+    super("sem meio de exibir anuncio nesta plataforma");
+    this.name = "AnuncioIndisponivel";
+  }
+}
+
+/**
  * A superfície nativa do Android, quando existe.
  *
  * Mínima de propósito: uma função, que recebe o `capability` da sessão e o

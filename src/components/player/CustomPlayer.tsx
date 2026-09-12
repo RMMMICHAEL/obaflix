@@ -24,7 +24,7 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
-import { AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
+import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
@@ -1581,6 +1581,10 @@ export function CustomPlayer({
 
     // Desistir de ver anúncio não é erro, e não deve virar tela vermelha.
     if (fluxo.situacao === "cancelado") throw new AnuncioRecusado();
+    // Sem meio de exibir o anúncio, a sessão não é nem tentada: `/fontes`
+    // recusaria de qualquer forma, e o usuário veria "não foi possível carregar
+    // os servidores" em vez da razão real.
+    if (fluxo.situacao === "indisponivel") throw new AnuncioIndisponivel();
     if (fluxo.situacao === "falhou") throw new Error("Não foi possível liberar a reprodução");
 
     const res = await fetch("/api/player/fontes", {
@@ -1670,6 +1674,13 @@ export function CustomPlayer({
         // sem "tente novamente" — não há nada para tentar de novo.
         if (e?.name === "AnuncioRecusado") {
           setError("A reprodução precisa de um anúncio para começar.");
+          setStatus("error");
+          return;
+        }
+        // Configuração nossa que falta, ou plataforma sem meio de exibição. A
+        // mensagem não expõe qual das duas — isso é log de servidor.
+        if (e?.name === "AnuncioIndisponivel") {
+          setError("Anúncio temporariamente indisponível. Tente novamente em instantes.");
           setStatus("error");
           return;
         }

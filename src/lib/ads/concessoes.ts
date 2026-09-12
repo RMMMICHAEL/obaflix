@@ -40,7 +40,7 @@ import crypto from "crypto";
 
 import { getRedis } from "../redis";
 import { janelaAnuncioHoras } from "./politica";
-import type { ConteudoDeAnuncio } from "./politica";
+import type { ConteudoDeAnuncio, PlataformaDeExibicao } from "./politica";
 import type { DireitosDoPlano } from "../planos";
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -99,6 +99,17 @@ export type PlataformaDeAnuncio = "android" | "electron";
 
 export function ehPlataformaDeAnuncio(v: unknown): v is PlataformaDeAnuncio {
   return v === "android" || v === "electron";
+}
+
+/**
+ * Normaliza o que o cliente declarou como plataforma.
+ *
+ * Qualquer coisa que não seja `android` ou `electron` — inclusive ausente, nula
+ * ou inventada — vira `"web"`, que é a plataforma **sem meio de exibição**. O
+ * desconhecido cai no caso mais restritivo, e não no mais permissivo.
+ */
+export function normalizarPlataforma(v: unknown): PlataformaDeExibicao {
+  return ehPlataformaDeAnuncio(v) ? v : "web";
 }
 
 /**
@@ -227,15 +238,29 @@ export async function consumirConcessao(
   const bruto = await redis.get(chaveConcessao(id));
   if (!bruto) return false;
 
-  const removidos = await redis.del(chaveConcessao(id));
-  if (removidos !== 1) return false;
-
+  let c: Concessao;
   try {
-    const c = JSON.parse(bruto) as Concessao;
-    return c.userId === userId && c.finalidade === finalidade;
+    c = JSON.parse(bruto) as Concessao;
   } catch {
     return false;
   }
+
+  // **Dono e finalidade ANTES do `DEL`**, e aqui a ordem é o oposto da do
+  // desafio — de propósito.
+  //
+  // Um desafio tentado com a conta errada é queimado: ele é de uso único de
+  // qualquer forma, e devolvê-lo ao pote daria tentativas ilimitadas contra um
+  // id já conhecido.
+  //
+  // Uma concessão, não. Apagar aqui deixaria qualquer um que descobrisse o id
+  // **negar a reprodução do dono** — um ataque de recusa de serviço contra a
+  // vítima, que veria a própria concessão sumir sem explicação. Conferir antes
+  // faz a tentativa alheia não custar nada a quem tem direito.
+  if (c.userId !== userId || c.finalidade !== finalidade) return false;
+
+  // Só agora. O `DEL` continua sendo quem autoriza: entre duas requisições
+  // legítimas e paralelas do mesmo dono, apenas a que recebe 1 consumiu.
+  return (await redis.del(chaveConcessao(id))) === 1;
 }
 
 // ── Contador de episódios distintos ──────────────────────────────────────────

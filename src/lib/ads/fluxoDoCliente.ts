@@ -66,8 +66,16 @@ export interface PortasDoFluxo {
 export type ResultadoDoFluxo =
   /** Pode abrir a sessão. `concessao` é `null` para quem não precisou de anúncio. */
   | { situacao: "liberado"; concessao: string | null }
-  /** O usuário desistiu, ou o anúncio não pôde ser exibido. */
+  /** O usuário desistiu de ver o anúncio. */
   | { situacao: "cancelado" }
+  /**
+   * O servidor exige anúncio e não há meio de exibi-lo nesta plataforma —
+   * Electron sem Direct Link configurado, ou navegador comum.
+   *
+   * Separado de `falhou` de propósito: não houve erro nenhum, e o usuário
+   * merece uma mensagem que diga isso. A sessão **não** é aberta.
+   */
+  | { situacao: "indisponivel" }
   /** Falha de rede ou recusa do servidor. A interface mostra erro, não libera. */
   | { situacao: "falhou" };
 
@@ -100,6 +108,12 @@ export async function executarFluxoDeAnuncio(
   }
 
   if (resposta?.decisao === "PERMITIDO") return { situacao: "liberado", concessao: null };
+
+  // O servidor exige anúncio e sabe que não há como exibi-lo aqui. Não há
+  // desafio para cumprir e **não se chama `/fontes`**: ela recusaria de qualquer
+  // forma, e o usuário veria "não foi possível carregar os servidores" em vez da
+  // razão real.
+  if (resposta?.decisao === "ANUNCIO_INDISPONIVEL") return { situacao: "indisponivel" };
 
   if (resposta?.decisao !== "ANUNCIO_NECESSARIO") {
     // Resposta que não é nenhuma das duas: servidor mais novo, erro, proxy no

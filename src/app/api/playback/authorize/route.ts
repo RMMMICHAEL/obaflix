@@ -10,10 +10,10 @@ import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
   concessaoValida,
-  ehPlataformaDeAnuncio,
+  normalizarPlataforma,
   registrarEpisodioDistinto,
 } from "@/lib/ads/concessoes";
-import { decidirAnuncio, exigeAnuncio } from "@/lib/ads/politica";
+import { decidirAnuncio, exigeAnuncio, meioDeExibicao } from "@/lib/ads/politica";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 
 /**
@@ -68,14 +68,42 @@ function inteiroPositivo(v: unknown): number | null {
   return Number.isInteger(n) && n >= 0 && n < 100000 ? n : null;
 }
 
-export async function POST(req: NextRequest) {
+/**
+ * As portas desta rota. Injetaveis para o teste exercitar a sequencia inteira
+ * sem Postgres, Redis, sessao nem rede — mesmo padrao de
+ * `createGetPedidoHandler` e `createWebhookBlackcatHandler`.
+ */
+export interface DependenciasDeAutorizacao {
+  getUserFromRequest?: typeof getUserFromRequest;
+  monetizacaoAtiva?: () => boolean;
+  entitlementsDoUsuario?: typeof entitlementsDoUsuario;
+  registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
+  concessaoValida?: typeof concessaoValida;
+  abrirDesafio?: typeof abrirDesafio;
+  resolverDirectLink?: typeof resolverDirectLink;
+  isIpBlocked?: typeof isIpBlocked;
+  recordAbuseAttempt?: typeof recordAbuseAttempt;
+}
+
+export function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
+  const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
+  const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
+  const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
+  const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
+  const verificarConcessao = deps.concessaoValida ?? concessaoValida;
+  const criarDesafio = deps.abrirDesafio ?? abrirDesafio;
+  const lerDirectLink = deps.resolverDirectLink ?? resolverDirectLink;
+  const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
+  const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
+
+  return async function POST(req: NextRequest) {
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
     "unknown";
   const ua = req.headers.get("user-agent") || "unknown";
 
-  if (await isIpBlocked(ip)) {
+  if (await ipBloqueado(ip)) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 429, headers: NO_STORE });
   }
 
@@ -84,14 +112,14 @@ export async function POST(req: NextRequest) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
   if (origin && host && !headerMatchesHost(origin, host)) {
-    await recordAbuseAttempt(ip);
+    await registrarAbuso(ip);
     audit("origin_rejected", { ip, ua, detail: "/playback/authorize" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  const usuario = await getUserFromRequest(req);
+  const usuario = await usuarioDaRequisicao(req);
   if (!usuario) {
-    await recordAbuseAttempt(ip);
+    await registrarAbuso(ip);
     audit("auth_failure", { ip, ua, detail: "/playback/authorize sem sessão" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 401, headers: NO_STORE });
   }
@@ -113,10 +141,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  const plataforma = ehPlataformaDeAnuncio(corpo.plataforma) ? corpo.plataforma : null;
+  // Qualquer coisa que não seja `android` ou `electron` vira `"web"` — a
+  // plataforma sem meio de exibição. O desconhecido cai no caso mais restritivo.
+  const plataforma = normalizarPlataforma(corpo.plataforma);
 
   // ── Flag desligada: permitido, sem consultar nada ──────────────────────────
-  if (!monetizacaoAtiva()) {
+  if (!flagAtiva()) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 
@@ -129,7 +159,7 @@ export async function POST(req: NextRequest) {
   // decisão comercial tomada no escuro.
   let direitos;
   try {
-    direitos = (await entitlementsDoUsuario(userId)).direitos;
+    direitos = (await resolverEntitlements(userId)).direitos;
   } catch {
     audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/playback/authorize" });
     return NextResponse.json(
@@ -157,7 +187,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
     }
     try {
-      distintos = await registrarEpisodioDistinto({
+      distintos = await registrarEpisodio({
         userId, conteudoId, temporada, episodio: numeroEp, direitos,
       });
     } catch {
@@ -175,7 +205,7 @@ export async function POST(req: NextRequest) {
   const concessaoDica = identificador(corpo.concessao);
   let temConcessao = false;
   try {
-    temConcessao = await concessaoValida(concessaoDica, userId);
+    temConcessao = await verificarConcessao(concessaoDica, userId);
   } catch {
     // Redis instável não deve travar a decisão: sem concessão confirmada, o
     // caminho é pedir anúncio. Custa um anúncio a mais, nunca acesso indevido.
@@ -197,42 +227,63 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 
-  // ── Anúncio necessário ────────────────────────────────────────────────────
-  if (!plataforma) {
-    // Plataforma desconhecida não tem como exibir anúncio — Web pura, por
-    // exemplo. Bloquear seria tirar acesso de quem não tem como pagar com
-    // atenção; esta fase monetiza Android e Electron, e a Web fica como está.
-    return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
+  // ── Anúncio necessário: existe meio de exibi-lo? ──────────────────────────
+  //
+  // A plataforma decide **como** o anúncio aparece, nunca **se** ele é exigido.
+  // Sem meio de exibição não há anúncio a mostrar — e a resposta é recusa, não
+  // liberação.
+  //
+  // A versão anterior devolvia PERMITIDO aqui, nos dois casos (plataforma sem
+  // meio e Direct Link ausente), e isso era **fail-open inconsistente**: o
+  // cliente recebia PERMITIDO, chamava `/api/player/fontes` sem concessão, e
+  // era recusado lá — a autoridade final. O usuário via um erro genérico de
+  // "não foi possível carregar os servidores" por uma configuração nossa que
+  // faltava. Agora os dois lados dizem a mesma coisa.
+  const link = plataforma === "electron" ? lerDirectLink() : null;
+  const meio = meioDeExibicao(plataforma, link?.situacao === "ok");
+
+  if (!meio) {
+    // Nenhum desafio é aberto: não faz sentido emitir um desafio de uso único
+    // que ninguém tem como cumprir, e cada desafio inútil é uma chave no Redis.
+    audit("playback_negado", {
+      userId, ip, ua,
+      detail: `anuncio indisponivel plataforma:${plataforma}`,
+    });
+    return NextResponse.json(
+      {
+        decisao: "ANUNCIO_INDISPONIVEL",
+        codigo: "anuncio_indisponivel",
+      },
+      { headers: NO_STORE },
+    );
   }
 
-  const desafioId = await abrirDesafio({ userId, tipo: conteudoTipo, plataforma });
+  const desafioId = await criarDesafio({
+    userId,
+    tipo: conteudoTipo,
+    // `meio` já provou que é uma das duas plataformas com exibição.
+    plataforma: plataforma === "android" ? "android" : "electron",
+  });
 
   const corpoResposta: Record<string, unknown> = {
     decisao: "ANUNCIO_NECESSARIO",
     desafioId,
   };
 
-  if (plataforma === "electron") {
-    const link = resolverDirectLink();
-    if (link.situacao === "ok") {
-      // Sai do servidor só aqui, e só para quem precisa ver anúncio no Electron.
-      corpoResposta.directLink = link.url;
-      audit("playback_negado", {
-        userId, ip, ua,
-        detail: `anuncio necessario electron host:${hostParaLog(link.url)}`,
-      });
-    } else {
-      // Sem Direct Link configurado não há anúncio a exibir. Bloquear seria
-      // punir o usuário por configuração nossa que falta — e a receita perdida
-      // é nossa, não dele. Libera e registra.
-      audit("playback_negado", {
-        userId, ip, ua, detail: "direct link ausente — liberado sem anuncio",
-      });
-      return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
-    }
+  if (meio === "direct_link" && link?.situacao === "ok") {
+    // Sai do servidor só aqui: Electron, com anúncio necessário e link válido.
+    // Assinante não recebe o campo — não é interface escondendo, é ausência.
+    corpoResposta.directLink = link.url;
+    audit("playback_negado", {
+      userId, ip, ua,
+      detail: `anuncio necessario electron host:${hostParaLog(link.url)}`,
+    });
   } else {
     audit("playback_negado", { userId, ip, ua, detail: "anuncio necessario android" });
   }
 
   return NextResponse.json(corpoResposta, { headers: NO_STORE });
+  };
 }
+
+export const POST = createAuthorizeHandler();

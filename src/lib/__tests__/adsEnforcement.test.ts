@@ -276,9 +276,9 @@ describe("o que o servidor NÃO aceita como prova", () => {
       "o campo do cliente não pode governar a emissão",
     );
 
-    const posDesafio = codigoComplete.indexOf("await consumirDesafio(");
+    const posDesafio = codigoComplete.indexOf("await consumir(desafioId, userId)");
     const posTempo = codigoComplete.indexOf("TEMPO_MINIMO_DE_ANUNCIO_MS");
-    const posEmite = codigoComplete.indexOf("await emitirConcessao(");
+    const posEmite = codigoComplete.indexOf("await emitir({");
 
     assert.ok(posDesafio > -1 && posTempo > -1 && posEmite > -1);
     assert.ok(posDesafio < posEmite, "o desafio precisa ser consumido antes de emitir");
@@ -300,7 +300,7 @@ describe("o que o servidor NÃO aceita como prova", () => {
   });
 
   test("desafio inválido não emite nada", () => {
-    const posDesafio = codigoComplete.indexOf("const desafio = await consumirDesafio(");
+    const posDesafio = codigoComplete.indexOf("const desafio = await consumir(");
     const bloco = codigoComplete.slice(posDesafio, posDesafio + 500);
     assert.ok(bloco.includes("if (!desafio)"));
     assert.ok(bloco.includes("403"));
