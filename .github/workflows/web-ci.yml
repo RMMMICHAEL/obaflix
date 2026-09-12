@@ -43,6 +43,13 @@ jobs:
       # e marcador de conflito, somente nas linhas que este PR introduz. Numa
       # arvore recem-clonada `git diff --check HEAD` nao compara nada — o que
       # vale a pena olhar e o diff contra a base.
+      #
+      # `core.whitespace=cr-at-eol` porque parte do repositorio esta gravada com
+      # CRLF (`.env.example`, `.gitignore`, alguns `.kt`) e sem isto o git
+      # acusaria o CR de toda linha nova nesses arquivos como espaco no fim.
+      # Renormalizar o repositorio inteiro seria outra mudanca, com outro risco;
+      # aqui o portao continua pegando espaco de verdade, TAB e marcador de
+      # conflito, que e o que ele existe para pegar.
       - name: Diff-check (whitespace / conflito)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -56,7 +63,7 @@ jobs:
             RANGE="HEAD~1"
           fi
           echo "Comparando com $RANGE"
-          git diff --check "$RANGE" -- .
+          git -c core.whitespace=cr-at-eol diff --check "$RANGE" -- .
 
       # A Vercel roda 24.x em producao. Fixamos 22.x aqui porque e a versao em
       # que esta pipeline inteira foi validada (test, tsc, lint, build) e porque
