@@ -41,8 +41,18 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
 
   if (!history.length) return [];
 
-  const movieIds = [...new Set(history.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
-  const seriesIds = [...new Set(history.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
+  // A faixa "Continuar assistindo" mostra apenas o contato mais recente
+  // com cada conteúdo. O histórico individual dos episódios permanece intacto.
+  const seenContent = new Set<string>();
+  const continueHistory = history.filter((item) => {
+    const key = `${item.conteudoTipo}:${item.conteudoId}`;
+    if (seenContent.has(key)) return false;
+    seenContent.add(key);
+    return true;
+  });
+
+  const movieIds = [...new Set(continueHistory.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
+  const seriesIds = [...new Set(continueHistory.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
 
   const [movies, series] = await Promise.all([
     movieIds.length
@@ -62,7 +72,7 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
   const movieMap = new Map(movies.map((item) => [item.id, item]));
   const seriesMap = new Map(series.map((item) => [item.id, item]));
 
-  return history.flatMap((item) => {
+  return continueHistory.flatMap((item) => {
     const content = item.conteudoTipo === "filme"
       ? movieMap.get(item.conteudoId)
       : seriesMap.get(item.conteudoId);

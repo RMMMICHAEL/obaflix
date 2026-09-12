@@ -33,9 +33,19 @@ export async function GET(req: NextRequest) {
 
   if (history.length === 0) return NextResponse.json([]);
 
+  // Exibe apenas o contato mais recente com cada filme ou série.
+  // O histórico individual dos episódios permanece salvo normalmente.
+  const seenContent = new Set<string>();
+  const continueHistory = history.filter((item) => {
+    const key = `${item.conteudoTipo}:${item.conteudoId}`;
+    if (seenContent.has(key)) return false;
+    seenContent.add(key);
+    return true;
+  });
+
   // Busca dados de filmes e séries por conteudoId (não via FK, que pode ser null em registros antigos)
-  const filmeIds = [...new Set(history.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
-  const serieIds = [...new Set(history.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
+  const filmeIds = [...new Set(continueHistory.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
+  const serieIds = [...new Set(continueHistory.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
 
   const [filmes, series] = await Promise.all([
     filmeIds.length
@@ -55,7 +65,7 @@ export async function GET(req: NextRequest) {
   const filmeMap = new Map(filmes.map((f) => [f.id, f]));
   const serieMap = new Map(series.map((s) => [s.id, s]));
 
-  const items = history
+  const items = continueHistory
     .map((h) => {
       const content =
         h.conteudoTipo === "filme"
