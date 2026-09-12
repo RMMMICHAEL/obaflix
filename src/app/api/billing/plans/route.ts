@@ -16,5 +16,5 @@ export async function GET() {
       } },
     },
   });
-  return NextResponse.json({ planos }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ planos: planos.map((plano) => ({ ...plano, compravel: plano.precos.length > 0 })) }, { headers: { "Cache-Control": "no-store" } });
 }

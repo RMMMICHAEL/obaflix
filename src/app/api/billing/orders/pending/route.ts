@@ -12,5 +12,5 @@ export async function GET(req: NextRequest) {
     orderBy: { criadoEm: "desc" },
     select: { id: true, status: true, valorCentavos: true, moeda: true, expiraEm: true },
   });
-  return NextResponse.json({ pedido }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ pedido: pedido && { pedidoId: pedido.id, status: pedido.status, valorCentavos: pedido.valorCentavos, moeda: pedido.moeda, expiraEm: pedido.expiraEm } }, { headers: { "Cache-Control": "no-store" } });
 }
