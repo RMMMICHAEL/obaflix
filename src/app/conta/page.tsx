@@ -4,6 +4,7 @@ import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import Link from "next/link";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
@@ -34,6 +35,12 @@ export default function ContaPage() {
           <p className="text-zinc-400 text-sm">{session.user?.email}</p>
         </div>
       </div>
+
+      <section className="mb-10 rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <h2 className="text-lg font-semibold text-white">Meu plano</h2>
+        <p className="mt-1 text-sm text-zinc-400">Consulte planos e disponibilidade de assinatura.</p>
+        <Link href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</Link>
+      </section>
 
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-white mb-4">Minha Lista ({watchlist.length})</h2>

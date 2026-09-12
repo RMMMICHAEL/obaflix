@@ -174,6 +174,16 @@ export async function POST(req: NextRequest) {
   }
   const userId = usuario.userId;
 
+  // Não cobramos de novo uma conta que já tem assinatura válida. Upgrade,
+  // renovação e prorrata exigem regra comercial explícita; não são inferidos.
+  const assinaturaAtiva = await prisma.assinatura.findFirst({
+    where: { userId, status: "ATIVA", iniciaEm: { lte: new Date() }, terminaEm: { gt: new Date() } },
+    select: { id: true },
+  });
+  if (assinaturaAtiva) {
+    return erro(409, "assinatura_ativa", "Você já possui uma assinatura ativa");
+  }
+
   // 5. Limites. Os dois sempre, e nesta ordem: a conta é o sujeito da cobrança,
   //    o IP é o que impede contornar o limite da conta criando contas.
   //
