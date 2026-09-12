@@ -1114,7 +1114,9 @@ export function CustomPlayer({
       if (!sessao) throw new Error("Sessão de reprodução indisponível");
 
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
-      const mediaApi = typeof window !== "undefined" && (window as any).obaflixMedia;
+      const mediaApi = desktop?.startLocalMedia
+        ? { start: desktop.startLocalMedia, stop: desktop.stopLocalMedia }
+        : (typeof window !== "undefined" && (window as any).obaflixMedia);
       console.info("[obaflix-media] EXTRACT_ROUTE", {
         isAndroid,
         nativo: alvo.nativo,
@@ -1260,14 +1262,16 @@ export function CustomPlayer({
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
         if (ctrl.signal.aborted || unmountedRef.current) return;
+        const useLocalPlayerflix = !!mediaApi?.start && isAndroid && conteudoTipo === "serie" &&
+          /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl);
         console.info("[obaflix-media] NATIVE_START", {
-          via: mediaApi?.start ? "mediaApi" : "desktop.extractStream",
+          via: useLocalPlayerflix ? "mediaApi" : "desktop.extractStream",
           sourceId: fonteId,
           playerflix: /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl),
         });
         const data: { sessionId?: string; streamType?: string; stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
-          await (mediaApi?.start
-            ? mediaApi.start({ embedUrl, sourceId: fonteId })
+          await (useLocalPlayerflix
+            ? mediaApi.start({ embedUrl, sourceId: fonteId, contentType: conteudoTipo })
             : desktop.extractStream(embedUrl));
         if (ctrl.signal.aborted || unmountedRef.current) {
           if (data.sessionId) void mediaApi?.stop(data.sessionId).catch(() => {});

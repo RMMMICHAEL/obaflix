@@ -111,6 +111,13 @@ dependencies {
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 
+    // Download — Storage Access Framework. E a unica forma de escrever na pasta
+    // que o usuario escolheu sem pedir permissao ampla de armazenamento.
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    // registerForActivityResult, para o seletor de diretorio e para
+    // POST_NOTIFICATIONS.
+    implementation 'androidx.activity:activity-ktx:1.8.2'
+
     // Unity Ads. So aqui, no :app — o :tv nao monetiza nesta fase e nao deve nem
     // conhecer a dependencia. A 4.18.1 traz kotlin-stdlib 1.8.10 e coroutines
     // 1.6.4, ambos abaixo do que o projeto ja usa, entao a resolucao do Gradle
