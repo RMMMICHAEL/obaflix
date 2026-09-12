@@ -538,8 +538,9 @@ export function CustomPlayer({
     portas: portasDeAnuncio,
     modal: modalDeAnuncio,
     aoConfirmar: confirmarAnuncio,
-    aoCancelar: cancelarAnuncio,
-    aoLiberar: liberarAposAnuncio,
+    aoFechar: fecharAnuncio,
+    aoAssinar: assinarPlano,
+    saiuParaPlanos,
   } = useAnuncio();
 
   const [fonteIdx, setFonteIdx] = useState(0);
@@ -604,8 +605,18 @@ export function CustomPlayer({
    * `tentativa > 0` devolve null de propósito: dentro do player a fonte é a que
    * o usuário escolheu no seletor de servidor. Trocar por conta própria por
    * causa de um download recusado mudaria o vídeo debaixo dele.
+   *
+   * Baixar e transmitir continuam sendo ações patrocinadas aqui dentro: antes de
+   * entregar a mídia ao Android, a ação é liberada (`liberar` abre o convite se o
+   * servidor exigir) e a concessão é consumida por `/api/player/fontes` contra a
+   * sessão desta reprodução, com a finalidade da ação. A concessão de reprodução
+   * que abriu o vídeo não serve para isso.
    */
-  const fonteAtualParaMidia = useCallback(async (tentativa: number) => {
+  const fonteAtualParaMidia = useCallback(async (
+    tentativa: number,
+    finalidade: "download" | "transmissao",
+    liberar: (finalidade: "download" | "transmissao") => Promise<string | null>,
+  ) => {
     if (tentativa > 0) return null;
     const stream = directStreamRef.current;
     if (!stream) return null;
@@ -613,6 +624,35 @@ export function CustomPlayer({
     // player do próprio provedor, e não há arquivo a baixar nem URL a entregar.
     const tipo = streamTipoRef.current;
     if (tipo !== "hls" && tipo !== "mp4") return null;
+
+    // Lança AcaoCancelada (X, assinar) ou AcaoInterrompida — sobem para o botão.
+    const concessao = await liberar(finalidade);
+    const interrompida = (motivo: string) =>
+      Object.assign(new Error(`acao interrompida: ${motivo}`), { name: "AcaoInterrompida", motivo });
+    let res: Response;
+    try {
+      res = await fetch("/api/player/fontes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessao: sessaoFontesRef.current,
+          acao: true,
+          finalidade,
+          ...(concessao ? { concessao } : {}),
+          conteudoId,
+          conteudoTipo,
+          temporada: temporada ?? null,
+          numeroEp: numeroEp ?? null,
+        }),
+      });
+    } catch {
+      throw interrompida("servidores_indisponiveis");
+    }
+    if (!res.ok) {
+      if (res.status === 410) throw interrompida("sessao_expirada");
+      if (res.status === 403) throw interrompida("acao_nao_liberada");
+      throw interrompida("servidores_indisponiveis");
+    }
     return {
       // Marca a origem presa à sessão do navegador. O Android recusa "superflix"
       // para download e transmissão — a mídia dessas fontes não vale fora do
@@ -623,7 +663,7 @@ export function CustomPlayer({
       referer: streamRefererRef.current,
       expiresAt: streamExpiresAtRef.current,
     };
-  }, []);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp]);
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
@@ -1572,6 +1612,11 @@ export function CustomPlayer({
     //
     // Assinante e flag desligada recebem PERMITIDO e seguem direto. O custo é
     // uma requisição a mais, e ela some no ruído do `fetch` que já existia.
+    // Recusa comercial não é falha de mídia: tem nome próprio para a interface
+    // nunca mostrar "servidor/nenhuma mídia disponível" por causa dela.
+    const erroComercial = (motivo: string) =>
+      Object.assign(new Error(motivo), { name: "LiberacaoComercial", motivo });
+
     const fluxo = await executarFluxoDeAnuncio(
       {
         conteudoId,
@@ -1579,6 +1624,7 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         plataforma: ambiente === "android" ? "android" : ambiente === "electron" ? "electron" : null,
+        finalidade: "reproducao",
       },
       portasDeAnuncio,
     );
@@ -1589,8 +1635,11 @@ export function CustomPlayer({
     // recusaria de qualquer forma, e o usuário veria "não foi possível carregar
     // os servidores" em vez da razão real.
     if (fluxo.situacao === "indisponivel") throw new AnuncioIndisponivel();
-    if (fluxo.situacao === "falhou") throw new Error("Não foi possível liberar a reprodução");
+    if (fluxo.situacao === "falhou") throw erroComercial("liberacao_falhou");
 
+    // A concessão — ou o passe de cota, para o episódio que a política deixou
+    // passar — é consumida por `/fontes` na criação da sessão, para esta
+    // finalidade e este conteúdo.
     const res = await fetch("/api/player/fontes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1600,11 +1649,19 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         ambiente,
+        finalidade: "reproducao",
         ...(fluxo.concessao ? { concessao: fluxo.concessao } : {}),
       }),
       signal,
     });
-    if (!res.ok) throw new Error("Não foi possível carregar os servidores");
+    if (!res.ok) {
+      const recusa = await res.json().catch(() => null);
+      if (res.status === 403 && recusa?.codigo === "anuncio_necessario") throw erroComercial("anuncio_necessario");
+      if (res.status === 403 && recusa?.codigo === "conteudo_indisponivel_no_plano") {
+        throw erroComercial("conteudo_indisponivel_no_plano");
+      }
+      throw new Error("Não foi possível carregar os servidores");
+    }
     const data = await res.json();
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
     // Direito de download, decidido no servidor. Comparação estrita com `true`:
@@ -1674,17 +1731,32 @@ export function CustomPlayer({
         }
       } catch (e: any) {
         if (e?.name === "AbortError") return;
-        // Recusar o anúncio é escolha do usuário, não falha: mensagem própria,
-        // sem "tente novamente" — não há nada para tentar de novo.
+        // Fechar o convite no X, ou ir escolher um plano, não é erro: a
+        // reprodução simplesmente não começa. No X volta para a página do título
+        // — o estado anterior, igual ao botão Voltar. Indo para os planos, o
+        // modal já navegou, e isto não pode sobrescrever a navegação.
         if (e?.name === "AnuncioRecusado") {
-          setError("A reprodução precisa de um anúncio para começar.");
-          setStatus("error");
+          if (!saiuParaPlanos()) {
+            router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`);
+          }
           return;
         }
         // Configuração nossa que falta, ou plataforma sem meio de exibição. A
         // mensagem não expõe qual das duas — isso é log de servidor.
         if (e?.name === "AnuncioIndisponivel") {
           setError("Anúncio temporariamente indisponível. Tente novamente em instantes.");
+          setStatus("error");
+          return;
+        }
+        // Liberação comercial recusada — concessão vencida, conteúdo fora do
+        // plano, autorização indisponível. Mensagem própria: "servidor" e
+        // "nenhuma mídia disponível" ficam só para falha real de mídia.
+        if (e?.name === "LiberacaoComercial") {
+          setError(
+            e.motivo === "conteudo_indisponivel_no_plano"
+              ? "Este título não está disponível no seu plano."
+              : "Não foi possível liberar a reprodução agora. Tente novamente.",
+          );
           setStatus("error");
           return;
         }
@@ -2938,8 +3010,8 @@ export function CustomPlayer({
     <ModalDeAnuncio
       estado={modalDeAnuncio}
       aoConfirmar={confirmarAnuncio}
-      aoCancelar={cancelarAnuncio}
-      aoLiberar={liberarAposAnuncio}
+      aoFechar={fecharAnuncio}
+      aoAssinar={assinarPlano}
     />
     <div
       ref={containerRef}

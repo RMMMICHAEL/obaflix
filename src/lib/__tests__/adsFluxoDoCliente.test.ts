@@ -191,10 +191,26 @@ describe("o player pergunta antes de abrir sessão", () => {
    * anúncio.
    */
   test("o fluxo roda antes do fetch de /fontes", () => {
-    const fluxo = codigo.indexOf("await executarFluxoDeAnuncio(");
-    const fontes = codigo.indexOf('await fetch("/api/player/fontes"');
+    // Medido dentro de `abrirSessao`: outras chamadas a /fontes (download e
+    // transmissão sobre a sessão em curso) têm a própria liberação, conferida abaixo.
+    const inicio = codigo.indexOf("const abrirSessao = useCallback(");
+    assert.ok(inicio > -1);
+    const trecho = codigo.slice(inicio);
+    const fluxo = trecho.indexOf("await executarFluxoDeAnuncio(");
+    const fontes = trecho.indexOf('await fetch("/api/player/fontes"');
     assert.ok(fluxo > -1 && fontes > -1);
     assert.ok(fluxo < fontes, "o anúncio precisa ser resolvido antes de abrir a sessão");
+  });
+
+  test("download e transmissão no player liberam a ação antes de reservar em /fontes", () => {
+    const inicio = codigo.indexOf("const fonteAtualParaMidia = useCallback(");
+    assert.ok(inicio > -1);
+    const trecho = codigo.slice(inicio);
+    const liberacao = trecho.indexOf("await liberar(finalidade)");
+    const fontes = trecho.indexOf('await fetch("/api/player/fontes"');
+    assert.ok(liberacao > -1 && fontes > -1);
+    assert.ok(liberacao < fontes, "a ação precisa ser liberada antes de consumir a concessão");
+    assert.match(trecho.slice(0, trecho.indexOf("expiresAt: streamExpiresAtRef.current")), /acao: true,\s*finalidade,/);
   });
 
   test("a concessão é encaminhada ao criar a sessão", () => {
@@ -248,5 +264,47 @@ describe("o player pergunta antes de abrir sessão", () => {
     const hook = readFileSync(join(raiz, "src/components/player/useAnuncio.tsx"), "utf8");
     assert.match(hook, /mostrarAnuncio\(capability, entrada\.desafioId\)/);
     assert.match(hook, /if \(desafioId !== entrada\.desafioId\) return;/);
+  });
+});
+
+describe("passe de cota e finalidade", () => {
+  test("PERMITIDO com passe devolve o passe para a sessão, sem exibir anúncio", async () => {
+    const { portas, reg } = portasFalsas({ resposta: { decisao: "PERMITIDO", passe: "passe-1" } });
+
+    assert.deepEqual(await executarFluxoDeAnuncio(PEDIDO, portas), {
+      situacao: "liberado",
+      concessao: "passe-1",
+    });
+    assert.equal(reg.exibiu.length, 0);
+  });
+
+  test("passe vazio ou de tipo errado não vira concessão inventada", async () => {
+    for (const passe of ["", 42, null, {}]) {
+      const { portas } = portasFalsas({ resposta: { decisao: "PERMITIDO", passe } as RespostaDeAutorizacao });
+      assert.deepEqual(await executarFluxoDeAnuncio(PEDIDO, portas), { situacao: "liberado", concessao: null });
+    }
+  });
+
+  test("a finalidade vai ao servidor e ao modal", async () => {
+    const pedidos: PedidoDeAutorizacao[] = [];
+    const { portas, reg } = portasFalsas({ resposta: { decisao: "ANUNCIO_NECESSARIO", desafioId: "d1" } });
+    const autorizar = portas.autorizar;
+    portas.autorizar = async (p) => {
+      pedidos.push(p);
+      return autorizar(p);
+    };
+
+    await executarFluxoDeAnuncio({ ...PEDIDO, plataforma: "android", finalidade: "download" }, portas);
+
+    assert.equal(pedidos[0].finalidade, "download");
+    assert.equal((reg.exibiu[0] as { finalidade?: string }).finalidade, "download");
+  });
+
+  test("o player pede reprodução e trata recusa comercial sem mensagem de mídia", () => {
+    const player = readFileSync(join(raiz, "src/components/player/CustomPlayer.tsx"), "utf8");
+    assert.match(player, /finalidade: "reproducao"/);
+    assert.ok(player.includes('e?.name === "LiberacaoComercial"'));
+    assert.equal(player.includes("A reprodução precisa de um anúncio para começar."), false,
+      "fechar o convite volta ao estado anterior, sem tela de erro");
   });
 });

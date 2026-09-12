@@ -53,6 +53,30 @@ export function pidDeEpisodio(serieId: string, temporada: number, numeroEp: numb
   return `serie:${serieId}:t${temporada}:e${numeroEp}`;
 }
 
+/**
+ * O inverso de `pidDeFilme`/`pidDeEpisodio`: de volta ao conteúdo.
+ *
+ * É o que as ações de Baixar e Transmitir mandam a `/api/playback/authorize` —
+ * o `pid` já é a identidade do conteúdo em hero, episódio e player. Qualquer
+ * outra forma devolve null, e a ação não pede liberação para um conteúdo mal
+ * interpretado.
+ */
+export function alvoDoPid(pid: string | null | undefined): AlvoDeMidia | null {
+  if (!pid) return null;
+  const filme = /^filme:([^:]+)$/.exec(pid);
+  if (filme) return { tipo: "filme", conteudoId: filme[1] };
+  const serie = /^serie:([^:]+):t(\d+):e(\d+)$/.exec(pid);
+  if (serie) {
+    return {
+      tipo: "serie",
+      conteudoId: serie[1],
+      temporada: Number(serie[2]),
+      numeroEp: Number(serie[3]),
+    };
+  }
+  return null;
+}
+
 export function pidDoAlvo(alvo: AlvoDeMidia): string {
   return alvo.tipo === "filme"
     ? pidDeFilme(alvo.conteudoId)
@@ -203,6 +227,14 @@ export function mensagemDeFalha(motivo?: string): string {
     case "download_indisponivel":
     case "hls_sem_arquivo_unico":
       return "Download indisponível para este título";
+    // Recusas comerciais: nunca a mensagem de "servidor" ou de mídia.
+    case "anuncio_indisponivel":
+      return "Anúncio indisponível no momento. Tente de novo";
+    case "acao_nao_liberada":
+    case "anuncio_necessario":
+      return "Não foi possível liberar esta ação agora";
+    case "sessao_expirada":
+      return "O link expirou. Tente de novo";
     default:
       return "Não foi possível concluir";
   }
@@ -305,7 +337,20 @@ export async function procurarFonteDeDownload<
     let fonte: F | null;
     try {
       fonte = await resolverFonte(tentativa);
-    } catch {
+    } catch (erro) {
+      const nome = (erro as { name?: unknown } | null)?.name;
+      // Fechar o convite de anúncio, ir assinar um plano ou ter a ação recusada
+      // comercialmente encerram a procura inteira: tentar o próximo servidor
+      // abriria o modal de novo, ou repetiria a mesma recusa.
+      if (nome === "AcaoCancelada") {
+        registrar({ tentativa, resultado: "falhou", motivo: "cancelado" });
+        return { ok: false, motivo: "cancelado" };
+      }
+      if (nome === "AcaoInterrompida") {
+        const motivo = String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada");
+        registrar({ tentativa, resultado: "falhou", motivo });
+        return { ok: false, motivo };
+      }
       // Este servidor falhou; os próximos ainda podem servir.
       registrar({ tentativa, resultado: "falhou" });
       continue;

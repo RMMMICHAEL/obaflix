@@ -3,7 +3,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { Cast, Check, Download, Loader2, X } from "lucide-react";
 import { DownloadQualityModal, type Qualidade } from "./DownloadQualityModal";
-import { linhaDiagDownload, mensagemDeFalha, pontesDeMidia, procurarFonteDeDownload } from "@/lib/androidMedia";
+import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
+import {
+  AcaoInterrompida,
+  ehAcaoCancelada,
+  ehAcaoInterrompida,
+  liberarAcao,
+} from "@/lib/ads/acaoPatrocinada";
+import {
+  alvoDoPid,
+  linhaDiagDownload,
+  mensagemDeFalha,
+  pontesDeMidia,
+  procurarFonteDeDownload,
+} from "@/lib/androidMedia";
 
 /**
  * Botões de Baixar e Transmitir do aplicativo Android.
@@ -22,16 +35,24 @@ import { linhaDiagDownload, mensagemDeFalha, pontesDeMidia, procurarFonteDeDownl
  * navegador, no Electron e na TV o campo não existe, o componente devolve
  * `null` e nada é desenhado nem requisitado.
  *
- * ## O fluxo tem duas etapas
+ * ## Ações patrocinadas
+ *
+ * Baixar e transmitir passam pelo mesmo fluxo de anúncio da reprodução, com a
+ * finalidade explícita. Quem decide é o servidor: assinante segue direto; conta
+ * sujeita a anúncio vê o convite e, concluído o anúncio, a ação continua sozinha
+ * — sem clique extra. A concessão é consumida no servidor, pela rota que entrega
+ * a fonte, antes de qualquer mídia sair. Fechar o convite no X ou ir assinar um
+ * plano volta o botão ao estado anterior, sem mensagem de erro.
+ *
+ * ## O download tem duas etapas
  *
  * 1. `inspectDownloadSource` — o lado nativo classifica a fonte e, se ela
- *    servir, lê o master HLS e devolve as resoluções reais.
+ *    servir, devolve as qualidades reais.
  * 2. `requestDownload` — só depois que a pessoa escolheu no modal.
  *
- * A ordem importa: o modal só aparece para uma fonte que de fato dá para
- * baixar. Uma fonte presa à sessão do navegador é recusada na etapa 1 e o
- * componente tenta a próxima, sem nunca ter mostrado uma tela de escolha que
- * ia falhar no fim.
+ * A ordem importa: o modal de qualidade só aparece para uma fonte que de fato dá
+ * para baixar. Assistir ao anúncio não transforma HLS em arquivo único: sem fonte
+ * direta, a resposta continua "Download indisponível para este título".
  */
 
 /** O que um resolvedor devolve: só a mídia, sem identidade do conteúdo. */
@@ -45,6 +66,16 @@ export type FonteResolvida = {
   expiresAt?: number | null;
   error?: string;
 };
+
+/** Para que a fonte vai servir. A reprodução não passa por este componente. */
+export type FinalidadeDeMidia = "download" | "transmissao";
+
+/**
+ * Pede ao servidor a liberação de uma ação — e o anúncio, se a conta estiver
+ * sujeita. Devolve o id que a rota da ação consome, ou `null` para quem não
+ * precisa. Lança `AcaoCancelada` ou `AcaoInterrompida`.
+ */
+export type LiberarAcao = (finalidade: FinalidadeDeMidia) => Promise<string | null>;
 
 type Resposta = {
   ok: boolean;
@@ -118,16 +149,24 @@ export function AndroidMediaActions({
   tituloCurto?: string;
   poster?: string | null;
   /**
-   * Devolve a próxima fonte já resolvida, ou `null` quando acabaram.
+   * Devolve a próxima fonte já resolvida para esta ação, ou `null` quando
+   * acabaram.
    *
    * Recebe a tentativa (0, 1, 2…) para oferecer outro servidor quando o Android
-   * recusa o anterior. Quem resolve é sempre quem já tem a sessão autenticada —
-   * este componente nunca fala com provedor.
+   * recusa o anterior, a finalidade, e a porta de liberação — quem resolve é quem
+   * abre a sessão, e é lá que a liberação é consumida pelo servidor. Este
+   * componente nunca fala com provedor.
    */
-  resolverFonte: (tentativa: number) => Promise<FonteResolvida | null>;
+  resolverFonte: (
+    tentativa: number,
+    finalidade: FinalidadeDeMidia,
+    liberar: LiberarAcao,
+  ) => Promise<FonteResolvida | null>;
   variante?: VarianteVisual;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
+  const anuncio = useAnuncio();
+  const portasDeAnuncio = anuncio.portas;
   const [download, setDownload] = useState<Estado>("ocioso");
   const [cast, setCast] = useState<Estado>("ocioso");
   const [aviso, setAviso] = useState<string | null>(null);
@@ -146,6 +185,32 @@ export function AndroidMediaActions({
     setTimeout(() => setEstado("ocioso"), 2500);
   }, []);
 
+  /**
+   * A liberação desta ação, pelo mesmo fluxo da reprodução.
+   *
+   * O conteúdo sai do `pid`, que já identifica filme ou episódio sem carregar
+   * nada da fonte. O cliente não decide nada: pergunta com a finalidade, mostra
+   * o convite se o servidor exigir e devolve o id que o servidor emitiu.
+   */
+  const liberar = useCallback<LiberarAcao>(
+    async (finalidade) => {
+      const alvo = alvoDoPid(pid);
+      if (!alvo) throw new AcaoInterrompida("acao_nao_liberada");
+      return liberarAcao(
+        {
+          conteudoId: alvo.conteudoId,
+          conteudoTipo: alvo.tipo,
+          temporada: alvo.tipo === "serie" ? alvo.temporada : null,
+          numeroEp: alvo.tipo === "serie" ? alvo.numeroEp : null,
+          plataforma: "android",
+          finalidade,
+        },
+        portasDeAnuncio,
+      );
+    },
+    [pid, portasDeAnuncio],
+  );
+
   // -- Baixar: etapa 1, sondagem -------------------------------------------
 
   const abrirEscolha = useCallback(async () => {
@@ -159,7 +224,7 @@ export function AndroidMediaActions({
     // para um arquivo único. A regra e os testes vivem em procurarFonteDeDownload.
     const inspecionar = p.inspectDownloadSource;
     const resultado = await procurarFonteDeDownload<FonteResolvida, Resposta>({
-      resolverFonte,
+      resolverFonte: (tentativa) => resolverFonte(tentativa, "download", liberar),
       sondar: (fonte) => inspecionar({ ...fonte, pid, titulo }),
       // Diagnóstico por tentativa (mídia, caminho, servidor genérico, motivo)
       // no canal [diag/etapa], que chega ao logcat do APK. Sem URL nem token.
@@ -167,6 +232,11 @@ export function AndroidMediaActions({
     });
 
     if (!resultado.ok) {
+      // Fechar o convite ou ir assinar não é erro: o botão só volta ao estado anterior.
+      if (resultado.motivo === "cancelado") {
+        setDownload("ocioso");
+        return;
+      }
       falhar(setDownload, resultado.motivo);
       return;
     }
@@ -182,7 +252,7 @@ export function AndroidMediaActions({
       return;
     }
     falhar(setDownload, r.motivo);
-  }, [pid, titulo, resolverFonte, concluir, falhar]);
+  }, [pid, titulo, resolverFonte, liberar, concluir, falhar]);
 
   // -- Baixar: etapa 2, escolha ---------------------------------------------
 
@@ -220,11 +290,23 @@ export function AndroidMediaActions({
 
     let ultimo: Resposta | null = null;
     for (let tentativa = 0; tentativa < 3; tentativa++) {
-      let fonte: FonteResolvida | null = null;
+      let fonte: FonteResolvida | null;
       try {
-        fonte = await resolverFonte(tentativa);
-      } catch {
-        fonte = null;
+        fonte = await resolverFonte(tentativa, "transmissao", liberar);
+      } catch (erro) {
+        // Fechar o convite ou ir assinar: volta ao estado anterior, sem mensagem.
+        if (ehAcaoCancelada(erro)) {
+          setCast("ocioso");
+          return;
+        }
+        // Recusa comercial: mensagem própria, nunca a de servidor ou de mídia.
+        if (ehAcaoInterrompida(erro)) {
+          falhar(setCast, erro.motivo);
+          return;
+        }
+        // Só este servidor falhou. A liberação já foi feita e a sessão é a
+        // mesma: o próximo servidor não pede anúncio de novo.
+        continue;
       }
       if (!fonte) break;
 
@@ -240,7 +322,7 @@ export function AndroidMediaActions({
     }
     if (ultimo?.podeInstalar) ponte()?.installCastApp?.();
     falhar(setCast, ultimo?.motivo);
-  }, [pid, titulo, poster, resolverFonte, concluir, falhar]);
+  }, [pid, titulo, poster, resolverFonte, liberar, concluir, falhar]);
 
   if (!disponivel) return null;
 
@@ -274,6 +356,13 @@ export function AndroidMediaActions({
           </span>
         )}
       </div>
+
+      <ModalDeAnuncio
+        estado={anuncio.modal}
+        aoConfirmar={anuncio.aoConfirmar}
+        aoFechar={anuncio.aoFechar}
+        aoAssinar={anuncio.aoAssinar}
+      />
 
       {modal && (
         <DownloadQualityModal
