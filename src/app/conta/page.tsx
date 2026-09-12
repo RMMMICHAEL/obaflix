@@ -32,9 +32,21 @@ export default function ContaPage() {
         <div className="w-16 h-16 rounded-full bg-zinc-700 flex items-center justify-center text-2xl font-bold text-white">
           {session.user?.name?.charAt(0) ?? "U"}
         </div>
-        <div>
+        <div className="min-w-0">
           <h1 className="text-xl font-bold text-white">{session.user?.name ?? "Usuário"}</h1>
           <p className="text-zinc-400 text-sm">{session.user?.email}</p>
+          {/*
+            Logout do NextAuth, o mesmo da Navbar, voltando para /login. Fica no
+            perfil, no topo — não depois da lista. Não apaga nada do aparelho:
+            downloads vivem no armazenamento nativo do app.
+          */}
+          <button
+            type="button"
+            onClick={() => signOut({ callbackUrl: "/login" })}
+            className="mt-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
+          >
+            Sair da conta
+          </button>
         </div>
       </div>
 
@@ -66,20 +78,6 @@ export default function ContaPage() {
             );
           })}
         </div>
-      </section>
-
-      {/*
-        Logout do NextAuth, o mesmo da Navbar, voltando para /login. Não apaga
-        nada do aparelho: downloads vivem no armazenamento nativo do app.
-      */}
-      <section>
-        <button
-          type="button"
-          onClick={() => signOut({ callbackUrl: "/login" })}
-          className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
-        >
-          Sair da conta
-        </button>
       </section>
     </div>
   );
