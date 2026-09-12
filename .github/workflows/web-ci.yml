@@ -34,6 +34,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Precisamos do historico para comparar com a base do PR no
+          # diff-check; com o checkout raso de 1 commit nao ha o que comparar.
+          fetch-depth: 0
+
+      # Espaco em branco no fim da linha, indentacao com espaco e TAB misturados
+      # e marcador de conflito, somente nas linhas que este PR introduz. Numa
+      # arvore recem-clonada `git diff --check HEAD` nao compara nada — o que
+      # vale a pena olhar e o diff contra a base.
+      - name: Diff-check (whitespace / conflito)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            RANGE="$BASE_SHA"
+          elif [ -n "$BEFORE_SHA" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            RANGE="$BEFORE_SHA"
+          else
+            RANGE="HEAD~1"
+          fi
+          echo "Comparando com $RANGE"
+          git diff --check "$RANGE" -- .
 
       # A Vercel roda 24.x em producao. Fixamos 22.x aqui porque e a versao em
       # que esta pipeline inteira foi validada (test, tsc, lint, build) e porque
@@ -68,9 +91,6 @@ jobs:
 
       - name: Type-check pós-build
         run: npx tsc --noEmit
-
-      - name: Diff-check (whitespace / conflito)
-        run: git diff --check HEAD
 
       - name: Árvore limpa após o build
         run: |
