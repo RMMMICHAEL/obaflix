@@ -391,8 +391,12 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             })();
         """.trimIndent()
         runCatching {
+            // Regra de origem, nao padrao de URL: scheme://host, SEM caminho. Um
+            // "/*" no fim tornava a regra invalida e addDocumentStartJavaScript
+            // lancava IllegalArgumentException em todo aparelho — o document-start
+            // do updater nunca instalava. Corrigido assim na 1.0.16.
             WebViewCompat.addDocumentStartJavaScript(
-                webView, script, setOf("${BuildConfig.OBAFLIX_URL}/*"),
+                webView, script, setOf(BuildConfig.OBAFLIX_URL),
             )
         }.onFailure { e ->
             ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "document_start_script_falhou", "excecao" to e.javaClass.simpleName)
