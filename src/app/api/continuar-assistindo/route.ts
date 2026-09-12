@@ -33,9 +33,16 @@ export async function GET(req: NextRequest) {
 
   if (history.length === 0) return NextResponse.json([]);
 
+  const vistos = new Set<string>();
+  const continuar = history.filter((h) => {
+    const chave = `${h.conteudoTipo}:${h.conteudoId}`;
+    if (vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
   // Busca dados de filmes e séries por conteudoId (não via FK, que pode ser null em registros antigos)
-  const filmeIds = [...new Set(history.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
-  const serieIds = [...new Set(history.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
+  const filmeIds = [...new Set(continuar.filter((h) => h.conteudoTipo === "filme").map((h) => h.conteudoId))];
+  const serieIds = [...new Set(continuar.filter((h) => h.conteudoTipo === "serie").map((h) => h.conteudoId))];
 
   const [filmes, series] = await Promise.all([
     filmeIds.length
@@ -55,7 +62,7 @@ export async function GET(req: NextRequest) {
   const filmeMap = new Map(filmes.map((f) => [f.id, f]));
   const serieMap = new Map(series.map((s) => [s.id, s]));
 
-  const items = history
+  const items = continuar
     .map((h) => {
       const content =
         h.conteudoTipo === "filme"

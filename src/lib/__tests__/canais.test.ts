@@ -51,8 +51,10 @@ import {
   TTL_GRANT_S,
 } from "../canais/sessao";
 import { getRedis } from "../redis";
-import { createPlayCanalHandler, type CanalDoBanco } from "../../app/api/canais/[id]/play/route";
-import { createCanaisCatalogoHandler } from "../../app/api/canais/route";
+import { POST as playPost, type CanalDoBanco } from "../../app/api/canais/[id]/play/route";
+import { GET as catalogoGet } from "../../app/api/canais/route";
+const createPlayCanalHandler = playPost.createForTest;
+const createCanaisCatalogoHandler = catalogoGet.createForTest;
 
 // ── 1. Acesso: a escala, e os dois domínios ──────────────────────────────────
 

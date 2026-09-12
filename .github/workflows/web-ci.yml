@@ -1,0 +1,108 @@
+name: CI Web
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verificação (test, tsc, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Placeholders locais: o CI nunca alcança banco de produção. Nenhum passo
+    # abaixo abre conexão — prisma generate, tsc, lint e next build só precisam
+    # que as variáveis existam para o schema resolver env().
+    env:
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+      DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+      NEXTAUTH_SECRET: ci-placeholder-nao-usado-em-producao
+      NEXTAUTH_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: '1'
+      CI: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Precisamos do historico para comparar com a base do PR no
+          # diff-check; com o checkout raso de 1 commit nao ha o que comparar.
+          fetch-depth: 0
+
+      # Espaco em branco no fim da linha, indentacao com espaco e TAB misturados
+      # e marcador de conflito, somente nas linhas que este PR introduz. Numa
+      # arvore recem-clonada `git diff --check HEAD` nao compara nada — o que
+      # vale a pena olhar e o diff contra a base.
+      #
+      # `core.whitespace=cr-at-eol` porque parte do repositorio esta gravada com
+      # CRLF (`.env.example`, `.gitignore`, alguns `.kt`) e sem isto o git
+      # acusaria o CR de toda linha nova nesses arquivos como espaco no fim.
+      # Renormalizar o repositorio inteiro seria outra mudanca, com outro risco;
+      # aqui o portao continua pegando espaco de verdade, TAB e marcador de
+      # conflito, que e o que ele existe para pegar.
+      - name: Diff-check (whitespace / conflito)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            RANGE="$BASE_SHA"
+          elif [ -n "$BEFORE_SHA" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            RANGE="$BEFORE_SHA"
+          else
+            RANGE="HEAD~1"
+          fi
+          echo "Comparando com $RANGE"
+          git -c core.whitespace=cr-at-eol diff --check "$RANGE" -- .
+
+      # A Vercel roda 24.x em producao. Fixamos 22.x aqui porque e a versao em
+      # que esta pipeline inteira foi validada (test, tsc, lint, build) e porque
+      # o portao serve para pegar regressao de codigo, nao de runtime. Ao subir
+      # o runtime da Vercel, suba tambem aqui — e valide antes de fixar.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: Testes (extractors + web)
+        run: npm test
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Next build
+        run: npx next build
+
+      - name: Type-check pós-build
+        run: npx tsc --noEmit
+
+      - name: Árvore limpa após o build
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::O build alterou arquivos versionados:"
+            git status --porcelain
+            exit 1
+          fi

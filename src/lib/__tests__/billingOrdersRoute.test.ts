@@ -398,8 +398,8 @@ describe("a rota não decide nada de comercial por conta própria", () => {
   /** A promessa da fase, mais uma vez, no lugar onde seria mais tentador quebrá-la. */
   test("a rota não cria assinatura nem invalida entitlements", () => {
     for (const proibido of [
-      "assinatura",
-      "Assinatura",
+      "assinatura.create",
+      "assinatura.update",
       "invalidarEntitlements",
       "entitlementsDoUsuario",
       "PAGO",

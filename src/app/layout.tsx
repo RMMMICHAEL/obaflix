@@ -10,6 +10,10 @@ import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, DEFAULT_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
+// O catálogo e a sessão dependem de dados de runtime; não consultar Prisma no
+// prerender torna o build reprodutível sem acesso a banco de produção.
+export const dynamic = "force-dynamic";
+
 const inter = Inter({ subsets: ["latin"] });
 
 const bebas = Bebas_Neue({

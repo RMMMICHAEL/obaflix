@@ -110,7 +110,7 @@ function sessionIdDoCorpo(corpo: { sessionId?: unknown }): string | null {
   return /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : null;
 }
 
-export function createPlayCanalHandler(d: DependenciasDePlay) {
+function createPlayCanalHandler(d: DependenciasDePlay) {
   return async function handler(
     req: NextRequest,
     ctx: { params: { id: string } | Promise<{ id: string }> },
@@ -242,7 +242,7 @@ export function createPlayCanalHandler(d: DependenciasDePlay) {
   };
 }
 
-export const POST = createPlayCanalHandler({
+export const POST = Object.assign(createPlayCanalHandler({
   env: process.env,
   clientIp,
   isIpBlocked,
@@ -271,4 +271,4 @@ export const POST = createPlayCanalHandler({
   criarSessao: criarSessaoDeCanal,
   renovarSessao: renovarSessaoDeCanal,
   audit,
-});
+}), { createForTest: createPlayCanalHandler });

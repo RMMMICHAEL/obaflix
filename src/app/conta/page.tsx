@@ -4,11 +4,13 @@ import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import Link from "next/link";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [historico, setHistorico] = useState<any[]>([]);
+  const [comercial, setComercial] = useState<{ plano: { id: string; nome: string }; assinatura: { terminaEm: string } | null } | null>(null);
 
   useEffect(() => {
     if (status === "unauthenticated") redirect("/login");
@@ -18,6 +20,7 @@ export default function ContaPage() {
     if (!session) return;
     fetch("/api/user/watchlist").then((r) => r.json()).then(setWatchlist);
     fetch("/api/user/history").then((r) => r.json()).then(setHistorico);
+    fetch("/api/billing/me").then((r) => r.ok ? r.json() : null).then(setComercial);
   }, [session]);
 
   if (status === "loading") return <div className="min-h-screen flex items-center justify-center"><p className="text-zinc-400">Carregando...</p></div>;
@@ -34,6 +37,13 @@ export default function ContaPage() {
           <p className="text-zinc-400 text-sm">{session.user?.email}</p>
         </div>
       </div>
+
+      <section className="mb-10 rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <h2 className="text-lg font-semibold text-white">Meu plano</h2>
+        <p className="mt-1 text-sm text-zinc-400">Plano atual: {comercial?.plano.nome ?? "Carregando…"}</p>
+        {comercial?.assinatura && <p className="mt-1 text-sm text-zinc-400">Válido até {new Date(comercial.assinatura.terminaEm).toLocaleDateString("pt-BR")}</p>}
+        <Link href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</Link>
+      </section>
 
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-white mb-4">Minha Lista ({watchlist.length})</h2>

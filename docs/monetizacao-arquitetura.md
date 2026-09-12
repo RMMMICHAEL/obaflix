@@ -22,16 +22,19 @@ Desde então foram implementadas:
   `src/lib/billing/*` e `POST /api/billing/orders`: cria um pedido local e uma
   venda PIX na Blackcat, atrás de `BLACKCAT_PIX_ATIVO`.
 
-Continua verdadeiro, e é o que importa: **nada de anúncio, canais, concessão ou
-interface comercial foi escrito, e nenhuma assinatura é criada por código.** O
-plano padrão no banco ainda concede tudo, então mesmo com as flags ligadas nada
-muda para os usuários de hoje.
+O checkout comercial já existe em `/planos`, `/checkout` e `/conta`. O preço vem
+exclusivamente de `PlanoPreco` ativo; sem preço não há compra, e canais não são
+prometidos na vitrine. Um PIX criado, QR lido ou webhook recebido **não concede
+direito sozinho**: o backend consulta o provedor server→server, confere
+`transactionId`, valor e estado, marca `PAGO`, cria uma `Assinatura` `ATIVA` de
+forma idempotente e invalida entitlements. O polling pode reconciliar webhook
+perdido. `REFUNDED` marca `ESTORNADO`, cancela a assinatura e invalida o cache.
+QR/copia-e-cola não são persistidos nem logados.
 
-**A Fase 4 é infraestrutura de cobrança, e só.** Um PIX criado, um
-`transactionId`, um QR lido, uma tela visitada e até um `status: "PAID"` na
-resposta de criação **não concedem direito**. A confirmação servidor→servidor, o
-webhook e a reconciliação são a Fase 5, e as seções 13 e 14 continuam
-descrevendo o que falta.
+Conta com assinatura vigente não cria novo PIX: upgrade, renovação automática e
+prorrata não existem nesta fase. O reload recupera apenas pedido pendente do
+próprio usuário — não necessariamente o PIX original. As flags permanecem
+opt-in e nenhuma cobrança real foi executada nesta fase.
 
 ### Estado do enforcement — Fase 3
 

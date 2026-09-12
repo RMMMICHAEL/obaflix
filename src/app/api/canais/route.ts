@@ -45,7 +45,7 @@ export interface DependenciasDeCatalogo {
   categoriasComCanais: (nivelDaConta: string) => Promise<CategoriaDeCanal[]>;
 }
 
-export function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
+function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
   return async function handler(req: NextRequest): Promise<NextResponse> {
     const ip = d.clientIp(req);
     if (await d.isIpBlocked(ip)) {
@@ -92,11 +92,11 @@ export function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
   };
 }
 
-export const GET = createCanaisCatalogoHandler({
+export const GET = Object.assign(createCanaisCatalogoHandler({
   clientIp,
   isIpBlocked,
   getUserFromRequest,
   nivelDaConta: async (userId) => (await entitlementsDoUsuario(userId)).direitos.canaisNivel,
   listarCanais,
   categoriasComCanais,
-});
+}), { createForTest: createCanaisCatalogoHandler });

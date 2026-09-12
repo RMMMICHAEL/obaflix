@@ -9,7 +9,13 @@
  */
 
 const OBA   = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
-const TOKEN = process.env.ADMIN_SECRET_TOKEN ?? "@Oba152535";
+export {};
+
+const TOKEN: string = (() => {
+  const token = process.env.ADMIN_SECRET_TOKEN;
+  if (!token) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
+  return token;
+})();
 const DRY   = process.argv.includes("--dry-run");
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

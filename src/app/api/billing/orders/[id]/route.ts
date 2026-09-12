@@ -5,7 +5,7 @@ import { checkRateLimit } from "@/lib/requestSecurity";
 import { confirmarPedidoPorId } from "@/lib/billing/confirmacao";
 export const dynamic = "force-dynamic";
 
-export function createGetPedidoHandler(deps:any={}) { const banco=deps.prisma??prisma, usuario=deps.getUserFromRequest??getUserFromRequest, limitar=deps.checkRateLimit??checkRateLimit, confirmar=deps.confirmarPedidoPorId??confirmarPedidoPorId, flag=deps.confirmacaoAtiva??(()=>process.env.BLACKCAT_CONFIRMACAO_ATIVA==="true"); return async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+function createGetPedidoHandler(deps:any={}) { const banco=deps.prisma??prisma, usuario=deps.getUserFromRequest??getUserFromRequest, limitar=deps.checkRateLimit??checkRateLimit, confirmar=deps.confirmarPedidoPorId??confirmarPedidoPorId, flag=deps.confirmacaoAtiva??(()=>process.env.BLACKCAT_CONFIRMACAO_ATIVA==="true"); return async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await usuario(req); if (!user) return NextResponse.json({ error: "Acesso negado" }, { status: 401 });
   const pedido = await banco.pedidoPagamento.findFirst({ where: { id: params.id, userId: user.userId }, select: { id:true,status:true,valorCentavos:true,moeda:true,expiraEm:true,transacaoId:true } });
   if (!pedido) return NextResponse.json({ error: "Não encontrado" }, { status: 404 });
@@ -15,4 +15,4 @@ export function createGetPedidoHandler(deps:any={}) { const banco=deps.prisma??p
   const atualizado = await banco.pedidoPagamento.findUnique({ where:{id:pedido.id}, select:{id:true,status:true,valorCentavos:true,moeda:true,expiraEm:true} });
   return NextResponse.json(atualizado && { id: atualizado.id, status: atualizado.status, valorCentavos: atualizado.valorCentavos, moeda: atualizado.moeda, expiraEm: atualizado.expiraEm }, { headers: { "Cache-Control": "no-store" } });
 }; }
-export const GET=createGetPedidoHandler();
+export const GET=Object.assign(createGetPedidoHandler(), { createForTest: createGetPedidoHandler });
