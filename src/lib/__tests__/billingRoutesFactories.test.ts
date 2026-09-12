@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { NextRequest } from "next/server";
-import { createWebhookBlackcatHandler } from "../../app/api/billing/webhook/blackcat/[segredo]/route";
-import { createGetPedidoHandler } from "../../app/api/billing/orders/[id]/route";
-import { createBillingReconcileHandler } from "../../app/api/cron/billing-reconcile/route";
+import { POST as webhookPost } from "../../app/api/billing/webhook/blackcat/[segredo]/route";
+import { GET as pedidoGet } from "../../app/api/billing/orders/[id]/route";
+import { GET as reconcileGet } from "../../app/api/cron/billing-reconcile/route";
+const createWebhookBlackcatHandler = webhookPost.createForTest;
+const createGetPedidoHandler = pedidoGet.createForTest;
+const createBillingReconcileHandler = reconcileGet.createForTest;
 
 test("factory webhook executa inteiramente com fakes", async () => {
   let confirmou = "";
@@ -63,6 +66,6 @@ test("exports de produção instanciam as factories com defaults", async () => {
     "src/app/api/billing/orders/[id]/route.ts",
     "src/app/api/cron/billing-reconcile/route.ts",
   ]) {
-    assert.match(await readFile(path, "utf8"), /export const (POST|GET)=create/);
+    assert.match(await readFile(path, "utf8"), /export const (POST|GET)=Object\.assign\(create/);
   }
 });

@@ -3,7 +3,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
-export function createBillingMeHandler(deps: any = {}) {
+function createBillingMeHandler(deps: any = {}) {
   const banco = deps.prisma ?? prisma;
   const usuario = deps.getUserFromRequest ?? getUserFromRequest;
   const entitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
@@ -22,4 +22,4 @@ export function createBillingMeHandler(deps: any = {}) {
   };
 }
 
-export const GET = createBillingMeHandler();
+export const GET = Object.assign(createBillingMeHandler(), { createForTest: createBillingMeHandler });

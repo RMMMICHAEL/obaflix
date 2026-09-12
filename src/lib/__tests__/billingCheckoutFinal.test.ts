@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NextRequest } from "next/server";
-import { createPlansHandler } from "../../app/api/billing/plans/route";
-import { createBillingMeHandler } from "../../app/api/billing/me/route";
-import { createPendingOrderHandler } from "../../app/api/billing/orders/pending/route";
+import { GET as plansGet } from "../../app/api/billing/plans/route";
+import { GET as meGet } from "../../app/api/billing/me/route";
+import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
 import { corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
+const createPlansHandler = plansGet.createForTest;
+const createBillingMeHandler = meGet.createForTest;
+const createPendingOrderHandler = pendingGet.createForTest;
 const plano = { id: "basic", nome: "Basic", descricao: "d", ehPadrao: false, filmes: true, series: true, downloads: true, telasMax: 1, anunciosObrigatorios: false };
 
 test("catálogo comercial só expõe planos ativos, preços ativos e nenhum canal ou gateway", async () => {

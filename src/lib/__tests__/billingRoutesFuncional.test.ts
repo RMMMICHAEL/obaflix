@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NextRequest } from "next/server";
-import { createWebhookBlackcatHandler } from "../../app/api/billing/webhook/blackcat/[segredo]/route";
-import { createGetPedidoHandler } from "../../app/api/billing/orders/[id]/route";
-import { createBillingReconcileHandler } from "../../app/api/cron/billing-reconcile/route";
+import { POST as webhookPost } from "../../app/api/billing/webhook/blackcat/[segredo]/route";
+import { GET as pedidoGet } from "../../app/api/billing/orders/[id]/route";
+import { GET as reconcileGet } from "../../app/api/cron/billing-reconcile/route";
+const createWebhookBlackcatHandler = webhookPost.createForTest;
+const createGetPedidoHandler = pedidoGet.createForTest;
+const createBillingReconcileHandler = reconcileGet.createForTest;
 
 const webhookRequest = (headers: Record<string, string> = {}) => new NextRequest("http://local", {
   method: "POST",

@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /** Recuperação de checkout somente para o dono; nunca revela transactionId. */
-export function createPendingOrderHandler(deps: any = {}) {
+function createPendingOrderHandler(deps: any = {}) {
   const banco = deps.prisma ?? prisma;
   const usuario = deps.getUserFromRequest ?? getUserFromRequest;
   const agora = deps.agora ?? (() => new Date());
@@ -20,4 +20,4 @@ export function createPendingOrderHandler(deps: any = {}) {
   };
 }
 
-export const GET = createPendingOrderHandler();
+export const GET = Object.assign(createPendingOrderHandler(), { createForTest: createPendingOrderHandler });

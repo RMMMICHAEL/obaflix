@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const OK = () => NextResponse.json({ ok: true }, { status: 200, headers: { "Cache-Control": "no-store" } });
 
 /** Aviso não autenticado: só registra campos documentados e pede confirmação S2S. */
-export function createWebhookBlackcatHandler(deps:any={}) { const banco=deps.prisma??prisma, limitar=deps.checkRateLimit??checkRateLimit, ip=deps.clientIp??clientIp, ler=deps.readJsonBody??readJsonBody, confirmar=deps.confirmarPedidoPorId??confirmarPedidoPorId, env=deps.env??process.env; return async function POST(req: NextRequest, { params }: { params: { segredo: string } }) {
+function createWebhookBlackcatHandler(deps:any={}) { const banco=deps.prisma??prisma, limitar=deps.checkRateLimit??checkRateLimit, ip=deps.clientIp??clientIp, ler=deps.readJsonBody??readJsonBody, confirmar=deps.confirmarPedidoPorId??confirmarPedidoPorId, env=deps.env??process.env; return async function POST(req: NextRequest, { params }: { params: { segredo: string } }) {
   const segredo = env.BLACKCAT_WEBHOOK_PATH_SECRET;
   if (env.BLACKCAT_CONFIRMACAO_ATIVA !== "true" || !segredo || params.segredo !== segredo) return new NextResponse(null, { status: 404 });
   try { const limite = await limitar(`billing:webhook:${ip(req)}`, 30, 60); if (!limite.allowed) return OK(); } catch { return OK(); }
@@ -30,4 +30,4 @@ export function createWebhookBlackcatHandler(deps:any={}) { const banco=deps.pri
   if (pedido) await confirmar(pedido.id).catch(() => {});
   return OK();
 }; }
-export const POST=createWebhookBlackcatHandler();
+export const POST=Object.assign(createWebhookBlackcatHandler(), { createForTest: createWebhookBlackcatHandler });

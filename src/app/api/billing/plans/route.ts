@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /** Catálogo comercial público, deliberadamente sem qualquer dado do gateway. */
-export function createPlansHandler(deps: any = {}) {
+function createPlansHandler(deps: any = {}) {
   const banco = deps.prisma ?? prisma;
   return async function GET() {
   const planos = await banco.plano.findMany({
@@ -22,4 +22,4 @@ export function createPlansHandler(deps: any = {}) {
   };
 }
 
-export const GET = createPlansHandler();
+export const GET = Object.assign(createPlansHandler(), { createForTest: createPlansHandler });

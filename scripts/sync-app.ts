@@ -15,8 +15,11 @@ const APP     = "https://app.megafrixapi.com/4.6.2";
 const OBAFLIX = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
 export {};
 
-const TOKEN = process.env.ADMIN_SECRET_TOKEN;
-if (!TOKEN) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
+const TOKEN: string = (() => {
+  const token = process.env.ADMIN_SECRET_TOKEN;
+  if (!token) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
+  return token;
+})();
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");
