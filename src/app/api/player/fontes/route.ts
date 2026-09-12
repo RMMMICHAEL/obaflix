@@ -8,6 +8,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
+import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
   diagnosticarSessao, diagFonte,
@@ -155,6 +156,7 @@ interface Corpo {
   ambiente?: unknown;
   desafioInterativo?: unknown;
   sessao?: unknown;
+  concessao?: unknown;
   alternativas?: unknown;
 }
 
@@ -316,6 +318,29 @@ export async function POST(req: NextRequest) {
   if (negativa) {
     audit(negativa.evento, { userId, ip, ua, detail: `/fontes: ${conteudoTipo}` });
     return NextResponse.json(negativa.corpo, { status: negativa.status, headers: NO_STORE });
+  }
+
+  // ── Concessão de anúncio (uso único) ──────────────────────────────────────
+  //
+  // Aqui o fluxo publicitário deixa de ser interface e vira enforcement: a
+  // sessão de fontes só nasce depois de a concessão ser **consumida**. É o mesmo
+  // ponto que já decide catálogo, e de propósito — nada disto entra no extractor
+  // nem no player.
+  //
+  // Quem não precisa de anúncio é liberado sem tocar no Redis de anúncio: o
+  // assinante não paga por esta camada. Para quem precisa, a concessão é apagada
+  // agora — reenviar o mesmo id não abre uma segunda sessão.
+  const anuncio = await autorizarPorAnuncio({
+    userId,
+    tipo: conteudoTipo,
+    concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
+  });
+  if (!anuncio.liberado) {
+    audit("playback_negado", { userId, ip, ua, detail: `/fontes: ${anuncio.motivo}` });
+    return NextResponse.json(
+      { error: "É necessário assistir a um anúncio", codigo: "anuncio_necessario" },
+      { status: 403, headers: NO_STORE },
+    );
   }
 
   let tmdbId: string | null = null;

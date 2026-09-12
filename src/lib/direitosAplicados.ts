@@ -130,26 +130,36 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
   },
 
   anunciosObrigatorios: {
-    estado: "nao_aplicado",
-    onde: "",
+    estado: "aplicado",
+    onde: "src/lib/ads/politica.ts",
     nota:
-      "A fase de anúncios não foi escrita, e nenhum plano de hoje exige anúncio " +
-      "— os quatro estão em `false`. Aplicar depende da concessão de anúncio e " +
-      "do SSV da rede (D-1, D-9).",
+      "`decidirAnuncio` sai no primeiro `if` para quem tem `false`, e é isso que " +
+      "mantém Basic, Plus e Premium fora do fluxo publicitário — por direito, " +
+      "nunca por nome de plano. Para quem tem `true`, `/api/playback/authorize` " +
+      "responde ANUNCIO_NECESSARIO e `/api/player/fontes` recusa a sessão sem " +
+      "concessão consumida (`ads/enforcement.ts`). Atrás de MONETIZACAO_ATIVA. " +
+      "A concessão é de uso único, presa à conta e à finalidade, com TTL de 30 " +
+      "min; o anúncio em si tem verificação SOFT — ver docs, nenhuma das duas " +
+      "redes desta fase confirma servidor→servidor.",
   },
   episodiosPorAnuncio: {
-    estado: "nao_aplicado",
-    onde: "",
+    estado: "aplicado",
+    onde: "src/lib/ads/politica.ts",
     nota:
-      "O `N` da regra de séries. `null` em todos os planos de hoje, porque sem " +
-      "`anunciosObrigatorios` não há o que contar. Mesma fase de anúncios.",
+      "O `N` da regra de séries, lido do plano por `episodiosPorAnuncio()` e " +
+      "usado por `decidirAnuncio`: o N-ésimo episódio DISTINTO da janela pede " +
+      "anúncio. Quem conta é `registrarEpisodioDistinto`, cujo `SET NX` faz " +
+      "replay, retry de player e reabertura do app não incrementarem. Valor fora " +
+      "do domínio cai no padrão aprovado (3) em vez de propagar.",
   },
   janelaAnuncioHoras: {
-    estado: "nao_aplicado",
-    onde: "",
+    estado: "aplicado",
+    onde: "src/lib/ads/concessoes.ts",
     nota:
-      "Janela do contador de episódios. Irrelevante enquanto nenhum plano exigir " +
-      "anúncio; entra junto de `episodiosPorAnuncio`.",
+      "Vira o TTL das duas chaves do contador em `registrarEpisodioDistinto`. O " +
+      "`expire` do contador só é aplicado na criação, então a janela começa no " +
+      "primeiro episódio do ciclo e não é empurrada a cada episódio novo — sem " +
+      "isso, quem assiste continuamente nunca fecharia o ciclo.",
   },
 };
 
