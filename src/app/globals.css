@@ -169,7 +169,11 @@ video::cue {
   min-height: calc(4.5rem + env(safe-area-inset-bottom));
   padding: 0.45rem 0.35rem env(safe-area-inset-bottom);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Uma linha só, sempre: cada aba vira uma coluna de mesma largura. Um número
+     fixo de colunas menor que o de abas empurrava as sobrando para uma segunda
+     linha. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   background: oklch(0.16 0.012 25 / 0.98);
   border-top: 1px solid var(--android-line);
   box-shadow: 0 -1rem 2.5rem oklch(0.07 0.012 25 / 0.28);
@@ -188,6 +192,15 @@ video::cue {
   font-size: 0.66rem;
   font-weight: 550;
   transition: color 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* O rótulo nunca quebra nem alarga a coluna: em 360 dp "Início" e "Séries"
+   cabem; um nome mais longo corta com reticências em vez de empurrar a barra. */
+.android-bottom-nav a span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .android-bottom-nav a.is-active {
