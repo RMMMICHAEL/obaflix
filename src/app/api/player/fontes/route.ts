@@ -4,7 +4,7 @@ export const maxDuration = 30;
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
-import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
+import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
@@ -296,6 +296,18 @@ export async function POST(req: NextRequest) {
   // pedido que seria descartado por má formação de qualquer jeito.
   if (conteudoTipo === "serie" && (temporada === null || numeroEp === null)) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+
+  // A montagem abre fan-out para provedores externos. O limite é por conta,
+  // antes de qualquer chamada externa ou criação de sessão.
+  try {
+    const limite = await checkRateLimit(`fontes:${userId}`, 40, 60);
+    if (!limite.allowed) {
+      audit("rate_limited", { userId, ip, ua, detail: "/fontes" });
+      return NextResponse.json({ error: "Muitas solicitações" }, { status: 429, headers: NO_STORE });
+    }
+  } catch {
+    return NextResponse.json({ error: "Serviço temporariamente indisponível" }, { status: 503, headers: NO_STORE });
   }
 
   // ── Enforcement comercial (Fase 3) ────────────────────────────────────────

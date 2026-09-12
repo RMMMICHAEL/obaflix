@@ -41,8 +41,15 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
 
   if (!history.length) return [];
 
-  const movieIds = [...new Set(history.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
-  const seriesIds = [...new Set(history.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
+  const vistos = new Set<string>();
+  const continuar = history.filter((item) => {
+    const chave = `${item.conteudoTipo}:${item.conteudoId}`;
+    if (vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+  const movieIds = [...new Set(continuar.filter((item) => item.conteudoTipo === "filme").map((item) => item.conteudoId))];
+  const seriesIds = [...new Set(continuar.filter((item) => item.conteudoTipo === "serie").map((item) => item.conteudoId))];
 
   const [movies, series] = await Promise.all([
     movieIds.length
@@ -62,7 +69,7 @@ export async function getContinueWatchingItems(userId: string): Promise<Continue
   const movieMap = new Map(movies.map((item) => [item.id, item]));
   const seriesMap = new Map(series.map((item) => [item.id, item]));
 
-  return history.flatMap((item) => {
+  return continuar.flatMap((item) => {
     const content = item.conteudoTipo === "filme"
       ? movieMap.get(item.conteudoId)
       : seriesMap.get(item.conteudoId);

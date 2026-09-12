@@ -15,6 +15,13 @@
 
 # production
 /build
+/dist
+/releases
+/.wrangler
+*.bak
+*.kt.txt
+log-*.txt
+diff-*.txt
 
 # misc
 .DS_Store

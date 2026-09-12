@@ -13,7 +13,10 @@ import { join } from "path";
 
 const APP     = "https://app.megafrixapi.com/4.6.2";
 const OBAFLIX = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
-const TOKEN   = process.env.ADMIN_SECRET_TOKEN ?? "@Oba152535";
+export {};
+
+const TOKEN = process.env.ADMIN_SECRET_TOKEN;
+if (!TOKEN) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");
