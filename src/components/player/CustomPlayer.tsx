@@ -24,6 +24,8 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 
 // ── JW Player loader (singleton, loads script once) ────────────────────────────
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
+import { AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
+import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
 } from "@/lib/playerFailover";
@@ -528,6 +530,17 @@ export function CustomPlayer({
   // src/lib/fontes.ts.
   const ambiente: "web" | "electron" | "android" =
     isAndroid ? "android" : isDesktop ? "electron" : "web";
+
+  // Fluxo de anuncio. A sequencia vive em `src/lib/ads/fluxoDoCliente.ts` e e
+  // testada la; o hook traz so o que precisa de DOM — abrir o Direct Link,
+  // chamar a ponte nativa e esperar o clique.
+  const {
+    portas: portasDeAnuncio,
+    modal: modalDeAnuncio,
+    aoConfirmar: confirmarAnuncio,
+    aoCancelar: cancelarAnuncio,
+    aoLiberar: liberarAposAnuncio,
+  } = useAnuncio();
 
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
@@ -1547,6 +1560,29 @@ export function CustomPlayer({
    * responder `sessao_invalida`.
    */
   const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[]> => {
+    // ── Anúncio, antes de abrir a sessão ────────────────────────────────────
+    //
+    // Pergunta ao servidor se esta reprodução precisa de anúncio e, se precisar,
+    // roda o fluxo. A concessão que volta é consumida por `/fontes` logo abaixo
+    // — o cliente não decide nada, só encaminha.
+    //
+    // Assinante e flag desligada recebem PERMITIDO e seguem direto. O custo é
+    // uma requisição a mais, e ela some no ruído do `fetch` que já existia.
+    const fluxo = await executarFluxoDeAnuncio(
+      {
+        conteudoId,
+        conteudoTipo,
+        temporada: temporada ?? null,
+        numeroEp: numeroEp ?? null,
+        plataforma: ambiente === "android" ? "android" : ambiente === "electron" ? "electron" : null,
+      },
+      portasDeAnuncio,
+    );
+
+    // Desistir de ver anúncio não é erro, e não deve virar tela vermelha.
+    if (fluxo.situacao === "cancelado") throw new AnuncioRecusado();
+    if (fluxo.situacao === "falhou") throw new Error("Não foi possível liberar a reprodução");
+
     const res = await fetch("/api/player/fontes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1556,6 +1592,7 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         ambiente,
+        ...(fluxo.concessao ? { concessao: fluxo.concessao } : {}),
       }),
       signal,
     });
@@ -1629,6 +1666,13 @@ export function CustomPlayer({
         }
       } catch (e: any) {
         if (e?.name === "AbortError") return;
+        // Recusar o anúncio é escolha do usuário, não falha: mensagem própria,
+        // sem "tente novamente" — não há nada para tentar de novo.
+        if (e?.name === "AnuncioRecusado") {
+          setError("A reprodução precisa de um anúncio para começar.");
+          setStatus("error");
+          return;
+        }
         if (!sessaoFontesRef.current) {
           setError("Não foi possível carregar os servidores. Tente novamente.");
           setStatus("error");
@@ -2875,6 +2919,13 @@ export function CustomPlayer({
   `;
 
   return (
+    <>
+    <ModalDeAnuncio
+      estado={modalDeAnuncio}
+      aoConfirmar={confirmarAnuncio}
+      aoCancelar={cancelarAnuncio}
+      aoLiberar={liberarAposAnuncio}
+    />
     <div
       ref={containerRef}
       className="fixed inset-0 z-50 bg-black select-none touch-none"
@@ -3900,5 +3951,6 @@ export function CustomPlayer({
         </div>
       )}
     </div>
+    </>
   );
 }

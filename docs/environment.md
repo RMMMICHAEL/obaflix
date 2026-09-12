@@ -52,6 +52,30 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `BLACKCAT_WEBHOOK_PATH_SECRET` | Segmento aleatório e URL-safe da rota de aviso Blackcat; não é autenticação | — |
 | `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
 | `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
+| `ANUNCIO_DIRECT_LINK_URL` | URL do anúncio que o Electron abre no navegador externo. **Servidor apenas**, `https:` obrigatório | — (sem ela, a reprodução é liberada sem anúncio) |
+
+### `ANUNCIO_DIRECT_LINK_URL`
+
+O nome é neutro de propósito: o nome da rede de anúncios também é informação.
+
+**Não pode ir para o repositório.** A URL carrega o identificador da conta de
+publisher; quem a tem gera impressões fora do aplicativo, e tráfego artificial
+não rende receita — rende suspensão da conta. Ela é configuração de produção, e
+`src/lib/__tests__/adsEnforcement.test.ts` falha se aparecer URL literal no
+código.
+
+Três consequências, todas verificadas por teste:
+
+- **nunca `NEXT_PUBLIC_`** — esse prefixo entra no bundle do cliente;
+- **nunca em log** — o servidor registra o host, nunca a querystring, que é onde
+  o identificador mora;
+- **só sai para quem precisa** — a resposta de `/api/playback/authorize` só
+  carrega o campo para Electron **com anúncio necessário**. Assinante não recebe
+  o campo; não é interface escondendo, é ausência na resposta.
+
+Faltando a variável, `/api/playback/authorize` **libera a reprodução sem
+anúncio** e registra. Bloquear seria punir o usuário por configuração nossa que
+falta, e a receita perdida é nossa, não dele.
 
 Quando `BLACKCAT_CONFIRMACAO_ATIVA="true"`, a criação do PIX exige também
 `NEXTAUTH_URL` válida em HTTPS e `BLACKCAT_WEBHOOK_PATH_SECRET` não vazio.
