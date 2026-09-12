@@ -447,7 +447,53 @@ envelhece em silêncio; o registro não.
 | `downloads` | **aplicado** | `direitosDoCliente` decide, `/api/player/fontes` devolve, `CustomPlayer` obedece. Ver a ressalva abaixo |
 | `canaisNivel` | **aplicado** | `src/lib/canais/acesso.ts`, consumido por `GET /api/canais` e `/api/canais/[id]/play`, comparado com `Canal.nivelMinimo`. **Único que não passa por `MONETIZACAO_ATIVA`** |
 | `resolucaoMax` | gravado, **não aplicado** | nenhuma rota limita qualidade |
-| `tvNivel` / `perfisMax` / `anunciosObrigatorios` / `episodiosPorAnuncio` / `janelaAnuncioHoras` | gravados, **não aplicados** | — |
+| `anunciosObrigatorios` | **aplicado** | `src/lib/ads/politica.ts` decide; `/api/playback/authorize` responde; `/api/player/fontes` recusa sem concessão consumida. Atrás de `MONETIZACAO_ATIVA`. Só Android e Electron |
+| `episodiosPorAnuncio` / `janelaAnuncioHoras` | **aplicados** | o `N` e a janela do contador de episódios distintos, em `src/lib/ads/concessoes.ts` |
+| `tvNivel` / `perfisMax` | gravados, **não aplicados** | — |
+
+### 5.4 Anúncios — Android e Electron
+
+Quem decide é o servidor, e a decisão sai de direito, nunca de identidade: quem
+tem `anunciosObrigatorios !== true` sai no primeiro `if` de `decidirAnuncio`.
+Nenhum cliente compara nome ou id de plano.
+
+O fluxo é o mesmo nos dois ambientes — `/api/playback/authorize` responde
+`PERMITIDO` ou `ANUNCIO_NECESSARIO` com um `desafioId`; o cliente exibe o
+anúncio; `/api/ads/complete` consome o desafio e emite a **concessão**;
+`/api/player/fontes` **consome** a concessão e só então abre a sessão. Muda só
+como o anúncio aparece: Direct Link no navegador externo no Electron,
+interstitial da Unity no Android.
+
+**Séries:** o `SET NX` por episódio dentro da janela é o que faz replay, retry de
+player e reabrir o app não incrementarem. O `N`-ésimo episódio **distinto** paga.
+
+#### A verificação é SOFT, e isso precisa estar escrito
+
+Nenhuma das duas redes desta fase confirma servidor→servidor:
+
+- **Direct Link** abre no navegador do sistema, que não fala com a gente;
+- **Unity interstitial** avisa o próprio aplicativo — quem nos conta é o cliente.
+
+A concessão nasce marcada `verificacao: "soft"`, e o nível é constante no
+servidor: um campo do corpo que o elevasse seria o próprio buraco. **Fingir
+verificação forte seria pior do que não ter** — alguém confiaria nela ao decidir
+quanto conteúdo liberar.
+
+O que é real, e limita o abuso ao que o desenho aceita: desafio de uso único
+emitido pelo servidor, tempo mínimo medido pelo **nosso** relógio, rate limit por
+conta, e concessão de uso único presa à conta e à finalidade. Isso impede replay,
+forja de desafio, automação rápida e reaproveitamento. Não impede um cliente
+modificado de fechar o anúncio e chamar a rota — esse é o teto honesto sem SSV.
+
+**Para chegar a `"hard"`** seria preciso um placement *rewarded* na Unity (o
+atual é interstitial) com o S2S redeem callback configurado no painel, e uma rota
+nossa validando aquela chamada. Nada disso foi feito nem presumido: `"hard"`
+existe como valor no tipo e nenhum caminho o emite.
+
+#### Android TV
+
+**Sem anúncios nesta fase.** A dependência do Unity está só no `:app`, e
+`AdsContratoTest` lê o `build.gradle` do `:tv` para garantir que continue assim.
 
 **`canaisNivel` vale sempre, com a flag ligada ou desligada.** É a única exceção
 da tabela, e é deliberada: a flag existe para não mudar comportamento
@@ -679,7 +725,9 @@ Redis:
 O `SET NX` é atômico: só o **primeiro** pedido daquele episódio na janela
 incrementa. Refresh, retry, erro de rede e reabertura do app não contam duas
 vezes. A cada `N` episódios (`N` configurável, hoje 3) a decisão vira
-`ANUNCIO_NECESSARIO`, e o contador só zera quando a concessão é emitida.
+`ANUNCIO_NECESSARIO`. O contador não zera ao emitir ou consumir a concessão:
+assim a cadência segue em 3, 6, 9… dentro da mesma janela; só o TTL da janela
+reinicia o ciclo.
 
 > **[D-6]** janela de 24 h ou por sessão? E `N = 3` fica configurável no
 > `Plano` (por exemplo, `episodiosPorAnuncio`) ou global?

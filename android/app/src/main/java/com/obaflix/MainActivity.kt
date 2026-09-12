@@ -17,6 +17,9 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.ObaflixBridge
+import com.obaflix.ads.AdsBridge
+import com.obaflix.ads.AdsScript
+import com.obaflix.ads.ObaflixAds
 import com.obaflix.bridge.SuperflixChallengeOverlay
 import com.obaflix.player.PlayerWebViewClient
 import com.obaflix.update.Atualizador
@@ -135,6 +138,19 @@ class MainActivity : AppCompatActivity() {
             ObaflixBridge(webView, lifecycleScope, bridgeCapability),
             "_obaflixBridge",
         )
+
+        // Ponte de anuncio: uma capacidade so, protegida pelo mesmo capability
+        // aleatorio por sessao. O nativo nao decide se ha anuncio — quem decide
+        // e o servidor, e esta ponte so exibe quando mandam. Ver AdsBridge.
+        webView.addJavascriptInterface(
+            AdsBridge(bridgeCapability, ObaflixAds.provider(this), this, webView),
+            AdsBridge.NOME_JS,
+        )
+
+        // Inicializa o SDK fora do caminho critico: aquecer nao pode atrasar a
+        // primeira renderizacao, e o interstitial precisa estar pronto muito antes
+        // de o usuario tocar em ASSISTIR. Quem nao ve anuncio nunca chega a exibi-lo.
+        webView.post { ObaflixAds.aquecer(applicationContext) }
 
         webView.webViewClient = PlayerWebViewClient(
             bridgeCapability = bridgeCapability,
@@ -370,6 +386,9 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         view.evaluateJavascript(script, null)
+        // window.obaflixAds, no mesmo ponto em que o shim da ponte principal e
+        // injetado. So o aplicativo movel recebe isto: o site e o Electron nao.
+        view.evaluateJavascript(AdsScript.montar(bridgeCapability), null)
     }
 
     private fun hideSystemUi() {

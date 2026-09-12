@@ -22,11 +22,29 @@ android {
         // ver o DOM/rede do player e necessario num aparelho onde o bug aparece.
         //   ./gradlew assembleRelease -PdiagLogs
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
+
+        // Unity Ads — so o aplicativo movel monetiza. O :tv e o Electron nao
+        // tem nem a dependencia. Game ID e Placement ID sao identificadores
+        // publicos do painel da Unity, nao segredos: nenhuma chave de API entra
+        // no APK por causa disto.
+        buildConfigField "String", "UNITY_ADS_GAME_ID", "\"800367180\""
+        buildConfigField "String", "UNITY_ADS_PLACEMENT_ID", "\"Interstitial_Android\""
+
+        // UNITY_ADS_TEST_MODE NAO mora aqui de proposito — ver buildTypes. Um
+        // valor unico em defaultConfig e o que faz um APK de release sair com
+        // anuncio de teste (sem receita) ou um APK de debug consumir trafego
+        // real. A escolha e do tipo de build, e cada um declara o seu.
     }
 
     buildFeatures {
         buildConfig true
     }
+
+    // `-PunityAdsTest` forca o modo de teste tambem no release: serve para
+    // validar o APK assinado e minificado sem contar impressao e sem arriscar a
+    // conta da Unity com trafego de desenvolvimento. Nao existe o caminho
+    // inverso — nao ha como um build de debug pedir anuncio real.
+    def unityAdsTesteForcado = project.hasProperty("unityAdsTest")
 
     buildTypes {
         release {
@@ -36,8 +54,17 @@ android {
             jniDebuggable false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
                 rootProject.file('hardening-rules.pro'), 'proguard-rules.pro'
+
+            // PRODUCAO: anuncios reais, com receita e impressao contada.
+            //   ./gradlew :app:assembleRelease                -> anuncio real
+            //   ./gradlew :app:assembleRelease -PunityAdsTest -> anuncio de teste
+            buildConfigField "boolean", "UNITY_ADS_TEST_MODE",
+                (unityAdsTesteForcado ? "true" : "false")
         }
         debug {
+            // Debug NUNCA pede anuncio real: nao conta impressao e nao arrisca a
+            // conta da Unity com trafego de desenvolvimento.
+            buildConfigField "boolean", "UNITY_ADS_TEST_MODE", "true"
             // Para dev local: alterar OBAFLIX_URL para http://10.0.2.2:3000 (emulador)
             // ou http://<IP-LAN>:3000 (dispositivo fÃ­sico)
         }
@@ -83,4 +110,19 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // Unity Ads. So aqui, no :app — o :tv nao monetiza nesta fase e nao deve nem
+    // conhecer a dependencia. A 4.18.1 traz kotlin-stdlib 1.8.10 e coroutines
+    // 1.6.4, ambos abaixo do que o projeto ja usa, entao a resolucao do Gradle
+    // nao rebaixa nada.
+    implementation 'com.unity3d.ads:unity-ads:4.18.1'
+    // O POM da Unity declara adquality-sdk como faixa aberta "(,10.0.0)", o que
+    // deixaria o build nao reproduzivel — duas maquinas resolveriam versoes
+    // diferentes. Fixado na maior existente hoje; sem dependencias proprias.
+    implementation 'com.unity3d.ads-mediation:adquality-sdk:9.9.0'
+
+    // A ponte de anuncio roda em JVM pura, com um provedor dublê: sem SDK, sem
+    // Activity, sem WebView real.
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }
