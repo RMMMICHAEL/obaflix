@@ -26,8 +26,6 @@ const frameSrc = (process.env.PLAYER_FRAME_HOSTS
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
   poweredByHeader: false,
   images: {
     unoptimized: true,
