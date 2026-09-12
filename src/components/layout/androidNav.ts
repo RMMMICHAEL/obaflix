@@ -1,4 +1,4 @@
-export type NomeIcone = "home" | "search" | "film" | "tv" | "sparkles" | "smile" | "radio";
+export type NomeIcone = "home" | "search" | "film" | "tv" | "sparkles" | "shuriken" | "smile" | "radio";
 
 export interface AndroidNavItem {
   href: string;
@@ -19,7 +19,7 @@ export const ANDROID_NAV_ITEMS: readonly AndroidNavItem[] = [
   { href: "/series", label: "Séries", icone: "tv" },
   { href: "/filmes", label: "Filmes", icone: "film" },
   { href: "/canais", label: "Canais", icone: "radio" },
-  { href: "/animes", label: "Animes", icone: "sparkles" },
+  { href: "/animes", label: "Animes", icone: "shuriken" },
   { href: "/desenhos", label: "Kids", icone: "smile" },
 ];
 

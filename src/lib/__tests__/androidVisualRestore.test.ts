@@ -34,6 +34,16 @@ test("a barra Android fica numa linha só, com colunas iguais", () => {
   assert.ok(!/grid-template-columns/.test(bloco), "colunas fixas empurram abas para uma segunda linha");
 });
 
+test("a aba Animes usa a shuriken local; as demais mantêm seus ícones", () => {
+  const icones = Object.fromEntries(ANDROID_NAV_ITEMS.map((item) => [item.label, item.icone]));
+  assert.deepEqual(icones, {
+    Início: "home", Séries: "tv", Filmes: "film", Canais: "radio", Animes: "shuriken", Kids: "smile",
+  });
+  const fonte = readFileSync("src/components/layout/ShurikenIcon.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(fonte.includes("createLucideIcon"), "a shuriken precisa seguir o traço dos ícones lucide");
+  assert.ok(!/https?:\/\/|\.(png|jpe?g|webp|gif)\b/i.test(fonte), "o ícone não pode depender de imagem externa");
+});
+
 test("a home preserva logo de cards e todos os destaques com background", () => {
   const item = paraTrilha({ id: "1", titulo: "Teste", logo: "/logo.png", background: "/bg.jpg" }, "filme");
   assert.equal(item.logo, "/logo.png");
