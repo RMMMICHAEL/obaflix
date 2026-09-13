@@ -135,7 +135,9 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
     nota:
       "`decidirAnuncio` sai no primeiro `if` para quem tem `false`, e é isso que " +
       "mantém Basic, Plus e Premium fora do fluxo publicitário — por direito, " +
-      "nunca por nome de plano. Para quem tem `true`, `/api/playback/authorize` " +
+      "nunca por nome de plano. Na Android TV o meio é a promoção interna " +
+      "(`ads/promocaoTv.ts`), com início e duração validados no servidor. " +
+      "Para quem tem `true`, `/api/playback/authorize` " +
       "decide por finalidade: reprodução segue a política (filme pede anúncio; " +
       "série, o N-ésimo episódio distinto) e o que passa sem anúncio recebe um " +
       "passe de uso único; download e transmissão pedem anúncio por ação. " +
