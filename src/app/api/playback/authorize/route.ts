@@ -5,32 +5,48 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva } from "@/lib/playbackAuthorization";
+import { prisma } from "@/lib/prisma";
+import { direitoDeCatalogo, monetizacaoAtiva } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
   emitirPasse,
   estaPago,
   normalizarFinalidade,
-  normalizarPlataforma,
   registrarEpisodioDistinto,
   type AlvoDeConcessao,
 } from "@/lib/ads/concessoes";
-import { decidirAnuncio, exigeAnuncio, meioDeExibicao } from "@/lib/ads/politica";
+import { decidirAnuncio, exigeAnuncio, meioDeExibicao, plataformaDaRequisicao } from "@/lib/ads/politica";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
+import { resolverPromocaoTv } from "@/lib/ads/promocaoTv";
 
 /**
  * `POST /api/playback/authorize` — "posso reproduzir, baixar ou transmistir isto agora?"
  *
  * A porta do fluxo de anúncio, e o único lugar que decide. O cliente pergunta
- * antes da ação; o servidor responde `PERMITIDO` ou `ANUNCIO_NECESSARIO` com um
- * desafio.
+ * antes da ação; o servidor responde uma decisão e, quando cabe, a prova que a
+ * rota da ação vai consumir.
  *
  * **Esta rota não libera a mídia.** Ela responde uma decisão e emite a prova que
  * a rota da ação — `/api/player/fontes` — vai **consumir**: o desafio leva a uma
  * concessão depois do anúncio, e o caminho permitido para uma conta sujeita a
  * anúncio devolve um **passe de cota** junto do `PERMITIDO`. O enforcement
  * continua lá — nada disto entra no extractor nem no player.
+ *
+ * ## As decisões
+ *
+ * ```text
+ * 200 PERMITIDO                 [+ passe]         reprodução liberada
+ * 200 ANUNCIO_NECESSARIO        + desafioId       Android/Electron: anúncio externo
+ * 200 PROMOCAO_TV_NECESSARIA    + desafioId       Android TV: promoção interna
+ * 200 ANUNCIO_INDISPONIVEL      + codigo          sem meio de exibir: recusa
+ * 200 NEGADO                    + codigo          Android TV: conteúdo fora do plano
+ * 503 { codigo }                                  falha recuperável — tentar de novo
+ * ```
+ *
+ * `PROMOCAO_TV_NECESSARIA` e `NEGADO` só saem para credencial de TV. Clientes
+ * publicados (Android 1.0.17, Electron) nunca os recebem, e seguem com o
+ * contrato de antes byte a byte.
  *
  * ## Por que PERMITIDO carrega passe
  *
@@ -49,6 +65,16 @@ import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
  *     segundo anúncio e não somam no contador;
  *   - **download** e **transmissão** — liberação pontual: a conta sujeita a
  *     anúncio assiste um por ação. Não contam episódio e não recebem marca de pago.
+ *     A TV não tem meio para elas: a promoção interna é só de reprodução.
+ *
+ * ## Android TV
+ *
+ * A plataforma sai da **credencial** (`plataformaDaRequisicao`), nunca do corpo.
+ * A política é a mesma de todo mundo — mesmos direitos, mesma cadência de
+ * episódios —, e só muda o meio: em vez de anúncio externo, o vídeo próprio do
+ * Obaflix configurado em `PROMOCAO_TV_*`. Antes de abrir o desafio de promoção a
+ * rota confere que o conteúdo existe: ninguém assiste a uma promoção para, no
+ * fim, receber "conteúdo não encontrado".
  *
  * ## Quem nunca chega ao fluxo publicitário
  *
@@ -61,7 +87,7 @@ import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
  * Responde `PERMITIDO` **sem resolver entitlements** — mesmo bypass de
  * `autorizarCatalogo` e `limiteDeTelas`, e pelo mesmo motivo: enquanto o
  * enforcement não está ligado, esta camada não custa consulta nem cria modo de
- * falha novo no caminho de reprodução de todo mundo.
+ * falha novo no caminho de reprodução de todo mundo. Vale para a TV também.
  */
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
@@ -90,6 +116,25 @@ function inteiroPositivo(v: unknown): number | null {
 }
 
 /**
+ * O conteúdo pedido existe no catálogo?
+ *
+ * Uma consulta por chave, e só no caminho que vai abrir uma promoção na TV — o
+ * caminho quente de assinante e o de celular não pagam por ela.
+ */
+async function conteudoExisteNoCatalogo(alvo: AlvoDeConcessao): Promise<boolean> {
+  if (alvo.tipo === "filme") {
+    const filme = await prisma.filme.findUnique({ where: { id: alvo.conteudoId }, select: { id: true } });
+    return filme !== null;
+  }
+  if (alvo.temporada === null || alvo.episodio === null) return false;
+  const episodio = await prisma.episodio.findFirst({
+    where: { serieId: alvo.conteudoId, temporada: alvo.temporada, numeroEp: alvo.episodio },
+    select: { id: true },
+  });
+  return episodio !== null;
+}
+
+/**
  * As portas desta rota. Injetaveis para o teste exercitar a sequencia inteira
  * sem Postgres, Redis, sessao nem rede — mesmo padrao de
  * `createGetPedidoHandler` e `createWebhookBlackcatHandler`.
@@ -103,6 +148,8 @@ export interface DependenciasDeAutorizacao {
   estaPago?: typeof estaPago;
   abrirDesafio?: typeof abrirDesafio;
   resolverDirectLink?: typeof resolverDirectLink;
+  resolverPromocaoTv?: typeof resolverPromocaoTv;
+  conteudoExiste?: (alvo: AlvoDeConcessao) => Promise<boolean>;
   isIpBlocked?: typeof isIpBlocked;
   recordAbuseAttempt?: typeof recordAbuseAttempt;
 }
@@ -116,6 +163,8 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const jaPago = deps.estaPago ?? estaPago;
   const criarDesafio = deps.abrirDesafio ?? abrirDesafio;
   const lerDirectLink = deps.resolverDirectLink ?? resolverDirectLink;
+  const lerPromocaoTv = deps.resolverPromocaoTv ?? resolverPromocaoTv;
+  const conteudoExiste = deps.conteudoExiste ?? conteudoExisteNoCatalogo;
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
   const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
 
@@ -171,9 +220,10 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  // Qualquer coisa que não seja `android` ou `electron` vira `"web"` — a
-  // plataforma sem meio de exibição. O desconhecido cai no caso mais restritivo.
-  const plataforma = normalizarPlataforma(corpo.plataforma);
+  // `android_tv` vem da credencial; do corpo, só `android` e `electron`.
+  // Qualquer outra declaração vira `"web"` — a plataforma sem meio de exibição.
+  // O desconhecido cai no caso mais restritivo.
+  const plataforma = plataformaDaRequisicao(corpo.plataforma, usuario);
 
   // ── Flag desligada: permitido, sem consultar nada ──────────────────────────
   if (!flagAtiva()) {
@@ -195,6 +245,20 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     return NextResponse.json(
       { error: "Serviço temporariamente indisponível", codigo: "entitlements_indisponiveis" },
       { status: 503, headers: NO_STORE },
+    );
+  }
+
+  // ── TV: o conteúdo cabe no plano? ─────────────────────────────────────────
+  //
+  // `/fontes` recusaria de qualquer forma; dizer antes é o que deixa a TV
+  // mostrar "Ver planos" em vez de um erro de servidor — e impede abrir uma
+  // promoção para um conteúdo que o plano não alcança. Os direitos já estão
+  // resolvidos: nenhuma consulta a mais.
+  if (plataforma === "android_tv" && !direitoDeCatalogo(direitos, conteudoTipo)) {
+    audit("playback_negado", { userId, ip, ua, detail: `authorize tv negado tipo:${conteudoTipo}` });
+    return NextResponse.json(
+      { decisao: "NEGADO", codigo: "conteudo_indisponivel_no_plano" },
+      { headers: NO_STORE },
     );
   }
 
@@ -303,15 +367,21 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // era recusado lá — a autoridade final. O usuário via um erro genérico de
   // "não foi possível carregar os servidores" por uma configuração nossa que
   // faltava. Agora os dois lados dizem a mesma coisa.
+  //
+  // A promoção da TV só existe para reprodução: download e transmissão na TV
+  // caem sem meio, e portanto em recusa.
   const link = plataforma === "electron" ? lerDirectLink() : null;
-  const meio = meioDeExibicao(plataforma, link?.situacao === "ok");
+  const promocao = plataforma === "android_tv" && finalidade === "reproducao" ? lerPromocaoTv() : null;
+  const meio = meioDeExibicao(plataforma, link?.situacao === "ok", promocao?.situacao === "ok");
 
   if (!meio) {
     // Nenhum desafio é aberto: não faz sentido emitir um desafio de uso único
     // que ninguém tem como cumprir, e cada desafio inútil é uma chave no Redis.
+    // O motivo da configuração vai só para o log, nunca para a resposta.
+    const motivo = promocao?.situacao === "indisponivel" ? ` promocao:${promocao.motivo}` : "";
     audit("playback_negado", {
       userId, ip, ua,
-      detail: `anuncio indisponivel plataforma:${plataforma} finalidade:${finalidade}`,
+      detail: `anuncio indisponivel plataforma:${plataforma} finalidade:${finalidade}${motivo}`,
     });
     return NextResponse.json(
       {
@@ -322,12 +392,50 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     );
   }
 
+  // ── Android TV: promoção interna ──────────────────────────────────────────
+  if (meio === "promocao_tv" && promocao?.situacao === "ok") {
+    let existe: boolean;
+    try {
+      existe = await conteudoExiste(alvo);
+    } catch {
+      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: catalogo" });
+      return NextResponse.json(
+        { error: "Serviço temporariamente indisponível", codigo: "catalogo_indisponivel" },
+        { status: 503, headers: NO_STORE },
+      );
+    }
+    if (!existe) {
+      return NextResponse.json({ error: "Conteúdo não encontrado" }, { status: 404, headers: NO_STORE });
+    }
+
+    // Promoção congelada no desafio, e o aparelho junto: só esta TV inicia e
+    // conclui. `plataformaDaRequisicao` só devolve `android_tv` com `deviceId`.
+    const desafioId = await criarDesafio({
+      userId,
+      tipo: conteudoTipo,
+      plataforma: "android_tv",
+      finalidade,
+      alvo,
+      promocao: promocao.promocao,
+      dispositivo: usuario.deviceId,
+    });
+
+    audit("playback_negado", {
+      userId, ip, ua,
+      detail: `promocao tv necessaria tipo:${conteudoTipo} versao:${promocao.promocao.versao}`,
+    });
+
+    // O vídeo não vai aqui: sai em `/api/ads/promocao/iniciar`, que é onde a
+    // sessão começa a contar. A TV só precisa do id para seguir.
+    return NextResponse.json({ decisao: "PROMOCAO_TV_NECESSARIA", desafioId }, { headers: NO_STORE });
+  }
+
   // O desafio grava finalidade e alvo. `/api/ads/complete` os lê daqui, e não
   // do corpo dele: a concessão sai presa ao que o servidor decidiu cobrar.
   const desafioId = await criarDesafio({
     userId,
     tipo: conteudoTipo,
-    // `meio` já provou que é uma das duas plataformas com exibição.
+    // `meio` já provou que é uma das duas plataformas com anúncio externo.
     plataforma: plataforma === "android" ? "android" : "electron",
     finalidade,
     alvo,
