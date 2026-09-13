@@ -25,13 +25,13 @@ import java.net.URI
  * `url` carrega so o token opaco (`?h=...`) — nunca o access token, o refresh
  * token, e-mail ou qualquer dado pessoal. `podeIrParaQr` ja recusa esses nomes.
  *
- * ## A limitacao de hoje, dita com clareza
+ * ## O fluxo de hoje
  *
- * `/planos` e `/checkout` existem, mas o site de streaming e fechado para
- * navegador comum (`src/config/site-mode.ts`): quem abre o endereco num
- * navegador cai na pagina de download do aplicativo. A assinatura, hoje, e
- * concluida no aplicativo Obaflix do celular, logado na mesma conta. A tela diz
- * exatamente isso, e nao promete checkout no navegador.
+ * `/planos`, `/checkout` e `/conta` abrem no navegador comum (`site-mode.ts`); o
+ * resto do streaming web continua fechado. O QR leva a `/planos?plano=<id>`, a
+ * pagina destaca o plano, "Assinar" vai ao checkout, e o checkout sem sessao
+ * manda ao login — que volta ao mesmo checkout. Sem token de handoff, a pessoa
+ * faz login normal no celular com a mesma conta da TV.
  */
 data class LinkDeAssinatura(
     val urlDoQr: String,
@@ -44,12 +44,14 @@ fun interface ResolvedorDeLinkDeAssinatura {
     suspend fun resolver(plano: PlanoTv): LinkDeAssinatura?
 }
 
-/** O resolvedor de hoje: a pagina de planos do Obaflix, sem nada da conta. */
+/** O resolvedor de hoje: a pagina de planos do Obaflix, com o plano escolhido e nada da conta. */
 class LinkDaPaginaDePlanos(private val baseUrl: String) : ResolvedorDeLinkDeAssinatura {
-    override suspend fun resolver(plano: PlanoTv): LinkDeAssinatura? = linkDaPaginaDePlanos(baseUrl)
+    override suspend fun resolver(plano: PlanoTv): LinkDeAssinatura? = linkDaPaginaDePlanos(baseUrl, plano.id)
 }
 
 const val CAMINHO_DOS_PLANOS = "/planos"
+
+private val ID_DE_PLANO = Regex("^[a-z0-9_-]{1,32}$")
 
 /**
  * Nomes de parametro que nunca vao para um QR.
@@ -63,15 +65,22 @@ private val PARAMETROS_PROIBIDOS = setOf(
     "email", "e-mail", "cpf", "telefone", "phone", "userid", "user_id",
 )
 
-/** O link fixo para `baseUrl`. `null` se a base nao for https. */
-fun linkDaPaginaDePlanos(baseUrl: String): LinkDeAssinatura? {
+/**
+ * O link para `baseUrl`, com o plano escolhido. `null` se a base nao for https.
+ *
+ * O QR leva `?plano=<id>` — so o id publico do plano, que a pagina usa para
+ * destacar o card. O endereco legivel fica curto, sem o parametro: quem digita
+ * escolhe o plano la.
+ */
+fun linkDaPaginaDePlanos(baseUrl: String, planoId: String? = null): LinkDeAssinatura? {
     val base = runCatching { URI(baseUrl.trim().trimEnd('/')) }.getOrNull() ?: return null
     val host = base.host
     if (base.scheme != "https" || host.isNullOrBlank() || base.userInfo != null) return null
 
     val porta = if (base.port > 0 && base.port != 443) ":" + base.port else ""
+    val consulta = planoId?.takeIf { ID_DE_PLANO.matches(it) }?.let { "?plano=$it" } ?: ""
     val link = LinkDeAssinatura(
-        urlDoQr = "https://" + host + porta + CAMINHO_DOS_PLANOS,
+        urlDoQr = "https://" + host + porta + CAMINHO_DOS_PLANOS + consulta,
         enderecoLegivel = host.removePrefix("www.") + porta + CAMINHO_DOS_PLANOS,
     )
     return link.takeIf { podeIrParaQr(it.urlDoQr) }

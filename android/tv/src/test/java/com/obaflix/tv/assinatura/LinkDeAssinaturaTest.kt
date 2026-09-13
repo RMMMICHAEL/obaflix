@@ -15,7 +15,7 @@ import org.junit.Test
 class LinkDeAssinaturaTest {
 
     @Test
-    fun `link fixo aponta para a pagina de planos existente`() {
+    fun `sem plano aponta para a pagina de planos`() {
         val link = linkDaPaginaDePlanos("https://obaflix.online")!!
         assertEquals("https://obaflix.online/planos", link.urlDoQr)
         assertEquals("obaflix.online/planos", link.enderecoLegivel)
@@ -23,16 +23,33 @@ class LinkDeAssinaturaTest {
     }
 
     @Test
+    fun `QR preserva o plano escolhido e o endereco legivel fica curto`() {
+        for (plano in CatalogoDePlanosTv.TODOS) {
+            val link = linkDaPaginaDePlanos("https://obaflix.online", plano.id)!!
+            assertEquals("https://obaflix.online/planos?plano=" + plano.id, link.urlDoQr)
+            assertEquals("obaflix.online/planos", link.enderecoLegivel)
+            assertTrue(podeIrParaQr(link.urlDoQr))
+        }
+    }
+
+    @Test
+    fun `id de plano malformado nao entra na URL`() {
+        for (ruim in listOf("PLUS", "plus&token=x", "../x", "", "a".repeat(40))) {
+            assertEquals(ruim, "https://obaflix.online/planos", linkDaPaginaDePlanos("https://obaflix.online", ruim)!!.urlDoQr)
+        }
+    }
+
+    @Test
     fun `barra final e www nao atrapalham o endereco legivel`() {
-        val link = linkDaPaginaDePlanos("https://www.obaflix.online/")!!
-        assertEquals("https://www.obaflix.online/planos", link.urlDoQr)
+        val link = linkDaPaginaDePlanos("https://www.obaflix.online/", "plus")!!
+        assertEquals("https://www.obaflix.online/planos?plano=plus", link.urlDoQr)
         assertEquals("obaflix.online/planos", link.enderecoLegivel)
     }
 
     @Test
     fun `base insegura ou malformada nao gera link`() {
         for (base in listOf("http://obaflix.online", "", "nao e url", "https://usuario:senha@obaflix.online", "ftp://x.y")) {
-            assertNull(base, linkDaPaginaDePlanos(base))
+            assertNull(base, linkDaPaginaDePlanos(base, "plus"))
         }
     }
 
@@ -55,14 +72,14 @@ class LinkDeAssinaturaTest {
 
     @Test
     fun `QR aceita a pagina de planos e o futuro token opaco de handoff`() {
-        assertTrue(podeIrParaQr("https://obaflix.online/planos"))
+        assertTrue(podeIrParaQr("https://obaflix.online/planos?plano=plus"))
         assertTrue(podeIrParaQr("https://obaflix.online/assinar?h=Zx9-opaco_123"))
     }
 
     @Test
-    fun `o link de hoje nao carrega nada da conta nem do plano`() {
-        val link = linkDaPaginaDePlanos("https://obaflix.online")!!
-        assertFalse(link.urlDoQr.contains("?"))
-        CatalogoDePlanosTv.TODOS.forEach { assertFalse(link.urlDoQr.contains(it.id)) }
+    fun `o link de hoje so carrega o id publico do plano`() {
+        val link = linkDaPaginaDePlanos("https://obaflix.online", "premium")!!
+        val consulta = link.urlDoQr.substringAfter("?", "")
+        assertEquals("plano=premium", consulta)
     }
 }

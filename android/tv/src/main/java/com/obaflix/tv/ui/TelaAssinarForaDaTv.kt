@@ -137,10 +137,10 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
                         ?: "Ou abra o Obaflix no celular.",
                 )
                 EspacoV(12.dp)
-                Passo(3, "Entre com a mesma conta desta TV e conclua a assinatura no app Obaflix.")
+                Passo(3, "Entre com a mesma conta desta TV e conclua a assinatura.")
                 EspacoV(18.dp)
                 Text(
-                    text = "O pagamento não é feito pela TV. Sem o app instalado, o endereço leva ao download do Obaflix.",
+                    text = "O pagamento não é feito pela TV. Quando for confirmado, os benefícios aparecem aqui.",
                     color = Cores.TextoApagado,
                     fontSize = 15.sp,
                     lineHeight = 21.sp,
