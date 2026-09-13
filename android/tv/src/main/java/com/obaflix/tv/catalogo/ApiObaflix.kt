@@ -471,12 +471,24 @@ object ApiObaflix {
     // Usadas por FontesTv. Ficam aqui para o transporte e a renovacao de token
     // serem os mesmos do resto; nenhuma delas registra URL em log.
 
+    /**
+     * Abre a sessao de fontes.
+     *
+     * Devolve o status junto do corpo porque 403 tem dois significados que a
+     * tela trata diferente — `conteudo_indisponivel_no_plano` e
+     * `anuncio_necessario` —, e o `objeto` comum descarta corpo de erro.
+     *
+     * `concessao` e o passe ou a concessao que `/api/playback/authorize` e
+     * `/api/ads/complete` emitiram. Vai uma vez: o servidor a consome, e reenviar
+     * o mesmo id e recusado.
+     */
     internal suspend fun fontes(
         conteudoId: String,
         conteudoTipo: String,
         temporada: Int?,
         numeroEp: Int?,
-    ): JSONObject? = objeto(
+        concessao: String? = null,
+    ): RespostaComStatus = comStatus(
         "/api/player/fontes",
         JSONObject()
             .put("conteudoId", conteudoId)
@@ -489,8 +501,107 @@ object ApiObaflix {
             // aceitar remover o `X-Requested-With`. Sem isso o provedor recusa,
             // e pedir a fonte so encheria a lista com um servidor que nunca
             // abre. Quem sabe disso e o aplicativo, nao o servidor.
-            .put("desafioInterativo", desafioInterativoSuportado()),
+            .put("desafioInterativo", desafioInterativoSuportado())
+            .apply { if (concessao != null) put("concessao", concessao) },
     )
+
+    // ── Autorizacao, promocao e conta ────────────────────────────────────────
+    //
+    // Rotas cuja resposta de erro carrega decisao. Nenhuma registra corpo,
+    // desafio, concessao ou URL em log: o alerta de falha leva so a rota.
+
+    internal data class RespostaComStatus(val status: Int, val corpo: JSONObject?)
+
+    private fun chamarComCorpo(caminho: String, corpo: JSONObject?): Resposta = runCatching {
+        ObaflixApp.httpClient.newCall(requisicao(caminho, corpo, false)).execute().use { r ->
+            Resposta(r.code, r.body?.string())
+        }
+    }.getOrElse {
+        ObaLog.alerta(
+            ObaLog.Fase.SESSAO, "tv_rota_falhou",
+            "rota" to caminho.substringBefore("?"), "erro" to it.javaClass.simpleName,
+        )
+        Resposta(0, null)
+    }
+
+    /** Mesma renovacao de `executar`, preservando status e corpo de erro. */
+    private suspend fun comStatus(caminho: String, corpo: JSONObject?): RespostaComStatus =
+        withContext(Dispatchers.IO) {
+            var r = chamarComCorpo(caminho, corpo)
+            if (r.status == 401) {
+                val ctx = contexto
+                val renovou = ctx != null && travaRenovacao.withLock { PareamentoTv.renovar(ctx) }
+                if (renovou) r = chamarComCorpo(caminho, corpo)
+            }
+            RespostaComStatus(r.status, r.corpo?.let { runCatching { JSONObject(it) }.getOrNull() })
+        }
+
+    /**
+     * "Posso reproduzir isto agora?" — antes de abrir o player.
+     *
+     * `plataforma` vai por clareza no log e nada mais: o servidor reconhece a TV
+     * pela credencial `Bearer` de aparelho pareado, e declarar outra coisa aqui
+     * nao muda a politica aplicada.
+     */
+    suspend fun autorizarReproducao(pedido: com.obaflix.tv.player.Pedido): com.obaflix.tv.player.DecisaoDeReproducao {
+        val r = comStatus(
+            "/api/playback/authorize",
+            JSONObject()
+                .put("conteudoId", pedido.conteudoId)
+                .put("conteudoTipo", if (pedido.ehSerie) "serie" else "filme")
+                .put("temporada", pedido.temporada ?: JSONObject.NULL)
+                .put("numeroEp", pedido.numeroEp ?: JSONObject.NULL)
+                .put("plataforma", "android_tv")
+                .put("finalidade", "reproducao"),
+        )
+        val c = r.corpo
+        return com.obaflix.tv.player.interpretarAutorizacao(
+            status = r.status,
+            decisao = c?.let { texto(it, "decisao") },
+            codigo = c?.let { texto(it, "codigo") },
+            passe = c?.let { texto(it, "passe") },
+            desafioId = c?.let { texto(it, "desafioId") },
+        )
+    }
+
+    /** "A pessoa escolheu assistir gratuitamente." O servidor marca o inicio. */
+    suspend fun iniciarPromocao(desafioId: String): com.obaflix.tv.player.InicioDaPromocaoTv {
+        val r = comStatus("/api/ads/promocao/iniciar", JSONObject().put("desafioId", desafioId))
+        return com.obaflix.tv.player.interpretarInicio(
+            status = r.status,
+            videoUrl = r.corpo?.let { texto(it, "videoUrl") },
+            duracaoSeg = r.corpo?.optInt("duracaoSeg", 0)?.takeIf { it > 0 },
+        )
+    }
+
+    /**
+     * "O video chegou ao fim." Chamada so pelo evento real de termino do player.
+     *
+     * `concluido` e informativo: quem decide e o servidor, pelo inicio que ele
+     * gravou e pela duracao que ele configurou.
+     */
+    suspend fun concluirPromocao(desafioId: String): com.obaflix.tv.player.ConclusaoDaPromocao {
+        val r = comStatus("/api/ads/complete", JSONObject().put("desafioId", desafioId).put("concluido", true))
+        return com.obaflix.tv.player.interpretarConclusao(r.status, r.corpo?.let { texto(it, "concessao") })
+    }
+
+    /**
+     * O plano oficial da conta, para a vitrine destacar o atual.
+     *
+     * So apresentacao: nenhuma decisao de acesso sai daqui. `null` em qualquer
+     * falha — a tela mostra erro com tentativa, e nunca adivinha um plano.
+     */
+    suspend fun contaDoPlano(): com.obaflix.tv.assinatura.ContaDoPlano? {
+        val r = comStatus("/api/billing/me", null)
+        if (r.status != 200) return null
+        val raiz = r.corpo ?: return null
+        val plano = raiz.optJSONObject("plano") ?: return null
+        val assinatura = raiz.optJSONObject("assinatura")
+        return com.obaflix.tv.assinatura.ContaDoPlano(
+            planoId = texto(plano, "id"),
+            assinaturaAtiva = assinatura != null && texto(assinatura, "status") == "ATIVA",
+        )
+    }
 
     /**
      * O que o servidor devolve para uma fonte escolhida.
@@ -589,7 +700,7 @@ object ApiObaflix {
             }
         }.orEmpty()
 
-        return CatalogoDeCanais(lista, categorias)
+        return CatalogoDeCanais(lista, categorias, incluidoNoPlano = raiz.optBoolean("incluidoNoPlano", true))
     }
 
     /**
