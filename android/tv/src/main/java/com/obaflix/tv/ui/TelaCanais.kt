@@ -135,6 +135,18 @@ fun TelaCanais() {
                 aoFocar = { algumFocado = it },
             )
 
+            // Antes de "nenhum canal": a lista vazia de quem nao tem canais no
+            // plano nao e falta de canal no ar, e dizer "voltam em breve" a
+            // essa conta seria errado. Uma chamada so, onde o beneficio falta.
+            dados.canais.isEmpty() && !dados.incluidoNoPlano -> Aviso(
+                titulo = "Canais de TV não fazem parte do seu plano",
+                detalhe = "Veja os planos com canais ao vivo.",
+                rotuloAcao = "Ver planos",
+                aoAgir = { Navegacao.abrirPlanos() },
+                requisitor = primeiro,
+                aoFocar = { algumFocado = it },
+            )
+
             dados.canais.isEmpty() -> Aviso(
                 titulo = "Nenhum canal disponível",
                 detalhe = "Os canais ao vivo voltam em breve.",
