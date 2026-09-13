@@ -76,6 +76,14 @@ const PUBLICO = [
   "/parear",
   "/login",
   "/cadastro",
+  // Assinatura. Abertas para o navegador do celular continuar o que começou na
+  // TV (QR em `/planos?plano=<id>`). Nenhuma delas é interface de streaming: não
+  // listam catálogo nem reproduzem nada, e cada ação continua exigindo sessão —
+  // `/checkout` manda para `/login` quem não tem, e as rotas de cobrança
+  // conferem sessão, origem e limite no servidor.
+  "/planos",
+  "/checkout",
+  "/conta",
   "/admin",
   "/api",
   "/robots.txt",
