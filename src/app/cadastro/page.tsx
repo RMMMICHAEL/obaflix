@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
+import { caminhoInternoSeguro } from "@/lib/billing/checkout";
 
 export default function CadastroPage() {
   const router = useRouter();
@@ -24,7 +25,9 @@ export default function CadastroPage() {
     });
     if (res.ok) {
       await signIn("credentials", { email, senha, redirect: false });
-      router.push("/");
+      // Quem veio do checkout volta para ele, com o plano escolhido. Lido do
+      // `window` para a página não precisar de Suspense; só caminho interno.
+      router.push(caminhoInternoSeguro(new URLSearchParams(window.location.search).get("callbackUrl")));
     } else {
       const d = await res.json();
       setErro(d.error ?? "Erro ao criar conta.");
