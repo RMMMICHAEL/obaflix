@@ -501,8 +501,11 @@ dependência do Unity continua só no `:app`, e `AdsContratoTest` lê o
 vídeo próprio do Obaflix, configurado no servidor (`PROMOCAO_TV_*`, ver
 `docs/environment.md`) — trocar o vídeo não exige APK novo.
 
-A decisão é a mesma de celular e Electron — mesmos direitos, mesma cadência de
-episódios de `decidirAnuncio` — e só o meio muda:
+Os direitos são os mesmos de celular e Electron; o meio e a **frequência** são
+próprios. Na TV, conta gratuita vê a promoção antes de **cada** filme ou
+episódio novo (`decidirPromocaoTv`), sem a cadência de episódios do celular, sem
+tocar no contador dele e com marca de recuperação separada por aparelho — ver
+`docs/tv-planos-publicacao.md`, seção 4:
 
 | Passo | Rota | O que o servidor confere |
 |---|---|---|
