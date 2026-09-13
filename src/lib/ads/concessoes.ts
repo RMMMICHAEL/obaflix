@@ -58,6 +58,7 @@ import crypto from "crypto";
 import { getRedis } from "../redis";
 import { janelaAnuncioHoras } from "./politica";
 import type { ConteudoDeAnuncio, PlataformaDeExibicao } from "./politica";
+import type { PromocaoTv } from "./promocaoTv";
 import type { DireitosDoPlano } from "../planos";
 
 // ── Constantes ───────────────────────────────────────────────────────────────
@@ -182,13 +183,22 @@ export interface Desafio {
   finalidade: FinalidadeDeConcessao;
   /** O conteúdo que o anúncio libera. `null` só em desafio sem alvo. */
   alvo: AlvoDeConcessao | null;
+  /**
+   * A promoção que este desafio cobra, congelada na abertura. Só na TV.
+   *
+   * Congelada de propósito: trocar a configuração no meio de uma sessão não pode
+   * mudar o tempo mínimo de quem já começou — nem para mais, nem para menos.
+   */
+  promocao: PromocaoTv | null;
+  /** O aparelho de TV que abriu o desafio. Só ele inicia e conclui. */
+  dispositivo: string | null;
   criadoEm: number;
 }
 
-export type PlataformaDeAnuncio = "android" | "electron";
+export type PlataformaDeAnuncio = "android" | "electron" | "android_tv";
 
 export function ehPlataformaDeAnuncio(v: unknown): v is PlataformaDeAnuncio {
-  return v === "android" || v === "electron";
+  return v === "android" || v === "electron" || v === "android_tv";
 }
 
 /**
@@ -197,9 +207,23 @@ export function ehPlataformaDeAnuncio(v: unknown): v is PlataformaDeAnuncio {
  * Qualquer coisa que não seja `android` ou `electron` — inclusive ausente, nula
  * ou inventada — vira `"web"`, que é a plataforma **sem meio de exibição**. O
  * desconhecido cai no caso mais restritivo, e não no mais permissivo.
+ *
+ * **`android_tv` também vira `"web"`.** TV não se declara: prova-se pela
+ * credencial, em `plataformaDaRequisicao` (`./politica.ts`).
  */
 export function normalizarPlataforma(v: unknown): PlataformaDeExibicao {
-  return ehPlataformaDeAnuncio(v) ? v : "web";
+  return v === "android" || v === "electron" ? v : "web";
+}
+
+/**
+ * Por quanto tempo um desafio de promoção fica vivo.
+ *
+ * O TTL comum mais a duração do vídeo: cinco minutos para decidir e carregar,
+ * mais o tempo de assistir. O início renova este mesmo TTL, então hesitar no
+ * convite não encurta o prazo de quem já começou a assistir.
+ */
+export function ttlDoDesafioDePromocaoS(duracaoMs: number): number {
+  return TTL_DESAFIO_S + Math.ceil(duracaoMs / 1000);
 }
 
 /**
@@ -215,7 +239,17 @@ export async function abrirDesafio(entrada: {
   plataforma: PlataformaDeAnuncio;
   finalidade?: FinalidadeDeConcessao;
   alvo?: AlvoDeConcessao | null;
+  promocao?: PromocaoTv | null;
+  dispositivo?: string | null;
 }): Promise<string> {
+  const promocao = entrada.promocao ?? null;
+  const dispositivo = entrada.dispositivo ?? null;
+  // Um desafio de TV sem promoção ou sem aparelho não teria como ser cumprido
+  // nem conferido. Recusar aqui evita gravar um estado que só falharia depois.
+  if ((entrada.plataforma === "android_tv") !== (promocao !== null && dispositivo !== null)) {
+    throw new Error("desafio de promocao incoerente");
+  }
+
   const id = novoId();
   const desafio: Desafio = {
     userId: entrada.userId,
@@ -223,35 +257,38 @@ export async function abrirDesafio(entrada: {
     plataforma: entrada.plataforma,
     finalidade: entrada.finalidade ?? "reproducao",
     alvo: entrada.alvo ?? null,
+    promocao,
+    dispositivo,
     criadoEm: Date.now(),
   };
-  await getRedis().set(chaveDesafio(id), JSON.stringify(desafio), { ex: TTL_DESAFIO_S });
+  const ttl = promocao ? ttlDoDesafioDePromocaoS(promocao.duracaoMs) : TTL_DESAFIO_S;
+  await getRedis().set(chaveDesafio(id), JSON.stringify(desafio), { ex: ttl });
   return id;
 }
 
+function ehPromocao(v: unknown): v is PromocaoTv {
+  if (!v || typeof v !== "object") return false;
+  const p = v as Record<string, unknown>;
+  return (
+    typeof p.versao === "string" &&
+    typeof p.videoUrl === "string" &&
+    typeof p.duracaoMs === "number" &&
+    Number.isInteger(p.duracaoMs) &&
+    p.duracaoMs > 0
+  );
+}
+
 /**
- * Consome o desafio. Devolve o conteúdo, ou `null` se não existir / já ter sido
- * usado / pertencer a outra conta.
+ * Interpreta o JSON de um desafio. `null` para qualquer forma inesperada.
  *
- * A conferência de dono acontece **depois** do `DEL`, e isso é deliberado: um
- * desafio que alguém tentou usar com a conta errada é um desafio queimado. Ele
- * era de uso único de qualquer forma, e devolvê-lo ao pote daria a um atacante
- * tentativas ilimitadas contra um id que ele já conhece.
- *
- * Desafio gravado antes de existir finalidade é lido como reprodução sem alvo.
+ * Desafio gravado antes de existir finalidade é lido como reprodução sem alvo, e
+ * antes de existir promoção, como desafio sem promoção. Um desafio de TV sem
+ * promoção ou sem aparelho é recusado: não há o que conferir nele.
  */
-export async function consumirDesafio(id: string, userId: string): Promise<Desafio | null> {
-  const redis = getRedis();
-  const bruto = await redis.get(chaveDesafio(id));
-  if (!bruto) return null;
-
-  const removidos = await redis.del(chaveDesafio(id));
-  // Duas requisições paralelas leem o mesmo desafio; só quem recebe 1 do `DEL`
-  // consumiu de fato. É o `DEL` que autoriza, nunca o `GET`.
-  if (removidos !== 1) return null;
-
+function interpretarDesafio(bruto: unknown, userId: string): Desafio | null {
   try {
-    const d = JSON.parse(bruto) as Partial<Desafio>;
+    const d = (typeof bruto === "string" ? JSON.parse(bruto) : bruto) as Partial<Desafio>;
+    if (!d || typeof d !== "object") return null;
     if (typeof d.userId !== "string" || d.userId !== userId) return null;
     if (d.tipo !== "filme" && d.tipo !== "serie") return null;
     if (!ehPlataformaDeAnuncio(d.plataforma)) return null;
@@ -263,17 +300,150 @@ export async function consumirDesafio(id: string, userId: string): Promise<Desaf
       alvo = d.alvo;
     }
     if (typeof d.criadoEm !== "number") return null;
+
+    let promocao: PromocaoTv | null = null;
+    let dispositivo: string | null = null;
+    if (d.plataforma === "android_tv") {
+      if (!ehPromocao(d.promocao) || typeof d.dispositivo !== "string" || d.dispositivo === "") return null;
+      promocao = d.promocao;
+      dispositivo = d.dispositivo;
+    }
+
     return {
       userId: d.userId,
       tipo: d.tipo,
       plataforma: d.plataforma,
       finalidade,
       alvo,
+      promocao,
+      dispositivo,
       criadoEm: d.criadoEm,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Consome o desafio. Devolve o conteúdo, ou `null` se não existir / já ter sido
+ * usado / pertencer a outra conta.
+ *
+ * A conferência de dono acontece **depois** do `DEL`, e isso é deliberado: um
+ * desafio que alguém tentou usar com a conta errada é um desafio queimado. Ele
+ * era de uso único de qualquer forma, e devolvê-lo ao pote daria a um atacante
+ * tentativas ilimitadas contra um id que ele já conhece.
+ */
+export async function consumirDesafio(id: string, userId: string): Promise<Desafio | null> {
+  const redis = getRedis();
+  const bruto = await redis.get(chaveDesafio(id));
+  if (!bruto) return null;
+
+  const removidos = await redis.del(chaveDesafio(id));
+  // Duas requisições paralelas leem o mesmo desafio; só quem recebe 1 do `DEL`
+  // consumiu de fato. É o `DEL` que autoriza, nunca o `GET`.
+  if (removidos !== 1) return null;
+
+  return interpretarDesafio(bruto, userId);
+}
+
+// ── Sessão promocional da TV ─────────────────────────────────────────────────
+//
+// A promoção tem dois momentos que o servidor observa — início e conclusão — e
+// o intervalo entre eles, medido pelo relógio do servidor, é a única medida de
+// "assistiu" que não vem do cliente. Por isso o início é gravado aqui, e não
+// informado na conclusão.
+
+/**
+ * Folga para relógios de instâncias diferentes do servidor.
+ *
+ * Início e conclusão podem cair em máquinas distintas. Um segundo cobre a
+ * diferença de NTP entre elas sem abrir espaço para pular o vídeo: o intervalo
+ * real já inclui a ida e volta do início, o carregamento e a ida da conclusão.
+ */
+export const TOLERANCIA_RELOGIO_PROMOCAO_MS = 1_000;
+
+/**
+ * TTL da concessão emitida depois da promoção da TV.
+ *
+ * O mesmo do passe: a TV usa a concessão no mesmo instante, para abrir o
+ * conteúdo que ficou esperando. Trinta minutos parados no Redis não servem a
+ * ninguém além de quem quisesse guardá-la.
+ */
+export const TTL_CONCESSAO_PROMOCAO_TV_S = TTL_PASSE_S;
+
+const chaveInicioDaPromocao = (id: string) => `ads:desafio:${id}:inicio`;
+
+export type InicioDaPromocao =
+  | {
+      situacao: "iniciada";
+      promocao: PromocaoTv;
+      iniciadaEm: number;
+      /** `true` quando o início já existia: retry de rede, não um novo início. */
+      repetida: boolean;
+    }
+  | { situacao: "invalido" };
+
+/**
+ * Marca o início da sessão promocional.
+ *
+ * O desafio é **lido, não consumido**: quem consome é a conclusão. Confere dono,
+ * plataforma e aparelho — um id de promoção vazado não inicia nada em outra TV
+ * nem em outra conta.
+ *
+ * O início é `SET NX`: só o primeiro pedido grava. Um retry de rede, ou a TV que
+ * tentou de novo depois de o vídeo falhar ao carregar, recebe o **mesmo**
+ * instante de volta. Repetir o início nunca reinicia o relógio para trás nem
+ * para frente.
+ */
+export async function iniciarPromocao(entrada: {
+  desafioId: string;
+  userId: string;
+  dispositivo: string | null;
+  agora?: number;
+}): Promise<InicioDaPromocao> {
+  const redis = getRedis();
+  const bruto = await redis.get(chaveDesafio(entrada.desafioId));
+  if (!bruto) return { situacao: "invalido" };
+
+  const d = interpretarDesafio(bruto, entrada.userId);
+  if (!d || d.plataforma !== "android_tv" || !d.promocao || !d.dispositivo) return { situacao: "invalido" };
+  if (!entrada.dispositivo || d.dispositivo !== entrada.dispositivo) return { situacao: "invalido" };
+
+  const ttl = ttlDoDesafioDePromocaoS(d.promocao.duracaoMs);
+  const agora = entrada.agora ?? Date.now();
+
+  const gravou = await redis.set(chaveInicioDaPromocao(entrada.desafioId), String(agora), { ex: ttl, nx: true });
+  if (gravou === "OK") {
+    // Renova o prazo do desafio a partir do início. `EXPIRE` numa chave que a
+    // conclusão acabou de apagar não a recria.
+    await redis.expire(chaveDesafio(entrada.desafioId), ttl);
+    return { situacao: "iniciada", promocao: d.promocao, iniciadaEm: agora, repetida: false };
+  }
+
+  const anterior = Number(await redis.get(chaveInicioDaPromocao(entrada.desafioId)));
+  if (!Number.isFinite(anterior) || anterior <= 0) return { situacao: "invalido" };
+  return { situacao: "iniciada", promocao: d.promocao, iniciadaEm: anterior, repetida: true };
+}
+
+/** O instante em que a promoção deste desafio começou, ou `null`. */
+export async function inicioDaPromocao(desafioId: string): Promise<number | null> {
+  const n = Number(await getRedis().get(chaveInicioDaPromocao(desafioId)));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Limpeza depois da conclusão. Conveniência: o TTL apagaria de qualquer forma. */
+export async function esquecerInicioDaPromocao(desafioId: string): Promise<void> {
+  await getRedis().del(chaveInicioDaPromocao(desafioId));
+}
+
+/**
+ * Passou tempo suficiente entre início e conclusão? Função pura.
+ *
+ * Os dois instantes são do servidor. A duração é a que o desafio congelou na
+ * abertura — nunca a que o cliente diria.
+ */
+export function promocaoCumprida(iniciadaEm: number, agora: number, duracaoMs: number): boolean {
+  return agora - iniciadaEm >= duracaoMs - TOLERANCIA_RELOGIO_PROMOCAO_MS;
 }
 
 // ── Concessão e passe ────────────────────────────────────────────────────────
@@ -320,6 +490,8 @@ export async function emitirConcessao(entrada: {
   finalidade: FinalidadeDeConcessao;
   verificacao: NivelDeVerificacao;
   alvo?: AlvoDeConcessao | null;
+  /** TTL próprio. Ausente: `TTL_CONCESSAO_S`. Só encurta — nunca passa do padrão. */
+  ttlS?: number;
 }): Promise<string> {
   const id = novoId();
   const concessao: Concessao = {
@@ -330,7 +502,11 @@ export async function emitirConcessao(entrada: {
     alvo: entrada.alvo ?? null,
     criadoEm: Date.now(),
   };
-  await getRedis().set(chaveConcessao(id), JSON.stringify(concessao), { ex: TTL_CONCESSAO_S });
+  const ttl =
+    typeof entrada.ttlS === "number" && Number.isInteger(entrada.ttlS) && entrada.ttlS >= 1
+      ? Math.min(entrada.ttlS, TTL_CONCESSAO_S)
+      : TTL_CONCESSAO_S;
+  await getRedis().set(chaveConcessao(id), JSON.stringify(concessao), { ex: ttl });
   return id;
 }
 
