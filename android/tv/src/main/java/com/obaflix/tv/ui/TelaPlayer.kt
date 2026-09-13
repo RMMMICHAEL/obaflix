@@ -314,8 +314,17 @@ private fun motivoDe(erro: PlaybackException): String {
 }
 
 @Composable
-fun TelaPlayer(pedido: Pedido) {
+fun TelaPlayer(pedido: Pedido, credencialInicial: String? = null) {
     val context = LocalContext.current
+
+    // ── Autorizacao ──────────────────────────────────────────────────────────
+    // `credencialInicial` e o passe ou a concessao que o portao obteve para o
+    // episodio com que o player abriu. Vale uma vez: a primeira abertura a leva,
+    // e cada troca de episodio pergunta de novo ao servidor.
+    val aberturaInicial = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    // Esta camada esta dando lugar a outra do mesmo conteudo (episodio seguinte
+    // que pede promocao). O progresso do episodio que nem abriu nao e gravado.
+    val descartando = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val escopo = rememberCoroutineScope()
     val teclado = remember { FocusRequester() }
 
@@ -735,13 +744,59 @@ fun TelaPlayer(pedido: Pedido) {
         posicaoMs = 0
         duracaoMs = 0
 
-        val abertura = FontesTv.abrir(
-            pedido.copy(
-                temporada = temporadaAtual,
-                numeroEp = numeroAtual,
-                episodioId = episodioAtual,
-            ),
+        val pedidoDoEpisodio = pedido.copy(
+            temporada = temporadaAtual,
+            numeroEp = numeroAtual,
+            episodioId = episodioAtual,
         )
+
+        // A primeira abertura usa a credencial do portao. Trocar de episodio e
+        // reproducao nova para o servidor: pergunta de novo, e o episodio que
+        // pedir promocao volta ao portao numa camada propria, ja com a decisao.
+        val credencial: String? = if (aberturaInicial.getAndSet(false)) {
+            credencialInicial
+        } else {
+            when (val decisao = ApiObaflix.autorizarReproducao(pedidoDoEpisodio)) {
+                is com.obaflix.tv.player.DecisaoDeReproducao.Liberada -> decisao.credencial
+                is com.obaflix.tv.player.DecisaoDeReproducao.PromocaoObrigatoria -> {
+                    val posicao = ApiObaflix.progresso(pedido.conteudoId, episodioAtual)
+                    descartando.set(true)
+                    Navegacao.substituirTopo(
+                        com.obaflix.tv.navegacao.Camada.Player(
+                            pedido = pedidoDoEpisodio.copy(posicaoSeg = posicao),
+                            autorizacaoPrevia = decisao,
+                        ),
+                    )
+                    return@LaunchedEffect
+                }
+                com.obaflix.tv.player.DecisaoDeReproducao.ForaDoPlano -> {
+                    falha = "Este episódio não faz parte do seu plano."
+                    carregando = false
+                    return@LaunchedEffect
+                }
+                else -> {
+                    falha = "Não foi possível liberar este episódio. Volte e tente de novo."
+                    carregando = false
+                    return@LaunchedEffect
+                }
+            }
+        }
+
+        val abertura = when (val resposta = FontesTv.abrirAutorizado(pedidoDoEpisodio, credencial)) {
+            is com.obaflix.tv.player.AberturaDeFontes.Aberta -> resposta.sessao
+            is com.obaflix.tv.player.AberturaDeFontes.Recusada -> {
+                // Recusa do servidor nao e "servidor fora do ar": sem trocar de
+                // fonte, sem insistir com a mesma credencial ja consumida.
+                falha = if (resposta.codigo == "conteudo_indisponivel_no_plano") {
+                    "Este conteúdo não faz parte do seu plano."
+                } else {
+                    "A liberação desta reprodução expirou. Volte e tente de novo."
+                }
+                carregando = false
+                return@LaunchedEffect
+            }
+            else -> null
+        }
         if (abertura == null || abertura.fontes.isEmpty()) {
             falha = "Este conteúdo não está disponível agora."
             carregando = false
@@ -823,7 +878,7 @@ fun TelaPlayer(pedido: Pedido) {
         player.addListener(ouvinte)
         player.addAnalyticsListener(diagnostico)
         onDispose {
-            salvarProgresso()
+            if (!descartando.get()) salvarProgresso()
             player.removeListener(ouvinte)
             player.removeAnalyticsListener(diagnostico)
             player.release()

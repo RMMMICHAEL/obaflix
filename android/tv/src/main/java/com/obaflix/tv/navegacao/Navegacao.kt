@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import com.obaflix.tv.catalogo.CanalTv
 import com.obaflix.tv.catalogo.Item
+import com.obaflix.tv.player.DecisaoDeReproducao
 import com.obaflix.tv.player.Pedido
 
 /**
@@ -43,8 +44,19 @@ sealed interface Camada {
      */
     data class Detalhe(val id: String, val tipo: String, val previa: Item?) : Camada
 
-    /** Reproducao em tela cheia. */
-    data class Player(val pedido: Pedido) : Camada
+    /**
+     * Reproducao em tela cheia.
+     *
+     * Comeca pela autorizacao (`PortaoDeReproducao`): o player do conteudo so
+     * aparece depois de o servidor liberar. `autorizacaoPrevia` existe para a
+     * troca de episodio dentro do player — quando o episodio seguinte pede a
+     * promocao, a camada nova ja nasce com a decisao, sem perguntar duas vezes.
+     */
+    data class Player(
+        val pedido: Pedido,
+        val autorizacaoPrevia: DecisaoDeReproducao.PromocaoObrigatoria? = null,
+        val memoria: MemoriaDoPortao = MemoriaDoPortao(),
+    ) : Camada
 
     /**
      * Canal ao vivo em tela cheia.
@@ -61,6 +73,26 @@ sealed interface Camada {
 
     /** Area de perfil: conta, favoritos, historico, continuar assistindo. */
     data object Perfil : Camada
+
+    /**
+     * Os planos. `memoria` guarda o card focado: a tela e descartada quando a
+     * continuacao da assinatura abre por cima, e a volta precisa cair no mesmo
+     * card, e nao no inicial.
+     */
+    data class Planos(val memoria: MemoriaDosPlanos = MemoriaDosPlanos()) : Camada
+
+    /** Continuar a assinatura do plano escolhido fora da TV: QR e endereco. */
+    data class AssinarForaDaTv(val planoId: String) : Camada
+}
+
+/** O que a vitrine lembra entre uma ida e uma volta. So foco — nada de conta. */
+class MemoriaDosPlanos {
+    var indiceFocado: Int? = null
+}
+
+/** O que o portao lembra quando os planos abrem por cima do convite. */
+class MemoriaDoPortao {
+    var foiAosPlanos: Boolean = false
 }
 
 /**
@@ -104,6 +136,34 @@ object Navegacao {
      */
     fun abrirDetalhe(item: Item) {
         abrir(Camada.Detalhe(item.id, item.tipo, item))
+    }
+
+    /**
+     * Abre os planos por cima de onde a pessoa esta — barra, canais, convite,
+     * recusa. Voltar devolve a origem.
+     *
+     * Nunca empilha planos sobre planos: um segundo "Ver planos" no mesmo lugar
+     * criaria uma pilha que so se desfaz com varios BACK.
+     */
+    fun abrirPlanos() {
+        if (pilha.lastOrNull() is Camada.Planos) return
+        abrir(Camada.Planos())
+    }
+
+    /**
+     * Troca a camada do topo sem crescer a pilha.
+     *
+     * Para quando a tela de cima deixa de fazer sentido e nao deve ser o destino
+     * do BACK: o canal recusado que abre os planos (voltar cai na grade, e nao
+     * num canal que recusaria de novo), ou o episodio seguinte que precisa de
+     * promocao (voltar cai na ficha, e nao num player que ja passou).
+     */
+    fun substituirTopo(camada: Camada) {
+        if (pilha.isEmpty()) {
+            pilha.add(camada)
+        } else {
+            pilha[pilha.lastIndex] = camada
+        }
     }
 
     /** Retrocede uma camada. Devolve false quando ja estava na moldura. */
