@@ -142,12 +142,18 @@ apenas que o tempo passou. Verificação `soft`, como Unity e Direct Link.
 
 Ver o PR #27 para o registro do que foi executado. Dependências para concluir:
 
-- **Emulador:** a máquina não tem aceleração (`emulator -accel-check`:
-  *"Android Emulator hypervisor driver is not installed"*). Instalar o driver ou
-  habilitar WHPX é alteração de sistema, a fazer pelo responsável pela máquina.
-  Imagens instaladas: TV **x86** (API 36) e telefone **x86_64** (API 34); uma
-  imagem de TV `x86_64` precisa ser baixada pelo SDK Manager. As ABIs de release
-  não foram alteradas.
+- **Emulador — tentado em 2026-09-13, bloqueado.**
+  - `emulator -accel-check`: *"Android Emulator hypervisor driver is not
+    installed on this machine"*.
+  - AVD `Television_720p` (Android TV **x86**, API 36): o sistema sobe, mas o APK
+    só traz `armeabi-v7a`, `arm64-v8a` e `x86_64` — não instala.
+  - AVD temporário `x86_64` (imagem Google APIs API 34 com perfil `tv_1080p`,
+    sem download): *"ERROR | x86_64 emulation currently requires hardware
+    acceleration!"*. AVD removido depois da tentativa.
+  - Para destravar: habilitar aceleração (AEHD ou WHPX — alteração de sistema,
+    feita pelo responsável pela máquina) e ter uma imagem Android TV `x86_64`
+    (download pelo SDK Manager, com autorização). As ABIs de release não foram
+    alteradas.
 - **Dispositivo:** nenhum aparelho conectado ao `adb`.
 - **Preview:** o deploy do PR responde 302 (proteção de deploy do Vercel). TV e
   celular precisam de bypass de proteção ou deploy acessível.
