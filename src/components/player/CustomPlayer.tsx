@@ -29,6 +29,7 @@ import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
 } from "@/lib/playerFailover";
+import { passoDoCarregamentoInicial, telaDoPlayer } from "@/lib/playerCarregamento";
 
 const JW_CDN = "https://ssl.p.jwpcdn.com/player/v/8.19.1/jwplayer.js";
 // Licença encontrada no app Megaflix desktop (resources/app.asar → player page)
@@ -538,13 +539,25 @@ export function CustomPlayer({
     portas: portasDeAnuncio,
     modal: modalDeAnuncio,
     aoConfirmar: confirmarAnuncio,
-    aoCancelar: cancelarAnuncio,
-    aoLiberar: liberarAposAnuncio,
+    aoFechar: fecharAnuncio,
+    aoAssinar: assinarPlano,
+    saiuParaPlanos,
   } = useAnuncio();
 
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
+  // Carregamento inicial explícito (ver src/lib/playerCarregamento.ts): da
+  // montagem até a primeira mídia pronta, a tela é a de carregamento — durante a
+  // autorização, o anúncio, a sessão, a extração e o failover automático — e erro
+  // de uma fonte só aparece quando não há mais recuperação pendente.
+  const [carregamentoInicial, setCarregamentoInicial] = useState(true);
+  const [sessaoPendente, setSessaoPendente] = useState(true);
+  const [alternativasPendentes, setAlternativasPendentes] = useState(false);
+  const [erroTerminal, setErroTerminal] = useState(false);
+  // Failovers antes do primeiro frame já contados quando este título abriu: o
+  // teto do carregamento inicial é o mesmo do failover, medido a partir daqui.
+  const failoverAntesBaseRef = useRef(0);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamTipo, setStreamTipo] = useState<StreamTipo>("hls");
   const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrack[]>([]);
@@ -604,8 +617,18 @@ export function CustomPlayer({
    * `tentativa > 0` devolve null de propósito: dentro do player a fonte é a que
    * o usuário escolheu no seletor de servidor. Trocar por conta própria por
    * causa de um download recusado mudaria o vídeo debaixo dele.
+   *
+   * Baixar e transmitir continuam sendo ações patrocinadas aqui dentro: antes de
+   * entregar a mídia ao Android, a ação é liberada (`liberar` abre o convite se o
+   * servidor exigir) e a concessão é consumida por `/api/player/fontes` contra a
+   * sessão desta reprodução, com a finalidade da ação. A concessão de reprodução
+   * que abriu o vídeo não serve para isso.
    */
-  const fonteAtualParaMidia = useCallback(async (tentativa: number) => {
+  const fonteAtualParaMidia = useCallback(async (
+    tentativa: number,
+    finalidade: "download" | "transmissao",
+    liberar: (finalidade: "download" | "transmissao") => Promise<string | null>,
+  ) => {
     if (tentativa > 0) return null;
     const stream = directStreamRef.current;
     if (!stream) return null;
@@ -613,6 +636,35 @@ export function CustomPlayer({
     // player do próprio provedor, e não há arquivo a baixar nem URL a entregar.
     const tipo = streamTipoRef.current;
     if (tipo !== "hls" && tipo !== "mp4") return null;
+
+    // Lança AcaoCancelada (X, assinar) ou AcaoInterrompida — sobem para o botão.
+    const concessao = await liberar(finalidade);
+    const interrompida = (motivo: string) =>
+      Object.assign(new Error(`acao interrompida: ${motivo}`), { name: "AcaoInterrompida", motivo });
+    let res: Response;
+    try {
+      res = await fetch("/api/player/fontes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessao: sessaoFontesRef.current,
+          acao: true,
+          finalidade,
+          ...(concessao ? { concessao } : {}),
+          conteudoId,
+          conteudoTipo,
+          temporada: temporada ?? null,
+          numeroEp: numeroEp ?? null,
+        }),
+      });
+    } catch {
+      throw interrompida("servidores_indisponiveis");
+    }
+    if (!res.ok) {
+      if (res.status === 410) throw interrompida("sessao_expirada");
+      if (res.status === 403) throw interrompida("acao_nao_liberada");
+      throw interrompida("servidores_indisponiveis");
+    }
     return {
       // Marca a origem presa à sessão do navegador. O Android recusa "superflix"
       // para download e transmissão — a mídia dessas fontes não vale fora do
@@ -623,7 +675,7 @@ export function CustomPlayer({
       referer: streamRefererRef.current,
       expiresAt: streamExpiresAtRef.current,
     };
-  }, []);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp]);
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
@@ -1114,7 +1166,9 @@ export function CustomPlayer({
       if (!sessao) throw new Error("Sessão de reprodução indisponível");
 
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
-      const mediaApi = typeof window !== "undefined" && (window as any).obaflixMedia;
+      const mediaApi = desktop?.startLocalMedia
+        ? { start: desktop.startLocalMedia, stop: desktop.stopLocalMedia }
+        : (typeof window !== "undefined" && (window as any).obaflixMedia);
       console.info("[obaflix-media] EXTRACT_ROUTE", {
         isAndroid,
         nativo: alvo.nativo,
@@ -1260,14 +1314,16 @@ export function CustomPlayer({
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
         const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
         if (ctrl.signal.aborted || unmountedRef.current) return;
+        const useLocalPlayerflix = !!mediaApi?.start && isAndroid && conteudoTipo === "serie" &&
+          /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl);
         console.info("[obaflix-media] NATIVE_START", {
-          via: mediaApi?.start ? "mediaApi" : "desktop.extractStream",
+          via: useLocalPlayerflix ? "mediaApi" : "desktop.extractStream",
           sourceId: fonteId,
           playerflix: /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl),
         });
         const data: { sessionId?: string; streamType?: string; stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
-          await (mediaApi?.start
-            ? mediaApi.start({ embedUrl, sourceId: fonteId })
+          await (useLocalPlayerflix
+            ? mediaApi.start({ embedUrl, sourceId: fonteId, contentType: conteudoTipo })
             : desktop.extractStream(embedUrl));
         if (ctrl.signal.aborted || unmountedRef.current) {
           if (data.sessionId) void mediaApi?.stop(data.sessionId).catch(() => {});
@@ -1401,6 +1457,7 @@ export function CustomPlayer({
         const desdeUltima = Date.now() - ultimaReaberturaRef.current;
         if (desdeUltima < REABERTURA_MIN_INTERVALO_MS) {
           console.warn(`[diag/sessao] reabertura recusada: ${desdeUltima}ms desde a anterior (motivo=${e.motivo})`);
+          setErroTerminal(true);
           setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
           setStatus("error");
           return;
@@ -1413,6 +1470,7 @@ export function CustomPlayer({
           extractRef.current(equivalente.id);
           return;
         } catch {
+          setErroTerminal(true);
           setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
           setStatus("error");
           return;
@@ -1568,6 +1626,11 @@ export function CustomPlayer({
     //
     // Assinante e flag desligada recebem PERMITIDO e seguem direto. O custo é
     // uma requisição a mais, e ela some no ruído do `fetch` que já existia.
+    // Recusa comercial não é falha de mídia: tem nome próprio para a interface
+    // nunca mostrar "servidor/nenhuma mídia disponível" por causa dela.
+    const erroComercial = (motivo: string) =>
+      Object.assign(new Error(motivo), { name: "LiberacaoComercial", motivo });
+
     const fluxo = await executarFluxoDeAnuncio(
       {
         conteudoId,
@@ -1575,6 +1638,7 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         plataforma: ambiente === "android" ? "android" : ambiente === "electron" ? "electron" : null,
+        finalidade: "reproducao",
       },
       portasDeAnuncio,
     );
@@ -1585,8 +1649,11 @@ export function CustomPlayer({
     // recusaria de qualquer forma, e o usuário veria "não foi possível carregar
     // os servidores" em vez da razão real.
     if (fluxo.situacao === "indisponivel") throw new AnuncioIndisponivel();
-    if (fluxo.situacao === "falhou") throw new Error("Não foi possível liberar a reprodução");
+    if (fluxo.situacao === "falhou") throw erroComercial("liberacao_falhou");
 
+    // A concessão — ou o passe de cota, para o episódio que a política deixou
+    // passar — é consumida por `/fontes` na criação da sessão, para esta
+    // finalidade e este conteúdo.
     const res = await fetch("/api/player/fontes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1596,11 +1663,19 @@ export function CustomPlayer({
         temporada: temporada ?? null,
         numeroEp: numeroEp ?? null,
         ambiente,
+        finalidade: "reproducao",
         ...(fluxo.concessao ? { concessao: fluxo.concessao } : {}),
       }),
       signal,
     });
-    if (!res.ok) throw new Error("Não foi possível carregar os servidores");
+    if (!res.ok) {
+      const recusa = await res.json().catch(() => null);
+      if (res.status === 403 && recusa?.codigo === "anuncio_necessario") throw erroComercial("anuncio_necessario");
+      if (res.status === 403 && recusa?.codigo === "conteudo_indisponivel_no_plano") {
+        throw erroComercial("conteudo_indisponivel_no_plano");
+      }
+      throw new Error("Não foi possível carregar os servidores");
+    }
     const data = await res.json();
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
     // Direito de download, decidido no servidor. Comparação estrita com `true`:
@@ -1632,19 +1707,42 @@ export function CustomPlayer({
     sessaoFontesRef.current = null;
     urlNativaRef.current.clear();
     ultimaReaberturaRef.current = 0;
-    if (!conteudoId) return;
-    if (conteudoTipo === "serie" && (!temporada || !numeroEp)) return;
+    // Título novo: a tela volta ao carregamento desde o primeiro frame, e nada do
+    // título anterior (erro, "tocando") vaza para ele.
+    setCarregamentoInicial(true);
+    setErroTerminal(false);
+    setAlternativasPendentes(false);
+    setSessaoPendente(true);
+    setStatus("idle");
+    setError("");
+    failoverAntesBaseRef.current = failoverAntesRef.current;
+    if (!conteudoId || (conteudoTipo === "serie" && (!temporada || !numeroEp))) {
+      // Sem conteúdo não há o que carregar: fica "Nenhuma fonte disponível".
+      setSessaoPendente(false);
+      setCarregamentoInicial(false);
+      return;
+    }
 
     const ctrl = new AbortController();
+    // Falha que nenhuma outra fonte resolveria: aparece na hora, sem esperar.
+    const falhaTerminal = (mensagem: string) => {
+      setError(mensagem);
+      setErroTerminal(true);
+      setStatus("error");
+    };
 
     (async () => {
       try {
         const lista = await abrirSessao(ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        setSessaoPendente(false);
         if (!lista.length) {
-          setError("Nenhum servidor disponível para este título.");
-          setStatus("error");
+          falhaTerminal("Nenhum servidor disponível para este título.");
           return;
         }
+        // A lista ainda pode crescer: até a fase 2 responder, a falha da última
+        // fonte da lista base não é o fim.
+        setAlternativasPendentes(true);
 
         // Fase 2: aditiva. Falha, lista vazia ou lentidão deixam a base como está.
         const res2 = await fetch("/api/player/fontes", {
@@ -1669,31 +1767,80 @@ export function CustomPlayer({
           setAllFontes(lista2);
         }
       } catch (e: any) {
-        if (e?.name === "AbortError") return;
-        // Recusar o anúncio é escolha do usuário, não falha: mensagem própria,
-        // sem "tente novamente" — não há nada para tentar de novo.
+        if (e?.name === "AbortError" || ctrl.signal.aborted) return;
+        setSessaoPendente(false);
+        // Fechar o convite no X, ou ir escolher um plano, não é erro: a
+        // reprodução simplesmente não começa. No X volta para a página do título
+        // — o estado anterior, igual ao botão Voltar. Indo para os planos, o
+        // modal já navegou, e isto não pode sobrescrever a navegação.
         if (e?.name === "AnuncioRecusado") {
-          setError("A reprodução precisa de um anúncio para começar.");
-          setStatus("error");
+          if (!saiuParaPlanos()) {
+            router.push(conteudoTipo === "filme" ? `/filme/${conteudoId}` : `/serie/${conteudoId}`);
+          }
           return;
         }
         // Configuração nossa que falta, ou plataforma sem meio de exibição. A
         // mensagem não expõe qual das duas — isso é log de servidor.
         if (e?.name === "AnuncioIndisponivel") {
-          setError("Anúncio temporariamente indisponível. Tente novamente em instantes.");
-          setStatus("error");
+          falhaTerminal("Anúncio temporariamente indisponível. Tente novamente em instantes.");
+          return;
+        }
+        // Liberação comercial recusada — concessão vencida, conteúdo fora do
+        // plano, autorização indisponível. Mensagem própria: "servidor" e
+        // "nenhuma mídia disponível" ficam só para falha real de mídia.
+        if (e?.name === "LiberacaoComercial") {
+          falhaTerminal(
+            e.motivo === "conteudo_indisponivel_no_plano"
+              ? "Este título não está disponível no seu plano."
+              : "Não foi possível liberar a reprodução agora. Tente novamente.",
+          );
           return;
         }
         if (!sessaoFontesRef.current) {
-          setError("Não foi possível carregar os servidores. Tente novamente.");
-          setStatus("error");
+          falhaTerminal("Não foi possível carregar os servidores. Tente novamente.");
         }
+      } finally {
+        // Fase 2 respondeu, falhou ou nem começou: a lista não cresce mais.
+        if (!ctrl.signal.aborted) setAlternativasPendentes(false);
       }
     })();
 
     return () => ctrl.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente, abrirSessao]);
+
+  // Carregamento inicial: a cada mudança de estado, decide se a primeira mídia
+  // ficou pronta, se a falha que chegou tem outra tentativa (trocar de fonte ou
+  // esperar sessão/alternativas) ou se é o fim. A regra e os testes vivem em
+  // src/lib/playerCarregamento.ts.
+  //
+  // É também o que corrige um erro gravado por quem enxergava a lista antiga:
+  // os handlers de falha do player capturam `allFontes.length` do momento em
+  // que a mídia foi montada, e as alternativas chegam depois.
+  useEffect(() => {
+    const passo = passoDoCarregamentoInicial({
+      carregamentoInicial,
+      status,
+      indiceDaFonte: fonteIdx,
+      totalDeFontes: allFontes.length,
+      sessaoPendente,
+      alternativasPendentes,
+      erroTerminal,
+      escolhaManual: escolhaManualRef.current,
+      failoversUsados: failoverAntesRef.current - failoverAntesBaseRef.current,
+      tetoDeFailovers: LIMITES.FAILOVERS_ANTES_FIRSTFRAME,
+    });
+    if (passo === "concluir" || passo === "encerrar_com_erro") {
+      setCarregamentoInicial(false);
+      return;
+    }
+    if (passo === "trocar_fonte") {
+      console.warn(`[diag/server] falha na carga inicial; fonte seguinte idx=${fonteIdx}→${fonteIdx + 1}`);
+      failoverAntesRef.current += 1;
+      switchFonte(fonteIdx + 1);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carregamentoInicial, status, fonteIdx, allFontes.length, sessaoPendente, alternativasPendentes, erroTerminal]);
 
   // Rede de segurança do carregamento do SuperFlix: se o load do iframe não
   // chegar (bloqueio de rede, desafio travado), a tela não pode ficar presa no
@@ -2929,13 +3076,24 @@ export function CustomPlayer({
     }
   `;
 
+  // Qual overlay de estado cobre o player. Durante o carregamento inicial, erro
+  // intermediário continua como carregamento; ver src/lib/playerCarregamento.ts.
+  const tela = telaDoPlayer({
+    carregamentoInicial,
+    status,
+    nativo: streamTipo === "native",
+    autoPlayBlocked,
+    totalDeFontes: allFontes.length,
+    erroTerminal,
+  });
+
   return (
     <>
     <ModalDeAnuncio
       estado={modalDeAnuncio}
       aoConfirmar={confirmarAnuncio}
-      aoCancelar={cancelarAnuncio}
-      aoLiberar={liberarAposAnuncio}
+      aoFechar={fecharAnuncio}
+      aoAssinar={assinarPlano}
     />
     <div
       ref={containerRef}
@@ -3766,8 +3924,9 @@ export function CustomPlayer({
 
       {/* ── Status overlays (z-[99999]) ── */}
 
-      {/* Loading unificado: extração + buffering inicial do JW */}
-      {(status === "extracting" || (status === "loading" && streamTipo !== "native")) && (
+      {/* Loading unificado: da montagem (autorização, anúncio, sessão) à extração,
+          failover inicial e buffering inicial do JW */}
+      {tela === "carregando" && (
         <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center">
           {thumbUrl && (
             <div className="absolute inset-0 bg-cover bg-center scale-105" style={{ backgroundImage: `url(${thumbUrl})` }} />
@@ -3786,7 +3945,7 @@ export function CustomPlayer({
       )}
 
       {/* Native buffering */}
-      {status === "loading" && streamTipo === "native" && !autoPlayBlocked && (
+      {tela === "buffer_nativo" && (
         <div className="absolute inset-0 z-[99999] flex items-center justify-center">
           <div className="w-10 h-10 border-4 border-white/20 border-t-[#E50914] rounded-full animate-spin" />
         </div>
@@ -3853,7 +4012,7 @@ export function CustomPlayer({
       )}
 
       {/* Retry */}
-      {showRetry && status !== "error" && status !== "extracting" && (
+      {showRetry && !carregamentoInicial && status !== "error" && status !== "extracting" && (
         <div className="absolute inset-0 z-[99999] flex items-center justify-center bg-black/50">
           <button
             onClick={() => {
@@ -3872,7 +4031,7 @@ export function CustomPlayer({
       )}
 
       {/* Erro */}
-      {status === "error" && (
+      {tela === "erro" && (
         <div className="absolute inset-0 z-[99999] flex flex-col items-center justify-center bg-black/75 gap-5">
           <AlertCircle size={44} className="text-[#E50914]" strokeWidth={1.5} />
           <p className="text-white/80 text-sm max-w-xs text-center leading-relaxed">{error}</p>
@@ -3894,7 +4053,7 @@ export function CustomPlayer({
       )}
 
       {/* Sem fontes */}
-      {status === "idle" && allFontes.length === 0 && (
+      {tela === "sem_fontes" && (
         <div className="absolute inset-0 z-[99999] flex flex-col gap-4 items-center justify-center">
           <p className="text-white/50 text-sm">Nenhuma fonte disponível</p>
           <button

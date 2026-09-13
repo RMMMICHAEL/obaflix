@@ -6,11 +6,14 @@ import {
   alvoDoHref,
   decidirAcaoDoHero,
   fontesCandidatas,
+  linhaDiagDownload,
   mensagemDeFalha,
+  midiaDaFonte,
   pidDeEpisodio,
   pidDeFilme,
   pidDoAlvo,
   pontesDeMidia,
+  procurarFonteDeDownload,
   rotuloDeEpisodio,
   rotuloDoAlvo,
 } from "../androidMedia";
@@ -407,10 +410,178 @@ test("toda mensagem conhecida é curta e legível", () => {
     "expirada",
     "sondagem_expirada",
     "indisponivel",
+    "download_indisponivel",
+    "hls_sem_arquivo_unico",
     undefined,
   ];
   for (const m of motivos) {
     const texto = mensagemDeFalha(m);
     assert.ok(texto.length > 0 && texto.length <= 60, `mensagem ruim para ${m}: ${texto}`);
   }
+});
+
+// ── Download: arquivo direto antes de HLS ────────────────────────────────────
+// Classifica pela mídia resolvida, nunca pelo número do servidor. HLS não vira
+// download nesta versão: sem remux seguro, gravaria dezenas de .ts soltos.
+
+type Resp = { ok: boolean; motivo?: string; tentarOutraFonte?: boolean; sondagemId?: string };
+type FonteTeste = { stream: string; tipo: string };
+
+const HLS: FonteTeste = { stream: "https://cdn-a.exemplo.com/serie/master.m3u8", tipo: "hls" };
+const MP4: FonteTeste = { stream: "https://cdn-b.exemplo.com/serie/episodio.mp4", tipo: "mp4" };
+
+function resolvedor(fontes: Array<FonteTeste | Error | null>) {
+  const chamadas: number[] = [];
+  const resolver = async (tentativa: number): Promise<FonteTeste | null> => {
+    chamadas.push(tentativa);
+    const f = fontes[tentativa];
+    if (f instanceof Error) throw f;
+    return f ?? null;
+  };
+  return { resolver, chamadas };
+}
+
+test("HLS atual não vence uma alternativa MP4 disponível", async () => {
+  const { resolver } = resolvedor([HLS, MP4]);
+  const sondadas: string[] = [];
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (f): Promise<Resp> => {
+      sondadas.push(f.stream);
+      return { ok: true, sondagemId: "s1" };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(sondadas, [MP4.stream], "o HLS não pode nem chegar a ser sondado");
+});
+
+test("MP4 recusado pelo Android dá lugar à próxima fonte direta, não ao HLS", async () => {
+  const outroMp4: FonteTeste = { stream: "https://cdn-c.exemplo.com/v.mp4", tipo: "mp4" };
+  const { resolver } = resolvedor([MP4, HLS, outroMp4]);
+  const sondadas: string[] = [];
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (f): Promise<Resp> => {
+      sondadas.push(f.stream);
+      return f.stream === MP4.stream
+        ? { ok: false, motivo: "expirada", tentarOutraFonte: true }
+        : { ok: true, sondagemId: "s2" };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(sondadas, [MP4.stream, outroMp4.stream]);
+});
+
+test("só HLS: download indisponível para este título, sem sondar nada", async () => {
+  const semTipo: FonteTeste = { stream: "https://cdn-d.exemplo.com/x/playlist", tipo: "" };
+  const { resolver } = resolvedor([HLS, semTipo, null]);
+  let sondou = false;
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (): Promise<Resp> => {
+      sondou = true;
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(r, { ok: false, motivo: "download_indisponivel" });
+  assert.equal(sondou, false);
+  assert.equal(mensagemDeFalha("download_indisponivel"), "Download indisponível para este título");
+});
+
+test("servidor que falha no meio não encerra a procura", async () => {
+  const { resolver } = resolvedor([new Error("fonte_falhou"), MP4]);
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (): Promise<Resp> => ({ ok: true, sondagemId: "s3" }),
+  });
+  assert.equal(r.ok, true);
+});
+
+test("fim da lista encerra a procura sem inventar fonte", async () => {
+  const { resolver, chamadas } = resolvedor([null, MP4]);
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+  });
+  assert.deepEqual(r, { ok: false, motivo: undefined });
+  assert.deepEqual(chamadas, [0]);
+});
+
+test("a procura respeita o teto de tentativas", async () => {
+  const { resolver, chamadas } = resolvedor(Array<FonteTeste>(10).fill(HLS));
+  await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+    maxTentativas: 4,
+  });
+  assert.equal(chamadas.length, 4);
+});
+
+test("a mídia é classificada como no Android: tipo declarado manda, depois a extensão", () => {
+  assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/a.m3u8", tipo: "mp4" }), "direta");
+  assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/a.mp4", tipo: "MP4" }), "direta");
+  assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/a.mp4", tipo: "hls" }), "hls");
+  assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/v/arquivo.MP4" }), "direta");
+  assert.equal(midiaDaFonte({ stream: "https://x.exemplo.com/playlist" }), "hls");
+  assert.equal(midiaDaFonte({ stream: "isto nao e url" }), "hls");
+});
+
+// ── Download: diagnóstico mascarado ──────────────────────────────────────────
+
+test("o diagnóstico registra classificação e servidor genérico, nunca URL ou token", async () => {
+  const eventos: string[] = [];
+  const hls = { ...HLS, servidor: "Servidor 2", via: "aparelho" };
+  const mp4 = { ...MP4, servidor: "Servidor 5", via: "servidor" };
+  await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => [hls, mp4][tentativa] ?? null,
+    sondar: async (): Promise<Resp> => ({ ok: true, sondagemId: "s4" }),
+    registrar: (evento) => eventos.push(linhaDiagDownload(evento)),
+  });
+  assert.deepEqual(eventos, [
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=0 resultado=pulada_hls midia=hls via=aparelho servidor=Servidor_2",
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=1 resultado=aceita midia=direta via=servidor servidor=Servidor_5",
+  ]);
+  for (const linha of eventos) {
+    assert.ok(!/https?:|cdn-|token|referer|\.m3u8|\.mp4/i.test(linha), `vazou dado de fonte: ${linha}`);
+  }
+});
+
+test("rótulo com cara de URL é mascarado e espaço vira _ no diagnóstico", () => {
+  const linha = linhaDiagDownload({
+    tentativa: 0,
+    resultado: "recusada",
+    midia: "direta",
+    servidor: "https://provedor.exemplo.com/x?token=abc",
+    motivo: "sessao do navegador",
+  });
+  assert.ok(linha.includes("servidor=mascarado"), linha);
+  assert.ok(linha.includes("motivo=sessao_do_navegador"), linha);
+  assert.ok(!/https?:|token|provedor/i.test(linha), linha);
+});
+
+test("fim de lista e falha de servidor também aparecem no diagnóstico", async () => {
+  const eventos: string[] = [];
+  await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => {
+      if (tentativa === 0) throw new Error("fonte_falhou");
+      return null;
+    },
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+    registrar: (evento) => eventos.push(linhaDiagDownload(evento)),
+  });
+  assert.deepEqual(eventos, [
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=0 resultado=falhou",
+    "[diag/etapa] etapa=DOWNLOAD_FONTE tentativa=1 resultado=fim",
+  ]);
+});
+
+test("um registrador que falha não interrompe a procura", async () => {
+  const r = await procurarFonteDeDownload({
+    resolverFonte: async (tentativa: number) => (tentativa === 0 ? MP4 : null),
+    sondar: async (): Promise<Resp> => ({ ok: true }),
+    registrar: () => {
+      throw new Error("log quebrado");
+    },
+  });
+  assert.equal(r.ok, true);
 });

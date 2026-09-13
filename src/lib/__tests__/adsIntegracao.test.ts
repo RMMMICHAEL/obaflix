@@ -6,12 +6,14 @@ import { POST as completePost } from "@/app/api/ads/complete/route";
 import { autorizarPorAnuncio } from "../ads/enforcement";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
+  TTL_PASSE_S,
   abrirDesafio,
-  concessaoValida,
   consumirConcessao,
-  consumirDesafio,
   emitirConcessao,
+  estaPago,
   registrarEpisodioDistinto,
+  type AlvoDeConcessao,
+  type FinalidadeDeConcessao,
 } from "../ads/concessoes";
 import { resolverDirectLink } from "../ads/directLink";
 import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PREMIUM } from "../planos";
@@ -25,9 +27,9 @@ import type { DireitosDoPlano, PlanoSemeado } from "../planos";
  * Os testes anteriores exercitam peças: a política pura, o estado no Redis, o
  * enforcement, o fluxo do cliente. Este exercita a corrente — `/authorize` →
  * `/ads/complete` → o portão de `/fontes` — porque é a corrente que pode estar
- * errada mesmo com todos os elos certos, e foi exatamente esse o defeito que
- * motivou esta rodada: `/authorize` devolvia PERMITIDO num caso em que `/fontes`
- * recusava.
+ * errada mesmo com todos os elos certos. Foi exatamente esse o defeito que o
+ * smoke test encontrou: `/authorize` dizia PERMITIDO para o episódio que não
+ * devia anúncio, e `/fontes` recusava por falta de concessão.
  *
  * Redis é o `MemoryStore` de verdade (o mesmo cliente que roda fora de
  * produção). Sessão, entitlements e bloqueio de IP entram por injeção — são o
@@ -98,14 +100,42 @@ function concluidor(userId: string, plano: PlanoSemeado, avancoMs = TEMPO_MINIMO
   });
 }
 
+const ALVO_F1: AlvoDeConcessao = { tipo: "filme", conteudoId: "f1", temporada: null, episodio: null };
+const alvoEp = (temporada: number, episodio: number): AlvoDeConcessao => ({
+  tipo: "serie",
+  conteudoId: "s1",
+  temporada,
+  episodio,
+});
+
 /** O portão de `/fontes`, com Redis real e entitlements injetados. */
-const portaDeFontes = (userId: string, plano: PlanoSemeado, concessao: string | null) =>
+const portaDeFontes = (
+  userId: string,
+  plano: PlanoSemeado,
+  concessao: string | null,
+  alvo: AlvoDeConcessao = ALVO_F1,
+  finalidade: FinalidadeDeConcessao = "reproducao",
+) =>
   autorizarPorAnuncio(
-    { userId, tipo: "filme", concessao },
+    { userId, tipo: alvo.tipo, concessao, finalidade, alvo },
     { ativa: true, resolver: async () => entitlementsDe(plano) },
   );
 
 const DL_VALIDO = { ANUNCIO_DIRECT_LINK_URL: "https://rede.invalido/x?p=1" };
+
+/** Pede autorização e, se o servidor exigir anúncio, conclui e devolve a concessão. */
+async function liberar(
+  userId: string,
+  corpo: Record<string, unknown>,
+  plano: PlanoSemeado = PLANO_GRATUITO,
+): Promise<{ decisao: string; id: string | null }> {
+  const auth = await (await autorizador(userId, plano, DL_VALIDO)(req(corpo))).json();
+  if (auth.decisao === "ANUNCIO_NECESSARIO") {
+    const { concessao } = await (await concluidor(userId, plano)(req({ desafioId: auth.desafioId }))).json();
+    return { decisao: auth.decisao, id: concessao };
+  }
+  return { decisao: auth.decisao, id: typeof auth.passe === "string" ? auth.passe : null };
+}
 
 // ── 1 a 4. Electron ──────────────────────────────────────────────────────────
 
@@ -135,12 +165,8 @@ describe("Electron", () => {
   });
 
   /**
-   * Cenário 2 — o defeito que motivou esta rodada.
-   *
-   * Antes, sem Direct Link, `/authorize` devolvia PERMITIDO e `/fontes` recusava:
-   * o usuário via "não foi possível carregar os servidores" por uma configuração
-   * nossa que faltava. Agora os dois lados dizem a mesma coisa, e o cliente sabe
-   * que não deve nem tentar abrir a sessão.
+   * Cenário 2 — sem Direct Link, `/authorize` e `/fontes` dizem a mesma coisa,
+   * e o cliente sabe que não deve nem tentar abrir a sessão.
    */
   test("gratuito SEM Direct Link: ANUNCIO_INDISPONIVEL, e /fontes recusaria", async () => {
     const userId = novoUsuario();
@@ -186,6 +212,7 @@ describe("Electron", () => {
       assert.equal(auth.decisao, "PERMITIDO", plano.id);
       assert.equal(auth.directLink, undefined, `${plano.id} não pode receber o Direct Link`);
       assert.equal(auth.desafioId, undefined);
+      assert.equal(auth.passe, undefined, "quem não vê anúncio não precisa de passe");
       assert.equal(JSON.stringify(auth).includes("rede.invalido"), false);
 
       assert.deepEqual(await portaDeFontes(userId, plano, null), {
@@ -385,23 +412,49 @@ describe("fail-closed", () => {
     );
     assert.equal(r.status, 503);
   });
+
+  /**
+   * Sem passe o episódio seria recusado em `/fontes`. Responder PERMITIDO sem
+   * ele recriaria exatamente a divergência corrigida — então é 503.
+   */
+  test("passe indisponível vira 503, não PERMITIDO sem prova", async () => {
+    const userId = novoUsuario();
+    const handler = createAuthorizeHandler({
+      ...portasComuns(userId, PLANO_GRATUITO),
+      emitirPasse: async () => {
+        throw new Error("Redis fora");
+      },
+    });
+
+    const r = await handler(
+      req({ conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" }),
+    );
+    assert.equal(r.status, 503);
+  });
 });
 
 // ── 13 a 16. Séries ──────────────────────────────────────────────────────────
 
 describe("séries, pela rota", () => {
-  const pedirEpisodio = (userId: string, temporada: number, numeroEp: number) =>
+  const pedirEpisodio = (userId: string, temporada: number, numeroEp: number, finalidade?: string) =>
     autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
-      req({ conteudoId: "s1", conteudoTipo: "serie", temporada, numeroEp, plataforma: "android" }),
+      req({ conteudoId: "s1", conteudoTipo: "serie", temporada, numeroEp, plataforma: "android", finalidade }),
     ).then((r) => r.json());
 
-  /** Cenário 13: o terceiro episódio distinto paga. */
+  /** Cenário 13: o terceiro episódio distinto paga; os dois primeiros levam passe. */
   test("1 livre, 2 livre, 3 exige anúncio", async () => {
     const userId = novoUsuario();
 
-    assert.equal((await pedirEpisodio(userId, 1, 1)).decisao, "PERMITIDO");
-    assert.equal((await pedirEpisodio(userId, 1, 2)).decisao, "PERMITIDO");
-    assert.equal((await pedirEpisodio(userId, 1, 3)).decisao, "ANUNCIO_NECESSARIO");
+    const ep1 = await pedirEpisodio(userId, 1, 1);
+    const ep2 = await pedirEpisodio(userId, 1, 2);
+    const ep3 = await pedirEpisodio(userId, 1, 3);
+
+    assert.equal(ep1.decisao, "PERMITIDO");
+    assert.equal(typeof ep1.passe, "string", "episódio dentro da cota leva a prova para /fontes");
+    assert.equal(ep2.decisao, "PERMITIDO");
+    assert.equal(typeof ep2.passe, "string");
+    assert.equal(ep3.decisao, "ANUNCIO_NECESSARIO");
+    assert.equal(ep3.passe, undefined, "o episódio que paga não recebe passe");
   });
 
   /** Cenários 14 e 15: replay e retry são o mesmo episódio de novo. */
@@ -456,7 +509,7 @@ describe("séries, pela rota", () => {
     assert.equal((await pedirEpisodio(userId, 1, 3)).decisao, "ANUNCIO_NECESSARIO");
   });
 
-  /** Depois do anúncio, a concessão cobre a reprodução e o ciclo segue. */
+  /** Depois do anúncio, a concessão cobre o episódio que pagou e o ciclo segue. */
   test("com concessão, o episódio que pagaria é liberado", async () => {
     const userId = novoUsuario();
     await pedirEpisodio(userId, 1, 1);
@@ -468,12 +521,217 @@ describe("séries, pela rota", () => {
     const r = await concluidor(userId, PLANO_GRATUITO)(req({ desafioId: auth.desafioId }));
     const { concessao } = await r.json();
 
-    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, concessao), {
+    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, concessao, alvoEp(1, 3)), {
       liberado: true,
       via: "concessao",
     });
     // A concessão foi consumida; o quarto distinto inicia o próximo grupo.
     assert.equal((await pedirEpisodio(userId, 1, 4)).decisao, "PERMITIDO");
+  });
+});
+
+// ── O defeito do smoke test: trocar de episódio ──────────────────────────────
+
+describe("passe de cota: o episódio que não deve anúncio abre /fontes", () => {
+  /**
+   * O teste explícito pedido: a política deixa passar, o servidor emite o
+   * passe, e a sessão de fontes abre com ele. Antes, este caminho terminava em
+   * "não foi possível carregar os servidores".
+   */
+  test("série: episódio autorizado sem novo anúncio → /fontes aceita o passe → sessão abre", async () => {
+    const userId = novoUsuario();
+
+    const auth = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+      req({ conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" }),
+    )).json();
+
+    assert.equal(auth.decisao, "PERMITIDO");
+    assert.equal(auth.desafioId, undefined, "nenhum anúncio foi pedido");
+    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, auth.passe, alvoEp(1, 1)), {
+      liberado: true,
+      via: "concessao",
+    });
+  });
+
+  test("trocar de episódio volta a abrir a sessão; o 3º continua exigindo anúncio", async () => {
+    const userId = novoUsuario();
+
+    // Episódio 3 pago primeiro, como no smoke test: anúncio, concessão, sessão.
+    await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" });
+    await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 2, plataforma: "android" });
+    const ep3 = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 3, plataforma: "android" });
+    assert.equal(ep3.decisao, "ANUNCIO_NECESSARIO");
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, ep3.id, alvoEp(1, 3))).liberado, true);
+
+    // Troca para o 4º: dentro da cota do novo ciclo, com passe, e a sessão abre.
+    const ep4 = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 4, plataforma: "android" });
+    assert.equal(ep4.decisao, "PERMITIDO");
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, ep4.id, alvoEp(1, 4))).liberado, true);
+
+    const ep5 = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 5, plataforma: "android" });
+    assert.equal(ep5.decisao, "PERMITIDO");
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, ep5.id, alvoEp(1, 5))).liberado, true);
+
+    // O 6º distinto volta a pagar: a política de N episódios continua valendo.
+    const ep6 = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+      req({ conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 6, plataforma: "android" }),
+    )).json();
+    assert.equal(ep6.decisao, "ANUNCIO_NECESSARIO");
+  });
+
+  test("o passe do 1º episódio não abre o 3º, e a tentativa não o queima", async () => {
+    const userId = novoUsuario();
+    const ep1 = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" });
+
+    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, ep1.id, alvoEp(1, 3)), {
+      liberado: false,
+      motivo: "concessao_invalida",
+    });
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, ep1.id, alvoEp(1, 1))).liberado, true);
+  });
+
+  test("o passe é de uso único e curto", async () => {
+    const userId = novoUsuario();
+    const ep1 = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" });
+
+    const ttl = await getRedis().ttl(`ads:concessao:${ep1.id}`);
+    assert.ok(ttl > 0 && ttl <= TTL_PASSE_S, `ttl do passe fora do limite: ${ttl}`);
+
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, ep1.id, alvoEp(1, 1))).liberado, true);
+    assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, ep1.id, alvoEp(1, 1)), {
+      liberado: false,
+      motivo: "concessao_invalida",
+    });
+  });
+
+  /**
+   * Retry, sessão expirada ou voltar ao episódio que pagou: passe sem outro
+   * anúncio, e o contador não soma o mesmo episódio de novo.
+   */
+  test("reabrir o 3º episódio depois do anúncio: passe, sem novo anúncio e sem somar", async () => {
+    const userId = novoUsuario();
+    await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 1, plataforma: "android" });
+    await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 2, plataforma: "android" });
+    const pago = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 3, plataforma: "android" });
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, pago.id, alvoEp(1, 3))).liberado, true);
+
+    for (let i = 0; i < 3; i++) {
+      const reaberto = await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 3, plataforma: "android" });
+      assert.equal(reaberto.decisao, "PERMITIDO", `reabertura ${i + 1} não pode pedir anúncio`);
+      assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, reaberto.id, alvoEp(1, 3))).liberado, true);
+    }
+
+    // Se o 3º tivesse somado de novo, o 4º cairia no 6 e pagaria.
+    assert.equal(
+      (await liberar(userId, { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp: 4, plataforma: "android" })).decisao,
+      "PERMITIDO",
+    );
+  });
+
+  test("filme: sessão expirada depois do anúncio reabre com passe; outro filme ainda paga", async () => {
+    const userId = novoUsuario();
+    const primeiro = await liberar(userId, { conteudoId: "f1", conteudoTipo: "filme", plataforma: "android" });
+    assert.equal(primeiro.decisao, "ANUNCIO_NECESSARIO");
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, primeiro.id)).liberado, true);
+    assert.equal(await estaPago({ userId, finalidade: "reproducao", alvo: ALVO_F1 }), true);
+
+    const reaberto = await liberar(userId, { conteudoId: "f1", conteudoTipo: "filme", plataforma: "android" });
+    assert.equal(reaberto.decisao, "PERMITIDO");
+    assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, reaberto.id)).liberado, true);
+
+    const outro = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+      req({ conteudoId: "f2", conteudoTipo: "filme", plataforma: "android" }),
+    )).json();
+    assert.equal(outro.decisao, "ANUNCIO_NECESSARIO", "o anúncio de um filme não paga outro");
+  });
+});
+
+// ── Reprodução, download e transmissão ───────────────────────────────────────
+
+describe("finalidade: reprodução, download e transmissão separados", () => {
+  const FILME = { conteudoId: "f1", conteudoTipo: "filme", plataforma: "android" };
+
+  test("download grátis exige anúncio mesmo dentro da cota, e não conta episódio", async () => {
+    const userId = novoUsuario();
+
+    // Baixar dois episódios distintos: anúncio em cada, e nenhum entra na cota.
+    for (const numeroEp of [5, 6]) {
+      const d = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+        req({ conteudoId: "s1", conteudoTipo: "serie", temporada: 1, numeroEp, plataforma: "android", finalidade: "download" }),
+      )).json();
+      assert.equal(d.decisao, "ANUNCIO_NECESSARIO", `download do episódio ${numeroEp}`);
+    }
+
+    // Se tivessem contado, o 1º episódio assistido já seria o 3º distinto e pagaria.
+    const serie = { conteudoId: "s1", conteudoTipo: "serie", temporada: 1, plataforma: "android" };
+    assert.equal((await liberar(userId, { ...serie, numeroEp: 1 })).decisao, "PERMITIDO");
+    assert.equal((await liberar(userId, { ...serie, numeroEp: 2 })).decisao, "PERMITIDO");
+    assert.equal((await liberar(userId, { ...serie, numeroEp: 3 })).decisao, "ANUNCIO_NECESSARIO");
+  });
+
+  test("transmissão grátis exige anúncio", async () => {
+    const userId = novoUsuario();
+    const t = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+      req({ ...FILME, finalidade: "transmissao" }),
+    )).json();
+    assert.equal(t.decisao, "ANUNCIO_NECESSARIO");
+  });
+
+  test("cada concessão abre só a própria finalidade", async () => {
+    const casos: FinalidadeDeConcessao[] = ["reproducao", "download", "transmissao"];
+    for (const emitida of casos) {
+      for (const pedida of casos) {
+        const userId = novoUsuario();
+        const { id } = await liberar(userId, { ...FILME, finalidade: emitida });
+        const r = await portaDeFontes(userId, PLANO_GRATUITO, id, ALVO_F1, pedida);
+        assert.equal(r.liberado, emitida === pedida, `concessão de ${emitida} pedida para ${pedida}`);
+      }
+    }
+  });
+
+  test("download e transmissão depois do anúncio não ficam pagos: nova ação, novo anúncio", async () => {
+    for (const finalidade of ["download", "transmissao"] as const) {
+      const userId = novoUsuario();
+      const primeira = await liberar(userId, { ...FILME, finalidade });
+      assert.equal((await portaDeFontes(userId, PLANO_GRATUITO, primeira.id, ALVO_F1, finalidade)).liberado, true);
+      assert.equal(await estaPago({ userId, finalidade, alvo: ALVO_F1 }), false);
+
+      const segunda = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(
+        req({ ...FILME, finalidade }),
+      )).json();
+      assert.equal(segunda.decisao, "ANUNCIO_NECESSARIO", finalidade);
+    }
+  });
+
+  test("anúncio de download não libera a reprodução do mesmo filme", async () => {
+    const userId = novoUsuario();
+    await liberar(userId, { ...FILME, finalidade: "download" });
+    const r = await (await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(req(FILME))).json();
+    assert.equal(r.decisao, "ANUNCIO_NECESSARIO");
+  });
+
+  test("finalidade desconhecida é pedido inválido, não reprodução", async () => {
+    const userId = novoUsuario();
+    for (const finalidade of ["canais", "", 7, {}]) {
+      const r = await autorizador(userId, PLANO_GRATUITO, DL_VALIDO)(req({ ...FILME, finalidade }));
+      assert.equal(r.status, 400, JSON.stringify(finalidade));
+    }
+  });
+
+  test("assinante: PERMITIDO sem modal nem passe nas três finalidades, e /fontes libera", async () => {
+    for (const plano of [PLANO_BASIC, PLANO_PREMIUM]) {
+      for (const finalidade of ["reproducao", "download", "transmissao"] as const) {
+        const userId = novoUsuario();
+        const r = await (await autorizador(userId, plano, DL_VALIDO)(req({ ...FILME, finalidade }))).json();
+        assert.equal(r.decisao, "PERMITIDO", `${plano.id} ${finalidade}`);
+        assert.equal(r.desafioId, undefined);
+        assert.equal(r.passe, undefined);
+        assert.deepEqual(await portaDeFontes(userId, plano, null, ALVO_F1, finalidade), {
+          liberado: true,
+          via: "sem_anuncios",
+        });
+      }
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-export type NomeIcone = "home" | "search" | "film" | "tv" | "sparkles" | "smile" | "radio";
+export type NomeIcone = "home" | "search" | "film" | "tv" | "sparkles" | "shuriken" | "smile" | "radio";
 
 export interface AndroidNavItem {
   href: string;
@@ -7,20 +7,19 @@ export interface AndroidNavItem {
 }
 
 /**
- * A sexta aba de busca é uma decisão nova, separada da recuperação histórica.
+ * Seis abas, numa linha só.
  *
- * Canais entra como sétima, sem tirar nenhuma das existentes. A barra fica
- * densa nessa contagem — numa tela de 360 dp cada alvo cai para perto de 51 dp,
- * ainda acima do mínimo de 48 dp, mas sem folga. Se entrar uma oitava aba, a
- * decisão deixa de ser "onde encaixar" e passa a ser "o que sai".
+ * A busca saiu da barra porque já vive na topbar (a lupa, ver
+ * `mostrarBuscaNaTopbar`). Com seis alvos, numa tela de 360 dp cada um fica
+ * perto de 58 dp, acima do mínimo de 48 dp. Se entrar uma sétima aba, a decisão
+ * deixa de ser "onde encaixar" e passa a ser "o que sai".
  */
 export const ANDROID_NAV_ITEMS: readonly AndroidNavItem[] = [
   { href: "/android", label: "Início", icone: "home" },
-  { href: "/buscar", label: "Buscar", icone: "search" },
   { href: "/series", label: "Séries", icone: "tv" },
   { href: "/filmes", label: "Filmes", icone: "film" },
   { href: "/canais", label: "Canais", icone: "radio" },
-  { href: "/animes", label: "Animes", icone: "sparkles" },
+  { href: "/animes", label: "Animes", icone: "shuriken" },
   { href: "/desenhos", label: "Kids", icone: "smile" },
 ];
 

@@ -159,6 +159,10 @@ export async function POST(req: NextRequest) {
         streamUrl: cv.streamUrl,
         // null de propósito quando o CDN não exige Referer; mandar um atrapalha.
         referer: cv.referer ?? null,
+        // Formato que o próprio extrator mediu no caminho final. Só "mp4" e "hls"
+        // descem: o download do app decide por ele em vez de adivinhar pela URL.
+        // O player não lê este campo — ele usa só o embedUrl desta rota.
+        tipo: cv.format === "MP4" ? "mp4" : cv.format === "HLS" ? "hls" : null,
         legendas: cv.subtitles ?? [],
       },
       { headers: NO_STORE },

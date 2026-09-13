@@ -6,8 +6,9 @@ import { FormEvent, useEffect, useState } from "react";
 import { Film, Home, Radio, Search, Smile, Sparkles, Tv, UserRound, X } from "lucide-react";
 import { isPlayerRoute, useAppMode } from "./AppMode";
 import { ANDROID_NAV_ITEMS, ROTA_CONTA, abaAtiva, mostrarBuscaNaTopbar, rotaDeBusca, type NomeIcone } from "./androidNav";
+import { Shuriken } from "./ShurikenIcon";
 
-const ICONES: Record<NomeIcone, typeof Home> = { home: Home, search: Search, film: Film, tv: Tv, sparkles: Sparkles, smile: Smile, radio: Radio };
+const ICONES: Record<NomeIcone, typeof Home> = { home: Home, search: Search, film: Film, tv: Tv, sparkles: Sparkles, shuriken: Shuriken, smile: Smile, radio: Radio };
 
 export function AndroidShell() {
   const pathname = usePathname();

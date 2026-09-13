@@ -1,6 +1,9 @@
 package com.obaflix
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -11,7 +14,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -21,6 +26,7 @@ import com.obaflix.ads.AdsBridge
 import com.obaflix.ads.AdsScript
 import com.obaflix.ads.ObaflixAds
 import com.obaflix.bridge.SuperflixChallengeOverlay
+import com.obaflix.download.DownloadFolder
 import com.obaflix.player.PlayerWebViewClient
 import com.obaflix.update.Atualizador
 import com.obaflix.update.EstadoAtualizacao
@@ -30,11 +36,51 @@ import java.util.UUID
 
 private const val TAG = "Obaflix"
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
 
     private lateinit var webView: WebView
     private var fullscreenView: View? = null
     private val bridgeCapability = UUID.randomUUID().toString()
+
+    /**
+     * Ponte de download e transmissao. Recriada junto com a WebView, porque
+     * guarda a referencia dela para responder as Promises do JS.
+     *
+     * Independente da ponte de anuncio: baixar e transmitir nao sao intencao de
+     * reproducao, e quem decide anuncio e o servidor. Ver SuperficieDeMidiaGuardTest.
+     */
+    private var mediaBridge: MediaActionsBridge? = null
+
+    /** Proxy de loopback da reproducao local (Playerflix). Recriado com a WebView. */
+    private var localMediaServer: LocalMediaServer? = null
+
+    /**
+     * Seletor nativo de diretorio.
+     *
+     * `registerForActivityResult` tem de acontecer antes de a Activity ficar
+     * STARTED — como inicializador de campo e o jeito recomendado, e o unico
+     * que sobrevive a recriacao por rotacao sem lancar.
+     */
+    private val seletorDePasta =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            val ok = uri != null && DownloadFolder.guardar(this, uri)
+            ObaLog.evento("download", "pasta_escolhida", "ok" to ok)
+            // Continua o download que estava esperando a pasta — e o retorno
+            // automatico ao app que o fluxo pede.
+            mediaBridge?.pastaEscolhida(ok)
+        }
+
+    /**
+     * POST_NOTIFICATIONS, so a partir do Android 13.
+     *
+     * Recusar nao impede o download: o servico em primeiro plano continua
+     * rodando, so nao desenha a notificacao de progresso. Por isso o resultado
+     * nao decide nada — e pedido, nao exigido.
+     */
+    private val permissaoDeNotificacao =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { concedida ->
+            ObaLog.evento("download", "permissao_notificacao", "concedida" to concedida)
+        }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,7 +155,9 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // O único conteúdo HTTP aceito vem do proxy de loopback, limitado
+            // pelo network_security_config a 127.0.0.1. Nunca usar ALWAYS_ALLOW.
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = false
@@ -137,6 +185,30 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(
             ObaflixBridge(webView, lifecycleScope, bridgeCapability),
             "_obaflixBridge",
+        )
+
+        // Download e transmissao vivem somente no app movel — a TV nao registra
+        // esta interface. Protegida pelo mesmo capability aleatorio por sessao.
+        mediaBridge = MediaActionsBridge(
+            activity = this,
+            host = this,
+            webView = webView,
+            capability = bridgeCapability,
+            escopo = lifecycleScope,
+        )
+        webView.addJavascriptInterface(
+            mediaBridge!!,
+            "_obaflixMedia",
+        )
+
+        // Reproducao local de episodios Playerflix pelo proxy de loopback. Um
+        // servidor por WebView: o anterior fecha antes, inclusive apos crash do
+        // renderer (rebuildWebViewAposCrash volta a chamar este metodo).
+        localMediaServer?.close()
+        localMediaServer = LocalMediaServer()
+        webView.addJavascriptInterface(
+            ObaflixMedia(webView, lifecycleScope, bridgeCapability, localMediaServer!!),
+            "_obaflixPlayback",
         )
 
         // Ponte de anuncio: uma capacidade so, protegida pelo mesmo capability
@@ -319,8 +391,12 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         runCatching {
+            // Regra de origem, nao padrao de URL: scheme://host, SEM caminho. Um
+            // "/*" no fim tornava a regra invalida e addDocumentStartJavaScript
+            // lancava IllegalArgumentException em todo aparelho — o document-start
+            // do updater nunca instalava. Corrigido assim na 1.0.16.
             WebViewCompat.addDocumentStartJavaScript(
-                webView, script, setOf("${BuildConfig.OBAFLIX_URL}/*"),
+                webView, script, setOf(BuildConfig.OBAFLIX_URL),
             )
         }.onFailure { e ->
             ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "document_start_script_falhou", "excecao" to e.javaClass.simpleName)
@@ -372,6 +448,78 @@ class MainActivity : AppCompatActivity() {
                     },
                     setKeepScreenOn: function(enabled) {
                         window._obaflixBridge.setKeepScreenOn(bridgeCapability, !!enabled);
+                    },
+                    // Reprodução local só é acionada pelo CustomPlayer para
+                    // episódios Playerflix; a ponte nativa valida novamente.
+                    startLocalMedia: function(payload) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            try { window._obaflixPlayback.start(bridgeCapability, id, JSON.stringify(payload || {})); }
+                            catch (e) { delete window._obaflixCallbacks[id]; reject(e); }
+                        });
+                    },
+                    stopLocalMedia: function(id) {
+                        try { window._obaflixPlayback.stop(bridgeCapability, id); } catch (e) {}
+                        return Promise.resolve();
+                    },
+
+                    // Download/Cast sao exclusivos do APK Android. Nao passam
+                    // pela ponte de anuncio: baixar e transmitir nao sao
+                    // intencao de reproducao.
+                    mediaActions: true,
+
+                    inspectDownloadSource: function(payload) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            try {
+                                window._obaflixMedia.inspecionarFonte(
+                                    bridgeCapability, id, JSON.stringify(payload || {})
+                                );
+                            } catch (e) {
+                                delete window._obaflixCallbacks[id];
+                                reject(e);
+                            }
+                        });
+                    },
+
+                    requestDownload: function(payload) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            try {
+                                window._obaflixMedia.solicitarDownload(
+                                    bridgeCapability, id, JSON.stringify(payload || {})
+                                );
+                            } catch (e) {
+                                delete window._obaflixCallbacks[id];
+                                reject(e);
+                            }
+                        });
+                    },
+
+                    discardDownloadSource: function() {
+                        window._obaflixMedia.descartarSondagem(bridgeCapability);
+                    },
+
+                    requestCast: function(payload) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            try {
+                                window._obaflixMedia.solicitarCast(
+                                    bridgeCapability, id, JSON.stringify(payload || {})
+                                );
+                            } catch (e) {
+                                delete window._obaflixCallbacks[id];
+                                reject(e);
+                            }
+                        });
+                    },
+
+                    installCastApp: function() {
+                        window._obaflixMedia.instalarAppDeCast(bridgeCapability);
                     },
                     // Igual ao preload.js do Electron: so registra o callback.
                     // Quem chama e o lado nativo (MainActivity.notificarAtualizacaoPronta),
@@ -433,7 +581,25 @@ class MainActivity : AppCompatActivity() {
         webView.onResume()
     }
 
+    override fun pedirPastaDeDownload() {
+        seletorDePasta.launch(null)
+    }
+
+    override fun garantirPermissaoDeNotificacao() {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissaoDeNotificacao.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     override fun onDestroy() {
+        localMediaServer?.close()
+        localMediaServer = null
         // destroy() com a WebView ainda anexada deixa o Chromium tentando desenhar
         // numa view ja destruida quando a Activity e recriada (rotacao, troca de
         // tema). Soltar antes e o que a documentacao pede.

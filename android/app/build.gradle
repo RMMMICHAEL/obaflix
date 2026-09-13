@@ -11,8 +11,8 @@ android {
         applicationId "com.obaflix"
         minSdk 26
         targetSdk 34
-        versionCode 13
-        versionName "1.0.13"
+        versionCode 17
+        versionName "1.0.17"
         // Mesmo valor que o :core-extractor le — ambos saem de gradle.properties.
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""
@@ -110,6 +110,13 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // Download — Storage Access Framework. E a unica forma de escrever na pasta
+    // que o usuario escolheu sem pedir permissao ampla de armazenamento.
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    // registerForActivityResult, para o seletor de diretorio e para
+    // POST_NOTIFICATIONS.
+    implementation 'androidx.activity:activity-ktx:1.8.2'
 
     // Unity Ads. So aqui, no :app — o :tv nao monetiza nesta fase e nao deve nem
     // conhecer a dependencia. A 4.18.1 traz kotlin-stdlib 1.8.10 e coroutines

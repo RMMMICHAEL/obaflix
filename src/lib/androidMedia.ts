@@ -53,6 +53,30 @@ export function pidDeEpisodio(serieId: string, temporada: number, numeroEp: numb
   return `serie:${serieId}:t${temporada}:e${numeroEp}`;
 }
 
+/**
+ * O inverso de `pidDeFilme`/`pidDeEpisodio`: de volta ao conteúdo.
+ *
+ * É o que as ações de Baixar e Transmitir mandam a `/api/playback/authorize` —
+ * o `pid` já é a identidade do conteúdo em hero, episódio e player. Qualquer
+ * outra forma devolve null, e a ação não pede liberação para um conteúdo mal
+ * interpretado.
+ */
+export function alvoDoPid(pid: string | null | undefined): AlvoDeMidia | null {
+  if (!pid) return null;
+  const filme = /^filme:([^:]+)$/.exec(pid);
+  if (filme) return { tipo: "filme", conteudoId: filme[1] };
+  const serie = /^serie:([^:]+):t(\d+):e(\d+)$/.exec(pid);
+  if (serie) {
+    return {
+      tipo: "serie",
+      conteudoId: serie[1],
+      temporada: Number(serie[2]),
+      numeroEp: Number(serie[3]),
+    };
+  }
+  return null;
+}
+
 export function pidDoAlvo(alvo: AlvoDeMidia): string {
   return alvo.tipo === "filme"
     ? pidDeFilme(alvo.conteudoId)
@@ -200,6 +224,17 @@ export function mensagemDeFalha(motivo?: string): string {
       return "O link expirou. Tente de novo";
     case "indisponivel":
       return "Indisponível neste aparelho";
+    case "download_indisponivel":
+    case "hls_sem_arquivo_unico":
+      return "Download indisponível para este título";
+    // Recusas comerciais: nunca a mensagem de "servidor" ou de mídia.
+    case "anuncio_indisponivel":
+      return "Anúncio indisponível no momento. Tente de novo";
+    case "acao_nao_liberada":
+    case "anuncio_necessario":
+      return "Não foi possível liberar esta ação agora";
+    case "sessao_expirada":
+      return "O link expirou. Tente de novo";
     default:
       return "Não foi possível concluir";
   }
@@ -226,4 +261,178 @@ export function fontesCandidatas<
   return fontes.filter(
     (f) => !!f.disponivel && !!f.nativo && !f.iframeDireto && !f.iframeDesafio && !f.superflixLocal,
   );
+}
+
+/**
+ * Que mídia uma fonte resolvida entrega, pelo mesmo critério do
+ * `DownloadSourceResolver.classificar` do Android: o tipo declarado manda, e só
+ * "mp4" é arquivo direto; sem tipo, só um caminho terminado em `.mp4` é direto.
+ * Todo o resto é HLS — inclusive uma URL que nem dá para ler.
+ *
+ * Classifica pela mídia resolvida, nunca pela posição ou pelo nome do servidor.
+ */
+export type MidiaDaFonte = "direta" | "hls";
+
+export function midiaDaFonte(fonte: { stream?: string; tipo?: string | null }): MidiaDaFonte {
+  if (fonte.tipo && fonte.tipo.trim() !== "") {
+    return fonte.tipo.toLowerCase() === "mp4" ? "direta" : "hls";
+  }
+  try {
+    return new URL(fonte.stream ?? "").pathname.toLowerCase().endsWith(".mp4") ? "direta" : "hls";
+  } catch {
+    return "hls";
+  }
+}
+
+/**
+ * Teto de servidores tentados num toque em Baixar. Cada tentativa fora do
+ * player custa uma chamada a `/api/player/fonte-nativa`; a extração em si roda
+ * no aparelho.
+ */
+export const MAX_TENTATIVAS_DE_DOWNLOAD = 6;
+
+export type RespostaDeSondagem = { ok: boolean; motivo?: string; tentarOutraFonte?: boolean };
+
+export type ResultadoDaProcura<R> = { ok: true; resposta: R } | { ok: false; motivo?: string };
+
+/**
+ * Procura a fonte de download: arquivo direto antes de HLS.
+ *
+ * Ordem: MP4/direta aceita pelo Android → próxima fonte direta → só então HLS.
+ * Nesta versão o HLS não tem vez: baixá-lo gravava dezenas de `.ts` e um
+ * `index.m3u8`, e ainda não há remux seguro para um arquivo único. Uma fonte HLS
+ * é pulada sem sequer ser sondada, e se só houver HLS a resposta é
+ * "Download indisponível para este título".
+ *
+ * `resolverFonte` devolve `null` quando as fontes acabaram e lança quando um
+ * servidor específico falhou — a procura segue para o próximo em vez de
+ * desistir no primeiro servidor quebrado.
+ *
+ * Não resolve nem troca a fonte que está tocando: o que cada tentativa devolve
+ * é decisão de quem chama (no player, só a fonte atual).
+ */
+export async function procurarFonteDeDownload<
+  F extends { stream?: string; tipo?: string | null; servidor?: string; via?: string },
+  R extends RespostaDeSondagem,
+>(params: {
+  resolverFonte: (tentativa: number) => Promise<F | null>;
+  sondar: (fonte: F) => Promise<R>;
+  maxTentativas?: number;
+  /** Diagnóstico de cada tentativa. Ver [EventoDeProcura] e [linhaDiagDownload]. */
+  registrar?: (evento: EventoDeProcura) => void;
+}): Promise<ResultadoDaProcura<R>> {
+  const { resolverFonte, sondar, maxTentativas = MAX_TENTATIVAS_DE_DOWNLOAD } = params;
+  // Log que quebra não pode derrubar o download.
+  const registrar = (evento: EventoDeProcura) => {
+    try {
+      params.registrar?.(evento);
+    } catch {
+      /* diagnóstico é acessório */
+    }
+  };
+  let viuHls = false;
+  let ultimo: R | null = null;
+
+  for (let tentativa = 0; tentativa < maxTentativas; tentativa++) {
+    let fonte: F | null;
+    try {
+      fonte = await resolverFonte(tentativa);
+    } catch (erro) {
+      const nome = (erro as { name?: unknown } | null)?.name;
+      // Fechar o convite de anúncio, ir assinar um plano ou ter a ação recusada
+      // comercialmente encerram a procura inteira: tentar o próximo servidor
+      // abriria o modal de novo, ou repetiria a mesma recusa.
+      if (nome === "AcaoCancelada") {
+        registrar({ tentativa, resultado: "falhou", motivo: "cancelado" });
+        return { ok: false, motivo: "cancelado" };
+      }
+      if (nome === "AcaoInterrompida") {
+        const motivo = String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada");
+        registrar({ tentativa, resultado: "falhou", motivo });
+        return { ok: false, motivo };
+      }
+      // Este servidor falhou; os próximos ainda podem servir.
+      registrar({ tentativa, resultado: "falhou" });
+      continue;
+    }
+    if (!fonte) {
+      registrar({ tentativa, resultado: "fim" });
+      break;
+    }
+
+    const identidade = { servidor: fonte.servidor, via: fonte.via };
+    const midia = midiaDaFonte(fonte);
+    if (midia === "hls") {
+      viuHls = true;
+      registrar({ tentativa, resultado: "pulada_hls", midia, ...identidade });
+      continue;
+    }
+
+    let r: R;
+    try {
+      r = await sondar(fonte);
+    } catch {
+      r = { ok: false } as R;
+    }
+    if (r.ok) {
+      registrar({ tentativa, resultado: "aceita", midia, ...identidade });
+      return { ok: true, resposta: r };
+    }
+    registrar({ tentativa, resultado: "recusada", midia, motivo: r.motivo, ...identidade });
+    ultimo = r;
+    // Só insiste quando o Android disse que outra fonte pode servir.
+    if (!r.tentarOutraFonte) break;
+  }
+
+  return { ok: false, motivo: viuHls ? "download_indisponivel" : ultimo?.motivo };
+}
+
+/**
+ * Um passo da procura de download, para diagnóstico.
+ *
+ * Só classificação e identificação genérica: nunca URL, token, Referer nem nome
+ * real de provedor. `servidor` é o rótulo que o usuário comum já vê ("Servidor 3").
+ */
+export type EventoDeProcura = {
+  tentativa: number;
+  resultado: "aceita" | "recusada" | "pulada_hls" | "falhou" | "fim";
+  midia?: MidiaDaFonte;
+  motivo?: string;
+  servidor?: string;
+  /** "servidor" quando a mídia veio resolvida da API; "aparelho" quando o app extraiu. */
+  via?: string;
+};
+
+/** Valor seguro para log: só letras, números, `_`, `.` e `-`; o que parecer URL vira "mascarado". */
+function valorDeLog(valor: string | undefined, limite = 32): string | undefined {
+  if (!valor) return undefined;
+  if (/https?:|\/\/|[?&=]/i.test(valor)) return "mascarado";
+  const limpo = valor
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return limpo ? limpo.slice(0, limite) : undefined;
+}
+
+/**
+ * A linha de diagnóstico de um passo da procura.
+ *
+ * Usa o canal `[diag/etapa]`, o único que o `MainActivity` repassa ao logcat
+ * mesmo num APK de release (vira `diag_etapa` com os campos `chave=valor`).
+ */
+export function linhaDiagDownload(evento: EventoDeProcura): string {
+  const campos: Array<[string, string | number | undefined]> = [
+    ["etapa", "DOWNLOAD_FONTE"],
+    ["tentativa", evento.tentativa],
+    ["resultado", evento.resultado],
+    ["midia", evento.midia],
+    ["via", valorDeLog(evento.via)],
+    ["servidor", valorDeLog(evento.servidor)],
+    ["motivo", valorDeLog(evento.motivo)],
+  ];
+  const partes = campos
+    .filter(([, valor]) => valor !== undefined && valor !== "")
+    .map(([chave, valor]) => `${chave}=${valor}`);
+  return `[diag/etapa] ${partes.join(" ")}`;
 }

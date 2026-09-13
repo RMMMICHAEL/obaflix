@@ -8,8 +8,47 @@ import com.obaflix.bridge.ObaLog
 import com.obaflix.bridge.PlayerState
 import com.obaflix.security.AppIntegrity
 import com.obaflix.security.AppIntegrityStatus
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import java.util.concurrent.TimeUnit
+
+/**
+ * Promove a https os redirecionamentos que o CDN devolve em http.
+ *
+ * O provedor do MP4 progressivo responde 3xx apontando para um host de borda
+ * com esquema http, mesmo servindo o mesmo caminho em https com certificado
+ * valido. Como o aplicativo proibe cleartext (network_security_config), o
+ * OkHttp recusava o salto com UnknownServiceException e o Media3 traduzia isso
+ * em "Source error" — a fonte inteira morria por um esquema errado no Location,
+ * e nao por estar indisponivel.
+ *
+ * Reescrever o Location e o menor conserto possivel: nao afrouxa a politica de
+ * cleartext, nao confia em host nenhum, e so troca o esquema de um destino que
+ * ja atende em TLS. Se o host nao atendesse em https, a falha continuaria — o
+ * que e o comportamento correto.
+ *
+ * E um network interceptor de proposito: os saltos intermediarios de um
+ * redirecionamento nao passam pelos interceptors de aplicacao.
+ */
+private object RedirecionamentoHttps : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val resposta = chain.proceed(chain.request())
+        if (!resposta.isRedirect) return resposta
+        val destino = resposta.header("Location") ?: return resposta
+        if (!destino.startsWith("http://", ignoreCase = true)) return resposta
+
+        val promovido = "https://" + destino.substring("http://".length)
+        ObaLog.alerta(
+            ObaLog.Fase.CDN, "redirecionamento_promovido_https",
+            "host" to ObaLog.host(promovido),
+            "status" to resposta.code,
+        )
+        return resposta.newBuilder()
+            .header("Location", promovido)
+            .build()
+    }
+}
 
 class ObaflixApp : Application() {
 
@@ -102,6 +141,7 @@ class ObaflixApp : Application() {
         mediaClient = httpClient.newBuilder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)
+            .addNetworkInterceptor(RedirecionamentoHttps)
             .build()
 
         ObaLog.ambiente(

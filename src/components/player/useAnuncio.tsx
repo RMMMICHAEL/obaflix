@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { X } from "lucide-react";
 
+import { efeitoDoConvite, type FinalidadeDeAcao } from "@/lib/ads/acaoPatrocinada";
 import {
   executarFluxoDeAnuncio,
   type PlataformaDeAnuncio,
@@ -13,14 +16,22 @@ import {
  * O fluxo de anúncio ligado à interface: as portas concretas e o modal.
  *
  * A sequência em si vive em `src/lib/ads/fluxoDoCliente.ts` e é testada lá, sem
- * React. Aqui fica só o que precisa de DOM: abrir o Direct Link, chamar a ponte
- * nativa, e esperar o usuário clicar.
+ * React; o que cada botão do convite faz vive em `src/lib/ads/acaoPatrocinada.ts`.
+ * Aqui fica só o que precisa de DOM: abrir o Direct Link, chamar a ponte nativa,
+ * esperar o usuário escolher e navegar para os planos.
  *
  * ## Desistir não é erro
  *
- * `AnuncioRecusado` existe para o player distinguir "deu problema" de "o usuário
- * não quis ver anúncio". O segundo caso volta ao catálogo em silêncio; tratar os
- * dois igual mostraria uma tela de erro a quem simplesmente mudou de ideia.
+ * `AnuncioRecusado` existe para quem chama distinguir "deu problema" de "o
+ * usuário não quis ver anúncio". O segundo caso volta ao estado anterior em
+ * silêncio; tratar os dois igual mostraria uma tela de erro a quem simplesmente
+ * mudou de ideia.
+ *
+ * ## Concluído, a ação continua sozinha
+ *
+ * Nenhum botão depois do anúncio. Assim que o SDK avisa o fim (Android), ou
+ * passa o tempo do Direct Link (Electron), a promessa resolve e a ação original
+ * — reproduzir, baixar ou transmitir — segue sem clique extra.
  */
 export class AnuncioRecusado extends Error {
   constructor() {
@@ -63,7 +74,7 @@ interface PonteDeAnuncioAndroid {
 declare global {
   interface Window {
     obaflixAds?: PonteDeAnuncioAndroid;
-    /** Resolvida pelo nativo quando o anúncio fecha. Ver `AdGateScript`. */
+    /** Resolvida pelo nativo quando o anúncio fecha. Ver `AdsScript`. */
     __obaflixAnuncioConcluido?: (desafioId: string, concluido: boolean) => void;
   }
 }
@@ -71,30 +82,49 @@ declare global {
 /** O que o modal está pedindo agora. */
 type EstadoDoModal =
   | { fase: "oculto" }
-  /** Antes de exibir: "assista a um anúncio para liberar". */
-  | { fase: "convite" }
-  /** Electron: o link abriu no navegador e estamos esperando o usuário voltar. */
+  /** Antes de exibir: "assista a um anúncio para liberar esta ação". */
+  | { fase: "convite"; finalidade: FinalidadeDeAcao }
+  /** Electron: o link abriu no navegador; a ação continua ao fim da contagem. */
   | { fase: "aguardando"; segundosRestantes: number }
-  /** Android: o SDK está exibindo. Sem botão — quem fecha é o anúncio. */
+  /** Android: o SDK está exibindo. Quem fecha o anúncio é o próprio anúncio. */
   | { fase: "exibindo" };
 
 /**
- * Quanto tempo o botão de liberar fica desabilitado no Electron.
+ * Quanto tempo o Electron espera antes de continuar a ação.
  *
- * Maior que o mínimo do servidor (6 s) de propósito: se fosse igual, um usuário
- * clicando no instante exato seria recusado por arredondamento de relógio e
- * veria um erro sem entender por quê. A margem faz a recusa do servidor ser um
- * caso de automação, não de azar.
+ * Maior que o mínimo do servidor (6 s) de propósito: se fosse igual, a conclusão
+ * chegaria no instante exato e seria recusada por arredondamento de relógio. A
+ * margem faz a recusa do servidor ser um caso de automação, não de azar.
  */
 const ESPERA_ELECTRON_S = 9;
 
+/** O texto do convite, pela ação que o anúncio vai liberar. */
+export function textoDoConvite(finalidade: FinalidadeDeAcao): string {
+  switch (finalidade) {
+    case "download":
+      return "Veja um anúncio rápido para liberar este download.";
+    case "transmissao":
+      return "Veja um anúncio rápido para transmitir este título.";
+    default:
+      return "Veja um anúncio rápido para começar a reprodução.";
+  }
+}
+
 export function useAnuncio() {
+  const router = useRouter();
   const [modal, setModal] = useState<EstadoDoModal>({ fase: "oculto" });
 
   /** Resolve a promessa que `exibirAnuncio` está aguardando. */
   const resolverRef = useRef<((r: ResultadoDaExibicao) => void) | null>(null);
+  const aceitarRef = useRef<(() => void) | null>(null);
+  const limparRef = useRef<(() => void) | null>(null);
+  /** O último cancelamento foi para escolher um plano: quem chamou não deve navegar por cima. */
+  const foiAssinarRef = useRef(false);
 
   const encerrar = useCallback((concluido: boolean) => {
+    limparRef.current?.();
+    limparRef.current = null;
+    aceitarRef.current = null;
     const resolver = resolverRef.current;
     resolverRef.current = null;
     setModal({ fase: "oculto" });
@@ -102,12 +132,18 @@ export function useAnuncio() {
   }, []);
 
   const exibirAnuncio = useCallback(
-    (entrada: { plataforma: PlataformaDeAnuncio; desafioId: string; directLink?: string }) =>
+    (entrada: {
+      plataforma: PlataformaDeAnuncio;
+      desafioId: string;
+      directLink?: string;
+      finalidade?: FinalidadeDeAcao;
+    }) =>
       new Promise<ResultadoDaExibicao>((resolve) => {
+        foiAssinarRef.current = false;
         resolverRef.current = resolve;
-        setModal({ fase: "convite" });
+        setModal({ fase: "convite", finalidade: entrada.finalidade ?? "reproducao" });
 
-        // O convite fica esperando o clique; quem continua é `aceitar`, abaixo.
+        // O convite fica esperando a escolha; quem continua é `aoConfirmar`.
         aceitarRef.current = () => {
           if (entrada.plataforma === "android") {
             const ponte = window.obaflixAds;
@@ -115,7 +151,7 @@ export function useAnuncio() {
             if (!ponte?.mostrarAnuncio || !capability) {
               // Aplicativo antigo, sem a ponte: não há como exibir anúncio. Não
               // travar o usuário por uma versão que ele não escolheu — cancela,
-              // e o servidor continua recusando a sessão sem concessão.
+              // e o servidor continua recusando a ação sem concessão.
               encerrar(false);
               return;
             }
@@ -125,6 +161,7 @@ export function useAnuncio() {
             window.__obaflixAnuncioConcluido = (desafioId, concluido) => {
               if (desafioId !== entrada.desafioId) return;
               window.__obaflixAnuncioConcluido = undefined;
+              // Concluído, a ação original continua sozinha: nenhum clique extra.
               encerrar(concluido === true);
             };
             ponte.mostrarAnuncio(capability, entrada.desafioId);
@@ -143,7 +180,9 @@ export function useAnuncio() {
             restantes -= 1;
             if (restantes <= 0) {
               clearInterval(timer);
-              setModal({ fase: "aguardando", segundosRestantes: 0 });
+              limparRef.current = null;
+              // Sem clique extra: passado o tempo do anúncio, a ação continua.
+              encerrar(true);
               return;
             }
             setModal({ fase: "aguardando", segundosRestantes: restantes });
@@ -153,9 +192,6 @@ export function useAnuncio() {
       }),
     [encerrar],
   );
-
-  const aceitarRef = useRef<(() => void) | null>(null);
-  const limparRef = useRef<(() => void) | null>(null);
 
   const portas = useRef<Pick<PortasDoFluxo, "autorizar" | "concluir" | "exibirAnuncio">>({
     async autorizar(pedido) {
@@ -181,29 +217,37 @@ export function useAnuncio() {
   });
   portas.current.exibirAnuncio = exibirAnuncio;
 
+  /** "Assistir anúncio". A única escolha que exibe. */
   const aoConfirmar = useCallback(() => {
+    if (!efeitoDoConvite("assistir").exibirAnuncio) return;
     aceitarRef.current?.();
   }, []);
 
-  const aoCancelar = useCallback(() => {
-    limparRef.current?.();
-    limparRef.current = null;
+  /** X: fecha e cancela só a ação pendente. Nenhuma rota é chamada. */
+  const aoFechar = useCallback(() => {
     window.__obaflixAnuncioConcluido = undefined;
     encerrar(false);
   }, [encerrar]);
 
-  const aoLiberar = useCallback(() => {
-    limparRef.current?.();
-    limparRef.current = null;
-    encerrar(true);
-  }, [encerrar]);
+  /** "Assinar um plano": cancela a ação pendente ANTES de navegar para a escolha. */
+  const aoAssinar = useCallback(() => {
+    const efeito = efeitoDoConvite("assinar");
+    foiAssinarRef.current = true;
+    window.__obaflixAnuncioConcluido = undefined;
+    encerrar(false);
+    if (efeito.navegarPara) router.push(efeito.navegarPara);
+  }, [encerrar, router]);
+
+  /** Se o último cancelamento foi para ir aos planos. */
+  const saiuParaPlanos = useCallback(() => foiAssinarRef.current, []);
 
   return {
     portas: portas.current as PortasDoFluxo,
     modal,
     aoConfirmar,
-    aoCancelar,
-    aoLiberar,
+    aoFechar,
+    aoAssinar,
+    saiuParaPlanos,
     executarFluxoDeAnuncio,
   };
 }
@@ -212,55 +256,68 @@ export function useAnuncio() {
 export function ModalDeAnuncio(props: {
   estado: EstadoDoModal;
   aoConfirmar: () => void;
-  aoCancelar: () => void;
-  aoLiberar: () => void;
+  aoFechar: () => void;
+  aoAssinar: () => void;
 }) {
-  const { estado, aoConfirmar, aoCancelar, aoLiberar } = props;
+  const { estado, aoConfirmar, aoFechar, aoAssinar } = props;
   if (estado.fase === "oculto") return null;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 px-6">
-      <div className="w-full max-w-sm rounded-xl border border-white/10 bg-[#101318] p-6 text-center">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="titulo-do-anuncio"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 px-6"
+    >
+      <div className="relative w-full max-w-sm rounded-xl border border-white/10 bg-[#101318] p-6 text-center">
+        <button
+          type="button"
+          onClick={aoFechar}
+          aria-label="Fechar"
+          className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-400 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white/70"
+        >
+          <X size={18} aria-hidden="true" />
+        </button>
+
         {estado.fase === "convite" && (
           <>
-            <h2 className="text-lg font-bold text-white">Assista a um anúncio</h2>
-            <p className="mt-2 text-sm text-gray-400">
-              Seu plano libera a reprodução depois de um anúncio rápido.
-            </p>
+            <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
+              Assista a um anúncio
+            </h2>
+            <p className="mt-2 text-sm text-gray-400">{textoDoConvite(estado.finalidade)}</p>
             <button
+              type="button"
               onClick={aoConfirmar}
               className="mt-5 w-full rounded-full bg-white py-3 text-sm font-bold text-black"
             >
               Assistir anúncio
             </button>
-            <button onClick={aoCancelar} className="mt-2 w-full py-2 text-sm text-gray-400">
-              Agora não
+            <button
+              type="button"
+              onClick={aoAssinar}
+              className="mt-2 w-full rounded-full border border-white/15 py-3 text-sm font-semibold text-white hover:bg-white/10"
+            >
+              Assinar um plano
             </button>
           </>
         )}
 
         {estado.fase === "exibindo" && (
-          <p className="py-4 text-sm text-gray-300">Carregando anúncio…</p>
+          <p id="titulo-do-anuncio" className="py-4 text-sm text-gray-300">
+            Carregando anúncio…
+          </p>
         )}
 
         {estado.fase === "aguardando" && (
           <>
-            <h2 className="text-lg font-bold text-white">Anúncio aberto no navegador</h2>
+            <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
+              Anúncio aberto no navegador
+            </h2>
             <p className="mt-2 text-sm text-gray-400">
-              Volte aqui quando terminar para liberar a reprodução.
-            </p>
-            <button
-              onClick={aoLiberar}
-              disabled={estado.segundosRestantes > 0}
-              className="mt-5 w-full rounded-full bg-white py-3 text-sm font-bold text-black disabled:opacity-40"
-            >
               {estado.segundosRestantes > 0
-                ? `Aguarde ${estado.segundosRestantes}s…`
-                : "Liberar reprodução"}
-            </button>
-            <button onClick={aoCancelar} className="mt-2 w-full py-2 text-sm text-gray-400">
-              Cancelar
-            </button>
+                ? `Continuamos sozinhos em ${estado.segundosRestantes}s.`
+                : "Continuando…"}
+            </p>
           </>
         )}
       </div>
