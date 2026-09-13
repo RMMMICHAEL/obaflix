@@ -11,12 +11,19 @@ import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
   emitirPasse,
+  escopoDaTv,
   estaPago,
   normalizarFinalidade,
   registrarEpisodioDistinto,
   type AlvoDeConcessao,
 } from "@/lib/ads/concessoes";
-import { decidirAnuncio, exigeAnuncio, meioDeExibicao, plataformaDaRequisicao } from "@/lib/ads/politica";
+import {
+  decidirAnuncio,
+  decidirPromocaoTv,
+  exigeAnuncio,
+  meioDeExibicao,
+  plataformaDaRequisicao,
+} from "@/lib/ads/politica";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 import { resolverPromocaoTv } from "@/lib/ads/promocaoTv";
 
@@ -307,7 +314,81 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     return NextResponse.json({ decisao: "PERMITIDO", passe }, { headers: NO_STORE });
   };
 
-  // ── Reprodução: política de anúncio ───────────────────────────────────────
+  // ── Android TV: política própria ──────────────────────────────────────────
+  //
+  // Promoção antes de cada filme ou episódio novo (`decidirPromocaoTv`). Não
+  // passa pelo contador de episódios nem pela marca de pago do celular: a TV
+  // não consome a cota dele e não herda o que ele liberou. A única dispensa é a
+  // recuperação no mesmo aparelho, com marca própria (`escopoDaTv`), para o
+  // mesmo conteúdo.
+  if (plataforma === "android_tv" && usuario.deviceId) {
+    const escopo = escopoDaTv(usuario.deviceId);
+    let liberadoNesteAparelho = false;
+    if (finalidade === "reproducao") {
+      try {
+        liberadoNesteAparelho = await jaPago({ userId, finalidade, alvo, escopo });
+      } catch {
+        // Redis instável: pede a promoção. Custa um vídeo a mais, nunca acesso indevido.
+        liberadoNesteAparelho = false;
+      }
+    }
+
+    const decisaoTv = decidirPromocaoTv({ direitos, finalidade, liberadoNesteAparelho });
+    if (decisaoTv.decisao === "permitido") return permitirComPasse(decisaoTv.via);
+
+    // Download e transmissão não têm meio na TV; e promoção sem configuração
+    // válida não é promoção. Os dois recusam, sem abrir desafio.
+    const promocao = decisaoTv.decisao === "promocao_necessaria" ? lerPromocaoTv() : null;
+    if (!promocao || promocao.situacao !== "ok") {
+      const motivo = promocao?.situacao === "indisponivel" ? ` promocao:${promocao.motivo}` : "";
+      audit("playback_negado", {
+        userId, ip, ua,
+        detail: `anuncio indisponivel plataforma:android_tv finalidade:${finalidade}${motivo}`,
+      });
+      return NextResponse.json(
+        { decisao: "ANUNCIO_INDISPONIVEL", codigo: "anuncio_indisponivel" },
+        { headers: NO_STORE },
+      );
+    }
+
+    let existe: boolean;
+    try {
+      existe = await conteudoExiste(alvo);
+    } catch {
+      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: catalogo" });
+      return NextResponse.json(
+        { error: "Serviço temporariamente indisponível", codigo: "catalogo_indisponivel" },
+        { status: 503, headers: NO_STORE },
+      );
+    }
+    if (!existe) {
+      return NextResponse.json({ error: "Conteúdo não encontrado" }, { status: 404, headers: NO_STORE });
+    }
+
+    // Promoção congelada no desafio, e o aparelho junto: só esta TV inicia e
+    // conclui. Cada pedido abre o seu desafio — cancelar um não libera outro,
+    // e dois pedidos paralelos pedem duas promoções.
+    const desafioId = await criarDesafio({
+      userId,
+      tipo: conteudoTipo,
+      plataforma: "android_tv",
+      finalidade,
+      alvo,
+      promocao: promocao.promocao,
+      dispositivo: usuario.deviceId,
+    });
+
+    audit("playback_negado", {
+      userId, ip, ua,
+      detail: `promocao tv necessaria tipo:${conteudoTipo} versao:${promocao.promocao.versao}`,
+    });
+
+    // O vídeo não vai aqui: sai em `/api/ads/promocao/iniciar`, que é onde a
+    // sessão começa a contar. A TV só precisa do id para seguir.
+    return NextResponse.json({ decisao: "PROMOCAO_TV_NECESSARIA", desafioId }, { headers: NO_STORE });
+  }
+
+  // ── Reprodução: política de anúncio (celular e Electron) ──────────────────
   //
   // Download e transmissão não entram aqui: são liberações pontuais, exigem
   // anúncio por ação e não contam episódio.
@@ -368,20 +449,16 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // "não foi possível carregar os servidores" por uma configuração nossa que
   // faltava. Agora os dois lados dizem a mesma coisa.
   //
-  // A promoção da TV só existe para reprodução: download e transmissão na TV
-  // caem sem meio, e portanto em recusa.
+  // A TV não chega aqui: ela decidiu e respondeu no ramo próprio, acima.
   const link = plataforma === "electron" ? lerDirectLink() : null;
-  const promocao = plataforma === "android_tv" && finalidade === "reproducao" ? lerPromocaoTv() : null;
-  const meio = meioDeExibicao(plataforma, link?.situacao === "ok", promocao?.situacao === "ok");
+  const meio = meioDeExibicao(plataforma, link?.situacao === "ok");
 
   if (!meio) {
     // Nenhum desafio é aberto: não faz sentido emitir um desafio de uso único
     // que ninguém tem como cumprir, e cada desafio inútil é uma chave no Redis.
-    // O motivo da configuração vai só para o log, nunca para a resposta.
-    const motivo = promocao?.situacao === "indisponivel" ? ` promocao:${promocao.motivo}` : "";
     audit("playback_negado", {
       userId, ip, ua,
-      detail: `anuncio indisponivel plataforma:${plataforma} finalidade:${finalidade}${motivo}`,
+      detail: `anuncio indisponivel plataforma:${plataforma} finalidade:${finalidade}`,
     });
     return NextResponse.json(
       {
@@ -390,44 +467,6 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
       },
       { headers: NO_STORE },
     );
-  }
-
-  // ── Android TV: promoção interna ──────────────────────────────────────────
-  if (meio === "promocao_tv" && promocao?.situacao === "ok") {
-    let existe: boolean;
-    try {
-      existe = await conteudoExiste(alvo);
-    } catch {
-      audit("entitlements_indisponiveis", { userId, ip, ua, detail: "/authorize: catalogo" });
-      return NextResponse.json(
-        { error: "Serviço temporariamente indisponível", codigo: "catalogo_indisponivel" },
-        { status: 503, headers: NO_STORE },
-      );
-    }
-    if (!existe) {
-      return NextResponse.json({ error: "Conteúdo não encontrado" }, { status: 404, headers: NO_STORE });
-    }
-
-    // Promoção congelada no desafio, e o aparelho junto: só esta TV inicia e
-    // conclui. `plataformaDaRequisicao` só devolve `android_tv` com `deviceId`.
-    const desafioId = await criarDesafio({
-      userId,
-      tipo: conteudoTipo,
-      plataforma: "android_tv",
-      finalidade,
-      alvo,
-      promocao: promocao.promocao,
-      dispositivo: usuario.deviceId,
-    });
-
-    audit("playback_negado", {
-      userId, ip, ua,
-      detail: `promocao tv necessaria tipo:${conteudoTipo} versao:${promocao.promocao.versao}`,
-    });
-
-    // O vídeo não vai aqui: sai em `/api/ads/promocao/iniciar`, que é onde a
-    // sessão começa a contar. A TV só precisa do id para seguir.
-    return NextResponse.json({ decisao: "PROMOCAO_TV_NECESSARIA", desafioId }, { headers: NO_STORE });
   }
 
   // O desafio grava finalidade e alvo. `/api/ads/complete` os lê daqui, e não

@@ -11,6 +11,7 @@ import {
   TTL_CONCESSAO_PROMOCAO_TV_S,
   consumirDesafio,
   emitirConcessao,
+  escopoDaTv,
   esquecerInicioDaPromocao,
   inicioDaPromocao,
   marcarPago,
@@ -286,7 +287,14 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // — sem segunda promoção e sem segunda concessão deste desafio.
   if (desafio.finalidade === "reproducao" && desafio.alvo) {
     try {
-      await marcarPagoDoAlvo({ userId, finalidade: desafio.finalidade, alvo: desafio.alvo });
+      // A TV marca no escopo do aparelho: a promoção dela não dispensa o anúncio
+      // do celular, e o anúncio do celular não dispensa a promoção dela.
+      await marcarPagoDoAlvo({
+        userId,
+        finalidade: desafio.finalidade,
+        alvo: desafio.alvo,
+        escopo: ehPromocaoTv && desafio.dispositivo ? escopoDaTv(desafio.dispositivo) : undefined,
+      });
     } catch {
       /* conveniência, não autorização */
     }

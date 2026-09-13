@@ -622,9 +622,13 @@ export async function marcarPago(entrada: {
   userId: string;
   finalidade: FinalidadeDeConcessao;
   alvo: AlvoDeConcessao;
+  /** Ausente: a marca do celular/Electron, como sempre foi. Ver `escopoDaTv`. */
+  escopo?: string | null;
 }): Promise<void> {
   const hash = hashDoAlvo(entrada.userId, entrada.alvo);
-  await getRedis().set(chavePago(entrada.userId, entrada.finalidade, hash), "1", { ex: TTL_PAGO_S });
+  await getRedis().set(chavePagoNoEscopo(entrada.userId, entrada.finalidade, hash, entrada.escopo), "1", {
+    ex: entrada.escopo ? TTL_RECUPERACAO_TV_S : TTL_PAGO_S,
+  });
 }
 
 /** Este alvo já foi pago por esta conta, para esta finalidade, na janela? */
@@ -632,9 +636,50 @@ export async function estaPago(entrada: {
   userId: string;
   finalidade: FinalidadeDeConcessao;
   alvo: AlvoDeConcessao;
+  escopo?: string | null;
 }): Promise<boolean> {
   const hash = hashDoAlvo(entrada.userId, entrada.alvo);
-  return Boolean(await getRedis().get(chavePago(entrada.userId, entrada.finalidade, hash)));
+  return Boolean(await getRedis().get(chavePagoNoEscopo(entrada.userId, entrada.finalidade, hash, entrada.escopo)));
+}
+
+/**
+ * Por quanto tempo a TV recupera, sem nova promoção, um conteúdo que ELA acabou
+ * de liberar.
+ *
+ * Não é a concessão. São duas coisas com papéis diferentes:
+ *
+ *  - **concessão** (`TTL_CONCESSAO_PROMOCAO_TV_S`, 5 min, uso único) — a prova
+ *    que `/fontes` consome para abrir a sessão. Morre no primeiro uso;
+ *  - **marca de recuperação** (este TTL, 30 min, reutilizável) — faz
+ *    `/authorize` responder `PERMITIDO` com um **passe novo** de uso único
+ *    quando o mesmo aparelho pede de novo o mesmo conteúdo: resposta de
+ *    conclusão perdida, player que caiu, voltar ao episódio. Não abre nada
+ *    sozinha — o passe ainda passa por `/fontes`.
+ *
+ * Abrangência: conta + aparelho de TV + reprodução + conteúdo exato (filme, ou
+ * série/temporada/episódio). Outro episódio, outro aparelho da mesma conta e o
+ * celular não enxergam esta marca.
+ */
+export const TTL_RECUPERACAO_TV_S = 30 * 60;
+
+/**
+ * O escopo da marca de recuperação da TV: o aparelho, com hash.
+ *
+ * Separa a TV do celular — um anúncio de 6 s no celular não dispensa a promoção
+ * na TV, e a promoção da TV não dispensa o anúncio do celular — e separa uma TV
+ * de outra na mesma conta. O hash evita o id do aparelho em claro na chave.
+ */
+export function escopoDaTv(deviceId: string): string {
+  return "tv-" + crypto.createHash("sha256").update(deviceId).digest("base64url").slice(0, 16);
+}
+
+function chavePagoNoEscopo(
+  userId: string,
+  finalidade: FinalidadeDeConcessao,
+  hash: string,
+  escopo?: string | null,
+): string {
+  return escopo ? `ads:pago:${escopo}:${userId}:${finalidade}:${hash}` : chavePago(userId, finalidade, hash);
 }
 
 // ── Contador de episódios distintos ──────────────────────────────────────────

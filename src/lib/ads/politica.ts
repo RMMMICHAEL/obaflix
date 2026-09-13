@@ -167,6 +167,37 @@ export function janelaAnuncioHoras(direitos: DireitosDoPlano): number {
     : JANELA_ANUNCIO_HORAS_PADRAO;
 }
 
+/**
+ * A política da Android TV, separada da do celular de propósito.
+ *
+ * **Promoção antes de cada filme ou episódio novo.** Não herda a cadência de
+ * `episodiosPorAnuncio` e não lê nem escreve o contador de episódios: o que a
+ * conta faz no celular não muda o que a TV cobra, e vice-versa.
+ *
+ * `liberadoNesteAparelho` é a única exceção, e é **recuperação**, não cota:
+ * este mesmo aparelho concluiu a promoção deste mesmo conteúdo há pouco (ver
+ * `TTL_RECUPERACAO_TV_S`). Cobre resposta perdida, player que caiu e voltar ao
+ * mesmo episódio — nunca outro conteúdo, outro aparelho ou outra plataforma.
+ *
+ * A TV não tem meio para download nem transmissão: nessas finalidades a conta
+ * sujeita a anúncio recebe recusa, nunca liberação.
+ */
+export type DecisaoDePromocaoTv =
+  | { decisao: "permitido"; via: "sem_anuncios" | "recuperacao_no_aparelho" }
+  | { decisao: "promocao_necessaria" }
+  | { decisao: "sem_meio" };
+
+export function decidirPromocaoTv(fatos: {
+  direitos: DireitosDoPlano;
+  finalidade: "reproducao" | "download" | "transmissao";
+  liberadoNesteAparelho: boolean;
+}): DecisaoDePromocaoTv {
+  if (!exigeAnuncio(fatos.direitos)) return { decisao: "permitido", via: "sem_anuncios" };
+  if (fatos.finalidade !== "reproducao") return { decisao: "sem_meio" };
+  if (fatos.liberadoNesteAparelho === true) return { decisao: "permitido", via: "recuperacao_no_aparelho" };
+  return { decisao: "promocao_necessaria" };
+}
+
 /** `true` quando esta conta está sujeita a anúncio. */
 export function exigeAnuncio(direitos: DireitosDoPlano): boolean {
   return direitos.anunciosObrigatorios === true;
