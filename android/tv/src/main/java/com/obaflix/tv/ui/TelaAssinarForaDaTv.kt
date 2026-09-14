@@ -31,10 +31,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.obaflix.tv.BuildConfig
-import com.obaflix.tv.assinatura.CatalogoDePlanosTv
 import com.obaflix.tv.assinatura.LinkDaPaginaDePlanos
 import com.obaflix.tv.assinatura.LinkDeAssinatura
 import com.obaflix.tv.assinatura.ResolvedorDeLinkDeAssinatura
+import com.obaflix.tv.assinatura.formatarPreco
 import com.obaflix.tv.assinatura.podeIrParaQr
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
@@ -48,13 +48,12 @@ import kotlinx.coroutines.delay
  *
  * Nenhum formulario aqui: nada de CPF, telefone, Pix ou cupom digitado com o
  * controle. A TV mostra para onde ir — QR e endereco curto — e a assinatura
- * termina no celular. Os beneficios aparecem na TV pela propria conta, quando o
- * servidor confirmar o pagamento.
+ * termina no navegador do celular: `/planos?plano=<id>` → checkout → login ou
+ * cadastro, se preciso, voltando ao mesmo plano.
  *
- * A tela so conhece `LinkDeAssinatura`. Quem produz o link e o resolvedor
- * injetado: hoje a pagina de planos existente; amanha, um link com token opaco
- * de handoff, sem mexer nesta tela. Ver `LinkDeAssinatura.kt` para o contrato e
- * a limitacao atual.
+ * Nome e preco sao os do plano que veio do servidor na tela anterior. A tela so
+ * conhece `LinkDeAssinatura`; quem produz o link e o resolvedor injetado — hoje a
+ * pagina de planos, amanha um link com token opaco de handoff, sem mexer aqui.
  */
 @Composable
 fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv) {
@@ -64,18 +63,16 @@ fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv) {
 
 @Composable
 internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: ResolvedorDeLinkDeAssinatura) {
-    val plano = CatalogoDePlanosTv.porId(camada.planoId)
-    var link by remember(camada.planoId) { mutableStateOf<LinkDeAssinatura?>(null) }
-    var resolvido by remember(camada.planoId) { mutableStateOf(false) }
+    val plano = camada.plano
+    var link by remember(plano.id) { mutableStateOf<LinkDeAssinatura?>(null) }
+    var resolvido by remember(plano.id) { mutableStateOf(false) }
     val voltar = remember { FocusRequester() }
     var temFoco by remember { mutableStateOf(false) }
 
-    LaunchedEffect(camada.planoId) {
+    LaunchedEffect(plano.id) {
         // O link passa de novo pela checagem de QR aqui, e nao so no resolvedor:
         // um resolvedor futuro que errasse nao chega a desenhar credencial.
-        link = plano
-            ?.let { runCatching { resolvedor.resolver(it) }.getOrNull() }
-            ?.takeIf { podeIrParaQr(it.urlDoQr) }
+        link = runCatching { resolvedor.resolver(plano) }.getOrNull()?.takeIf { podeIrParaQr(it.urlDoQr) }
         resolvido = true
     }
 
@@ -91,7 +88,8 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
     BackHandler(enabled = true) { Navegacao.voltar() }
 
     val margem = margemHorizontal()
-    val tom = plano?.let { corDoTom(it.tom) } ?: Cores.Destaque
+    val tom = corDoTom(plano.tom)
+    val preco = plano.precoDeEntrada
 
     Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
         Box(
@@ -108,10 +106,8 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1.2f).padding(end = 36.dp)) {
-                if (plano != null) {
-                    SeloDoPlano(texto = "Plano " + plano.nome, fundo = tom, cor = textoSobreTom(plano.tom))
-                    EspacoV(14.dp)
-                }
+                SeloDoPlano(texto = "Plano " + plano.nome, fundo = tom, cor = textoSobreTom(plano.tom))
+                EspacoV(14.dp)
                 Text(
                     text = "Continue a assinatura fora da TV",
                     color = Cores.Texto,
@@ -119,14 +115,18 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
                     fontWeight = FontWeight.Black,
                     lineHeight = 38.sp,
                 )
-                if (plano != null) {
+                if (preco != null) {
                     EspacoV(8.dp)
                     Text(
-                        text = plano.preco + " / " + plano.periodo,
+                        text = formatarPreco(preco.precoCentavos, preco.moeda) + " / " + preco.rotulo,
                         color = tom,
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Bold,
                     )
+                    if (plano.precos.size > 1) {
+                        EspacoV(4.dp)
+                        Text("Outras durações no celular.", color = Cores.TextoFraco, fontSize = 16.sp)
+                    }
                 }
                 EspacoV(24.dp)
                 Passo(1, "Aponte a câmera do celular para o QR Code.")
@@ -134,7 +134,7 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
                 Passo(
                     2,
                     link?.let { "Ou digite no navegador do celular: " + it.enderecoLegivel }
-                        ?: "Ou abra o Obaflix no celular.",
+                        ?: "Ou abra o Obaflix no navegador do celular.",
                 )
                 EspacoV(12.dp)
                 Passo(3, "Entre com a mesma conta desta TV e conclua a assinatura.")

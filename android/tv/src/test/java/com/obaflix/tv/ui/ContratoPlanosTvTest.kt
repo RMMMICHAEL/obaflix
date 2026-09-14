@@ -119,6 +119,26 @@ class ContratoPlanosTvTest {
         proibidos.forEach { assertFalse("build.gradle contem $it", gradle.contains(it)) }
     }
 
+    /**
+     * Preco, beneficio e selo comerciais vem de `/api/billing/plans`. Se algum
+     * deles aparecer escrito no codigo da TV, existe uma segunda tabela comercial
+     * que o checkout nao enxerga.
+     */
+    @Test
+    fun `nenhuma tabela comercial no APK`() {
+        val literais = listOf(
+            "19,90", "29,90", "\"R$ 10", "44,90", "89,90", "134,90", "95,90", "189,90", "284,90",
+            "\"Mais escolhido\"", "\"Experiência completa\"", "\"Suporte prioritário\"",
+            "\"Canais de TV incluídos\"", "\"Servidor VIP incluso\"", "\"Downloads com anúncio\"",
+        )
+        raiz.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { arquivo ->
+            val caminho = arquivo.relativeTo(raiz).path.replace('\\', '/')
+            val c = codigo(caminho)
+            literais.forEach { assertFalse("$caminho contem $it", c.contains(it)) }
+        }
+        assertTrue(codigo("catalogo/ApiObaflix.kt").contains("\"/api/billing/plans\""))
+    }
+
     @Test
     fun `adicional VIP de 5,90 nao aparece na TV`() {
         raiz.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach {

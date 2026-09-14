@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -40,12 +41,13 @@ import androidx.tv.material3.Text
 import com.obaflix.tv.assinatura.AcaoDoPlano
 import com.obaflix.tv.assinatura.Beneficio
 import com.obaflix.tv.assinatura.CardDePlano
-import com.obaflix.tv.assinatura.CatalogoDePlanosTv
 import com.obaflix.tv.assinatura.ContaDoPlano
+import com.obaflix.tv.assinatura.PlanoTv
 import com.obaflix.tv.assinatura.TomDoPlano
 import com.obaflix.tv.assinatura.cardVizinho
 import com.obaflix.tv.assinatura.cardsDosPlanos
 import com.obaflix.tv.assinatura.focoDosPlanos
+import com.obaflix.tv.assinatura.formatarPreco
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
@@ -56,67 +58,78 @@ import com.obaflix.tv.ui.componentes.FocoBridge
 import com.obaflix.tv.ui.componentes.escalaFoco
 import com.obaflix.tv.ui.componentes.escalar
 import com.obaflix.tv.ui.componentes.focavel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 
 /**
  * Planos na televisao.
  *
- * Tres cards grandes lado a lado, e nao uma tabela: a tres metros, uma grade de
- * celulas com "sim/nao" vira ruido. Cada card carrega o proprio preco, a propria
- * cor e os beneficios na mesma ordem dos vizinhos, entao a comparacao se faz
- * passando o cursor.
+ * Cards grandes lado a lado, e nao uma tabela: a tres metros, uma grade de
+ * celulas vira ruido. Cada card traz nome, marcador de nivel, preco, beneficios
+ * na mesma ordem dos vizinhos e a acao.
+ *
+ * ## Dados
+ *
+ * Tudo do servidor, em paralelo: a vitrine (`/api/billing/plans`) e o plano da
+ * conta (`/api/billing/me`). Sem os dois, a tela mostra erro com "Tentar de
+ * novo" — nunca um card montado com valor local.
  *
  * ## Navegacao
  *
- * Ordem explicita, e nao busca espacial: esquerda e direita andam entre os
- * cards e param nas pontas (`cardVizinho`); cima vai ao Voltar; baixo, do
- * Voltar, volta ao card que tinha o foco. O cursor nasce no card que
- * `focoInicialDosPlanos` escolhe, e a volta da continuacao cai no card de onde a
- * pessoa saiu (`MemoriaDosPlanos`).
- *
- * ## O que nao decide
- *
- * O plano atual vem de `/api/billing/me`. Os estados dos cards sao so desenho —
- * nada aqui libera canal, VIP ou reproducao. Sem conta carregada, nao ha
- * palpite: a tela mostra erro com "Tentar de novo".
+ * Ordem explicita: esquerda e direita entre cards, parando nas pontas; cima vai
+ * ao Voltar; baixo, do Voltar, volta ao card que tinha o foco. A volta da
+ * continuacao cai no card de onde a pessoa saiu (`MemoriaDosPlanos`).
  */
 
 internal fun corDoTom(tom: TomDoPlano): Color = when (tom) {
     TomDoPlano.Azul -> Color(0xFF4C8DFF)
     TomDoPlano.Roxo -> Color(0xFFA66BFF)
     TomDoPlano.Ambar -> Color(0xFFF5B82E)
+    TomDoPlano.Neutro -> Color(0xFFC4C4C4)
 }
 
-/** Texto sobre o preenchimento do tom. Ambar e claro demais para branco. */
+/** Texto sobre o preenchimento do tom. Ambar e neutro sao claros demais para branco. */
 internal fun textoSobreTom(tom: TomDoPlano): Color =
-    if (tom == TomDoPlano.Ambar) Color(0xFF1A1206) else Color.White
+    if (tom == TomDoPlano.Ambar || tom == TomDoPlano.Neutro) Color(0xFF1A1206) else Color.White
 
 private const val TENTATIVAS_DE_FOCO = 12
 
 @Composable
 fun TelaPlanos(camada: Camada.Planos) {
     var conta by remember { mutableStateOf<ContaDoPlano?>(null) }
+    var catalogo by remember { mutableStateOf<List<PlanoTv>?>(null) }
     var falhou by remember { mutableStateOf(false) }
     var tentativa by remember { mutableStateOf(0) }
 
     LaunchedEffect(tentativa) {
         falhou = false
-        val resposta = ApiObaflix.contaDoPlano()
-        if (resposta == null) falhou = true else conta = resposta
+        val (novaConta, novoCatalogo) = coroutineScope {
+            val c = async { ApiObaflix.contaDoPlano() }
+            val p = async { ApiObaflix.catalogoDePlanos() }
+            c.await() to p.await()
+        }
+        if (novaConta == null || novoCatalogo == null) {
+            falhou = true
+        } else {
+            conta = novaConta
+            catalogo = novoCatalogo
+        }
     }
 
     BackHandler(enabled = true) { Navegacao.voltar() }
 
-    val cards = remember(conta) { conta?.let { cardsDosPlanos(it) }.orEmpty() }
-    val requisitores = remember { List(CatalogoDePlanosTv.TODOS.size) { FocusRequester() } }
+    val cards = remember(conta, catalogo) {
+        val c = conta
+        val p = catalogo
+        if (c != null && p != null) cardsDosPlanos(p, c) else emptyList()
+    }
+    val requisitores = remember(cards.size) { List(maxOf(cards.size, 1)) { FocusRequester() } }
     val voltar = remember { FocusRequester() }
     val tentarDeNovo = remember { FocusRequester() }
     var temFoco by remember { mutableStateOf(false) }
     var cardComFoco by remember { mutableStateOf<Int?>(null) }
 
-    // Foco inicial e restauracao. Insiste ate o alvo confirmar o foco, porque o
-    // primeiro pedido pode chegar antes de o card ser posicionado; e para quando
-    // esta tela deixa de ser o topo.
     LaunchedEffect(cards, falhou, FocoBridge.pulso) {
         val indice = if (!falhou && cards.isNotEmpty()) focoDosPlanos(camada.memoria.indiceFocado, cards) else null
         val alvo = when {
@@ -135,6 +148,7 @@ fun TelaPlanos(camada: Camada.Planos) {
     }
 
     val margem = margemHorizontal()
+    val carregado = conta != null && catalogo != null
 
     Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
         Box(
@@ -180,28 +194,23 @@ fun TelaPlanos(camada: Camada.Planos) {
             EspacoV(20.dp)
 
             when {
-                falhou -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "Não foi possível carregar seu plano",
-                            color = Cores.Texto,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        EspacoV(8.dp)
-                        Text("Verifique a conexão e tente de novo.", color = Cores.TextoFraco, fontSize = 17.sp)
-                        EspacoV(20.dp)
-                        BotaoTv(
-                            texto = "Tentar de novo",
-                            principal = true,
-                            modifier = Modifier.focusRequester(tentarDeNovo),
-                        ) { tentativa++ }
-                    }
+                falhou -> Aviso(
+                    titulo = "Não foi possível carregar os planos",
+                    detalhe = "Verifique a conexão e tente de novo.",
+                ) {
+                    BotaoTv(
+                        texto = "Tentar de novo",
+                        principal = true,
+                        modifier = Modifier.focusRequester(tentarDeNovo),
+                    ) { tentativa++ }
                 }
 
-                conta == null -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("Carregando planos…", color = Cores.TextoFraco, fontSize = 18.sp)
-                }
+                !carregado -> Aviso(titulo = "Carregando planos…", detalhe = "")
+
+                cards.isEmpty() -> Aviso(
+                    titulo = "Planos indisponíveis no momento",
+                    detalhe = "Tente novamente mais tarde.",
+                )
 
                 else -> Row(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -225,14 +234,31 @@ fun TelaPlanos(camada: Camada.Planos) {
                                 camada.memoria.indiceFocado = i
                             },
                             aoEscolher = {
-                                if (card.acao != AcaoDoPlano.Nenhuma) {
-                                    Navegacao.abrir(Camada.AssinarForaDaTv(card.plano.id))
-                                }
+                                if (card.acao.acionavel) Navegacao.abrir(Camada.AssinarForaDaTv(card.plano))
                             },
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.ColumnScope.Aviso(
+    titulo: String,
+    detalhe: String,
+    acao: @Composable () -> Unit = {},
+) {
+    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(text = titulo, color = Cores.Texto, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            if (detalhe.isNotBlank()) {
+                EspacoV(8.dp)
+                Text(text = detalhe, color = Cores.TextoFraco, fontSize = 17.sp)
+            }
+            EspacoV(20.dp)
+            acao()
         }
     }
 }
@@ -251,6 +277,7 @@ private fun CardDoPlano(
     val escala = escalaFoco(focado, alvo = 1.03f)
     val tom = corDoTom(card.plano.tom)
     val forma = RoundedCornerShape(18.dp)
+    val preco = card.plano.precoDeEntrada
 
     Column(
         modifier = modifier
@@ -281,29 +308,37 @@ private fun CardDoPlano(
             }
         }
         EspacoV(8.dp)
-        Text(
-            text = card.plano.nome,
-            color = Cores.Texto,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Black,
-            maxLines = 1,
-        )
-        Row(verticalAlignment = Alignment.Bottom) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = card.plano.preco,
-                color = tom,
-                fontSize = 28.sp,
+                text = card.plano.nome,
+                color = Cores.Texto,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
             )
-            EspacoH(6.dp)
-            Text(
-                text = "/ " + card.plano.periodo,
-                color = Cores.TextoFraco,
-                fontSize = 15.sp,
-                maxLines = 1,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
+            EspacoH(10.dp)
+            MarcadorDeNivel(card.nivel, tom)
+        }
+        if (preco != null) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = formatarPreco(preco.precoCentavos, preco.moeda),
+                    color = tom,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+                EspacoH(6.dp)
+                Text(
+                    text = "/ " + preco.rotulo,
+                    color = Cores.TextoFraco,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+        } else {
+            Text(text = "Sem preço disponível", color = Cores.TextoApagado, fontSize = 18.sp, maxLines = 1)
         }
         EspacoV(10.dp)
         Box(Modifier.fillMaxWidth().height(1.dp).background(Cores.Texto.copy(alpha = 0.12f)))
@@ -313,6 +348,18 @@ private fun CardDoPlano(
         }
         EspacoV(10.dp)
         RodapeDoCard(card, focado)
+    }
+}
+
+/**
+ * Um, dois ou tres pontos: o plano e identificado por texto e forma, alem da cor.
+ */
+@Composable
+private fun MarcadorDeNivel(nivel: Int, tom: Color) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        repeat(nivel.coerceIn(1, 3)) {
+            Box(Modifier.size(9.dp).clip(RoundedCornerShape(50)).background(tom))
+        }
     }
 }
 
@@ -337,15 +384,15 @@ private fun LinhaDeBeneficio(beneficio: Beneficio, tom: Color) {
 }
 
 /**
- * A acao do card. So ha botao desenhado quando ha acao — um "Plano atual" em
- * forma de botao pareceria clicavel e nao faria nada.
+ * A acao do card. Preenchimento so quando ha acao — um estado sem acao
+ * desenhado como botao pareceria clicavel e nao faria nada.
  */
 @Composable
 private fun RodapeDoCard(card: CardDePlano, focado: Boolean) {
     val rotulo = card.acao.rotulo
     val forma = RoundedCornerShape(10.dp)
     when {
-        rotulo != null -> Box(
+        rotulo != null && card.acao.acionavel -> Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
@@ -359,6 +406,10 @@ private fun RodapeDoCard(card: CardDePlano, focado: Boolean) {
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             )
+        }
+
+        rotulo != null -> Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+            Text(rotulo, color = Cores.TextoApagado, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         }
 
         card.atual -> Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
@@ -392,7 +443,7 @@ const val CHAVE_FOCO_PLANOS = "barra#planos"
  *
  * Mesma forma do botao de Perfil, sem cor de chamada: e uma entrada fixa, nao um
  * anuncio. As chamadas contextuais ("Ver planos") aparecem so onde um beneficio
- * falta — canais, recusa de conteudo, convite antes do video.
+ * falta.
  */
 @Composable
 internal fun BotaoPlanosDaBarra() {
