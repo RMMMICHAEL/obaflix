@@ -265,6 +265,19 @@ object ArmazenamentoSessao {
         }
     }
 
+    /**
+     * O arquivo do cofre principal ja existe em disco?
+     *
+     * Se existe e nao abriu, o Keystore esta indisponivel **agora** (comum logo
+     * apos ligar alguns aparelhos). Cair para outro cofre vazio faria a sessao
+     * guardada parecer inexistente e mandaria ao pareamento; entao a abertura
+     * falha sem ser memorizada e a proxima leitura tenta de novo.
+     */
+    private fun cofrePrincipalExiste(context: Context): Boolean =
+        java.io.File(context.applicationInfo.dataDir, "shared_prefs/$ARQUIVO.xml").exists()
+
+    private class CofreTemporariamenteIndisponivel(causa: Throwable) : Exception(causa)
+
     private fun abrir(context: Context): Cofre {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             runCatching {
@@ -285,6 +298,7 @@ object ArmazenamentoSessao {
                         "encrypted_prefs_indisponivel",
                         "erro" to it.javaClass.simpleName,
                     )
+                    if (cofrePrincipalExiste(context)) throw CofreTemporariamenteIndisponivel(it)
                 }
         }
 
@@ -321,6 +335,19 @@ object ArmazenamentoSessao {
 
     fun refreshToken(context: Context): String? =
         runCatching { cofre(context).ler(CHAVE_REFRESH) }.getOrNull()
+
+    /**
+     * Ha credencial guardada? Distingue "nao ha" de "nao deu para ler agora".
+     *
+     * `refreshToken` devolve `null` nos dois casos, e era isso que fazia um
+     * Keystore lento no boot parecer logout.
+     */
+    fun leitura(context: Context): LeituraCredencial =
+        runCatching { cofre(context).ler(CHAVE_REFRESH) }
+            .fold(
+                onSuccess = { if (it != null) LeituraCredencial.Presente else LeituraCredencial.Ausente },
+                onFailure = { LeituraCredencial.Indisponivel },
+            )
 
     fun deviceId(context: Context): String? =
         runCatching { cofre(context).ler(CHAVE_DEVICE) }.getOrNull()
