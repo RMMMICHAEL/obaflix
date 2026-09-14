@@ -3,6 +3,8 @@ import { invalidarEntitlements } from "@/lib/entitlements";
 import { audit } from "@/lib/auditLog";
 import { criarConfirmadorBlackcat, type ConfirmacaoBlackcat } from "./blackcat";
 import { fimDoPeriodo, type Duracao } from "./vigencia";
+import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
+import { confirmadorDeCobranca } from "./simulado";
 
 type Pedido = { id: string; userId: string; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
@@ -92,7 +94,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   if (process.env.BLACKCAT_CONFIRMACAO_ATIVA !== "true") return { resultado: "desligada" };
   const pedido = await banco.pedidoPagamento.findUnique({ where: { id: pedidoId }, select: { id:true,userId:true,planoId:true,planoPrecoId:true,status:true,valorCentavos:true,moeda:true,duracaoDias:true,transacaoId:true,expiraEm:true } });
   if (!pedido?.transacaoId) return { resultado: "sem_transacao" };
-  const confirmar = injetadas.consultarStatusBlackcat ?? criarConfirmadorBlackcat(); if (!confirmar) return { resultado: "configuracao" };
+  const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDeCobranca(); if (!confirmar) return { resultado: "configuracao" };
   const externo = await confirmar(pedido.transacaoId);
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
   const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null;
@@ -102,21 +104,23 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (atual.status === "PAGO" && atual.assinatura && externo.confirmacao.status !== "REFUNDED") return;
     const d = decidirConfirmacao(atual, externo.confirmacao, agora);
     if (d === "MANTER") return;
-    if (d === "REVISAR") { await tx.pedidoPagamento.update({ where:{id:atual.id},data:{status:"REVISAO_MANUAL"} }); return; }
+    if (d === "REVISAR") { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: motivoDaConfirmacao(atual, externo.confirmacao, agora) }); return; }
     if (d === "EXPIRAR" || d === "CANCELAR") { await tx.pedidoPagamento.update({ where:{id:atual.id},data:{status:d === "EXPIRAR" ? "EXPIRADO" : "CANCELADO"} }); return; }
     if (d === "ESTORNAR") {
+      // O evento financeiro confirmado é registrado já, e o pedido estornado
+      // deixa de conceder direito. Em upgrade, restaurar os períodos que ele
+      // substituiu exige análise: o caso é aberto e nada é restaurado aqui, nem
+      // crédito é criado.
       await tx.pedidoPagamento.update({ where:{id:atual.id},data:{status:"ESTORNADO"} });
       if (atual.assinatura?.status === "ATIVA") await tx.assinatura.update({where:{id:atual.assinatura.id},data:{status:"CANCELADA"}});
-      // Estorno de upgrade: os períodos que o upgrade substituiu continuam cancelados.
-      // Devolver o direito anterior é decisão de suporte, não automática.
-      if ((atual as { operacao?: string }).operacao === "upgrade") audit("billing_payment_review",{userId:atual.userId,detail:`estorno de upgrade ${atual.id}: periodos substituidos permanecem cancelados`});
+      if ((atual as { operacao?: string }).operacao === "upgrade") await abrirRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: "estorno_upgrade" });
       userParaInvalidar=atual.userId; return;
     }
-    if (atual.assinatura) { if (atual.status !== "PAGO") await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"REVISAO_MANUAL"}}); return; }
+    if (atual.assinatura) { if (atual.status !== "PAGO") await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: "pedido_ja_vinculado" }); return; }
     const extra = atual as typeof atual & { operacao?: string | null; assinaturasSubstituidas?: string[] | null; duracaoMeses?: number | null; telasAdicionais?: number | null; servidorVip?: boolean | null };
     const abertos=await tx.assinatura.findMany({where:{userId:atual.userId,status:"ATIVA",terminaEm:{gt:agora}},select:{id:true,terminaEm:true}});
     const plano=planejarAtivacao({operacao:extra.operacao,assinaturasSubstituidas:extra.assinaturasSubstituidas,duracao:duracaoDoPedido(extra)},abertos,agora);
-    if (!plano.ok) { await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"REVISAO_MANUAL"}}); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
+    if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
     await tx.assinatura.create({data:{userId:atual.userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=atual.userId;
@@ -125,7 +129,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     const reconciliado=await banco.pedidoPagamento.findUnique({where:{id:pedidoId},include:{assinatura:true}});
     const a=reconciliado?.assinatura;
     if (reconciliado?.status === "PAGO" && a && a.pedidoId === pedidoId && a.userId === reconciliado.userId && a.planoId === reconciliado.planoId && a.planoPrecoId === reconciliado.planoPrecoId) return {resultado:"idempotente"};
-    if (reconciliado) await banco.pedidoPagamento.update({where:{id:pedidoId},data:{status:"REVISAO_MANUAL"}});
+    if (reconciliado) await banco.$transaction((tx) => marcarPedidoEmRevisao(tx, { pedidoId, userId: reconciliado.userId, motivo: "reconciliacao_inconsistente" }));
     return {resultado:"inconsistencia"};
   }
   if(userParaInvalidar) try { await invalidar(userParaInvalidar); } catch { audit("billing_entitlements_invalidation_failed",{userId:userParaInvalidar,detail:"apos_commit"}); }

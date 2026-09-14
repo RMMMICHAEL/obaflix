@@ -242,7 +242,7 @@ describe("ordem das verificações", () => {
       "checkRateLimit(",
       "readJsonBody",
       "prisma.user.findUnique",
-      "criarProvedorBlackcat()",
+      "provedorDeCobranca()",
       "criarPedidoPix(",
     ]) {
       assert.ok(flag < posicaoDe(depois), `${depois} não pode acontecer antes da flag`);
@@ -266,7 +266,7 @@ describe("ordem das verificações", () => {
    * de cobrança pendurada no banco.
    */
   test("o provedor é montado antes de qualquer escrita", () => {
-    assert.ok(posicaoDe("criarProvedorBlackcat()") < posicaoDe("criarPedidoPix("));
+    assert.ok(posicaoDe("provedorDeCobranca()") < posicaoDe("criarPedidoPix("));
   });
 
   test("os campos financeiros são recusados antes de resolver preço", () => {

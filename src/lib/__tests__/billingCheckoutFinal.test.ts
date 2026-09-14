@@ -48,7 +48,7 @@ test("recuperação de pendente é autenticada, do dono, vigente e sem transacti
   const semSessao = createPendingOrderHandler({ getUserFromRequest: async () => null });
   assert.equal((await semSessao(req)).status, 401);
   let where: any;
-  const h = createPendingOrderHandler({ agora: () => new Date("2026-01-01"), getUserFromRequest: async () => ({ userId: "A" }), prisma: { pedidoPagamento: { findFirst: async (q: any) => { where = q.where; return { id: "p", status: "AGUARDANDO", valorCentavos: 1000, moeda: "BRL", expiraEm: new Date("2026-01-02"), transacaoId: "nunca" }; } } } });
+  const h = createPendingOrderHandler({ agora: () => new Date("2026-01-01"), getUserFromRequest: async () => ({ userId: "A" }), prisma: { revisaoPagamento: { findFirst: async () => null }, pedidoPagamento: { findFirst: async (q: any) => { where = q.where; return { id: "p", status: "AGUARDANDO", valorCentavos: 1000, moeda: "BRL", expiraEm: new Date("2026-01-02"), transacaoId: "nunca" }; } } } });
   const body = await (await h(req)).json();
   assert.equal(where.userId, "A"); assert.equal(body.pedido.pedidoId, "p");
   assert.equal(JSON.stringify(body).match(/transaction|pix/i), null);

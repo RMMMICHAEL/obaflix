@@ -217,7 +217,7 @@ describe("fiação no servidor", () => {
     assert.ok(validacao > 0);
     assert.ok(validacao > rota.indexOf("campoFinanceiroNoCorpo(corpo"), "depois da fronteira financeira");
     assert.ok(validacao < rota.indexOf("montarPagador(conta"), "antes do pagador");
-    assert.ok(validacao < rota.indexOf("criarProvedorBlackcat()"), "antes do provedor");
+    assert.ok(validacao < rota.indexOf("provedorDeCobranca()"), "antes do provedor");
     assert.ok(validacao < rota.indexOf("criarPedidoPix("), "antes de criar pedido");
   });
 
