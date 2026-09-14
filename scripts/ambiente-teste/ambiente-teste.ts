@@ -139,8 +139,48 @@ async function catalogo(vars: Record<string, string>) {
   });
 }
 
+/**
+ * Troca a senha das contas fictícias por senhas aleatórias novas.
+ *
+ * As senhas novas vão só para o arquivo em `--arquivo=`, que precisa ficar FORA
+ * do repositório. Nada é impresso além do e-mail e do resultado.
+ */
+async function regenerarSenhas(vars: Record<string, string>) {
+  const id = argumento("ambiente-id");
+  const arquivo = argumento("arquivo");
+  if (!id || !UUID.test(id)) recusar("--ambiente-id=<uuid> obrigatorio");
+  if (!arquivo) recusar("--arquivo=<caminho fora do repositorio> obrigatorio");
+  const { resolve, sep } = await import("node:path");
+  const destino = resolve(arquivo);
+  const repositorio = resolve(__dirname, "..", "..");
+  if (destino.toLowerCase().startsWith((repositorio + sep).toLowerCase())) recusar("arquivo de senhas dentro do repositorio");
+
+  const { randomBytes } = await import("node:crypto");
+  const bcrypt = (await import("bcryptjs")).default;
+  const { writeFileSync } = await import("node:fs");
+  const contas = ["gratuito", "basico", "plus", "premium"].map((c) => `${c}${DOMINIO_FICTICIO}`);
+
+  await comBanco(vars, async (db) => {
+    const linhas = await db.$queryRawUnsafe<{ id: string; ambiente: string }[]>(`SELECT "id"::text AS id, "ambiente" FROM "_ObaflixAmbiente"`);
+    if (linhas.length !== 1 || linhas[0].id !== id || linhas[0].ambiente !== "teste") recusar("marcador diferente do autorizado");
+
+    const saida: string[] = [];
+    for (const email of contas) {
+      // Letras e números, como a regra de cadastro exige.
+      const senha = `T${randomBytes(18).toString("base64url").replace(/[-_]/g, "x")}7`;
+      const hash = await bcrypt.hash(senha, 10);
+      const n = await db.$executeRawUnsafe(`UPDATE "User" SET "senhaHash" = $1 WHERE "email" = $2`, hash, email);
+      if (n !== 1) recusar(`conta ficticia ausente: ${email}`);
+      saida.push(`${email}=${senha}`);
+      console.log(JSON.stringify({ conta: email, senha: "regenerada" }));
+    }
+    writeFileSync(destino, saida.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+    console.log(JSON.stringify({ arquivo: "gravado fora do repositorio", contas: saida.length }));
+  });
+}
+
 const comando = process.argv[2];
 const vars = lerVariaveis();
-const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar, catalogo };
+const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar, catalogo, "regenerar-senhas": regenerarSenhas };
 if (!acoes[comando]) recusar(`comando desconhecido: ${comando}`);
 acoes[comando](vars).catch((e) => { console.error(`ERRO: ${e instanceof Error ? e.message.split("\n")[0] : "falha"}`); process.exit(1); });

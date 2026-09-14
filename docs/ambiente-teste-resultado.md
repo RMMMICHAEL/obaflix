@@ -54,22 +54,47 @@ real no Preview.
   `EventoPagamento` e tabelas de revisão, que as migrations/scripts criam com
   CHECKs, índices parciais e trigger.
 
-## 3. Bloqueio para o smoke na TV — proteção do Preview
+## 3. Acesso da TV — Deployment Protection Exception
 
-O Preview responde `302` para `vercel.com/sso-api` (Vercel Authentication). O
-navegador do celular passa se estiver logado na Vercel com acesso ao time; **o
-APK da TV não passa**, porque o OkHttp não tem sessão da Vercel. Alterar a
-proteção é configuração do projeto e **não foi feito**.
+O Preview responde `302` para `vercel.com/sso-api` (Vercel Authentication), e o
+APK da TV não tem sessão da Vercel. Decisão: **Deployment Protection Exception
+somente para `obaflix-git-feat-tv-planos-promocao-michaeltrader.vercel.app`**,
+durante o smoke. Nenhum segredo de bypass no APK.
 
-Opções (decisão pendente):
+### 3.1 Antes de abrir
 
-1. **Bypass só no APK de homologação:** gerar o segredo "Protection Bypass for
-   Automation" e o build `homologacao` enviar `x-vercel-protection-bypass`. Não
-   abre o Preview para ninguém; o segredo fica só num APK não distribuído.
-   Exige mudança pequena no app (só na variante de homologação).
-2. **Desligar a Vercel Authentication para Preview durante o smoke:** vale para
-   **todos** os Previews, inclusive de branches que usam o banco de Production.
-   Não recomendado.
+- Senhas das quatro contas fictícias **regeneradas** (as anteriores tinham sido
+  expostas). As novas ficam só num arquivo local fora do repositório; nunca em
+  documento versionado nem em mensagem.
+- Linha de base: `obaflix.online` `/` e `/api/billing/plans` → 200, hash da API
+  de planos `49D8A909AF79C642583ADFA1374974D557DDB9B5682C1FD50FF21D2E6D433E30`;
+  domínio da homologação e Preview do #28 → 302.
+
+### 3.2 Exceção criada
+
+`PATCH /aliases/{uid}/protection-bypass` com
+`{"override":{"scope":"alias-protection-override","action":"create"}}`, no
+alias do domínio acima (id conferido com o projeto). Resposta:
+`protectionBypass` com escopo `alias-protection-override`. Nenhum segredo
+retornado ou usado.
+
+### 3.3 Validações com a exceção ativa
+
+| Validação | Resultado |
+|---|---|
+| Domínio da homologação sem login da Vercel | ✅ `/` → 200; `/api/billing/plans` → 200 |
+| Outros Previews continuam protegidos | ✅ Preview do #28, URL própria de deploy da mesma branch e Preview antigo → 302 para `vercel.com/sso-api` |
+| `obaflix.online` inalterado | ✅ mesmos status e cabeçalhos; hash da API de planos idêntico ao da linha de base |
+| Banco isolado | ✅ domínio público devolve 4 planos e 9 preços (Production tem 0) |
+| Redis isolado | ✅ `POST /api/tv/pair/start` → 200; Redis de teste 1 → 2 chaves; QR no domínio da homologação |
+| Worker de teste | ✅ requisição sem assinatura → 403; `CANAIS_MEDIA_BASE` só no escopo da branch |
+| Pagamento simulado e admin | ✅ simulado sem token → 404; admin sem autenticação → 401; nenhuma credencial Blackcat real no Preview |
+
+### 3.4 Remoção depois do smoke
+
+Mesmo endpoint, com `"action":"revoke"`. Validar em seguida: domínio da
+homologação volta a responder 302 para `vercel.com/sso-api`, outros Previews
+seguem 302 e `obaflix.online` mantém o hash da linha de base.
 
 ## 4. APK de homologação
 
