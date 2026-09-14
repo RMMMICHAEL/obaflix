@@ -56,6 +56,40 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
                 rootProject.file('hardening-rules.pro'), 'proguard-rules.pro'
         }
+
+        // APK de TESTE: mesmo codigo e mesma assinatura da release (a sessao so
+        // persiste com o certificado aceito em obaflix.allowedSigningCerts), mas
+        // nunca confundivel com ela nem capaz de virar ela:
+        //  - pacote proprio (com.obaflix.tv.homologacao), convive com o oficial;
+        //  - versao com sufixo -homologacao;
+        //  - aponta so para o ambiente isolado, passado explicitamente;
+        //  - auto-atualizacao desligada (manifesto vazio), para nao trocar o APK
+        //    de teste pela release oficial no meio do smoke.
+        // Uso: gradlew :tv:assembleHomologacao -Pobaflix.urlTeste=https://<ambiente-de-teste>
+        // (o Android nao aceita build type comecando com "test")
+        homologacao {
+            initWith release
+            applicationIdSuffix ".homologacao"
+            versionNameSuffix "-homologacao"
+            matchingFallbacks = ['release']
+            def urlTeste = project.findProperty('obaflix.urlTeste')
+            buildConfigField "String", "OBAFLIX_URL", "\"${urlTeste ?: ''}\""
+            buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+        }
+    }
+
+    // Sem a URL do ambiente isolado, o build de teste falha em vez de sair
+    // apontando para Production ou para lugar nenhum.
+    gradle.taskGraph.whenReady { grafo ->
+        if (grafo.allTasks.any { it.name.toLowerCase().contains('homologacao') && it.project == project }) {
+            def urlTeste = project.findProperty('obaflix.urlTeste')?.toString()
+            if (!urlTeste?.startsWith('https://')) {
+                throw new GradleException("assembleHomologacao exige -Pobaflix.urlTeste=https://<ambiente-de-teste>")
+            }
+            if (urlTeste == project.property('obaflix.url')) {
+                throw new GradleException("obaflix.urlTeste nao pode ser a URL de Production")
+            }
+        }
     }
 
     compileOptions {
@@ -91,6 +125,19 @@ android {
             }
         }
         buildTypes.release.signingConfig signingConfigs.release
+        // `initWith release` copia a configuracao antes desta atribuicao: sem
+        // repetir aqui, o APK de homologacao sairia sem assinatura.
+        buildTypes.homologacao.signingConfig signingConfigs.release
+    }
+
+    // Sem a chave de release o APK de homologacao nao persistiria a sessao
+    // (assinatura fora de obaflix.allowedSigningCerts) e o smoke daria um
+    // resultado falso. Melhor falhar o build.
+    gradle.taskGraph.whenReady { grafo ->
+        if (!keystorePropsFile.exists() &&
+            grafo.allTasks.any { it.name.toLowerCase().contains('homologacao') && it.project == project }) {
+            throw new GradleException("assembleHomologacao exige android/key.properties com a chave de release")
+        }
     }
 }
 
