@@ -36,6 +36,19 @@ android {
         buildConfig true
     }
 
+    buildTypes {
+        // Par da variante `homologacao` do :tv. Sem ela o :tv cairia no
+        // `release` desta biblioteca (matchingFallbacks), e o APK de teste
+        // levaria o dominio de Production em BuildConfig.OBAFLIX_URL: base do
+        // WebView do desafio, Referer do extrator e host aceito no player.
+        homologacao {
+            initWith release
+            def urlTeste = project.findProperty('obaflix.urlTeste')
+            buildConfigField "String", "OBAFLIX_URL", "\"${urlTeste ?: ''}\""
+            buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
