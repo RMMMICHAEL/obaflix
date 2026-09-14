@@ -2,7 +2,9 @@ name: CI Web
 
 on:
   pull_request:
-    branches: [main]
+    # `feat/**` cobre PR empilhado: um PR cuja base é outra branch de feature
+    # (ex.: TV sobre checkout) também precisa do portão antes de ser aprovado.
+    branches: [main, 'feat/**']
   push:
     branches: [main]
   workflow_dispatch:
