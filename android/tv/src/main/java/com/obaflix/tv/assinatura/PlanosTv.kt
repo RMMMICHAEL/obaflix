@@ -27,10 +27,16 @@ data class Beneficio(val texto: String, val incluido: Boolean = true)
 data class PrecoDoPlano(
     val id: String,
     val rotulo: String,
-    val duracaoDias: Int,
+    /** Duracao em dias (ex.: 30) ou `null` quando o servidor usa meses de calendario. */
+    val duracaoDias: Int?,
     val precoCentavos: Int,
     val moeda: String,
-)
+    /** Meses de calendario (5, 12). Exatamente um dos dois vem preenchido. */
+    val duracaoMeses: Int? = null,
+) {
+    /** So para ordenar: meses contam como 30 dias. Nunca usado em calculo de valor. */
+    val duracaoAproximadaEmDias: Int get() = duracaoDias ?: ((duracaoMeses ?: 0) * 30)
+}
 
 data class PlanoTv(
     /** O id do plano no servidor. So para casar com a conta; nunca autoriza. */
@@ -45,7 +51,7 @@ data class PlanoTv(
     val compravel: Boolean get() = precos.isNotEmpty()
 
     /** A menor duracao disponivel — a que o card mostra. As outras ficam no checkout. */
-    val precoDeEntrada: PrecoDoPlano? get() = precos.minByOrNull { it.duracaoDias }
+    val precoDeEntrada: PrecoDoPlano? get() = precos.minByOrNull { it.duracaoAproximadaEmDias }
 }
 
 fun tomDoTema(tema: String?): TomDoPlano = when (tema) {

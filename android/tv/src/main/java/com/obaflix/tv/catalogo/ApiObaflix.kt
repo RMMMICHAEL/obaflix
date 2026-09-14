@@ -630,12 +630,18 @@ object ApiObaflix {
                     val p = lista.optJSONObject(j) ?: return@mapNotNull null
                     val precoId = texto(p, "id") ?: return@mapNotNull null
                     val centavos = p.optInt("precoCentavos", -1).takeIf { it > 0 } ?: return@mapNotNull null
+                    // Dias (30) ou meses de calendario (5, 12). `optInt` transformaria
+                    // `null` em 0 e faria "5 meses" parecer a menor duracao.
+                    val dias = if (p.isNull("duracaoDias")) null else p.optInt("duracaoDias", 0).takeIf { it > 0 }
+                    val meses = if (p.isNull("duracaoMeses")) null else p.optInt("duracaoMeses", 0).takeIf { it > 0 }
+                    if (dias == null && meses == null) return@mapNotNull null
                     com.obaflix.tv.assinatura.PrecoDoPlano(
                         id = precoId,
                         rotulo = texto(p, "rotulo") ?: "",
-                        duracaoDias = p.optInt("duracaoDias", 0),
+                        duracaoDias = dias,
                         precoCentavos = centavos,
                         moeda = texto(p, "moeda") ?: "BRL",
+                        duracaoMeses = meses,
                     )
                 }
             }.orEmpty()

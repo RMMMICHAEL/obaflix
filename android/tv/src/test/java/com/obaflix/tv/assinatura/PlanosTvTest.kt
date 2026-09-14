@@ -123,6 +123,20 @@ class PlanosTvTest {
     }
 
     @Test
+    fun `linhas em meses de calendario nao passam na frente dos 30 dias`() {
+        // 5 meses e 1 ano chegam com duracaoDias null.
+        val comMeses = plus.copy(
+            precos = listOf(
+                PrecoDoPlano("anual", "1 ano", null, 18990, "BRL", duracaoMeses = 12),
+                PrecoDoPlano("cinco", "5 meses", null, 8990, "BRL", duracaoMeses = 5),
+                PrecoDoPlano("mensal", "30 dias", 30, 1990, "BRL"),
+            ),
+        )
+        assertEquals("mensal", comMeses.precoDeEntrada?.id)
+        assertEquals(150, comMeses.precos[1].duracaoAproximadaEmDias)
+    }
+
+    @Test
     fun `foco inicial previsivel`() {
         assertEquals("sem plano atual: o recomendado", 1, focoInicialDosPlanos(cards("gratuito", false)))
         assertEquals("Basico: primeiro upgrade", 1, focoInicialDosPlanos(cards("basic", true)))
