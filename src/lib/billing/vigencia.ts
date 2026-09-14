@@ -132,16 +132,30 @@ export function classificarOperacao(entrada: {
 /**
  * O valor não utilizado de um período, em centavos, arredondado para baixo.
  *
- * Proporcional ao tempo restante: o período vigente vale a fração que falta; um
- * período que ainda não começou vale inteiro. Arredondar para baixo evita
- * crédito maior do que o pago por diferença de milissegundos.
+ * Proporcional ao tempo restante, em milissegundos: o período vigente vale a
+ * fração que falta; um período que ainda não começou vale inteiro.
+ *
+ * Aritmética inteira exata (`BigInt`): `valor × restante ÷ total` com divisão
+ * inteira, que já é o arredondamento para baixo. Em ponto flutuante, um quociente
+ * logo abaixo de um inteiro pode ser arredondado para cima pela divisão e o
+ * `Math.floor` devolveria um centavo a mais — exatamente o erro que a regra
+ * aprovada proíbe.
  */
 export function valorNaoUtilizado(periodo: PeriodoPago, agora: Date): number {
   const inicio = periodo.iniciaEm.getTime();
   const fim = periodo.terminaEm.getTime();
   const t = agora.getTime();
-  if (!Number.isInteger(periodo.valorPagoCentavos) || periodo.valorPagoCentavos <= 0 || fim <= inicio) return 0;
+  if (!Number.isSafeInteger(periodo.valorPagoCentavos) || periodo.valorPagoCentavos <= 0) return 0;
+  if (!Number.isSafeInteger(inicio) || !Number.isSafeInteger(fim) || !Number.isSafeInteger(t) || fim <= inicio) return 0;
   if (t >= fim) return 0;
   if (t <= inicio) return periodo.valorPagoCentavos;
-  return Math.floor((periodo.valorPagoCentavos * (fim - t)) / (fim - inicio));
+  return proporcaoParaBaixo(periodo.valorPagoCentavos, fim - t, fim - inicio);
+}
+
+/** `floor(valor × parte ÷ total)` exato, para inteiros não negativos. */
+export function proporcaoParaBaixo(valor: number, parte: number, total: number): number {
+  if (![valor, parte, total].every(Number.isSafeInteger) || valor < 0 || parte < 0 || total <= 0) {
+    throw new Error("proporcao_invalida");
+  }
+  return Number((BigInt(valor) * BigInt(parte)) / BigInt(total));
 }
