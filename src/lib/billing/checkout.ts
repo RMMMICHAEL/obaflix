@@ -17,10 +17,27 @@ export function corpoCriarPedido(
   planoId: string | null,
   planoPrecoId: string | null,
   pagador: { nome: string; telefone: string; documento: string },
-  opcoes: { cupom?: string } = {},
+  opcoes: { cupom?: string; telasAdicionais?: number } = {},
 ) {
   const cupom = opcoes.cupom?.trim();
-  return { planoId, planoPrecoId, ...pagador, ...(cupom ? { cupom } : {}) };
+  const telas = opcoes.telasAdicionais;
+  return {
+    planoId, planoPrecoId, ...pagador,
+    ...(cupom ? { cupom } : {}),
+    ...(typeof telas === "number" && telas > 0 ? { telasAdicionais: telas } : {}),
+  };
+}
+
+/** Texto da operação que o servidor decidiu. Informativo; o valor já veio calculado. */
+export function descricaoDaOperacao(pedido: { operacao?: string; creditoCentavos?: number; iniciaEm?: string; moeda?: string }): string | null {
+  const data = pedido.iniciaEm ? new Date(pedido.iniciaEm).toLocaleDateString("pt-BR") : null;
+  const credito = typeof pedido.creditoCentavos === "number" && pedido.creditoCentavos > 0
+    ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: pedido.moeda ?? "BRL" }).format(pedido.creditoCentavos / 100)
+    : null;
+  if (pedido.operacao === "renovacao") return data ? `Renovação: o novo período começa em ${data}, ao fim do atual.` : "Renovação do seu plano.";
+  if (pedido.operacao === "downgrade") return data ? `Mudança de plano: começa em ${data}, quando terminar o período já pago.` : "Mudança de plano ao fim do período pago.";
+  if (pedido.operacao === "upgrade") return credito ? `Upgrade imediato. Crédito do período não utilizado: ${credito}.` : "Upgrade imediato.";
+  return null;
 }
 
 /**
@@ -51,6 +68,10 @@ export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "plano_indisponivel") return "Plano temporariamente indisponível para compra.";
   if (codigo === "cupom_invalido") return "Cupom inválido.";
   if (codigo === "adicional_indisponivel") return "Este adicional ainda não está disponível.";
+  if (codigo === "telas_acima_do_limite") return "É possível contratar no máximo 2 telas adicionais.";
+  if (codigo === "servidor_vip_ja_incluso") return "O servidor VIP já está incluso neste plano.";
+  if (codigo === "credito_maior_que_compra") return "O crédito do seu plano atual é maior que esta compra. Escolha uma duração maior.";
+  if (codigo === "duracao_invalida") return "Esta duração não está disponível.";
   if (codigo === "dados_do_pagador_invalidos") return "Confira nome, telefone e CPF/CNPJ.";
   return "Não foi possível iniciar o pagamento.";
 }

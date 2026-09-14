@@ -56,6 +56,12 @@ function repositorioFalso(preco: PrecoDoBanco | null) {
     async buscarPreco() {
       return preco;
     },
+    async buscarAdicionais() {
+      return { telaMensalCentavos: null, servidorVipMensalCentavos: null };
+    },
+    async periodosEmAberto() {
+      return [];
+    },
     async criar(dados) {
       const id = `pedido_${++n}`;
       gravacoes.push({ op: "criar", pedidoId: id, status: dados.status, dados });
@@ -244,6 +250,7 @@ describe("resolverPreco: nenhuma ramificação por nome de plano", () => {
       valorCentavos: 1890,
       moeda: "BRL",
       duracaoDias: 30,
+      duracaoMeses: null,
       descricao: "Plus — Mensal",
     });
   });
@@ -615,7 +622,9 @@ describe("NENHUM caminho ativa assinatura", () => {
     for (const g of gravacoes) {
       assert.ok(["criar", "registrarVenda", "registrarFalha"].includes(g.op));
     }
-    assert.equal(Object.keys(repo).length, 4, "a porta tem 4 métodos, e nenhum é de assinatura");
+    // 6 métodos: os 4 de escrita do pedido e 2 leituras (adicionais e períodos
+    // em aberto, para calcular operação e crédito). Nenhum escreve assinatura.
+    assert.equal(Object.keys(repo).length, 6, "a porta tem 6 métodos, e nenhum escreve assinatura");
   });
 
   /**
@@ -638,7 +647,6 @@ describe("NENHUM caminho ativa assinatura", () => {
     for (const proibido of [
       "invalidarEntitlements",
       "entitlementsDoUsuario",
-      "assinatura",
       "prisma",
     ]) {
       assert.equal(
@@ -647,6 +655,9 @@ describe("NENHUM caminho ativa assinatura", () => {
         `${proibido} não pode aparecer no código do serviço de pedidos`,
       );
     }
+    // `assinaturasSubstituidas` é só um snapshot de ids no pedido; o que não pode
+    // existir é acesso ao modelo `assinatura`.
+    assert.equal(/\bassinatura\b/i.test(codigo), false, "assinatura não pode aparecer no código do serviço de pedidos");
 
     // `PAGO` aparece uma vez, e só uma: dentro de `STATUS_PEDIDO`, porque o
     // CHECK do banco precisa do estado declarado. O que não pode existir é uma

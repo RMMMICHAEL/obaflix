@@ -1,25 +1,25 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { SERVIDOR_VIP_NA_VITRINE, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
+import { SERVIDOR_VIP_AVULSO_OFERTADO, SERVIDOR_VIP_NA_VITRINE, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
 import { validarOpcoesComerciais } from "../billing/opcoes";
 import {
   AJUSTES_DE_PLANO,
-  PRECOS_DE_30_DIAS,
-  PRECOS_PENDENTES_DE_SCHEMA,
+  PRECOS_DE_ADICIONAIS,
+  PRECOS_DE_PLANO,
   bancoConfirmado,
   planejarCatalogo,
   podeAplicar,
+  type EstadoDoCatalogo,
 } from "../billing/catalogoComercial";
 import { videoPermitidoPorVip, servidorVipDaConta } from "../servidorVip";
 import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PLUS, PLANO_PREMIUM } from "../planos";
+import type { Entitlements } from "../entitlements";
 import type { PlanoSemeado } from "../planos";
 
 /**
- * A definição comercial final: vitrine, preços, opções do pedido e VIP.
- *
- * A vitrine é derivada dos direitos das constantes de bootstrap — as mesmas que
- * o seed grava —, então um direito divergente aparece aqui como texto errado.
+ * A definição comercial final: vitrine, catálogo de preços, opções do pedido e
+ * servidor VIP.
  */
 
 const textos = (p: PlanoSemeado) => vitrineDoPlano(p).beneficios.map((b) => b.texto);
@@ -43,7 +43,7 @@ describe("matriz final na vitrine", () => {
     ]);
   });
 
-  test("Básico: 2 telas, HD, sem anúncios, sem downloads nem promessa de downloads com anúncio, sem canais", () => {
+  test("Básico: 2 telas, HD, sem anúncios, sem downloads, sem canais", () => {
     assert.deepEqual(textos(PLANO_BASIC), [
       "2 telas simultâneas", "Filmes e séries", "Suporte a HD", "Sem anúncios", "Sem downloads", "Sem canais de TV", "Suporte padrão",
     ]);
@@ -51,7 +51,7 @@ describe("matriz final na vitrine", () => {
     assert.equal(textos(PLANO_BASIC).some((t) => /download/i.test(t) && /anúncio/i.test(t)), false);
   });
 
-  test("Plus: Full HD, downloads sem anúncios, canais até o nível Plus — nunca todos os canais", () => {
+  test("Plus: Full HD, downloads sem anúncios, canais até o nível Plus", () => {
     assert.deepEqual(textos(PLANO_PLUS), [
       "2 telas simultâneas", "Filmes e séries", "Suporte a Full HD", "Sem anúncios",
       "Downloads sem anúncios", "Canais até o nível Plus", "Suporte",
@@ -66,96 +66,112 @@ describe("matriz final na vitrine", () => {
     ]);
   });
 
+  test("com preço de tela ativo, a vitrine anuncia até 2 telas adicionais", () => {
+    const v = vitrineDoPlano({ ...PLANO_PLUS, telasAdicionaisDisponiveis: true });
+    assert.equal(v.beneficios[1].texto, "Até 2 telas adicionais");
+    assert.equal(textos(PLANO_PLUS).includes("Até 2 telas adicionais"), false, "sem preço, sem anúncio");
+  });
+
   test("qualidade é anunciada como suporte, nunca como limite aplicado", () => {
     for (const p of [PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM]) {
       assert.equal(textos(p).some((t) => /limit/i.test(t)), false, p.id);
     }
   });
 
-  test("temas e selos; identificação não depende só da cor", () => {
+  test("temas e selos", () => {
     assert.deepEqual(
       [PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM].map((p) => [vitrineDoPlano(p).tema, vitrineDoPlano(p).selo]),
       [["azul", null], ["roxo", "Mais escolhido"], ["ambar", "Experiência completa"]],
     );
   });
 
-  test("servidor VIP fora da vitrine enquanto não existir e não estiver protegido", () => {
+  test("servidor VIP fora da vitrine e do checkout, mesmo com o direito existindo", () => {
     assert.equal(SERVIDOR_VIP_NA_VITRINE, false);
+    assert.equal(SERVIDOR_VIP_AVULSO_OFERTADO, false);
     for (const p of [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM]) {
       assert.equal(textos(p).some((t) => /vip/i.test(t)), false, p.id);
     }
   });
 
-  test("telas: 2 nos pagos; o gratuito preserva a regra atual", () => {
-    assert.deepEqual([PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM].map((p) => p.telasMax), [2, 2, 2]);
-    assert.equal(PLANO_GRATUITO.telasMax, 1);
-  });
-
-  test("canais por nível: gratuito e Básico nenhum, Plus plus, Premium premium", () => {
-    assert.deepEqual(
-      [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM].map((p) => p.canaisNivel),
-      ["nenhum", "nenhum", "plus", "premium"],
-    );
-  });
-
-  test("Básico não concede downloads; Plus e Premium concedem", () => {
-    assert.deepEqual(
-      [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM].map((p) => p.downloads),
-      [false, false, true, true],
-    );
+  test("direitos: telas, canais, downloads e VIP incluso por plano", () => {
+    const planos = [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM];
+    assert.deepEqual(planos.map((p) => p.telasMax), [1, 2, 2, 2]);
+    assert.deepEqual(planos.map((p) => p.canaisNivel), ["nenhum", "nenhum", "plus", "premium"]);
+    assert.deepEqual(planos.map((p) => p.downloads), [false, false, true, true]);
+    assert.deepEqual(planos.map((p) => p.servidorVip), [false, false, true, true]);
   });
 });
 
-describe("preços", () => {
-  test("30 dias: R$ 10,00, R$ 19,90, R$ 29,90 em centavos inteiros", () => {
-    assert.deepEqual(PRECOS_DE_30_DIAS, [
-      { planoId: "basic", precoCentavos: 1000 },
-      { planoId: "plus", precoCentavos: 1990 },
-      { planoId: "premium", precoCentavos: 2990 },
-    ]);
+describe("catálogo de preços", () => {
+  const brl = (planoId: string, meses: number | null, dias: number | null) =>
+    PRECOS_DE_PLANO.find((p) =>
+      p.planoId === planoId &&
+      (meses !== null ? p.duracao.tipo === "meses" && p.duracao.meses === meses : p.duracao.tipo === "dias" && p.duracao.dias === dias),
+    )?.precoCentavos;
+
+  test("três durações por plano, total do período em centavos", () => {
+    assert.deepEqual(
+      ["basic", "plus", "premium"].map((id) => [brl(id, null, 30), brl(id, 5, null), brl(id, 12, null)]),
+      [[1000, 4490, 9590], [1990, 8990, 18990], [2990, 13490, 28490]],
+    );
+    assert.equal(PRECOS_DE_PLANO.length, 9);
   });
 
-  test("5 meses e 1 ano: aprovados, registrados e não criáveis sem duração em meses", () => {
-    assert.deepEqual(
-      PRECOS_PENDENTES_DE_SCHEMA.map((p) => [p.planoId, p.meses, p.precoCentavos]),
-      [["basic", 5, 4490], ["basic", 12, 9590], ["plus", 5, 8990], ["plus", 12, 18990], ["premium", 5, 13490], ["premium", 12, 28490]],
-    );
-    const estado = {
-      planos: ["basic", "plus", "premium"].map((id) => ({ id, nome: id, resolucaoMax: "hd" })),
-      precos: [],
-    };
-    const criadas = planejarCatalogo(estado).filter((a) => a.tipo === "criar_preco");
-    assert.ok(criadas.every((a) => a.tipo === "criar_preco" && a.duracaoDias === 30));
+  test("5 meses e 1 ano são meses de calendário, não dias", () => {
+    for (const p of PRECOS_DE_PLANO.filter((x) => x.rotulo !== "30 dias")) {
+      assert.equal(p.duracao.tipo, "meses", `${p.planoId} ${p.rotulo}`);
+    }
   });
 
-  test("banco sem preços: cria os três e ajusta nome e qualidade", () => {
-    const acoes = planejarCatalogo({
-      planos: [
-        { id: "basic", nome: "Basic", resolucaoMax: "hd" },
-        { id: "plus", nome: "Plus", resolucaoMax: "hd" },
-        { id: "premium", nome: "Premium", resolucaoMax: "4k" },
-      ],
-      precos: [],
-    });
-    assert.equal(acoes.filter((a) => a.tipo === "criar_preco").length, 3);
+  test("adicionais: tela por mês (10,00 / 9,95 / 14,95); VIP avulso 5,90 inativo", () => {
     assert.deepEqual(
-      acoes.filter((a) => a.tipo === "atualizar_plano"),
-      [
-        { tipo: "atualizar_plano", planoId: "basic", campo: "nome", de: "Basic", para: "Básico" },
-        { tipo: "atualizar_plano", planoId: "plus", campo: "resolucaoMax", de: "hd", para: "fhd" },
-      ],
+      PRECOS_DE_ADICIONAIS.map((a) => [a.planoId, a.tipo, a.precoMensalCentavos, a.ativo]),
+      [["basic", "tela", 1000, true], ["plus", "tela", 995, true], ["premium", "tela", 1495, true], ["basic", "servidor_vip", 590, false]],
     );
+  });
+
+  const vazio: EstadoDoCatalogo = {
+    planos: [
+      { id: "basic", nome: "Basic", resolucaoMax: "hd", servidorVip: false },
+      { id: "plus", nome: "Plus", resolucaoMax: "hd", servidorVip: false },
+      { id: "premium", nome: "Premium", resolucaoMax: "4k", servidorVip: false },
+    ],
+    precos: [],
+    adicionais: [],
+  };
+
+  test("banco sem preços: cria 9 preços, 4 adicionais e ajusta os planos", () => {
+    const acoes = planejarCatalogo(vazio);
+    assert.equal(acoes.filter((a) => a.tipo === "criar_preco").length, 9);
+    assert.equal(acoes.filter((a) => a.tipo === "criar_adicional").length, 4);
+    assert.deepEqual(
+      acoes.filter((a) => a.tipo === "atualizar_plano").map((a) => a.tipo === "atualizar_plano" && [a.planoId, a.campo, a.para]),
+      [["basic", "nome", "Básico"], ["plus", "resolucaoMax", "fhd"], ["plus", "servidorVip", true], ["premium", "servidorVip", true]],
+    );
+    const anual = acoes.find((a) => a.tipo === "criar_preco" && a.planoId === "premium" && a.rotulo === "1 ano");
+    assert.deepEqual(anual && anual.tipo === "criar_preco" && [anual.duracaoDias, anual.duracaoMeses], [null, 12]);
     assert.equal(podeAplicar(acoes), true);
-    assert.equal(AJUSTES_DE_PLANO.length, 2);
+    assert.equal(AJUSTES_DE_PLANO.length, 4);
   });
 
-  test("preço ativo diferente é conflito, nunca sobrescrita", () => {
+  test("valor ativo diferente é conflito, nunca sobrescrita", () => {
     const acoes = planejarCatalogo({
-      planos: [{ id: "basic", nome: "Básico", resolucaoMax: "hd" }, { id: "plus", nome: "Plus", resolucaoMax: "fhd" }, { id: "premium", nome: "Premium", resolucaoMax: "4k" }],
-      precos: [{ planoId: "plus", duracaoDias: 30, precoCentavos: 1500, moeda: "BRL", ativo: true }],
+      ...vazio,
+      precos: [{ planoId: "plus", duracaoDias: null, duracaoMeses: 5, precoCentavos: 7000, moeda: "BRL", ativo: true }],
+      adicionais: [{ planoId: "premium", tipo: "tela", precoMensalCentavos: 1000, moeda: "BRL", ativo: true }],
     });
-    assert.ok(acoes.some((a) => a.tipo === "conflito_de_preco" && a.planoId === "plus"));
+    assert.ok(acoes.some((a) => a.tipo === "conflito_de_preco" && a.planoId === "plus" && a.rotulo === "5 meses"));
+    assert.ok(acoes.some((a) => a.tipo === "conflito_de_adicional" && a.planoId === "premium"));
     assert.equal(podeAplicar(acoes), false);
+  });
+
+  test("preço de 30 dias não conta como 1 mês, nem o contrário", () => {
+    const acoes = planejarCatalogo({
+      ...vazio,
+      precos: [{ planoId: "basic", duracaoDias: 30, duracaoMeses: null, precoCentavos: 1000, moeda: "BRL", ativo: true }],
+    });
+    assert.ok(acoes.some((a) => a.tipo === "preco_ja_correto" && a.planoId === "basic" && a.rotulo === "30 dias"));
+    assert.ok(acoes.some((a) => a.tipo === "criar_preco" && a.planoId === "basic" && a.rotulo === "5 meses"));
   });
 
   test("apply exige o host exato do banco", () => {
@@ -168,12 +184,14 @@ describe("preços", () => {
 });
 
 describe("opções do pedido", () => {
-  test("sem opções: aceito", () => {
-    assert.deepEqual(validarOpcoesComerciais({}), { ok: true });
-    assert.deepEqual(validarOpcoesComerciais({ cupom: "", adicionais: [], telasAdicionais: 0, servidorVip: false }), { ok: true });
+  test("sem opções: aceito com zero telas e sem VIP", () => {
+    assert.deepEqual(validarOpcoesComerciais({}), { ok: true, telasAdicionais: 0, servidorVip: false });
+    assert.deepEqual(validarOpcoesComerciais({ cupom: "", adicionais: [], telasAdicionais: 2, servidorVip: false }), {
+      ok: true, telasAdicionais: 2, servidorVip: false,
+    });
   });
 
-  test("cupom informado é recusado — não existe catálogo de cupons", () => {
+  test("cupom informado é recusado — sem regra, sem desconto fictício", () => {
     for (const cupom of ["BEMVINDO", "  DESCONTO10 ", "0"]) {
       assert.deepEqual(validarOpcoesComerciais({ cupom }), { ok: false, codigo: "cupom_invalido" }, cupom);
     }
@@ -181,12 +199,11 @@ describe("opções do pedido", () => {
     assert.deepEqual(validarOpcoesComerciais({ cupom: "x".repeat(65) }), { ok: false, codigo: "parametros_invalidos" });
   });
 
-  test("telas adicionais e VIP avulso indisponíveis", () => {
-    assert.deepEqual(validarOpcoesComerciais({ telasAdicionais: 1 }), { ok: false, codigo: "adicional_indisponivel" });
-    assert.deepEqual(validarOpcoesComerciais({ servidorVip: true }), { ok: false, codigo: "adicional_indisponivel" });
-    assert.deepEqual(validarOpcoesComerciais({ adicionais: [{ tipo: "tela" }] }), { ok: false, codigo: "adicional_indisponivel" });
+  test("formato de telas, VIP e adicionais genéricos", () => {
     assert.deepEqual(validarOpcoesComerciais({ telasAdicionais: -1 }), { ok: false, codigo: "parametros_invalidos" });
+    assert.deepEqual(validarOpcoesComerciais({ telasAdicionais: 1.5 }), { ok: false, codigo: "parametros_invalidos" });
     assert.deepEqual(validarOpcoesComerciais({ servidorVip: "sim" }), { ok: false, codigo: "parametros_invalidos" });
+    assert.deepEqual(validarOpcoesComerciais({ adicionais: [{ tipo: "tela" }] }), { ok: false, codigo: "adicional_indisponivel" });
     assert.deepEqual(validarOpcoesComerciais({ adicionais: "tela" }), { ok: false, codigo: "parametros_invalidos" });
   });
 });
@@ -194,7 +211,7 @@ describe("opções do pedido", () => {
 describe("fiação no servidor", () => {
   const fonte = async (caminho: string) => (await import("node:fs")).readFileSync(caminho, "utf8");
 
-  test("pedido: cupom e adicionais validados antes de pagador, pedido e provedor", async () => {
+  test("pedido: opções validadas antes de pagador, provedor e pedido", async () => {
     const rota = await fonte("src/app/api/billing/orders/route.ts");
     const validacao = rota.indexOf("validarOpcoesComerciais(corpo");
     assert.ok(validacao > 0);
@@ -202,7 +219,12 @@ describe("fiação no servidor", () => {
     assert.ok(validacao < rota.indexOf("montarPagador(conta"), "antes do pagador");
     assert.ok(validacao < rota.indexOf("criarProvedorBlackcat()"), "antes do provedor");
     assert.ok(validacao < rota.indexOf("criarPedidoPix("), "antes de criar pedido");
-    assert.equal(/detail:[^\n]*cupom\b[^:]/.test(rota.replace("opcoes: ${opcoes.codigo}", "")), false, "valor do cupom fora do log");
+  });
+
+  test("pedido: assinatura vigente não é mais recusada por 409", async () => {
+    const rota = await fonte("src/app/api/billing/orders/route.ts");
+    assert.equal(rota.includes('"assinatura_ativa"'), false);
+    assert.ok(rota.includes("periodosEmAberto"));
   });
 
   test("VIP: os dois caminhos que listam ou resolvem vídeo premium passam o direito", async () => {
@@ -213,26 +235,41 @@ describe("fiação no servidor", () => {
     assert.ok(nativa.includes("servidorVip: await servidorVipDaConta(userId)"));
   });
 
-  test("VIP: filtro antes de rotular e bloqueio do videoId direto", async () => {
+  test("VIP: filtro antes de rotular e bloqueio do videoId direto; extrator sem banco", async () => {
     const cinevs = await fonte("src/lib/cinevs.ts");
     const filtro = cinevs.indexOf("const permitidos = videos.filter");
     assert.ok(filtro > 0 && filtro < cinevs.indexOf("rotularFontes(permitidos"));
     assert.ok(cinevs.includes("pedida && !videoPermitidoPorVip(Boolean(pedida.is_premium), q.servidorVip)"));
+    assert.ok(cinevs.includes('from "./servidorVipRegra"'));
   });
 });
 
 describe("servidor VIP", () => {
-  test("sem direito: vídeo premium bloqueado; comum liberado", () => {
+  const ent = (servidorVip: boolean): Entitlements => ({
+    assinatura: { ativa: true, planoId: "x", expiraEm: new Date("2030-01-01") },
+    direitos: { ...PLANO_BASIC, servidorVip },
+  });
+
+  test("regra: sem direito, premium bloqueado; comum liberado; com direito, liberado", () => {
     assert.equal(videoPermitidoPorVip(true, false), false);
     assert.equal(videoPermitidoPorVip(false, false), true);
-  });
-
-  test("com direito: premium liberado", () => {
     assert.equal(videoPermitidoPorVip(true, true), true);
+    assert.equal(videoPermitidoPorVip(true, undefined), true);
   });
 
-  test("direito não modelado: nenhum filtro, comportamento anterior", async () => {
-    assert.equal(await servidorVipDaConta("qualquer"), undefined);
-    assert.equal(videoPermitidoPorVip(true, undefined), true);
+  test("monetização desligada: sem filtro e sem consultar nada", async () => {
+    let consultou = false;
+    const r = await servidorVipDaConta("u", { ativa: false, resolver: async () => { consultou = true; return ent(true); } });
+    assert.equal(r, undefined);
+    assert.equal(consultou, false);
+  });
+
+  test("monetização ligada: o direito real decide, nunca o nome do plano", async () => {
+    assert.equal(await servidorVipDaConta("u", { ativa: true, resolver: async () => ent(true) }), true);
+    assert.equal(await servidorVipDaConta("u", { ativa: true, resolver: async () => ent(false) }), false);
+  });
+
+  test("falha ao resolver o direito não libera VIP", async () => {
+    assert.equal(await servidorVipDaConta("u", { ativa: true, resolver: async () => { throw new Error("redis"); } }), false);
   });
 });

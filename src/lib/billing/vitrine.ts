@@ -49,6 +49,8 @@ export interface LinhaDaVitrine {
   anunciosObrigatorios: boolean;
   downloads: boolean;
   canaisNivel: string;
+  /** Há preço ativo de tela adicional para este plano. */
+  telasAdicionaisDisponiveis?: boolean;
 }
 
 /** Nomes públicos. Os ids internos continuam os mesmos. */
@@ -91,6 +93,15 @@ const CANAIS: Record<string, BeneficioDaVitrine> = {
  */
 export const SERVIDOR_VIP_NA_VITRINE = false;
 
+/**
+ * O adicional avulso de VIP (Básico) segue a mesma decisão: enquanto o VIP estiver
+ * fora da vitrine, o checkout recusa comprá-lo, mesmo com preço cadastrado.
+ */
+export const SERVIDOR_VIP_AVULSO_OFERTADO = SERVIDOR_VIP_NA_VITRINE;
+
+/** Espelho de `TELAS_ADICIONAIS_MAX` (precificacao.ts), para o texto da vitrine. */
+const TELAS_ADICIONAIS_NO_TEXTO = 2;
+
 export function nomePublicoDoPlano(id: string, nomeDoBanco: string): string {
   return NOMES_PUBLICOS[id] ?? nomeDoBanco;
 }
@@ -108,6 +119,9 @@ export function vitrineDoPlano(linha: LinhaDaVitrine): PlanoDaVitrine {
     texto: linha.telasMax === 1 ? "1 tela" : `${linha.telasMax} telas simultâneas`,
     incluido: true,
   });
+  if (linha.telasAdicionaisDisponiveis === true) {
+    beneficios.push({ texto: `Até ${TELAS_ADICIONAIS_NO_TEXTO} telas adicionais`, incluido: true });
+  }
   beneficios.push({ texto: "Filmes e séries", incluido: linha.filmes === true && linha.series === true });
 
   const qualidade = QUALIDADE[linha.resolucaoMax];
