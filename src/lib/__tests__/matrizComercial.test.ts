@@ -92,9 +92,9 @@ describe("mapeamento de entitlement, campo a campo", () => {
   });
 
   /** Decisões tomadas fora da matriz escrita. Ficam travadas para não derivarem. */
-  test("qualidade: basic e plus em hd, premium em 4k", () => {
+  test("qualidade prevista: basic hd, plus fhd, premium 4k", () => {
     assert.equal(PLANO_BASIC.resolucaoMax, "hd");
-    assert.equal(PLANO_PLUS.resolucaoMax, "hd");
+    assert.equal(PLANO_PLUS.resolucaoMax, "fhd");
     assert.equal(PLANO_PREMIUM.resolucaoMax, "4k");
   });
 
