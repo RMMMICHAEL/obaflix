@@ -161,6 +161,48 @@ apksigner verify --print-certs android/tv/build/outputs/apk/homologacao/tv-homol
 
 O digest SHA-256 impresso precisa ser `bdf64ebf3cc9f841a05d4a60d67c39bc957f69c0f4fd6b66c0465901f6a0de04`.
 
+### 6.1 Crash do primeiro APK de homologação (corrigido)
+
+**Sintoma no smoke:** o processo `com.obaflix.tv.homologacao` morria poucos
+segundos após restaurar a sessão, com
+`FATAL EXCEPTION: DefaultDispatcher-worker-2` e
+`java.lang.IllegalArgumentException: Expected URL scheme 'http' or 'https' but no scheme was found for`.
+
+**Retrace** (`retrace.bat` + `tv/build/outputs/mapping/homologacao/mapping.txt`):
+`UpdateChecker$verificar$2` ← `Atualizador$iniciar$1` ← `AppTvKt$AppTv$1`.
+
+**Causa:** a variante desliga a auto-atualização com `UPDATE_MANIFEST_URL = ""`.
+Assim que a Home abre, o `AppTv` inicia o `Atualizador`, e
+`UpdateChecker.verificar` montava `Request.Builder().url("")` antes do `try`,
+numa thread do `Dispatchers.IO`. A exceção escapava e derrubava o processo. Não
+tinha relação com login nem com o emulador; a validação de build só conferia
+`OBAFLIX_URL`.
+
+**Correção:**
+
+- `UpdateChecker.manifestoConfigurado`: só https válido; vazio, sem esquema ou
+  fora de https volta como `ManifestoInvalido`, sem montar requisição;
+- `Atualizador`: URL desligada não abre o laço; falha numa checagem não derruba
+  o processo (cancelamento preservado);
+- fail-fast no Gradle do `:tv` e do `:core-extractor`: toda URL do `BuildConfig`
+  da homologação precisa ser https e fora de Production; vazio só para campo
+  desligado de propósito (`UPDATE_MANIFEST_URL`); a chave de release é exigida
+  só para gerar/instalar o APK.
+
+**Testes:**
+
+- `UpdateCheckerUrlDoManifestoTest` (`core-extractor`) — reproduz o crash;
+  falhava com a mesma mensagem antes da correção;
+- `ConfiguracaoHomologacaoTest` (`tv/src/testHomologacao`) — confere o
+  `BuildConfig` gerado da variante: URLs do `tv` e do `core` iguais, https e
+  fora de Production; manifesto vazio tratado como desligado, sem lançar.
+
+```bash
+cd android && ./gradlew :core-extractor:testDebugUnitTest :tv:testHomologacaoUnitTest -Pobaflix.urlTeste=https://<ambiente-de-teste>
+```
+
+O APK gerado antes desta correção está **reprovado** e não deve ser usado.
+
 ## 7. Conferir o APK instalado na TV com problema
 
 Com a depuração por rede ligada na TV:

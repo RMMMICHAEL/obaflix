@@ -49,6 +49,19 @@ android {
         }
     }
 
+    // Mesmo fail-fast do :tv, para quem compilar a variante so desta biblioteca.
+    gradle.taskGraph.whenReady { grafo ->
+        if (grafo.allTasks.any { it.name.toLowerCase().contains('homologacao') && it.project == project }) {
+            def urlTeste = project.findProperty('obaflix.urlTeste')?.toString()
+            if (!urlTeste?.startsWith('https://')) {
+                throw new GradleException(":core-extractor homologacao exige -Pobaflix.urlTeste=https://<ambiente-de-teste>")
+            }
+            if (urlTeste == project.property('obaflix.url') || urlTeste.contains('obaflix.online')) {
+                throw new GradleException(":core-extractor homologacao: obaflix.urlTeste nao pode ser Production")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8

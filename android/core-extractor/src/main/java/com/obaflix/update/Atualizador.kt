@@ -2,6 +2,8 @@ package com.obaflix.update
 
 import android.content.Context
 import com.obaflix.bridge.ObaLog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,24 +49,52 @@ object Atualizador {
     // Mesmo intervalo do autoUpdater do Electron (ver desktop/electron/updater.js).
     private const val INTERVALO_RECHECAGEM_MS = 4 * 60 * 60 * 1000L
 
-    private val escopo = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     private val _estado = MutableStateFlow<EstadoAtualizacao>(EstadoAtualizacao.Ocioso)
     val estado: StateFlow<EstadoAtualizacao> = _estado.asStateFlow()
+
+    /**
+     * Atualizacao e acessoria: nenhuma falha dela pode derrubar o processo. O
+     * handler e a ultima rede — o laco abaixo ja trata cada checagem.
+     */
+    private val escopo = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, erro ->
+            ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "erro_inesperado", "erro" to erro.javaClass.simpleName)
+            _estado.value = EstadoAtualizacao.Falhou(erro.javaClass.simpleName)
+        },
+    )
 
     private var job: Job? = null
     private var versionCodeJaBaixado = -1
 
+    /** A checagem roda para esta URL? Falso para vazia, sem esquema ou fora de https. */
+    fun atualizacaoAtiva(manifestUrl: String?): Boolean = UpdateChecker.manifestoConfigurado(manifestUrl) != null
+
     /**
      * Inicia o laco de checagem periodica. Idempotente: uma segunda chamada
      * no mesmo processo (nova Activity, rotacao) nao abre um segundo laco.
+     *
+     * URL vazia e a forma de desligar a auto-atualizacao (APK de homologacao):
+     * nenhum laco e aberto e nenhuma requisicao e montada.
      */
     fun iniciar(context: Context, manifestUrl: String, plataforma: Plataforma, versionCodeAtual: Int) {
         if (job?.isActive == true) return
+        if (!atualizacaoAtiva(manifestUrl)) {
+            ObaLog.evento(ObaLog.Fase.ATUALIZACAO, "desativada")
+            _estado.value = EstadoAtualizacao.Ocioso
+            return
+        }
         val appContext = context.applicationContext
         job = escopo.launch {
             while (isActive) {
-                verificarUmaVez(appContext, manifestUrl, plataforma, versionCodeAtual)
+                try {
+                    verificarUmaVez(appContext, manifestUrl, plataforma, versionCodeAtual)
+                } catch (cancelada: CancellationException) {
+                    throw cancelada
+                } catch (erro: Exception) {
+                    // Uma checagem ruim nao encerra as proximas.
+                    ObaLog.alerta(ObaLog.Fase.ATUALIZACAO, "checagem_falhou", "erro" to erro.javaClass.simpleName)
+                    _estado.value = EstadoAtualizacao.Falhou(erro.javaClass.simpleName)
+                }
                 delay(INTERVALO_RECHECAGEM_MS)
             }
         }
