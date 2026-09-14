@@ -98,14 +98,27 @@ seguem 302 e `obaflix.online` mantém o hash da linha de base.
 
 ## 4. APK de homologação
 
+### 4.1 APK reprovado no smoke (não usar)
+
+SHA-256 `4EE8A7123B4954AE0F090613B5C2A9C31082A348E94E7BB0298410CD46DB6E5D`.
+Crash poucos segundos após restaurar a sessão
+(`IllegalArgumentException: Expected URL scheme 'http' or 'https' but no scheme was found for`),
+causado pela URL de manifesto de atualização vazia da variante chegando ao
+OkHttp. Diagnóstico, retrace e correção: `docs/tv-login-persistente.md` §6.1
+(PR #29, commit `aa064ba`).
+
+### 4.2 APK atual
+
 | Item | Valor |
 |---|---|
-| Arquivo | `android/tv/build/outputs/apk/homologacao/tv-homologacao.apk` (branch `feat/tv-planos-promocao`) |
+| Arquivo | `D:\obaflix-tv-planos\android\tv\build\outputs\apk\homologacao\tv-homologacao.apk` |
+| Origem | branch `feat/tv-planos-promocao`, commit `5aa50bf` (inclui a correção do #29) |
 | Pacote / versão | `com.obaflix.tv.homologacao` / `0.7.25-homologacao` (versionCode 41) |
 | Certificado | `CN=Obaflix, OU=Mobile, O=Obaflix, C=BR`, SHA-256 `bdf64ebf3cc9f841a05d4a60d67c39bc957f69c0f4fd6b66c0465901f6a0de04` (aceito) |
-| SHA-256 do APK | `4EE8A7123B4954AE0F090613B5C2A9C31082A348E94E7BB0298410CD46DB6E5D` |
+| SHA-256 do APK | `B2333574876C93F5DE31285B417F009456E992E038DE9A647625954C92AEF65F` |
 | URL embutida | só `https://obaflix-git-feat-tv-planos-promocao-michaeltrader.vercel.app` |
-| Conferência do `dex` | URL de teste presente; `obaflix.online` ausente; manifesto de atualização ausente |
+| Conferência do `dex` | URL de teste presente; `obaflix.online` ausente; guarda da URL de manifesto presente |
+| Testes antes do build | `core-extractor` 22/22; TV `debug` 98/98; TV `homologacao` 102/102 (inclui `ConfiguracaoHomologacaoTest`) |
 
 Correção feita no caminho: o `core-extractor` também ganhou a variante
 `homologacao`. Antes, o APK de teste levava o domínio de Production no
