@@ -6,9 +6,21 @@ export function deveFazerPolling(status: string) {
   return !STATUS_TERMINAIS_DO_PEDIDO.has(status);
 }
 
-/** O valor nunca faz parte do contrato enviado pelo navegador. */
-export function corpoCriarPedido(planoId: string | null, planoPrecoId: string | null, pagador: { nome: string; telefone: string; documento: string }) {
-  return { planoId, planoPrecoId, ...pagador };
+/**
+ * O valor nunca faz parte do contrato enviado pelo navegador.
+ *
+ * O cliente envia só escolhas — plano, preço (que carrega a duração), dados do
+ * pagador e cupom. O servidor resolve preço, valida cupom e adicionais e calcula
+ * o total. Cupom vazio não é enviado.
+ */
+export function corpoCriarPedido(
+  planoId: string | null,
+  planoPrecoId: string | null,
+  pagador: { nome: string; telefone: string; documento: string },
+  opcoes: { cupom?: string } = {},
+) {
+  const cupom = opcoes.cupom?.trim();
+  return { planoId, planoPrecoId, ...pagador, ...(cupom ? { cupom } : {}) };
 }
 
 /**
@@ -37,5 +49,8 @@ export function planoEscolhidoDaUrl(search: string): string | null {
 export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "assinatura_ativa") return "Você já possui uma assinatura ativa.";
   if (codigo === "plano_indisponivel") return "Plano temporariamente indisponível para compra.";
+  if (codigo === "cupom_invalido") return "Cupom inválido.";
+  if (codigo === "adicional_indisponivel") return "Este adicional ainda não está disponível.";
+  if (codigo === "dados_do_pagador_invalidos") return "Confira nome, telefone e CPF/CNPJ.";
   return "Não foi possível iniciar o pagamento.";
 }

@@ -12,6 +12,7 @@ import {
   montarPagador,
   type CorpoDoPagador,
 } from "@/lib/billing/pagador";
+import { validarOpcoesComerciais, type CorpoDasOpcoes } from "@/lib/billing/opcoes";
 import {
   campoFinanceiroNoCorpo,
   cobrancaPixAtiva,
@@ -227,6 +228,21 @@ export async function POST(req: NextRequest) {
   const proibido = campoFinanceiroNoCorpo(corpo as Record<string, unknown>);
   if (proibido) {
     return erro(400, "campo_nao_permitido", "Parâmetros inválidos");
+  }
+
+  // 7b. Cupom e adicionais. Sem catálogo de cupons e sem regra aprovada para
+  //     telas extras e VIP avulso, o servidor recusa o que não sabe cobrar —
+  //     antes de montar pagador, criar pedido ou chamar o provedor. O código
+  //     vai para o log; o valor do cupom, não.
+  const opcoes = validarOpcoesComerciais(corpo as CorpoDasOpcoes);
+  if (!opcoes.ok) {
+    audit("billing_order_failed", { userId, ip, ua, detail: `opcoes: ${opcoes.codigo}` });
+    const mensagem = opcoes.codigo === "cupom_invalido"
+      ? "Cupom inválido"
+      : opcoes.codigo === "adicional_indisponivel"
+        ? "Adicional indisponível"
+        : "Parâmetros inválidos";
+    return erro(opcoes.codigo === "parametros_invalidos" ? 400 : 422, opcoes.codigo, mensagem);
   }
 
   const planoId = identificadorComercial(corpo.planoId);
