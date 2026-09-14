@@ -164,6 +164,17 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
       "primeiro episódio do ciclo e não é empurrada a cada episódio novo — sem " +
       "isso, quem assiste continuamente nunca fecharia o ciclo.",
   },
+  servidorVip: {
+    estado: "aplicado",
+    onde: "src/lib/servidorVip.ts",
+    nota:
+      "Direito efetivo = `Plano.servidorVip` OU adicional da assinatura, resolvido " +
+      "em `entitlements.ts`. `servidorVipDaConta` o lê atrás de MONETIZACAO_ATIVA, e " +
+      "`extractCineVs` deixa de listar, escolher ou resolver vídeo `is_premium` sem " +
+      "ele — inclusive por `videoId` direto, em /api/player/extract e " +
+      "/api/player/fonte-nativa. Flag desligada: nenhum filtro. Fora da vitrine e " +
+      "do checkout até a oferta ser liberada.",
+  },
 };
 
 /** Os direitos que negam alguma coisa hoje. */
