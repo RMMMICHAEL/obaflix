@@ -127,6 +127,52 @@ aceito no player).
 
 **Não é release e não deve ser publicado.**
 
+## 4.3 Home vazia no smoke — catálogo ausente no banco isolado
+
+**Sintoma:** com o APK novo, a Home abria só o layout, sem filmes nem séries;
+sem crash e sem erro HTTP no log.
+
+**Causa:** o preparo do ambiente criou schema, marcador, planos, preços e
+contas, mas **nenhum catálogo**. Contagem no banco de teste antes do ajuste:
+`Filme 0`, `Serie 0`, `Episodio 0`, `Genero 0`, `Saga 0`, `Canal 0`.
+
+**Rotas da Home da TV** (`/api/tv/home`, pública, só lê o banco) e dos
+catálogos, comparadas por status e contagem, sem copiar conteúdo:
+
+| Rota | Preview isolado (antes) | Production |
+|---|---|---|
+| `/api/tv/home` | 200, todas as fileiras com 0, 0 categorias | 200, 20 em alta, 24 por fileira, Top 10 com 10, 8 categorias |
+| `/api/filmes?page=1&ordem=recente` | 200, 0 itens | 200, 24 itens, 1068 páginas |
+| `/api/series?tipo=serie&page=1&ordem=recente` | 200, 0 itens | 200, 24 itens, 359 páginas |
+
+**Ajuste (só no banco isolado):** `scripts/ambiente-teste/catalogo-minimo.ts`,
+com verificação do marcador. Copia 8 filmes populares e as 4 primeiras séries
+populares **que têm episódios**, com até 5 episódios da menor temporada de cada
+uma, a partir das **APIs públicas** de catálogo e com lista fechada de campos
+(ids, `tmdbId`/`imdbId`, título, artes do TMDB, sinopse, ano, nota,
+popularidade, gêneros). `urlDub`/`urlLeg` ficam **nulos**: nenhuma URL de
+provedor é gravada (as APIs públicas nem as expõem). O script é idempotente e
+remove do banco de teste as séries que ele mesmo gravou sem episódio.
+
+Na primeira execução, duas séries populares (`tmdb_94722` e `tmdb_91759`)
+entraram sem episódios: em Production elas também têm **0** episódios na rota
+pública. Foram substituídas por séries com episódios e removidas do banco de
+teste.
+
+**Depois:** `Filme 8`, `Serie 4`, `Episodio 20` (5 por série), `Genero 13`.
+`/api/tv/home` → 12 em alta, 8 filmes por fileira, 4 séries por fileira, 7
+categorias.
+
+**Limites conhecidos do catálogo mínimo:**
+
+- "Mais bem avaliados" fica vazio (a vitrine exige URL de provedor no banco);
+- episódios aparecem como indisponíveis na TV (a disponibilidade vem de
+  `urlDub`/`urlLeg`);
+- filmes podem ter fontes pelo id e pelo `tmdbId` (a rota de fontes consulta
+  também fontes externas e montadas por `tmdbId`); a reprodução real só o smoke
+  confirma. Se não houver fonte, a reprodução exigiria URLs de provedor no banco
+  de teste — decisão pendente, não tomada.
+
 ## 5. Roteiro exato do smoke da TV
 
 Pré-requisito: §3 resolvido. Contas: as quatro contas fictícias (senhas

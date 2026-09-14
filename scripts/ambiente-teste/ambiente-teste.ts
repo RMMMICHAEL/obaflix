@@ -139,6 +139,19 @@ async function catalogo(vars: Record<string, string>) {
   });
 }
 
+/** Quantidade de catálogo no banco de teste. Só contagens; nada de usuário. */
+async function contagens(vars: Record<string, string>) {
+  await comBanco(vars, async (db) => {
+    const resultado: Record<string, number | null> = {};
+    for (const tabela of ["Filme", "Serie", "Episodio", "Genero", "FilmeGenero", "SerieGenero", "Saga", "Canal", "CanalFonte"]) {
+      resultado[tabela] = (await tabelaExiste(db, tabela))
+        ? Number((await db.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM "${tabela}"`))[0].n)
+        : null;
+    }
+    console.log(JSON.stringify(resultado));
+  });
+}
+
 /**
  * Troca a senha das contas fictícias por senhas aleatórias novas.
  *
@@ -181,6 +194,6 @@ async function regenerarSenhas(vars: Record<string, string>) {
 
 const comando = process.argv[2];
 const vars = lerVariaveis();
-const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar, catalogo, "regenerar-senhas": regenerarSenhas };
+const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar, catalogo, contagens, "regenerar-senhas": regenerarSenhas };
 if (!acoes[comando]) recusar(`comando desconhecido: ${comando}`);
 acoes[comando](vars).catch((e) => { console.error(`ERRO: ${e instanceof Error ? e.message.split("\n")[0] : "falha"}`); process.exit(1); });
