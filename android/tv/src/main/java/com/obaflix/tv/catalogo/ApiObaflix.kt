@@ -92,21 +92,22 @@ object ApiObaflix {
     }
 
     /**
-     * Executa uma vez; se voltou 401, renova e executa de novo.
+     * Executa uma vez; se voltou 401 (access vencido), renova e executa de novo.
      *
-     * Nao ha terceira tentativa de proposito: se o segundo 401 chegou, o refresh
-     * tambem nao vale mais e insistir so gera trafego. PareamentoTv.renovar ja
-     * limpa a credencial e a raiz cai no pareamento.
+     * Nao ha terceira tentativa de proposito: se o segundo 401 chegou, insistir
+     * so gera trafego. Renovacao recusada (401 no refresh) ja limpou a credencial
+     * e levou a raiz ao pareamento; renovacao adiada (rede, 5xx) mantem a sessao
+     * e so esta chamada fica sem dado.
      */
     private suspend fun executar(caminho: String, corpo: JSONObject? = null, corpoDelete: Boolean = false): String? =
         withContext(Dispatchers.IO) {
-            val primeira = chamar(caminho, corpo, corpoDelete)
-            if (primeira.status != 401) return@withContext primeira.corpo
-
-            val ctx = contexto ?: return@withContext null
-            val renovou = travaRenovacao.withLock { PareamentoTv.renovar(ctx) }
-            if (!renovou) return@withContext null
-            chamar(caminho, corpo, corpoDelete).corpo
+            val ctx = contexto
+            val desfecho = com.obaflix.tv.sessao.executarComRenovacao(
+                chamar = { chamar(caminho, corpo, corpoDelete) },
+                accessRecusado = { it.status == 401 && ctx != null },
+                renovar = { travaRenovacao.withLock { PareamentoTv.renovarDetalhado(ctx!!) } },
+            )
+            (desfecho as? com.obaflix.tv.sessao.DesfechoDaChamada.Respondeu)?.resposta?.corpo
         }
 
     private suspend fun objeto(caminho: String, corpo: JSONObject? = null): JSONObject? =
@@ -630,12 +631,18 @@ object ApiObaflix {
         // resolve do zero. A checagem de entitlement acontece nos dois casos.
         val corpo = JSONObject().apply { if (sessionId != null) put("sessionId", sessionId) }
 
-        var r = chamarLendoErro(caminho, corpo)
-        if (r.status == 401) {
-            val ctx = contexto
-            val renovou = ctx != null && travaRenovacao.withLock { PareamentoTv.renovar(ctx) }
-            if (!renovou) return@withContext Concessao.SemSessao
-            r = chamarLendoErro(caminho, corpo)
+        val ctx = contexto
+        val desfecho = com.obaflix.tv.sessao.executarComRenovacao(
+            chamar = { chamarLendoErro(caminho, corpo) },
+            accessRecusado = { it.status == 401 && ctx != null },
+            renovar = { travaRenovacao.withLock { PareamentoTv.renovarDetalhado(ctx!!) } },
+        )
+        val r = when (desfecho) {
+            is com.obaflix.tv.sessao.DesfechoDaChamada.Respondeu -> desfecho.resposta
+            // Refresh recusado: sessao encerrada de verdade.
+            com.obaflix.tv.sessao.DesfechoDaChamada.SessaoRecusada -> return@withContext Concessao.SemSessao
+            // Access vencido sem conseguir renovar agora: a sessao continua valida.
+            is com.obaflix.tv.sessao.DesfechoDaChamada.RenovacaoAdiada -> return@withContext Concessao.FalhaTemporaria
         }
 
         when (r.status) {
