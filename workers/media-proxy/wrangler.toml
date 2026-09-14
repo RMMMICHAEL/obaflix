@@ -31,3 +31,23 @@ CANAIS_MEDIA_BASE = ""
 #   npx wrangler secret put ASSINATURA_SECRET
 #   npx wrangler secret put UPSTASH_REDIS_REST_URL
 #   npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
+
+# ── Ambiente de TESTE (smoke isolado de canais) ──────────────────────────────
+#
+# Worker separado (nome proprio), apontando para a origem do deploy de teste.
+# Segredos proprios, NUNCA os de producao, e o Redis exclusivo de teste:
+#   npx wrangler secret put ASSINATURA_SECRET --env teste
+#   npx wrangler secret put UPSTASH_REDIS_REST_URL --env teste
+#   npx wrangler secret put UPSTASH_REDIS_REST_TOKEN --env teste
+# Deploy (so com autorizacao especifica):
+#   npx wrangler deploy --env teste
+[env.teste]
+name = "obaflix-media-teste"
+
+[env.teste.vars]
+# Preencher com a origem do deploy de teste antes do deploy.
+APP_ORIGIN = ""
+CDN_ALLOWLIST = ""
+CANAIS_PLAYER_ALLOWLIST = ""
+# URL publica do Worker de teste; o mesmo valor de CANAIS_MEDIA_BASE do backend de teste.
+CANAIS_MEDIA_BASE = ""

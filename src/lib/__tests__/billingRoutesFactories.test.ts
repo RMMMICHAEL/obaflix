@@ -40,12 +40,12 @@ test("factory GET usa sessão, banco, limite e confirmação falsos", async () =
     checkRateLimit: async () => ({ allowed: true }),
     confirmarPedidoPorId: async (id: string) => { confirmou = id; },
     confirmacaoAtiva: () => true,
-    prisma: { pedidoPagamento: { findFirst: async () => pedido, findUnique: async () => ({ id: "pedido-1", status: "PAGO", valorCentavos: 100, moeda: "BRL", expiraEm: null }) } },
+    prisma: { revisaoPagamento: { findFirst: async () => null }, pedidoPagamento: { findFirst: async () => pedido, findUnique: async () => ({ id: "pedido-1", status: "PAGO", valorCentavos: 100, moeda: "BRL", expiraEm: null }) } },
   });
   const response = await handler(new NextRequest("http://local"), { params: { id: "pedido-1" } });
   assert.equal(confirmou, "pedido-1");
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.deepEqual(Object.keys(await response.json()).sort(), ["expiraEm", "id", "moeda", "status", "valorCentavos"].sort());
+  assert.deepEqual(Object.keys(await response.json()).sort(), ["emRevisao", "expiraEm", "id", "moeda", "status", "valorCentavos"].sort());
 });
 
 test("factory cron usa lote, ambiente e confirmação falsos", async () => {

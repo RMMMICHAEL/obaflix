@@ -65,6 +65,7 @@ export function planoEscolhidoDaUrl(search: string): string | null {
 
 export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "assinatura_ativa") return "Você já possui uma assinatura ativa.";
+  if (codigo === "pagamento_em_revisao") return "Seu pagamento está em análise. Não faça outro pagamento para esta assinatura. Acompanhe o status por aqui.";
   if (codigo === "plano_indisponivel") return "Plano temporariamente indisponível para compra.";
   if (codigo === "cupom_invalido") return "Cupom inválido.";
   if (codigo === "adicional_indisponivel") return "Este adicional ainda não está disponível.";

@@ -37,6 +37,7 @@ import { randomBytes } from "node:crypto";
 import { calcularTotal, type PrecosDosAdicionais } from "./precificacao";
 import { classificarOperacao, valorNaoUtilizado, type Duracao, type PeriodoPago } from "./vigencia";
 import { SERVIDOR_VIP_AVULSO_OFERTADO, nomePublicoDoPlano } from "./vitrine";
+import type { MotivoDeRevisao as CodigoDeRevisao } from "./revisao";
 
 // ── Domínio ──────────────────────────────────────────────────────────────────
 
@@ -74,7 +75,12 @@ export type StatusPedido = (typeof STATUS_PEDIDO)[number];
  */
 export const STATUS_DA_FASE_4 = ["CRIADO", "AGUARDANDO", "FALHOU", "REVISAO_MANUAL"] as const;
 
-export const PROVEDORES_PAGAMENTO = ["blackcat"] as const;
+/**
+ * `simulado` só existe no ambiente isolado de testes (`simulado.ts`). O CHECK de
+ * Production aceita apenas `blackcat`: um pedido simulado não grava lá nem com a
+ * configuração errada.
+ */
+export const PROVEDORES_PAGAMENTO = ["blackcat", "simulado"] as const;
 export type ProvedorPagamento = (typeof PROVEDORES_PAGAMENTO)[number];
 
 /**
@@ -397,14 +403,22 @@ export interface RepositorioDePedidos {
   buscarAdicionais(planoId: string): Promise<PrecosDosAdicionais>;
   /** Assinaturas ATIVAS da conta que ainda não terminaram: a vigente e as agendadas. */
   periodosEmAberto(userId: string, agora: Date): Promise<PeriodoPago[]>;
-  criar(dados: NovoPedido): Promise<{ id: string }>;
+  /** Há caso de revisão pendente para esta conta? Checagem barata, antes de tudo. */
+  revisaoPendente(userId: string): Promise<boolean>;
+  /**
+   * Grava o pedido `CRIADO`. `null` quando a conta tem revisão pendente: a
+   * implementação repete a checagem com a conta travada, na mesma transação da
+   * gravação — é o que vale com requisições simultâneas.
+   */
+  criar(dados: NovoPedido): Promise<{ id: string } | null>;
   registrarVenda(
     pedidoId: string,
     dados: { transacaoId: string; expiraEm: Date },
   ): Promise<void>;
+  /** Com `REVISAO_MANUAL`, abre o caso com o `motivo` na mesma transação. */
   registrarFalha(
     pedidoId: string,
-    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string },
+    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string; motivo?: CodigoDeRevisao },
   ): Promise<void>;
 }
 
@@ -546,6 +560,8 @@ export interface DependenciasDoPedido {
   gerarRef?: () => string;
   /** Relógio injetável; produção usa `new Date()`. */
   agora?: () => Date;
+  /** Quem processa a cobrança. Padrão `blackcat`. */
+  nomeDoProvedor?: ProvedorPagamento;
 }
 
 /** Por que um pedido foi parar em `REVISAO_MANUAL`. Só para log sanitizado. */
@@ -566,6 +582,8 @@ export type ResultadoDoPedido =
     }
   | { situacao: "nao_compravel"; motivo: MotivoNaoCompravel }
   | { situacao: "compra_recusada"; codigo: CodigoDeCompraRecusada }
+  /** Conta com pagamento em revisão: nenhuma compra nova até o caso ser resolvido. */
+  | { situacao: "revisao_pendente" }
   | { situacao: "falha_no_provedor"; falha: FalhaDoProvedor; pedidoId: string }
   | { situacao: "revisao_manual"; pedidoId: string; motivo: MotivoDeRevisao };
 
@@ -617,6 +635,11 @@ export async function criarPedidoPix(
   const { repo, provedor } = deps;
   const gerarRef = deps.gerarRef ?? gerarRefExterna;
 
+  // Revisão pendente bloqueia qualquer compra da conta: um segundo pagamento
+  // enquanto o primeiro está em análise é exatamente o que a mensagem ao
+  // comprador pede para não acontecer. `criar` repete a checagem com trava.
+  if (await repo.revisaoPendente(entrada.userId)) return { situacao: "revisao_pendente" };
+
   const preco = await repo.buscarPreco(entrada.planoPrecoId);
   const resolucao = resolverPreco(preco, entrada.planoId);
   if (!resolucao.compravel) {
@@ -645,10 +668,10 @@ export async function criarPedidoPix(
   const snapshot = compra.snapshot;
   const refExterna = gerarRef();
 
-  const { id: pedidoId } = await repo.criar({
+  const criado = await repo.criar({
     ...snapshot,
     userId: entrada.userId,
-    provedor: "blackcat",
+    provedor: deps.nomeDoProvedor ?? "blackcat",
     status: "CRIADO",
     refExterna,
     telasAdicionais: compra.telasAdicionais,
@@ -660,6 +683,9 @@ export async function criarPedidoPix(
     assinaturasSubstituidas: compra.assinaturasSubstituidas,
     iniciaEmPrevisto: compra.iniciaEmPrevisto,
   });
+  // Uma revisão foi aberta entre a primeira checagem e a gravação.
+  if (!criado) return { situacao: "revisao_pendente" };
+  const pedidoId = criado.id;
 
   const resultado = await provedor.criarVenda({
     refExterna,
@@ -680,6 +706,7 @@ export async function criarPedidoPix(
       await repo.registrarFalha(pedidoId, {
         status: "REVISAO_MANUAL",
         transacaoId: resultado.transacaoId,
+        motivo: "criacao_falha_com_transacao",
       });
       return { situacao: "revisao_manual", pedidoId, motivo: resultado.falha };
     }
@@ -704,6 +731,7 @@ export async function criarPedidoPix(
     await repo.registrarFalha(pedidoId, {
       status: "REVISAO_MANUAL",
       transacaoId: venda.transacaoId,
+      motivo: "criacao_valor_divergente",
     });
     return { situacao: "revisao_manual", pedidoId, motivo: "valor_divergente" };
   }

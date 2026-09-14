@@ -633,6 +633,7 @@ model PedidoPagamento {
   /// da FK criada na Fase 4; nenhuma linha é criada por esta fase.
   assinatura Assinatura?
   eventos    EventoPagamento[]
+  revisoes   RevisaoPagamento[]
 
   /// "os pedidos desta conta, do mais novo para o mais velho" — a listagem de
   /// suporte e a trava de retentativa.
@@ -657,6 +658,64 @@ model EventoPagamento {
   @@unique([provedor, transacaoId, evento, statusInformado])
   @@index([pedidoId, recebidoEm])
   @@index([resultado, recebidoEm])
+}
+
+// ── Revisão manual de pagamentos ─────────────────────────────────────────────
+//
+// PROPOSTA DE SCHEMA, SEM MIGRATION. Os dois modelos abaixo exigem tabelas que
+// não existem em banco nenhum. O SQL proposto está em
+// docs/revisao-manual-pagamentos.md; criar ou aplicar a migration depende de
+// autorização explícita.
+
+/// Um caso de revisão de um pedido. No máximo um PENDENTE por pedido (índice
+/// único parcial no SQL proposto — o Prisma 5 não o expressa).
+model RevisaoPagamento {
+  id       String          @id @default(cuid())
+  pedidoId String
+  pedido   PedidoPagamento @relation(fields: [pedidoId], references: [id], onDelete: NoAction)
+  /// Desnormalizado de propósito: a trava de compra por conta e a consulta
+  /// administrativa filtram por conta sem juntar com o pedido.
+  userId   String
+
+  /// Código interno do primeiro motivo (`MOTIVOS_DE_REVISAO` em
+  /// src/lib/billing/revisao.ts). Motivos posteriores ficam no histórico.
+  motivo   String
+  /// "PENDENTE" | "RESOLVIDA" (CHECK no SQL proposto).
+  status   String
+  /// Código da resolução (`RESOLUCOES_DE_REVISAO`). Nulo enquanto pendente.
+  resolucao String?
+
+  abertaEm     DateTime  @default(now())
+  resolvidaEm  DateTime?
+  atualizadoEm DateTime  @updatedAt
+
+  eventos RevisaoPagamentoEvento[]
+
+  @@index([status, abertaEm])
+  @@index([userId, status])
+  @@index([pedidoId])
+}
+
+/// Histórico imutável de um caso: abertura, motivos, ações executadas ou
+/// recusadas e resolução. Nunca guarda payload do provedor nem dado pessoal.
+model RevisaoPagamentoEvento {
+  id        String           @id @default(cuid())
+  revisaoId String
+  revisao   RevisaoPagamento @relation(fields: [revisaoId], references: [id], onDelete: NoAction)
+  /// "aberta" | "motivo_registrado" | "acao_executada" | "acao_recusada" | "resolvida"
+  tipo      String
+  /// Código interno: motivo, ação ou `acao:recusa`.
+  codigo    String
+  /// "sistema", "token_admin" ou o id do usuário admin.
+  ator      String
+  /// Texto curto do operador (ações administrativas). Sem dado de pagamento.
+  observacao String?
+  /// Chave enviada pelo operador. Única: repetir a mesma ação não a executa de
+  /// novo — devolve o registro anterior.
+  chaveIdempotencia String? @unique
+  criadoEm  DateTime @default(now())
+
+  @@index([revisaoId, criadoEm])
 }
 
 // ── Canais ao vivo ───────────────────────────────────────────────────────────

@@ -6,13 +6,14 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
-import { criarProvedorBlackcat } from "@/lib/billing/blackcat";
+import { provedorDeCobranca } from "@/lib/billing/simulado";
 import {
   identificadorComercial,
   montarPagador,
   type CorpoDoPagador,
 } from "@/lib/billing/pagador";
 import { validarOpcoesComerciais, type CorpoDasOpcoes } from "@/lib/billing/opcoes";
+import { abrirRevisao, travarContaParaCobranca, MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 import {
   campoFinanceiroNoCorpo,
   cobrancaPixAtiva,
@@ -161,13 +162,30 @@ const repositorio: RepositorioDePedidos = {
     }));
   },
 
+  async revisaoPendente(userId) {
+    const caso = await prisma.revisaoPagamento.findFirst({
+      where: { userId, status: "PENDENTE" },
+      select: { id: true },
+    });
+    return caso !== null;
+  },
+
   async criar(dados: NovoPedido) {
     const { descricao: _descricao, iniciaEmPrevisto: _inicio, ...colunas } = dados;
     // `descricao` e `iniciaEmPrevisto` ficam em memória: um vai para a fatura do
     // provedor, o outro para a resposta. O início real é decidido na confirmação.
-    return prisma.pedidoPagamento.create({
-      data: colunas,
-      select: { id: true },
+    //
+    // Conta travada durante a checagem e a gravação. Quem abre revisão usa a
+    // mesma trava; com requisições simultâneas, uma espera a outra e a checagem
+    // enxerga o caso que acabou de ser gravado.
+    return prisma.$transaction(async (tx) => {
+      await travarContaParaCobranca(tx, colunas.userId);
+      const pendente = await tx.revisaoPagamento.findFirst({
+        where: { userId: colunas.userId, status: "PENDENTE" },
+        select: { id: true },
+      });
+      if (pendente) return null;
+      return tx.pedidoPagamento.create({ data: colunas, select: { id: true } });
     });
   },
 
@@ -178,10 +196,16 @@ const repositorio: RepositorioDePedidos = {
     });
   },
 
-  async registrarFalha(pedidoId, { status, transacaoId }) {
-    await prisma.pedidoPagamento.update({
-      where: { id: pedidoId },
-      data: transacaoId ? { status, transacaoId } : { status },
+  async registrarFalha(pedidoId, { status, transacaoId, motivo }) {
+    const data = transacaoId ? { status, transacaoId } : { status };
+    if (status !== "REVISAO_MANUAL") {
+      await prisma.pedidoPagamento.update({ where: { id: pedidoId }, data });
+      return;
+    }
+    // Pedido em revisão e caso aberto juntos: nunca um sem o outro.
+    await prisma.$transaction(async (tx) => {
+      const pedido = await tx.pedidoPagamento.update({ where: { id: pedidoId }, data, select: { userId: true } });
+      await abrirRevisao(tx, { pedidoId, userId: pedido.userId, motivo: motivo ?? "criacao_falha_com_transacao" });
     });
   },
 };
@@ -287,7 +311,8 @@ export async function POST(req: NextRequest) {
 
   // O provedor é montado ANTES de qualquer escrita: sem chave de API, a resposta
   // é 503 e **nenhum pedido é criado**.
-  const provedor = criarProvedorBlackcat();
+  // Blackcat, ou a simulação — só com as três condições do ambiente isolado.
+  const { provedor, nome: nomeDoProvedor } = provedorDeCobranca();
   if (!provedor) {
     audit("billing_order_failed", { userId, ip, ua, detail: "provedor nao configurado" });
     return INDISPONIVEL();
@@ -303,7 +328,7 @@ export async function POST(req: NextRequest) {
         telasAdicionais: opcoes.telasAdicionais,
         servidorVip: opcoes.servidorVip,
       },
-      { repo: repositorio, provedor },
+      { repo: repositorio, provedor, nomeDoProvedor },
     );
   } catch {
     audit("billing_order_failed", { userId, ip, ua, detail: "erro interno" });
@@ -313,6 +338,11 @@ export async function POST(req: NextRequest) {
   if (resultado.situacao === "nao_compravel") {
     audit("billing_order_failed", { userId, ip, ua, detail: `nao compravel: ${resultado.motivo}` });
     return erro(422, "plano_indisponivel", "Plano indisponível para compra");
+  }
+
+  if (resultado.situacao === "revisao_pendente") {
+    audit("billing_order_blocked_review", { userId, ip, ua, detail: "/billing/orders" });
+    return erro(409, "pagamento_em_revisao", MENSAGEM_DE_REVISAO_AO_COMPRADOR);
   }
 
   if (resultado.situacao === "compra_recusada") {

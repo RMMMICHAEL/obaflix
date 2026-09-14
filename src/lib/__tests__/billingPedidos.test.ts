@@ -62,6 +62,9 @@ function repositorioFalso(preco: PrecoDoBanco | null) {
     async periodosEmAberto() {
       return [];
     },
+    async revisaoPendente() {
+      return false;
+    },
     async criar(dados) {
       const id = `pedido_${++n}`;
       gravacoes.push({ op: "criar", pedidoId: id, status: dados.status, dados });
@@ -622,9 +625,9 @@ describe("NENHUM caminho ativa assinatura", () => {
     for (const g of gravacoes) {
       assert.ok(["criar", "registrarVenda", "registrarFalha"].includes(g.op));
     }
-    // 6 métodos: os 4 de escrita do pedido e 2 leituras (adicionais e períodos
-    // em aberto, para calcular operação e crédito). Nenhum escreve assinatura.
-    assert.equal(Object.keys(repo).length, 6, "a porta tem 6 métodos, e nenhum escreve assinatura");
+    // 7 métodos: os 4 de escrita do pedido e 3 leituras (adicionais, períodos
+    // em aberto e revisão pendente). Nenhum escreve assinatura.
+    assert.equal(Object.keys(repo).length, 7, "a porta tem 7 métodos, e nenhum escreve assinatura");
   });
 
   /**
