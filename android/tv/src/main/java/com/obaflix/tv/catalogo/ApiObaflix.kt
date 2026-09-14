@@ -604,6 +604,53 @@ object ApiObaflix {
     }
 
     /**
+     * A vitrine comercial: planos, beneficios e precos, do servidor.
+     *
+     * Mesma resposta de `/planos` e do checkout. Plano sem `vitrine` (backend
+     * antigo) e preco sem valor positivo sao descartados — nunca completados com
+     * valor local. `null` em qualquer falha: a tela mostra erro, nao palpite.
+     */
+    suspend fun catalogoDePlanos(): List<com.obaflix.tv.assinatura.PlanoTv>? {
+        val r = comStatus("/api/billing/plans", null)
+        if (r.status != 200) return null
+        val arr = r.corpo?.optJSONArray("planos") ?: return null
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val id = texto(o, "id") ?: return@mapNotNull null
+            val vitrine = o.optJSONObject("vitrine") ?: return@mapNotNull null
+            val beneficios = vitrine.optJSONArray("beneficios")?.let { lista ->
+                (0 until lista.length()).mapNotNull { j ->
+                    val b = lista.optJSONObject(j) ?: return@mapNotNull null
+                    val textoDoBeneficio = texto(b, "texto") ?: return@mapNotNull null
+                    com.obaflix.tv.assinatura.Beneficio(textoDoBeneficio, b.optBoolean("incluido", false))
+                }
+            }.orEmpty()
+            val precos = o.optJSONArray("precos")?.let { lista ->
+                (0 until lista.length()).mapNotNull { j ->
+                    val p = lista.optJSONObject(j) ?: return@mapNotNull null
+                    val precoId = texto(p, "id") ?: return@mapNotNull null
+                    val centavos = p.optInt("precoCentavos", -1).takeIf { it > 0 } ?: return@mapNotNull null
+                    com.obaflix.tv.assinatura.PrecoDoPlano(
+                        id = precoId,
+                        rotulo = texto(p, "rotulo") ?: "",
+                        duracaoDias = p.optInt("duracaoDias", 0),
+                        precoCentavos = centavos,
+                        moeda = texto(p, "moeda") ?: "BRL",
+                    )
+                }
+            }.orEmpty()
+            com.obaflix.tv.assinatura.PlanoTv(
+                id = id,
+                nome = texto(o, "nome") ?: id,
+                selo = texto(vitrine, "selo"),
+                tom = com.obaflix.tv.assinatura.tomDoTema(texto(vitrine, "tema")),
+                beneficios = beneficios,
+                precos = precos,
+            )
+        }
+    }
+
+    /**
      * O que o servidor devolve para uma fonte escolhida.
      *
      * Duas formas, e o aparelho trata cada uma de um jeito: `embedUrl` e uma

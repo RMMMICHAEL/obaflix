@@ -24,9 +24,9 @@ class LinkDeAssinaturaTest {
 
     @Test
     fun `QR preserva o plano escolhido e o endereco legivel fica curto`() {
-        for (plano in CatalogoDePlanosTv.TODOS) {
-            val link = linkDaPaginaDePlanos("https://obaflix.online", plano.id)!!
-            assertEquals("https://obaflix.online/planos?plano=" + plano.id, link.urlDoQr)
+        for (planoId in listOf("basic", "plus", "premium")) {
+            val link = linkDaPaginaDePlanos("https://obaflix.online", planoId)!!
+            assertEquals("https://obaflix.online/planos?plano=" + planoId, link.urlDoQr)
             assertEquals("obaflix.online/planos", link.enderecoLegivel)
             assertTrue(podeIrParaQr(link.urlDoQr))
         }

@@ -81,8 +81,13 @@ sealed interface Camada {
      */
     data class Planos(val memoria: MemoriaDosPlanos = MemoriaDosPlanos()) : Camada
 
-    /** Continuar a assinatura do plano escolhido fora da TV: QR e endereco. */
-    data class AssinarForaDaTv(val planoId: String) : Camada
+    /**
+     * Continuar a assinatura do plano escolhido fora da TV: QR e endereco.
+     *
+     * Leva o plano como veio do servidor, para a tela mostrar nome e preco sem
+     * uma segunda consulta e sem tabela local.
+     */
+    data class AssinarForaDaTv(val plano: com.obaflix.tv.assinatura.PlanoTv) : Camada
 }
 
 /** O que a vitrine lembra entre uma ida e uma volta. So foco — nada de conta. */

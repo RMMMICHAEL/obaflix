@@ -51,7 +51,10 @@ class NavegacaoPlanosTest {
         val planos = Navegacao.pilha.last() as Camada.Planos
         planos.memoria.indiceFocado = 2
 
-        Navegacao.abrir(Camada.AssinarForaDaTv("premium"))
+        val premium = com.obaflix.tv.assinatura.PlanoTv(
+            "premium", "Premium", null, com.obaflix.tv.assinatura.TomDoPlano.Ambar, emptyList(), emptyList(),
+        )
+        Navegacao.abrir(Camada.AssinarForaDaTv(premium))
         assertTrue(Navegacao.voltar())
 
         assertSame(planos, Navegacao.pilha.last())
