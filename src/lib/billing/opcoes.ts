@@ -1,28 +1,22 @@
 /**
- * As opções comerciais do pedido além de plano e duração: cupom e adicionais.
+ * Validação de formato das opções do pedido: cupom, telas adicionais, VIP avulso.
  *
- * ## Por que tudo é recusado hoje
+ * Aqui só forma e o que está indisponível por decisão. Limite de telas, preço e
+ * disponibilidade do VIP avulso são decididos em `calcularTotal`
+ * (`precificacao.ts`), com os preços do banco.
  *
- * - **Cupom:** não existe catálogo de cupons — nem tabela, nem regra de desconto
- *   aprovada. Aceitar um código sem ter como validá-lo seria desconto inventado.
- *   Qualquer cupom informado é recusado com `cupom_invalido`, e o pedido não é
- *   criado.
- * - **Telas adicionais:** faltam quantidade máxima, validade, cálculo para 5
- *   meses e 1 ano e regra durante assinatura vigente.
- * - **Servidor VIP avulso (Básico):** falta a validade do adicional e o direito
- *   `servidorVip` no schema.
+ * - **Cupom:** indisponível nesta fase. Não existe catálogo nem regra de
+ *   desconto; qualquer cupom informado é recusado com `cupom_invalido`, e o pedido
+ *   não é criado. Desconto fictício não é aplicado.
+ * - **`adicionais` genérico:** não faz parte do contrato. As opções têm campo
+ *   próprio (`telasAdicionais`, `servidorVip`); um array de adicionais é recusado.
  *
- * O contrato já existe para o checkout enviar as escolhas; o servidor recusa o
- * que não sabe cobrar. Quando uma regra for aprovada, ela entra aqui — e só
- * aqui — sem mudar o formato do pedido.
- *
- * Nenhum desses campos carrega preço. O total continua saindo exclusivamente de
- * `PlanoPreco`, e campo financeiro no corpo continua recusado
- * (`campoFinanceiroNoCorpo`).
+ * Nenhum desses campos carrega preço. O total sai do servidor; campo financeiro
+ * no corpo continua recusado (`campoFinanceiroNoCorpo`).
  */
 
 export type ResultadoDasOpcoes =
-  | { ok: true }
+  | { ok: true; telasAdicionais: number; servidorVip: boolean }
   | { ok: false; codigo: "cupom_invalido" | "adicional_indisponivel" | "parametros_invalidos" };
 
 export interface CorpoDasOpcoes {
@@ -40,16 +34,18 @@ export function validarOpcoesComerciais(corpo: CorpoDasOpcoes): ResultadoDasOpco
     if (cupom.trim() !== "") return { ok: false, codigo: "cupom_invalido" };
   }
 
+  let telas = 0;
   if (telasAdicionais !== undefined && telasAdicionais !== null) {
-    if (typeof telasAdicionais !== "number" || !Number.isInteger(telasAdicionais) || telasAdicionais < 0) {
+    if (typeof telasAdicionais !== "number" || !Number.isInteger(telasAdicionais) || telasAdicionais < 0 || telasAdicionais > 99) {
       return { ok: false, codigo: "parametros_invalidos" };
     }
-    if (telasAdicionais > 0) return { ok: false, codigo: "adicional_indisponivel" };
+    telas = telasAdicionais;
   }
 
+  let vip = false;
   if (servidorVip !== undefined && servidorVip !== null) {
     if (typeof servidorVip !== "boolean") return { ok: false, codigo: "parametros_invalidos" };
-    if (servidorVip) return { ok: false, codigo: "adicional_indisponivel" };
+    vip = servidorVip;
   }
 
   if (adicionais !== undefined && adicionais !== null) {
@@ -57,5 +53,5 @@ export function validarOpcoesComerciais(corpo: CorpoDasOpcoes): ResultadoDasOpco
     if (adicionais.length > 0) return { ok: false, codigo: "adicional_indisponivel" };
   }
 
-  return { ok: true };
+  return { ok: true, telasAdicionais: telas, servidorVip: vip };
 }

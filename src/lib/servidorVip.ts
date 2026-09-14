@@ -1,42 +1,48 @@
 /**
- * Servidor VIP: o direito e onde ele é aplicado.
+ * Servidor VIP: o direito da conta e onde ele é aplicado.
  *
- * ## Classificação
+ * ## O direito
  *
- * "VIP" é o vídeo que o provedor Webcine marca `is_premium`. É a única marca
- * confiável: vem da API do provedor, lida no servidor (`src/lib/cinevs.ts`), e
- * não de rótulo de interface.
+ * `servidorVip` efetivo = `Plano.servidorVip` (incluso no plano) **ou** o
+ * adicional comprado junto da assinatura vigente (`Assinatura.servidorVip`).
+ * Quem resolve é `entitlements.ts`, a partir do banco. Nome de plano e campo do
+ * cliente não entram.
  *
- * ## Aplicação
+ * ## A aplicação
  *
- * O filtro vive dentro de `extractCineVs`, que é chamado pelos dois caminhos que
- * listam ou resolvem esses vídeos — `/api/player/extract` e
- * `/api/player/fonte-nativa`. Com `servidorVip === false`, vídeo premium não é
- * listado, não é escolhido automaticamente e, pedido por `videoId`, não é
- * resolvido.
+ * `extractCineVs` — chamado por `/api/player/extract` e
+ * `/api/player/fonte-nativa` — recebe o direito resolvido aqui. Com `false`,
+ * vídeo `is_premium` não é listado, não é escolhido automaticamente e, pedido
+ * por `videoId`, não é resolvido.
  *
- * ## Estado: preparado e desligado
+ * ## Com `MONETIZACAO_ATIVA` desligada
  *
- * O direito `servidorVip` **não existe no schema** (proposta em
- * `docs/planos-comerciais.md`; migration não autorizada). Sem ele não há como
- * saber quem pode, e cortar premium de todos tiraria de Plus e Premium o que eles
- * já recebem. Então `servidorVipDaConta` devolve `undefined` — "não modelado" —
- * e o filtro não age: o comportamento de hoje, em que vídeo premium chega a
- * qualquer conta, continua. Isso é bloqueio de publicação da oferta de VIP, e não
- * proteção.
+ * `undefined`: nenhum filtro, sem consultar nada — o mesmo bypass dos demais
+ * direitos. Ligada, falha ao resolver vira `false` (fail-closed): não saber se a
+ * conta tem VIP não libera o VIP.
  *
- * Quando a coluna existir, só `servidorVipDaConta` muda: passa a devolver
- * `entitlements.direitos.servidorVip === true`, atrás de `MONETIZACAO_ATIVA`.
+ * ## Oferta
+ *
+ * O direito existir não coloca o VIP na vitrine nem no checkout: isso continua
+ * desligado até a oferta ser liberada (`SERVIDOR_VIP_NA_VITRINE`).
  */
 
-/** `true`: tem. `false`: não tem, filtra. `undefined`: direito não modelado, não filtra. */
-export type DireitoServidorVip = boolean | undefined;
+import { entitlementsDoUsuario, type Entitlements } from "./entitlements";
+import { monetizacaoAtiva } from "./playbackAuthorization";
+import type { DireitoServidorVip } from "./servidorVipRegra";
 
-export async function servidorVipDaConta(_userId: string): Promise<DireitoServidorVip> {
-  return undefined;
-}
+export { videoPermitidoPorVip, type DireitoServidorVip } from "./servidorVipRegra";
 
-/** Este vídeo pode ser listado e resolvido para esta conta? */
-export function videoPermitidoPorVip(ehPremium: boolean, direito: DireitoServidorVip): boolean {
-  return !ehPremium || direito !== false;
+export async function servidorVipDaConta(
+  userId: string,
+  opcoes: { ativa?: boolean; resolver?: (userId: string) => Promise<Entitlements> } = {},
+): Promise<DireitoServidorVip> {
+  const ativa = opcoes.ativa ?? monetizacaoAtiva();
+  if (!ativa) return undefined;
+  const resolver = opcoes.resolver ?? entitlementsDoUsuario;
+  try {
+    return (await resolver(userId)).direitos.servidorVip === true;
+  } catch {
+    return false;
+  }
 }

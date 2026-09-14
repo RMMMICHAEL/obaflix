@@ -52,6 +52,7 @@ function planoPadraoRestrito(
     perfisMax: 1,
     resolucaoMax: "hd",
     tvNivel: "limitado",
+    servidorVip: false,
     ativo: true,
     ...over,
   };
@@ -72,6 +73,7 @@ function planoPago(over: Partial<PlanoAutorizador> = {}): PlanoAutorizador {
     perfisMax: 3,
     resolucaoMax: "4k",
     tvNivel: "completo",
+    servidorVip: false,
     ...over,
   };
 }
@@ -297,7 +299,7 @@ describe("os direitos vêm das colunas, nunca da identidade do plano", () => {
     assert.equal(r.direitos.anunciosObrigatorios, true);
   });
 
-  test("a saída carrega só os onze direitos, sem sobras do Plano", () => {
+  test("a saída carrega só os doze direitos, sem sobras do Plano", () => {
     const r = resolverEntitlements({
       agora: AGORA,
       candidatas: [],
@@ -307,7 +309,7 @@ describe("os direitos vêm das colunas, nunca da identidade do plano", () => {
     assert.deepEqual(Object.keys(r.direitos).sort(), [
       "anunciosObrigatorios", "canaisNivel", "downloads", "episodiosPorAnuncio",
       "filmes", "janelaAnuncioHoras", "perfisMax", "resolucaoMax", "series",
-      "telasMax", "tvNivel",
+      "servidorVip", "telasMax", "tvNivel",
     ]);
     assert.deepEqual(Object.keys(r.assinatura).sort(), ["ativa", "expiraEm", "planoId"]);
   });
@@ -327,6 +329,7 @@ describe("planoDaLinha: domínio fechado é conferido, não convertido", () => {
     perfisMax: 1,
     resolucaoMax: "hd",
     tvNivel: "limitado",
+    servidorVip: false,
   };
 
   test("linha válida atravessa", () => {
