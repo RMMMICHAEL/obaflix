@@ -89,6 +89,31 @@ android {
             if (urlTeste == project.property('obaflix.url')) {
                 throw new GradleException("obaflix.urlTeste nao pode ser a URL de Production")
             }
+
+            // Toda URL do BuildConfig da homologacao — do :tv E do
+            // :core-extractor — tem de ser https e fora de Production. Vazio so
+            // e aceito para campo listado como desligado de proposito, e o app
+            // precisa tratar esse vazio como "desligado" (UpdateChecker/Atualizador,
+            // com teste). Foi um campo vazio fora dessa garantia que derrubou o
+            // APK de homologacao no smoke.
+            def desligadosDeProposito = ['UPDATE_MANIFEST_URL']
+            def producao = project.property('obaflix.url').toString()
+            [project, project(':core-extractor')].each { modulo ->
+                modulo.android.buildTypes.homologacao.buildConfigFields.each { nome, campo ->
+                    if (campo.type != 'String' || !nome.endsWith('URL')) return
+                    def valor = campo.value.toString()
+                    if (valor.startsWith('"') && valor.endsWith('"') && valor.length() >= 2) valor = valor.substring(1, valor.length() - 1)
+                    if (valor.isEmpty()) {
+                        if (!desligadosDeProposito.contains(nome)) {
+                            throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} vazio")
+                        }
+                    } else if (!valor.startsWith('https://')) {
+                        throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} precisa ser https")
+                    } else if (valor == producao || valor.contains('obaflix.online')) {
+                        throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} aponta para Production")
+                    }
+                }
+            }
         }
     }
 
@@ -133,9 +158,14 @@ android {
     // Sem a chave de release o APK de homologacao nao persistiria a sessao
     // (assinatura fora de obaflix.allowedSigningCerts) e o smoke daria um
     // resultado falso. Melhor falhar o build.
+    // So empacotamento exige a chave: os testes da variante (testHomologacaoUnitTest)
+    // rodam sem assinatura.
     gradle.taskGraph.whenReady { grafo ->
-        if (!keystorePropsFile.exists() &&
-            grafo.allTasks.any { it.name.toLowerCase().contains('homologacao') && it.project == project }) {
+        // Nomes exatos: o grafo dos testes da variante tambem tem tarefas
+        // internas que comecam com `package`/`assemble` (recursos do teste).
+        def tarefasQueGeramApk = ['assembleHomologacao', 'packageHomologacao', 'bundleHomologacao', 'installHomologacao']
+        def empacota = grafo.allTasks.any { t -> t.project == project && tarefasQueGeramApk.contains(t.name) }
+        if (!keystorePropsFile.exists() && empacota) {
             throw new GradleException("assembleHomologacao exige android/key.properties com a chave de release")
         }
     }

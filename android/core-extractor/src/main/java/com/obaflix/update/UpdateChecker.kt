@@ -5,6 +5,8 @@ import com.obaflix.bridge.NetworkDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.CacheControl
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 
 /**
@@ -37,13 +39,31 @@ sealed interface ResultadoVerificacao {
  */
 object UpdateChecker {
 
+    /**
+     * A URL do manifesto, se ela for utilizavel; `null` quando a
+     * auto-atualizacao esta desligada ou mal configurada (vazia, sem esquema,
+     * ou fora de https). Nunca lanca.
+     *
+     * Existe por causa do crash do APK de homologacao: a variante desliga a
+     * atualizacao com `UPDATE_MANIFEST_URL = ""`, e `Request.Builder().url("")`
+     * lanca `IllegalArgumentException` fora de qualquer `try`, numa thread do
+     * `Dispatchers.IO` — o processo inteiro morria logo apos abrir a Home.
+     */
+    fun manifestoConfigurado(manifestUrl: String?): HttpUrl? {
+        val url = manifestUrl?.trim().orEmpty().toHttpUrlOrNull() ?: return null
+        return if (url.isHttps) url else null
+    }
+
     suspend fun verificar(
         manifestUrl: String,
         plataforma: Plataforma,
         versionCodeAtual: Int,
     ): ResultadoVerificacao = withContext(Dispatchers.IO) {
+        val alvo = manifestoConfigurado(manifestUrl)
+            ?: return@withContext ResultadoVerificacao.ManifestoInvalido("url_de_manifesto_ausente_ou_invalida")
+
         val requisicao = Request.Builder()
-            .url(manifestUrl)
+            .url(alvo)
             // O manifesto muda a cada release; uma resposta do cache do OkHttp
             // aqui faria a checagem sempre "ver" a versao de quando o cache
             // foi preenchido, nunca a atual.
