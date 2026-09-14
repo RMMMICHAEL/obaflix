@@ -21,7 +21,11 @@ test("catálogo comercial só expõe planos ativos, preços ativos e nenhum cana
   const body = await (await handler()).json();
   assert.deepEqual(consulta.where, { ativo: true });
   assert.equal(body.planos[0].compravel, true); assert.equal(body.planos[1].compravel, false);
-  assert.equal(JSON.stringify(body).match(/blackcat|transaction|canais|secret|api.?key/i), null);
+  assert.equal(JSON.stringify(body).match(/blackcat|transaction|secret|api.?key/i), null);
+  // Nenhum catálogo de canais: a vitrine descreve o nível em texto, nunca lista canal.
+  assert.equal(JSON.stringify(body).match(/"canais"\s*:|nivelMinimo|logoUrl/i), null);
+  assert.equal(body.planos[0].nome, "Básico");
+  assert.ok(Array.isArray(body.planos[0].vitrine.beneficios));
 });
 
 test("estado comercial exige sessão e devolve nome comercial sem campos administrativos", async () => {
@@ -29,7 +33,7 @@ test("estado comercial exige sessão e devolve nome comercial sem campos adminis
   assert.equal((await semSessao(req)).status, 401);
   const handler = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa: true, planoId: "basic" } }), agora: () => new Date("2026-01-01"), prisma: { assinatura: { findFirst: async () => ({ terminaEm: new Date("2026-02-01") }) }, plano: { findUnique: async () => ({ id: "basic", nome: "Basic" }) } } });
   const body = await (await handler(req)).json();
-  assert.deepEqual(body.plano, { id: "basic", nome: "Basic" }); assert.equal(body.assinatura.status, "ATIVA");
+  assert.deepEqual(body.plano, { id: "basic", nome: "Básico" }); assert.equal(body.assinatura.status, "ATIVA");
   assert.equal(JSON.stringify(body).match(/transaction|pedidoId|planoPreco|origem/i), null);
 });
 

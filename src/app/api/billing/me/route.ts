@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
+import { nomePublicoDoPlano } from "@/lib/billing/vitrine";
 export const dynamic = "force-dynamic";
 function createBillingMeHandler(deps: any = {}) {
   const banco = deps.prisma ?? prisma;
@@ -18,7 +19,8 @@ function createBillingMeHandler(deps: any = {}) {
   }) : null;
   const plano = await banco.plano.findUnique({ where: { id: direitos.assinatura.planoId }, select: { id: true, nome: true } });
   if (!plano) return NextResponse.json({ error: "Indisponível" }, { status: 503 });
-  return NextResponse.json({ plano, assinatura: assinatura ? { status: "ATIVA", terminaEm: assinatura.terminaEm } : null }, { headers: { "Cache-Control": "no-store" } });
+  // Nome público da vitrine: a TV e a conta mostram "Básico", nunca "Basic".
+  return NextResponse.json({ plano: { id: plano.id, nome: nomePublicoDoPlano(plano.id, plano.nome) }, assinatura: assinatura ? { status: "ATIVA", terminaEm: assinatura.terminaEm } : null }, { headers: { "Cache-Control": "no-store" } });
   };
 }
 
