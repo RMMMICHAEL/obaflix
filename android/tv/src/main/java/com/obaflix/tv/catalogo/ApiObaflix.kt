@@ -205,10 +205,21 @@ object ApiObaflix {
      */
     suspend fun home(): Home? {
         val raiz = objeto("/api/tv/home") ?: return null
+        return montarHome(raiz, continuarAssistindo())
+    }
 
+    /**
+     * Monta a Home a partir do payload, sem rede (ver MontarHomeTest).
+     *
+     * Nenhuma fileira sai vazia daqui. Uma lista vazia no payload e resposta
+     * legitima — "Mais bem avaliados" vem vazia quando o banco nao tem fonte
+     * cadastrada, como no ambiente de homologacao — e fileira sem card nao tem
+     * para onde levar o foco da seta.
+     */
+    internal fun montarHome(raiz: JSONObject, continuar: List<Item>?): Home {
         val fileiras = mutableListOf<Fileira>()
 
-        continuarAssistindo()?.takeIf { it.isNotEmpty() }?.let {
+        continuar?.takeIf { it.isNotEmpty() }?.let {
             fileiras += Fileira("continuar", "Continuar assistindo", it, paisagem = true)
         }
 
@@ -234,7 +245,9 @@ object ApiObaflix {
             for (i in 0 until cats.length()) {
                 val cat = cats.optJSONObject(i) ?: continue
                 val titulo = texto(cat, "titulo") ?: continue
-                val itens = itens(cat.optJSONArray("itens"), "filme")
+                // distinctBy como em `lista`: a categoria mistura filme e serie
+                // e usa o id como key da LazyRow.
+                val itens = itens(cat.optJSONArray("itens"), "filme").distinctBy { it.id }
                 if (itens.isNotEmpty()) fileiras += Fileira("cat-$i-$titulo", titulo, itens)
             }
         }
