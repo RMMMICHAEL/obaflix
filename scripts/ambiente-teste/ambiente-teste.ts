@@ -125,8 +125,22 @@ async function verificar(vars: Record<string, string>) {
   });
 }
 
+/** Planos, preços ativos e adicionais do banco de teste. Sem segredo nem dado de usuário. */
+async function catalogo(vars: Record<string, string>) {
+  await comBanco(vars, async (db) => {
+    if (!(await tabelaExiste(db, "Plano"))) { console.log(JSON.stringify({ planos: null })); return; }
+    const planos = await db.$queryRawUnsafe<unknown[]>(
+      `SELECT "id", "nome", "ordem", "ehPadrao", "servidorVip", "resolucaoMax" FROM "Plano" ORDER BY "ordem"`);
+    const precos = await db.$queryRawUnsafe<unknown[]>(
+      `SELECT "planoId", "rotulo", "precoCentavos", "duracaoDias", "duracaoMeses" FROM "PlanoPreco" WHERE "ativo" ORDER BY "planoId", "ordem"`);
+    const adicionais = await db.$queryRawUnsafe<unknown[]>(
+      `SELECT "planoId", "tipo", "precoMensalCentavos", "ativo" FROM "PlanoAdicionalPreco" ORDER BY "planoId", "tipo"`);
+    console.log(JSON.stringify({ planos, precos, adicionais }));
+  });
+}
+
 const comando = process.argv[2];
 const vars = lerVariaveis();
-const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar };
+const acoes: Record<string, (v: Record<string, string>) => Promise<void>> = { inspecionar, "redis-vazio": redisVazio, marcar, verificar, catalogo };
 if (!acoes[comando]) recusar(`comando desconhecido: ${comando}`);
 acoes[comando](vars).catch((e) => { console.error(`ERRO: ${e instanceof Error ? e.message.split("\n")[0] : "falha"}`); process.exit(1); });
