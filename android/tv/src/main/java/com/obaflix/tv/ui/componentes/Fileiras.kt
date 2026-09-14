@@ -54,6 +54,11 @@ fun FileiraCatalogo(
     aoFocar: (Item) -> Unit,
     aoAbrir: (Item) -> Unit,
 ) {
+    // Fileira sem card nao entra na composicao: seria um grupo de foco sem alvo
+    // no meio da travessia vertical, com `enter` apontando para um requisitor
+    // que nunca foi anexado.
+    if (fileira.itens.isEmpty()) return
+
     val rolagem = rememberLazyListState()
     val escopo = rememberCoroutineScope()
     val primeiro = remember { FocusRequester() }
@@ -103,6 +108,18 @@ fun FileiraCatalogo(
         }
     }
 }
+
+/**
+ * Fileiras que participam da navegacao: so as que tem card.
+ *
+ * A montagem da Home ja descarta as vazias; a tela repete o filtro para nao
+ * depender de toda origem de dados lembrar dele.
+ */
+fun fileirasNavegaveis(fileiras: List<Fileira>): List<Fileira> = fileiras.filter { it.itens.isNotEmpty() }
+
+/** A Home tem ao menos um alvo de foco? Sem nenhum, a tela mostra aviso, nao lista. */
+fun homeNavegavel(home: com.obaflix.tv.catalogo.Home): Boolean =
+    home.destaques.isNotEmpty() || fileirasNavegaveis(home.fileiras).isNotEmpty()
 
 /**
  * Quantas colunas cabem na largura util. A referencia usa 6 para o catalogo;

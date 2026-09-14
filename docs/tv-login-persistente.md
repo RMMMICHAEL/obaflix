@@ -203,6 +203,66 @@ cd android && ./gradlew :core-extractor:testDebugUnitTest :tv:testHomologacaoUni
 
 O APK gerado antes desta correção está **reprovado** e não deve ser usado.
 
+### 6.2 Crash ao descer pela Home com catálogo mínimo
+
+**Sintoma no smoke:** depois de popular o catálogo mínimo do banco isolado,
+navegar para baixo pela Home derrubou o app (`exit-info reason=4 APP CRASH`):
+`java.lang.IndexOutOfBoundsException: Index -1 out of bounds for length 0`.
+Nesse ambiente, "Mais bem avaliados" chega vazia entre fileiras preenchidas.
+
+**Retrace** (DropBox `data_app_crash` + `mapping.txt` da homologação, APK
+instalado conferido pelo SHA-256):
+`Recomposer.runRecomposeAndApplyChanges` → `CompositionImpl.recompose` →
+`ComposerImpl.recompose` → `doCompose` → `endRoot` → `endGroup` → `end` →
+`exitGroup` → `androidx.compose.runtime.Stack.pop()` → `ArrayList.remove(-1)`.
+
+**O que o stack diz:** o `-1` não veio de código nosso chamando `get`,
+`scrollToItem` ou `requestFocus` com índice inválido. É a pilha interna de grupos
+do Compose esvaziando numa recomposição — composição desbalanceada. Não há frame
+do app no stack.
+
+**O que foi descartado:**
+
+- fileira vazia chegando à tela: `ApiObaflix.home()` já descartava lista vazia;
+- key repetida: o payload do Preview não repete `id` em nenhuma fileira;
+- `return` antecipado dentro de lambda composable nas telas da Home.
+
+**Reprodução:** no emulador, com o mesmo APK e o mesmo ambiente, descidas
+lentas, rajadas rápidas e ida/volta pela ficha **não** reproduziram o crash. A
+causa exata dentro do Compose 1.6.8 não foi provada. A hipótese principal é o
+`MainActivity.dispatchKeyEvent`, que engole o `IllegalStateException`
+"isAttached": se ele sair de dentro de uma subcomposição síncrona disparada pela
+tecla, o compositor fica com grupos abertos e a recomposição seguinte faz
+exatamente este `pop`. Esse ponto **não foi alterado** sem prova.
+
+**Correção (defensiva, no que é nosso):**
+
+- `ApiObaflix.montarHome`: montagem pura da Home, sem fileira vazia e sem id
+  repetido também nas categorias;
+- `ListaDaHome`: a Home só renderiza fileira com card (`fileirasNavegaveis`);
+- `FileiraCatalogo`: fileira sem card não entra na composição nem na navegação;
+- `TelaHome`: restauração de foco só quando há alvo; Home sem nenhum card mostra
+  aviso em vez de lista vazia.
+
+**Testes:**
+
+- `MontarHomeTest` (JVM) — payload com fileira intermediária vazia, categoria
+  vazia e categoria com repetição;
+- `NavegacaoHomeFileiraVaziaTest` (instrumentado, emulador de TV) — primeira
+  fileira preenchida, intermediária vazia, seguinte preenchida; setas para baixo
+  e para cima atravessando o cenário, entrada vinda do meio da fileira, ida e
+  volta repetidas, fileira vazia sem composição nem foco.
+
+```bash
+cd android && ./gradlew :tv:testDebugUnitTest :tv:connectedUiTesteAndroidTest
+```
+
+O teste instrumentado roda no build type `uiTeste` (pacote
+`com.obaflix.tv.uiteste`, URL `.invalid`, sem rede): instalar e desinstalar esse
+pacote não toca no APK de homologação nem na sessão dele.
+
+O APK anterior (`B2333574…EF65F`) fica **reprovado** para o smoke.
+
 ## 7. Conferir o APK instalado na TV com problema
 
 Com a depuração por rede ligada na TV:
