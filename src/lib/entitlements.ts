@@ -96,6 +96,10 @@ export interface AssinaturaCandidata {
   status: string;
   iniciaEm: Date;
   terminaEm: Date;
+  /** Telas extras compradas junto desta assinatura (0 a 2). Ausente: 0. */
+  telasAdicionais?: number;
+  /** Servidor VIP avulso comprado junto desta assinatura. Ausente: não. */
+  servidorVip?: boolean;
   /** `null` quando a linha veio sem o plano relacionado — ver motivo acima. */
   plano: PlanoAutorizador | null;
 }
@@ -163,13 +167,23 @@ export function resolverEntitlements(entrada: EntradaDaResolucao): Entitlements 
     // `Plano.ativo` NÃO é conferido aqui, e é intencional: `ativo = false`
     // significa "saiu de venda", não "perdeu validade". Quem comprou continua
     // com o plano que comprou até `terminaEm`.
+    //
+    // Adicionais comprados com o período entram aqui, e só aqui: telas extras
+    // somam ao teto do plano; VIP avulso soma ao VIP incluso. Um valor fora do
+    // domínio (CHECK 0..2) não vira tela a mais — é tratado como zero.
+    const direitos = apenasDireitos(assinatura.plano);
+    const extras = assinatura.telasAdicionais;
+    if (typeof extras === "number" && Number.isInteger(extras) && extras >= 1 && extras <= 2) {
+      direitos.telasMax = direitos.telasMax + extras;
+    }
+    direitos.servidorVip = direitos.servidorVip === true || assinatura.servidorVip === true;
     return {
       assinatura: {
         ativa: true,
         planoId: assinatura.plano.id,
         expiraEm: assinatura.terminaEm,
       },
-      direitos: apenasDireitos(assinatura.plano),
+      direitos,
     };
   }
 
@@ -201,6 +215,7 @@ function apenasDireitos(p: DireitosDoPlano): DireitosDoPlano {
     perfisMax: p.perfisMax,
     resolucaoMax: p.resolucaoMax,
     tvNivel: p.tvNivel,
+    servidorVip: p.servidorVip === true,
   };
 }
 
@@ -236,6 +251,7 @@ interface LinhaDePlano {
   perfisMax: number;
   resolucaoMax: string;
   tvNivel: string;
+  servidorVip: boolean;
 }
 
 export function planoDaLinha(linha: LinhaDePlano): PlanoAutorizador {
@@ -252,6 +268,7 @@ export function planoDaLinha(linha: LinhaDePlano): PlanoAutorizador {
     perfisMax: linha.perfisMax,
     resolucaoMax: emDominio<Resolucao>(linha.resolucaoMax, RESOLUCOES, "resolucaoMax"),
     tvNivel: emDominio<TvNivel>(linha.tvNivel, TV_NIVEIS, "tvNivel"),
+    servidorVip: linha.servidorVip === true,
   };
 }
 
@@ -392,7 +409,9 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
   // que este módulo nunca escreveu — não vale tentar interpretar.
   if (a.ativa === (expiraEm === null)) return null;
 
-  const booleanos = ["anunciosObrigatorios", "filmes", "series", "downloads"] as const;
+  // `servidorVip` entrou depois: uma entrada de cache sem ele é de formato antigo
+  // e vira miss — recarrega do banco em vez de supor "sem VIP" ou "com VIP".
+  const booleanos = ["anunciosObrigatorios", "filmes", "series", "downloads", "servidorVip"] as const;
   for (const campo of booleanos) if (typeof d[campo] !== "boolean") return null;
 
   const inteiros = ["janelaAnuncioHoras", "telasMax", "perfisMax"] as const;
@@ -424,6 +443,7 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
       perfisMax: d.perfisMax as number,
       resolucaoMax: d.resolucaoMax as Resolucao,
       tvNivel: d.tvNivel as TvNivel,
+      servidorVip: d.servidorVip as boolean,
     },
   };
 }
@@ -449,6 +469,7 @@ const COLUNAS_DE_PLANO = {
   perfisMax: true,
   resolucaoMax: true,
   tvNivel: true,
+  servidorVip: true,
 } as const;
 
 /**
@@ -488,6 +509,8 @@ export function argumentosDaConsulta(userId: string, agora: Date) {
       status: true,
       iniciaEm: true,
       terminaEm: true,
+      telasAdicionais: true,
+      servidorVip: true,
       plano: { select: COLUNAS_DE_PLANO },
     },
     orderBy: { terminaEm: "desc" },
@@ -504,6 +527,8 @@ const fontePrisma: FonteDeEntitlements = {
       status: l.status,
       iniciaEm: l.iniciaEm,
       terminaEm: l.terminaEm,
+      telasAdicionais: l.telasAdicionais,
+      servidorVip: l.servidorVip,
       plano: l.plano ? planoDaLinha(l.plano) : null,
     }));
   },

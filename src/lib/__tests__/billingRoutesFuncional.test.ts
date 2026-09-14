@@ -93,12 +93,12 @@ test("polling protege sessão, propriedade, cache e campos expostos", async () =
   let confirmou = 0;
   const handler = createGetPedidoHandler({
     getUserFromRequest: async () => ({ userId: "dono" }), confirmacaoAtiva: () => true, checkRateLimit: async () => ({ allowed: true }), confirmarPedidoPorId: async () => { confirmou++; },
-    prisma: { pedidoPagamento: { findFirst: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "tx" }), findUnique: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "não-vazar" }) } },
+    prisma: { revisaoPagamento: { findFirst: async () => null }, pedidoPagamento: { findFirst: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "tx" }), findUnique: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "não-vazar" }) } },
   });
   const response = await handler(new NextRequest("http://local"), { params: { id: "p" } });
   assert.equal(confirmou, 1);
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.deepEqual(Object.keys(await response.json()).sort(), ["expiraEm", "id", "moeda", "status", "valorCentavos"].sort());
+  assert.deepEqual(Object.keys(await response.json()).sort(), ["emRevisao", "expiraEm", "id", "moeda", "status", "valorCentavos"].sort());
 });
 
 test("polling pendente, falho ou limitado não concede direito", async () => {
@@ -107,7 +107,7 @@ test("polling pendente, falho ou limitado não concede direito", async () => {
     const handler = createGetPedidoHandler({
       getUserFromRequest: async () => ({ userId: "u" }), confirmacaoAtiva: () => true, checkRateLimit: async () => ({ allowed: limite }),
       confirmarPedidoPorId: async () => { confirmou++; throw new Error("provider indisponível"); },
-      prisma: { pedidoPagamento: { findFirst: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "tx" }), findUnique: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null }) } },
+      prisma: { revisaoPagamento: { findFirst: async () => null }, pedidoPagamento: { findFirst: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null, transacaoId: "tx" }), findUnique: async () => ({ id: "p", status: "AGUARDANDO", valorCentavos: 100, moeda: "BRL", expiraEm: null }) } },
     });
     const resposta = await handler(new NextRequest("http://local"), { params: { id: "p" } });
     assert.equal((await resposta.json()).status, "AGUARDANDO");

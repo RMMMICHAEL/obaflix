@@ -65,7 +65,12 @@ export type AuditEvent =
   | "billing_payment_review"
   | "billing_payment_refunded"
   | "billing_reconcile_failed"
-  | "billing_entitlements_invalidation_failed";
+  | "billing_entitlements_invalidation_failed"
+  // Revisão manual: ação administrativa executada ou recusada, e compra
+  // bloqueada por caso pendente. `detail` leva só códigos internos e ids.
+  | "billing_review_action"
+  | "billing_review_action_refused"
+  | "billing_order_blocked_review";
 
 interface AuditMeta {
   userId?: string;

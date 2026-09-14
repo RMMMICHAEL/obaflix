@@ -44,6 +44,11 @@ export interface DireitosDoPlano {
   perfisMax: number;
   resolucaoMax: Resolucao;
   tvNivel: TvNivel;
+  /**
+   * Servidor VIP. No plano, é o incluso; no direito efetivo resolvido por
+   * `entitlements.ts`, é `plano OR adicional da assinatura`.
+   */
+  servidorVip: boolean;
 }
 
 export interface PlanoSemeado extends DireitosDoPlano {
@@ -142,6 +147,8 @@ export const PLANO_GRATUITO: PlanoSemeado = {
 
   // TV limitada. **Sem enforcement hoje**: nenhuma rota lê `tvNivel`.
   tvNivel: "limitado",
+
+  servidorVip: false,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,7 +200,8 @@ export const PLANO_GRATUITO: PlanoSemeado = {
  */
 export const PLANO_BASIC: PlanoSemeado = {
   id: "basic",
-  nome: "Basic",
+  // Nome público. O id interno continua `basic`.
+  nome: "Básico",
   descricao: "Filmes e séries, sem anúncios. Sem canais ao vivo e sem downloads.",
   ordem: 1,
   ativo: true,
@@ -217,6 +225,10 @@ export const PLANO_BASIC: PlanoSemeado = {
 
   resolucaoMax: "hd",
   tvNivel: "completo",
+
+  // Não incluso. O Básico só tem VIP com o adicional comprado junto da
+  // assinatura — e esse adicional segue fora da oferta.
+  servidorVip: false,
 };
 
 /**
@@ -247,8 +259,11 @@ export const PLANO_PLUS: PlanoSemeado = {
   telasMax: 2,
   perfisMax: 1,
 
-  resolucaoMax: "hd",
+  // Qualidade prevista: Full HD. Gravada e não aplicada — nenhuma rota limita.
+  resolucaoMax: "fhd",
   tvNivel: "completo",
+
+  servidorVip: true,
 };
 
 /**
@@ -297,6 +312,8 @@ export const PLANO_PREMIUM: PlanoSemeado = {
 
   resolucaoMax: "4k",
   tvNivel: "completo",
+
+  servidorVip: true,
 };
 
 /**
@@ -461,6 +478,8 @@ export function planoDaLinhaCrua(
     perfisMax,
     resolucaoMax: resolucaoMax as Resolucao,
     tvNivel: tvNivel as TvNivel,
+    // Coluna da migration 20260913, ainda não aplicada: ausente conta como sem VIP.
+    servidorVip: linha.servidorVip === true,
   };
 }
 
