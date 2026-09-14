@@ -3,22 +3,19 @@
 -- Production continua com CHECK ("provedor" IN ('blackcat')): mesmo com flags
 -- erradas, um pedido simulado nao grava la. NUNCA executar fora do banco marcado.
 --
---   psql "$DATABASE_URL_TESTE" -v ambiente_id=<uuid-autorizado> -f 03-provedor-simulado-somente-teste.sql
---
--- Pre-requisitos: 01 (marcador) e schema aplicado; rodar 02 antes, na mesma URL.
+-- SQL puro (roda com `prisma db execute`). O id do marcador e conferido antes,
+-- por `ambiente-teste.ts verificar --ambiente-id=<uuid>`; aqui o bloco abaixo
+-- ainda recusa qualquer banco sem o marcador de teste.
 
-\set ON_ERROR_STOP on
-
-SELECT CASE WHEN count(*) = 1 THEN 'ok' END AS marcador_confere
-FROM information_schema.tables t
-JOIN "_ObaflixAmbiente" m ON m."id" = :'ambiente_id' AND m."ambiente" = 'teste'
-WHERE t.table_schema = 'public' AND t.table_name = '_ObaflixAmbiente'
-\gset
-\if :{?marcador_confere}
-\else
-    \echo 'Sem marcador do banco de testes com o id autorizado. Abortado.'
-    \quit 3
-\endif
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_ObaflixAmbiente') THEN
+        RAISE EXCEPTION 'Sem marcador _ObaflixAmbiente: NAO e o banco de testes. Abortado.';
+    END IF;
+    IF (SELECT count(*) FROM "_ObaflixAmbiente" WHERE "ambiente" = 'teste') <> 1 THEN
+        RAISE EXCEPTION 'Marcador de teste invalido. Abortado.';
+    END IF;
+END $$;
 
 BEGIN;
 
