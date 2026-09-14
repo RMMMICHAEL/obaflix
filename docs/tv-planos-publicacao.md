@@ -37,6 +37,15 @@ navegador, no app móvel e no Electron. Ver a seção 2.
 
 ## 2. Divergências comerciais
 
+> **Atualização (definição comercial final):** esta seção registra a análise
+> anterior. A matriz final, as fontes de verdade e as propostas de schema estão
+> em `docs/planos-comerciais.md` (PR #28, base deste PR). A TV não tem mais
+> tabela própria: nome, selo, tema, benefícios e preços vêm de
+> `GET /api/billing/plans`. "Downloads com anúncio" no Básico foi removido; a
+> qualidade aparece como "Suporte a…"; canais como "até o nível Plus/Premium"; o
+> servidor VIP não aparece enquanto o direito não existir. O filtro server-side
+> das fontes premium está implementado e desligado no PR #28.
+
 Fontes: tela da TV (`PlanosTv.kt`); o que o backend concede (`Plano` em
 Production via API pública + `src/lib/planos.ts` + `direitosAplicados.ts`); o que
 o checkout oferece (`PlanoPreco` ativo, `resolverPreco`).
@@ -116,6 +125,22 @@ mostram o texto da matriz aprovada, mas o PR não o declara concluído.
   a marca de pago do celular não dispensa a promoção da TV (nem o contrário).
 - **Promoção cancelada não some:** cada pedido abre um desafio próprio; voltar
   ao episódio anterior sem concluir pede a promoção de novo.
+
+### Validades, uma a uma
+
+| Estado | Nasce em | Validade | Vínculos | Uso |
+|---|---|---|---|---|
+| **Sessão promocional** (desafio) | `/api/playback/authorize` → `PROMOCAO_TV_NECESSARIA` | 5 min + duração do vídeo; renovada para o mesmo prazo no início | conta, aparelho de TV, conteúdo exato (filme ou série/temporada/episódio), finalidade reprodução, promoção congelada (URL, duração, versão) | consumida uma vez na conclusão (`DEL`); qualquer recusa na conclusão a queima |
+| **Início da promoção** | `/api/ads/promocao/iniciar` | igual à sessão | a sessão | `SET NX`: retry devolve o mesmo instante |
+| **Concessão** | `/api/ads/complete` válida | **5 min** | conta, finalidade, conteúdo exato | uso único em `/api/player/fontes` |
+| **Marca de recuperação** | junto da concessão | **30 min** | conta, **aparelho**, reprodução, conteúdo exato | reutilizável — só autoriza reemissão |
+| **Passe reemitido** | `/api/playback/authorize` com marca válida | **5 min** | conta, finalidade, conteúdo exato | uso único em `/api/player/fontes` |
+
+**Condições para reemitir** (passe novo sem nova promoção), todas ao mesmo
+tempo: conta gratuita na TV, mesmo aparelho, mesmo conteúdo exato, finalidade
+reprodução, marca de recuperação dentro dos 30 min. Faltando qualquer uma, a
+TV recebe nova promoção. Não existe contador: outro episódio, outro aparelho,
+celular ou Electron nunca apagam uma promoção pendente.
 
 ### Concessão × marca de recuperação
 
