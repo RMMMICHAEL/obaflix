@@ -20,7 +20,8 @@ Production. Nenhum teste que grave dados roda nele.
 
 ## 2. Variáveis
 
-Modelo: `.env.teste.example`. Regras:
+Modelo: `scripts/ambiente-teste/variaveis-ambiente-teste.example` (fora do
+padrão `.env*`, que o `.gitignore` ignora). Regras:
 
 - **todos** os segredos são novos: `NEXTAUTH_SECRET`, `ADMIN_SECRET_TOKEN`,
   `CRON_SECRET`, `BLACKCAT_WEBHOOK_PATH_SECRET`, `TESTE_PAGAMENTO_TOKEN`,
@@ -40,7 +41,7 @@ vercel env add DATABASE_URL preview feat/tv-planos-promocao
 vercel env add NEXTAUTH_SECRET preview feat/tv-planos-promocao
 ```
 
-(repetir para cada variável de `.env.teste.example`)
+(repetir para cada variável de `variaveis-ambiente-teste.example`)
 
 Conferência sem expor valores:
 
