@@ -18,6 +18,13 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   resolveSuperflix: (sessionId, optionKey) =>
     ipcRenderer.invoke("superflix-resolve", sessionId, optionKey),
 
+  // Google OAuth no navegador do sistema. O main guarda o verifier PKCE e
+  // recebe somente o ticket assinado pelo protocolo obaflix://.
+  startGoogleLogin: (callbackUrl) => ipcRenderer.invoke("desktop-google-login", callbackUrl),
+
+  // Abre somente o Direct Link homologado e confirma que o SO aceitou a abertura.
+  openSponsoredLink: (url) => ipcRenderer.invoke("open-sponsored-link", url),
+
   // Toggle tela cheia nativa
   toggleFullscreen: () => ipcRenderer.invoke("toggle-fullscreen"),
 

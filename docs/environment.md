@@ -52,7 +52,7 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `BLACKCAT_WEBHOOK_PATH_SECRET` | Segmento aleatório e URL-safe da rota de aviso Blackcat; não é autenticação | — |
 | `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
 | `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
-| `ANUNCIO_DIRECT_LINK_URL` | URL do anúncio que o Electron abre no navegador externo. **Servidor apenas**, `https:` obrigatório | — (sem ela, a reprodução é liberada sem anúncio) |
+| `ANUNCIO_DIRECT_LINK_URL` | Override opcional do Direct Link homologado do Electron; só é aceito se idêntico a `https://omg10.com/4/11767843` | `https://omg10.com/4/11767843` |
 | `PROMOCAO_TV_VIDEO_URL` | Vídeo promocional próprio exibido na Android TV antes da reprodução gratuita (R2). **Servidor apenas**, `https:` obrigatório, sem usuário/senha na URL | — (sem ela, conta gratuita na TV recebe `ANUNCIO_INDISPONIVEL`) |
 | `PROMOCAO_TV_DURACAO_SEG` | Duração confiável do vídeo, inteiro de 10 a 180. É o tempo mínimo entre início e conclusão | — (obrigatória junto da URL) |
 | `PROMOCAO_TV_VERSAO` | Identificador da peça, `[A-Za-z0-9._-]{1,32}`. Vai para o log | `1` |
@@ -76,13 +76,9 @@ alterar as variáveis e fazer deploy.
 
 ### `ANUNCIO_DIRECT_LINK_URL`
 
-O nome é neutro de propósito: o nome da rede de anúncios também é informação.
-
-**Não pode ir para o repositório.** A URL carrega o identificador da conta de
-publisher; quem a tem gera impressões fora do aplicativo, e tráfego artificial
-não rende receita — rende suspensão da conta. Ela é configuração de produção, e
-`src/lib/__tests__/adsEnforcement.test.ts` falha se aparecer URL literal no
-código.
+O valor homologado fica no servidor e na allowlist do processo principal do
+Electron. A variável existe apenas como override compatível e é recusada se
+apontar para outra URL.
 
 Três consequências, todas verificadas por teste:
 

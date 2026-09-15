@@ -217,6 +217,52 @@ test("plus tentando premium é negado; premium no canal premium é permitido", a
   assert.equal(permitido.chamadas.sessoes, 1);
 });
 
+test("abertura nova de canal exige a concessão de anúncio no backend", async () => {
+  let alvoRecebido: unknown = null;
+  const semConcessao = play({
+    autorizarAnuncio: async (entrada) => {
+      alvoRecebido = entrada.alvo;
+      return { liberado: false, motivo: "sem_concessao" };
+    },
+  });
+  const negado = await semConcessao.run();
+  assert.equal(negado.status, 403);
+  assert.equal((await negado.json()).erro, "anuncio_necessario");
+  assert.deepEqual(alvoRecebido, {
+    tipo: "canal",
+    conteudoId: CANAL_PLUS.id,
+    temporada: null,
+    episodio: null,
+  });
+  assert.equal(semConcessao.chamadas.resolveu, 0);
+
+  const comConcessao = play({
+    lerCorpo: async () => ({ concessao: "concessao-valida" }),
+    autorizarAnuncio: async (entrada) => {
+      assert.equal(entrada.concessao, "concessao-valida");
+      return { liberado: true, via: "concessao" };
+    },
+  });
+  assert.equal((await comConcessao.run()).status, 200);
+});
+
+test("renovação de canal não exige outro anúncio", async () => {
+  let cobrou = 0;
+  const { run } = play({
+    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
+    autorizarAnuncio: async () => {
+      cobrou++;
+      return { liberado: false, motivo: "sem_concessao" };
+    },
+    renovarSessao: async () => ({
+      sessionId: "S".repeat(32), geracao: 1, exp: 2_000_000_000,
+      sig: "b".repeat(22), validoPorSegundos: TTL_GRANT_S,
+    }),
+  });
+  assert.equal((await run()).status, 200);
+  assert.equal(cobrou, 0);
+});
+
 test("channelId inexistente e channelId adulterado não elevam acesso", async () => {
   const { run } = play();
   assert.equal((await run("nao-existe")).status, 404);

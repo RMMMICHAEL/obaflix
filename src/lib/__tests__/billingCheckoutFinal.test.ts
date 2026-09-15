@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as plansGet } from "../../app/api/billing/plans/route";
 import { GET as meGet } from "../../app/api/billing/me/route";
 import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
-import { corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
+import { acaoComercialDoPlano, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
 const createPlansHandler = plansGet.createForTest;
@@ -61,4 +61,11 @@ test("checkout envia somente seleção e pagador, e encerra polling em todo esta
   assert.equal(deveFazerPolling("AGUARDANDO"), true);
   assert.match(mensagemErroCheckout("assinatura_ativa"), /assinatura ativa/);
   assert.match(mensagemErroCheckout("plano_indisponivel"), /indisponível/);
+});
+
+test("vitrine comercial permite renovar e mudar plano com assinatura ativa", () => {
+  assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: true, assinaturaAtiva: true }), { disponivel: true, rotulo: "Renovar" });
+  assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: true }), { disponivel: true, rotulo: "Alterar plano" });
+  assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: false }), { disponivel: true, rotulo: "Assinar" });
+  assert.deepEqual(acaoComercialDoPlano({ compravel: false, planoAtual: false, assinaturaAtiva: true }), { disponivel: false, rotulo: "Indisponível" });
 });

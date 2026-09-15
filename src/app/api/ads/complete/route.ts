@@ -294,6 +294,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
         finalidade: desafio.finalidade,
         alvo: desafio.alvo,
         escopo: ehPromocaoTv && desafio.dispositivo ? escopoDaTv(desafio.dispositivo) : undefined,
+        persistente: desafio.plataforma === "electron",
       });
     } catch {
       /* conveniência, não autorização */

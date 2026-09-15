@@ -168,9 +168,16 @@ describe("gratuito: a sessão só nasce com concessão", () => {
 // ── Direct Link ──────────────────────────────────────────────────────────────
 
 describe("Direct Link do Electron", () => {
-  test("resolve uma URL https válida", () => {
-    const r = resolverDirectLink({ ANUNCIO_DIRECT_LINK_URL: "https://exemplo.invalido/x?id=1" });
+  test("resolve a URL https homologada", () => {
+    const r = resolverDirectLink({ ANUNCIO_DIRECT_LINK_URL: "https://omg10.com/4/11767843" });
     assert.equal(r.situacao, "ok");
+  });
+
+  test("recusa override https diferente do link homologado", () => {
+    assert.equal(
+      resolverDirectLink({ ANUNCIO_DIRECT_LINK_URL: "https://exemplo.invalido/outro" }).situacao,
+      "indisponivel",
+    );
   });
 
   /**
@@ -195,8 +202,11 @@ describe("Direct Link do Electron", () => {
     }
   });
 
-  test("ausente é indisponível, não erro", () => {
-    assert.equal(resolverDirectLink({}).situacao, "indisponivel");
+  test("ausente usa o Direct Link homologado", () => {
+    assert.deepEqual(resolverDirectLink({}), {
+      situacao: "ok",
+      url: "https://omg10.com/4/11767843",
+    });
   });
 
   /** O identificador de publisher vive na querystring — só o host vai ao log. */
@@ -209,7 +219,7 @@ describe("Direct Link do Electron", () => {
    * Cenário 15. A URL real é configuração de produção e o repositório nunca a
    * vê. Este teste falha se alguém "facilitar" colocando um default no código.
    */
-  test("nenhum Direct Link literal no repositório", () => {
+  test("somente o Direct Link homologado aparece no servidor", () => {
     const fontes = [
       "src/lib/ads/directLink.ts",
       "src/lib/ads/concessoes.ts",
@@ -231,7 +241,10 @@ describe("Direct Link do Electron", () => {
       // Só `exemplo.invalido` e afins podem aparecer, e mesmo isso não deve
       // estar em código de produção — nenhum literal https fora de comentário.
       const literais = codigo.match(/["'`]https:\/\/[^"'`]+["'`]/g) ?? [];
-      assert.deepEqual(literais, [], `${arquivo} tem URL literal em código`);
+      const permitidos = arquivo === "src/lib/ads/directLink.ts"
+        ? ['"https://omg10.com/4/11767843"']
+        : [];
+      assert.deepEqual(literais, permitidos, `${arquivo} tem URL literal não homologada`);
     }
   });
 
@@ -241,11 +254,10 @@ describe("Direct Link do Electron", () => {
     assert.ok(fonte.includes("ANUNCIO_DIRECT_LINK_URL"));
     assert.equal(/NEXT_PUBLIC_[A-Z_]*DIRECT/.test(fonte), false);
 
-    assert.equal(
-      resolverDirectLink({ NEXT_PUBLIC_ANUNCIO_DIRECT_LINK_URL: "https://x.invalido" } as Record<string, string>)
-        .situacao,
-      "indisponivel",
-      "uma variável pública não pode alimentar o Direct Link",
+    assert.deepEqual(
+      resolverDirectLink({ NEXT_PUBLIC_ANUNCIO_DIRECT_LINK_URL: "https://x.invalido" } as Record<string, string>),
+      { situacao: "ok", url: "https://omg10.com/4/11767843" },
+      "uma variável pública não pode substituir o Direct Link homologado",
     );
   });
 });

@@ -121,7 +121,7 @@ const portaDeFontes = (
     { ativa: true, resolver: async () => entitlementsDe(plano) },
   );
 
-const DL_VALIDO = { ANUNCIO_DIRECT_LINK_URL: "https://rede.invalido/x?p=1" };
+const DL_VALIDO = { ANUNCIO_DIRECT_LINK_URL: "https://omg10.com/4/11767843" };
 
 /** Pede autorização e, se o servidor exigir anúncio, conclui e devolve a concessão. */
 async function liberar(
@@ -168,7 +168,7 @@ describe("Electron", () => {
    * Cenário 2 — sem Direct Link, `/authorize` e `/fontes` dizem a mesma coisa,
    * e o cliente sabe que não deve nem tentar abrir a sessão.
    */
-  test("gratuito SEM Direct Link: ANUNCIO_INDISPONIVEL, e /fontes recusaria", async () => {
+  test("gratuito sem override usa o Direct Link homologado", async () => {
     const userId = novoUsuario();
 
     const r = await autorizador(userId, PLANO_GRATUITO, {})(
@@ -176,9 +176,9 @@ describe("Electron", () => {
     );
     const auth = await r.json();
 
-    assert.equal(auth.decisao, "ANUNCIO_INDISPONIVEL");
-    assert.equal(auth.desafioId, undefined, "não se emite desafio que ninguém pode cumprir");
-    assert.equal(auth.directLink, undefined);
+    assert.equal(auth.decisao, "ANUNCIO_NECESSARIO");
+    assert.equal(typeof auth.desafioId, "string");
+    assert.equal(auth.directLink, "https://omg10.com/4/11767843");
 
     // Coerência: se o cliente insistisse, a autoridade final também recusaria.
     assert.deepEqual(await portaDeFontes(userId, PLANO_GRATUITO, null), {
