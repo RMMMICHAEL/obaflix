@@ -10,13 +10,34 @@ onde o build sai e onde a cópia distribuível é guardada.
 > "Bootstrap: a última atualização manual", que explica por que **esta**
 > versão específica não pode chegar aos usuários por auto-update.
 
-Atualizado em **2026-09-02**.
+Atualizado originalmente em **2026-09-02**; handoff final da Android TV acrescentado em **2026-09-15**.
+
+### Baseline final homologada da Android TV
+
+> Esta secao identifica a baseline de codigo e o APK homologado desta rodada.
+> Ela nao representa autorizacao automatica para publicacao ou merge.
+
+| Campo | Valor |
+|---|---|
+| Branch | `feat/tv-planos-promocao` |
+| PR | `#27` |
+| Commit de codigo homologado | `846d4bf0dee2` |
+| VersionName base | `0.7.25` |
+| VersionCode | `41` |
+| VersionName homologacao | `0.7.25-homologacao` |
+| Pacote homologacao | `com.obaflix.tv.homologacao` |
+| APK homologado | `android/tv/build/outputs/apk/homologacao/tv-homologacao.apk` |
+| SHA-256 daquele APK | `423795074125a1a308d418a53ccfcae71cb235f3d4aa51df95314c3b686e1035` |
+
+O SHA acima identifica somente aquele binario.
+
+O handoff completo esta em [`android-tv-final.md`](android-tv-final.md).
 
 ## Versão corrente
 
 | Aplicativo | Versão | Pacote / AppId | Onde o número é declarado |
 |---|---|---|---|
-| **Android TV** | `0.7.21` (versionCode 37) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
+| **Android TV** | `0.7.25` (versionCode 41) | `com.obaflix.tv` | [`android/tv/build.gradle`](../android/tv/build.gradle) |
 | **Android celular** | `1.0.10` (versionCode 10) | `com.obaflix` | [`android/app/build.gradle`](../android/app/build.gradle) |
 | **Desktop (Windows)** | `1.0.5` | `com.obaflix.app` | [`desktop/package.json`](../desktop/package.json) |
 
@@ -51,7 +72,7 @@ cd desktop && npm run build:win
 Os dois APK saem assinados com o certificado de produção
 (`CN=Obaflix, O=Obaflix, C=BR`, SHA-256 `bdf64ebf…`), que é o mesmo que o
 `AppIntegrity` do `:core-extractor` espera. As credenciais vêm de
-`android/keystore.properties`, que **não está no Git**. Sem esse arquivo o
+`android/key.properties`, que **não está no Git**. Sem esse arquivo o
 build de release falha — é o comportamento desejado.
 
 Conferir a assinatura de um APK antes de distribuir:

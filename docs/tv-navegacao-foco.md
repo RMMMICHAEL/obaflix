@@ -1,5 +1,12 @@
 # Android TV - Navegacao por foco
 
+> **Baseline final homologada desta rodada:** `846d4bf0dee2`.
+> Branch `feat/tv-planos-promocao`, PR `#27`, fechamento tecnico em 2026-09-15.
+> Handoff completo: [`android-tv-final.md`](android-tv-final.md).
+
+O commit acima e a referencia do codigo que produziu o APK homologado.
+Commits posteriores exclusivamente documentais nao substituem essa baseline de codigo.
+
 ## Decisao canonica
 
 A navegacao da Home deve usar a busca de foco 2D padrao do Jetpack Compose.

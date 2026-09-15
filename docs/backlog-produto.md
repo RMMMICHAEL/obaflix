@@ -1,5 +1,17 @@
 # Backlog de produto apos fechamento da Android TV
 
+## Baseline congelada da Android TV
+
+A Android TV foi fechada e congelada nesta rodada em 2026-09-15.
+
+- baseline de codigo homologada: `846d4bf0dee2`;
+- branch: `feat/tv-planos-promocao`;
+- PR: `#27`;
+- handoff: [`android-tv-final.md`](android-tv-final.md);
+- arquitetura de foco: [`tv-navegacao-foco.md`](tv-navegacao-foco.md).
+
+Os itens deste backlog sao trabalho futuro e nao reabrem nem alteram silenciosamente essa baseline.
+
 Este backlog nao bloqueia a release atual da TV.
 
 ## 1. Ranking canonico e Top 10 Hoje
