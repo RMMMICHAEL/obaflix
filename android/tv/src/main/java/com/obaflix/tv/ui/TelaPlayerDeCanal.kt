@@ -187,12 +187,15 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
         when (val c = recusa) {
             null -> if (!tocando) Mensagem("Conectando…", "", null) {}
 
+            // "Ver planos" troca esta camada pelos planos: voltar deles cai na
+            // grade de canais, e nao num canal que recusaria de novo. O BACK
+            // continua saindo direto para a grade.
             is Concessao.PrecisaDeUpgrade -> Mensagem(
                 titulo = "Canal não incluso no seu plano",
-                detalhe = c.nivelExigido?.let { "Este canal faz parte do plano $it." }
+                detalhe = c.nivelExigido?.let { "Este canal faz parte do plano ${it.replaceFirstChar { ch -> ch.uppercase() }}." }
                     ?: "Seu plano não inclui este canal.",
-                rotuloAcao = "Voltar",
-            ) { Navegacao.voltar() }
+                rotuloAcao = "Ver planos",
+            ) { Navegacao.substituirTopo(com.obaflix.tv.navegacao.Camada.Planos()) }
 
             is Concessao.SemSessao -> Mensagem(
                 titulo = "Sessão expirada",

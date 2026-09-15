@@ -120,6 +120,12 @@ data class CategoriaDeCanal(val id: String, val rotulo: String)
 data class CatalogoDeCanais(
     val canais: List<CanalTv>,
     val categorias: List<CategoriaDeCanal>,
+    /**
+     * O plano da conta inclui canais? Separa "seu plano nao tem canais" de
+     * "nenhum canal no ar". `true` quando o servidor nao informa — um backend
+     * antigo nunca faz a TV dizer a um assinante que o plano dele nao inclui.
+     */
+    val incluidoNoPlano: Boolean = true,
 )
 
 /**

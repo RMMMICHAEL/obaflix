@@ -327,6 +327,12 @@ async function emitirAccessToken(userId: string, role: string, deviceId: string)
   return encode({ token: { id: userId, role, tv: true, did: deviceId }, secret: segredo, maxAge: ACCESS_TTL_SEG });
 }
 
+/**
+ * As duas tabelas da sessão da TV. Injetável só para o teste exercitar rotação e
+ * reuso sem banco; produção usa o `prisma` de sempre.
+ */
+export type BancoDeSessaoTv = Pick<typeof prisma, "tvDevice" | "tvRefreshToken">;
+
 async function emitirSessao(args: {
   userId: string;
   fingerprint: string;
@@ -334,10 +340,10 @@ async function emitirSessao(args: {
   rede: string;
   userAgent: string;
   familia?: string;
-}): Promise<Sessao> {
+}, banco: BancoDeSessaoTv = prisma): Promise<Sessao> {
   const nome = args.modelo ? `Obaflix TV · ${args.modelo}` : "Obaflix TV";
 
-  const dispositivo = await prisma.tvDevice.upsert({
+  const dispositivo = await banco.tvDevice.upsert({
     where: { userId_fingerprint: { userId: args.userId, fingerprint: args.fingerprint } },
     create: {
       userId: args.userId,
@@ -351,7 +357,7 @@ async function emitirSessao(args: {
   });
 
   const refreshToken = crypto.randomBytes(32).toString("base64url");
-  await prisma.tvRefreshToken.create({
+  await banco.tvRefreshToken.create({
     data: {
       tokenHash: sha256(refreshToken),
       deviceId: dispositivo.id,
@@ -385,16 +391,18 @@ export async function renovarSessao(args: {
   fingerprint: string;
   rede: string;
   userAgent: string;
-}): Promise<ResultadoRenovacao> {
-  const registro = await prisma.tvRefreshToken.findUnique({
+}, banco: BancoDeSessaoTv = prisma): Promise<ResultadoRenovacao> {
+  const registro = await banco.tvRefreshToken.findUnique({
     where: { tokenHash: sha256(args.refreshToken) },
     include: { device: true },
   });
 
   if (!registro) return { ok: false, motivo: "invalido" };
 
+  // Reuso é reuso mesmo vindo do aparelho certo: o fingerprint é um hash de
+  // identificadores do aparelho, não um segredo, e não prova posse do token.
   if (registro.usadoEm) {
-    await prisma.tvRefreshToken.updateMany({
+    await banco.tvRefreshToken.updateMany({
       where: { familia: registro.familia, revogadoEm: null },
       data: { revogadoEm: new Date() },
     });
@@ -413,7 +421,7 @@ export async function renovarSessao(args: {
     return { ok: false, motivo: "invalido" };
   }
 
-  await prisma.tvRefreshToken.update({
+  await banco.tvRefreshToken.update({
     where: { id: registro.id },
     data: { usadoEm: new Date() },
   });
@@ -425,7 +433,7 @@ export async function renovarSessao(args: {
     rede: args.rede,
     userAgent: args.userAgent,
     familia: registro.familia,
-  });
+  }, banco);
 
   return { ok: true, sessao };
 }

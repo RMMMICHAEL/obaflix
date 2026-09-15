@@ -301,17 +301,44 @@ object FontesTv {
         )
     }
 
-    suspend fun abrir(pedido: Pedido): SessaoFontes? {
+    /**
+     * Abre a sessao sem credencial.
+     *
+     * Serve a previa muda da ficha, que nao passa pela autorizacao. Para conta
+     * sujeita a promocao, `/fontes` recusa e a previa simplesmente nao aparece:
+     * nenhuma promocao e oferecida por causa de um preview.
+     */
+    suspend fun abrir(pedido: Pedido): SessaoFontes? =
+        (abrirAutorizado(pedido, concessao = null) as? AberturaDeFontes.Aberta)?.sessao
+
+    /**
+     * Abre a sessao com a credencial que a autorizacao devolveu.
+     *
+     * A recusa volta com o `codigo` do servidor, e nao como `null`: "fora do
+     * plano" e "autorizacao vencida" pedem mensagens diferentes, e nenhuma das
+     * duas e "servidor fora do ar".
+     */
+    suspend fun abrirAutorizado(pedido: Pedido, concessao: String?): AberturaDeFontes {
         registrarTls()
-        val raiz = ApiObaflix.fontes(
+        val resposta = ApiObaflix.fontes(
             conteudoId = pedido.conteudoId,
             conteudoTipo = if (pedido.ehSerie) "serie" else "filme",
             temporada = pedido.temporada,
             numeroEp = pedido.numeroEp,
-        ) ?: return null
+            concessao = concessao,
+        )
+        when (resposta.status) {
+            200 -> Unit
+            401 -> return AberturaDeFontes.SemSessao
+            403 -> return AberturaDeFontes.Recusada(
+                resposta.corpo?.optString("codigo")?.takeIf { it.isNotBlank() && it != "null" },
+            )
+            else -> return AberturaDeFontes.Falhou
+        }
+        val raiz = resposta.corpo ?: return AberturaDeFontes.Falhou
 
-        val sessao = raiz.optString("sessao").takeIf { it.isNotBlank() } ?: return null
-        val arr = raiz.optJSONArray("fontes") ?: return SessaoFontes(sessao, emptyList())
+        val sessao = raiz.optString("sessao").takeIf { it.isNotBlank() } ?: return AberturaDeFontes.Falhou
+        val arr = raiz.optJSONArray("fontes") ?: return AberturaDeFontes.Aberta(SessaoFontes(sessao, emptyList()))
 
         val fontes = (0 until arr.length()).mapNotNull { i ->
             val f = arr.optJSONObject(i) ?: return@mapNotNull null
@@ -366,7 +393,7 @@ object FontesTv {
             "descartadas" to (arr.length() - fontes.size),
             "tipo" to (if (pedido.ehSerie) "serie" else "filme"),
         )
-        return SessaoFontes(sessao, fontes)
+        return AberturaDeFontes.Aberta(SessaoFontes(sessao, fontes))
     }
 
     /**
