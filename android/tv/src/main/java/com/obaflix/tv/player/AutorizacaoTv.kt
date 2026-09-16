@@ -16,9 +16,14 @@ package com.obaflix.tv.player
  * servidor:
  *
  * ```text
- * Convite → (Assistir gratuitamente) → /ads/promocao/iniciar → video
- *        → fim real do player → /ads/complete → concessao → /player/fontes
+ * /ads/promocao/iniciar → video → fim real do player → escolha final
+ *        → (Continuar gratis) → /ads/complete → concessao → /player/fontes
  * ```
+ *
+ * Todo inicio de filme ou episodio de conta gratuita passa pelo video — o
+ * servidor emite um desafio por reproducao, e a TV nao pergunta antes. O fim do
+ * video **nao libera sozinho**: para na escolha final (planos ou continuar
+ * gratis), e so "Continuar gratis" pede a conclusao.
  *
  * O fim do video dispara a conclusao, mas **nao e prova de nada sozinho**: o
  * servidor so emite concessao se entre o inicio que ELE gravou e a conclusao
@@ -145,9 +150,14 @@ sealed interface AberturaDeFontes {
 
 sealed interface EtapaDaReproducao {
     data object Autorizando : EtapaDaReproducao
-    data class Convite(val desafioId: String) : EtapaDaReproducao
     data class IniciandoPromocao(val desafioId: String) : EtapaDaReproducao
     data class Promocao(val desafioId: String, val videoUrl: String) : EtapaDaReproducao
+    /**
+     * O video terminou de verdade; a pessoa escolhe entre os planos e continuar
+     * gratis. `videoUrl` mantem o player (e o ultimo quadro) vivo; `null` quando
+     * a etapa e retomada na volta dos planos, sem player.
+     */
+    data class EscolhaFinal(val desafioId: String, val videoUrl: String?) : EtapaDaReproducao
     data class ConcluindoPromocao(val desafioId: String) : EtapaDaReproducao
     /** Unica etapa que abre o player do conteudo. */
     data class Liberada(val credencial: String?) : EtapaDaReproducao
@@ -165,19 +175,33 @@ enum class MotivoDaFalha { Rede, VideoNaoCarregou, ConclusaoNaoConfirmada }
 
 sealed interface EventoDaReproducao {
     data class Decidiu(val decisao: DecisaoDeReproducao) : EventoDaReproducao
-    data object EscolheuAssistir : EventoDaReproducao
     data class PromocaoIniciou(val inicio: InicioDaPromocaoTv) : EventoDaReproducao
     /** `STATE_ENDED` que passou por `terminouDeVerdade`. */
     data object VideoTerminou : EventoDaReproducao
     data object VideoFalhou : EventoDaReproducao
+    /** OK em "Continuar gratis" na escolha final. Unico caminho para a conclusao. */
+    data object EscolheuContinuarGratis : EventoDaReproducao
     data class PromocaoConcluiu(val conclusao: ConclusaoDaPromocao) : EventoDaReproducao
     data object TentouDeNovo : EventoDaReproducao
     data object Voltou : EventoDaReproducao
 }
 
-/** Onde a camada comeca: com a decisao que o player ja recebeu, ou perguntando. */
-fun etapaInicial(previa: DecisaoDeReproducao.PromocaoObrigatoria?): EtapaDaReproducao =
-    previa?.let { EtapaDaReproducao.Convite(it.desafioId) } ?: EtapaDaReproducao.Autorizando
+/**
+ * Onde a camada comeca.
+ *
+ *  - `escolhaPendente`: a pessoa foi aos planos a partir da escolha final e
+ *    voltou — retoma a escolha do mesmo desafio, sem outro video;
+ *  - `previa`: o episodio seguinte ja trouxe a decisao — o video comeca direto;
+ *  - senao, pergunta ao servidor.
+ */
+fun etapaInicial(
+    previa: DecisaoDeReproducao.PromocaoObrigatoria?,
+    escolhaPendente: String? = null,
+): EtapaDaReproducao = when {
+    escolhaPendente != null -> EtapaDaReproducao.EscolhaFinal(escolhaPendente, videoUrl = null)
+    previa != null -> EtapaDaReproducao.IniciandoPromocao(previa.desafioId)
+    else -> EtapaDaReproducao.Autorizando
+}
 
 /**
  * A transicao. Funcao total e pura.
@@ -191,17 +215,17 @@ fun etapaInicial(previa: DecisaoDeReproducao.PromocaoObrigatoria?): EtapaDaRepro
  *
  *  - `Liberada` so nasce de `Decidiu(Liberada)` em `Autorizando`, ou de
  *    `PromocaoConcluiu(Concedida)` em `ConcluindoPromocao`;
- *  - Voltar durante a promocao nunca libera: volta a perguntar ao servidor;
+ *  - `ConcluindoPromocao` so nasce de `EscolheuContinuarGratis` na escolha
+ *    final, que so nasce de `VideoTerminou` — o fim do video, sozinho, para;
+ *  - Voltar durante a promocao nunca libera: cancela a tentativa e sai;
  *  - erro de rede, de video ou de conclusao nunca libera.
  */
 fun avancar(etapa: EtapaDaReproducao, evento: EventoDaReproducao): EtapaDaReproducao = when (evento) {
     is EventoDaReproducao.Voltou -> when (etapa) {
-        // Sair no meio da promocao cancela a tentativa. Pergunta de novo em vez
-        // de devolver o mesmo convite: o desafio anterior ja comecou a contar.
-        is EtapaDaReproducao.IniciandoPromocao,
-        is EtapaDaReproducao.Promocao,
-        is EtapaDaReproducao.ConcluindoPromocao -> EtapaDaReproducao.Autorizando
-        // O player do conteudo cuida do proprio BACK.
+        // Sair no meio da promocao cancela a tentativa: o desafio fica para tras
+        // e vence sozinho no servidor. Perguntar de novo reabriria outro video
+        // em vez de devolver a pessoa de onde ela veio.
+        // Liberada: o player do conteudo cuida do proprio BACK.
         is EtapaDaReproducao.Liberada -> etapa
         else -> EtapaDaReproducao.Saiu
     }
@@ -210,7 +234,7 @@ fun avancar(etapa: EtapaDaReproducao, evento: EventoDaReproducao): EtapaDaReprod
         if (etapa !is EtapaDaReproducao.Autorizando) etapa
         else when (val d = evento.decisao) {
             is DecisaoDeReproducao.Liberada -> EtapaDaReproducao.Liberada(d.credencial)
-            is DecisaoDeReproducao.PromocaoObrigatoria -> EtapaDaReproducao.Convite(d.desafioId)
+            is DecisaoDeReproducao.PromocaoObrigatoria -> EtapaDaReproducao.IniciandoPromocao(d.desafioId)
             DecisaoDeReproducao.ForaDoPlano -> EtapaDaReproducao.ForaDoPlano
             DecisaoDeReproducao.GratuitoIndisponivel -> EtapaDaReproducao.GratuitoIndisponivel
             DecisaoDeReproducao.ConteudoInexistente -> EtapaDaReproducao.ConteudoInexistente
@@ -218,9 +242,6 @@ fun avancar(etapa: EtapaDaReproducao, evento: EventoDaReproducao): EtapaDaReprod
             DecisaoDeReproducao.FalhaTemporaria ->
                 EtapaDaReproducao.Falha(MotivoDaFalha.Rede, retomar = EtapaDaReproducao.Autorizando)
         }
-
-    is EventoDaReproducao.EscolheuAssistir ->
-        if (etapa is EtapaDaReproducao.Convite) EtapaDaReproducao.IniciandoPromocao(etapa.desafioId) else etapa
 
     is EventoDaReproducao.PromocaoIniciou ->
         if (etapa !is EtapaDaReproducao.IniciandoPromocao) etapa
@@ -233,7 +254,10 @@ fun avancar(etapa: EtapaDaReproducao, evento: EventoDaReproducao): EtapaDaReprod
         }
 
     is EventoDaReproducao.VideoTerminou ->
-        if (etapa is EtapaDaReproducao.Promocao) EtapaDaReproducao.ConcluindoPromocao(etapa.desafioId) else etapa
+        if (etapa is EtapaDaReproducao.Promocao) EtapaDaReproducao.EscolhaFinal(etapa.desafioId, etapa.videoUrl) else etapa
+
+    is EventoDaReproducao.EscolheuContinuarGratis ->
+        if (etapa is EtapaDaReproducao.EscolhaFinal) EtapaDaReproducao.ConcluindoPromocao(etapa.desafioId) else etapa
 
     is EventoDaReproducao.VideoFalhou ->
         if (etapa is EtapaDaReproducao.Promocao) {

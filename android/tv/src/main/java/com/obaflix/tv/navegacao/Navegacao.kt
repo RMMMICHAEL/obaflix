@@ -95,9 +95,17 @@ class MemoriaDosPlanos {
     var indiceFocado: Int? = null
 }
 
-/** O que o portao lembra quando os planos abrem por cima do convite. */
+/**
+ * O que o portao lembra quando os planos abrem por cima da escolha final do
+ * anuncio. A camada do player e descartada enquanto os planos estao no topo; na
+ * volta, a escolha retoma o mesmo desafio e o mesmo plano, sem outro video.
+ * So estado de tela — nada aqui conclui ou libera.
+ */
 class MemoriaDoPortao {
-    var foiAosPlanos: Boolean = false
+    /** Desafio cuja escolha final ficou aberta. */
+    var escolhaPendente: String? = null
+    /** Plano que abriu os planos, para o cursor voltar a ele. */
+    var planoEscolhido: com.obaflix.tv.player.AlvoDaEscolha? = null
 }
 
 /**
@@ -149,10 +157,14 @@ object Navegacao {
      *
      * Nunca empilha planos sobre planos: um segundo "Ver planos" no mesmo lugar
      * criaria uma pilha que so se desfaz com varios BACK.
+     *
+     * `indiceDestacado` abre com esse card focado — a escolha final do anuncio
+     * entra direto no plano escolhido. Indice fora da vitrine cai no foco
+     * inicial normal (`focoDosPlanos`).
      */
-    fun abrirPlanos() {
+    fun abrirPlanos(indiceDestacado: Int? = null) {
         if (pilha.lastOrNull() is Camada.Planos) return
-        abrir(Camada.Planos())
+        abrir(Camada.Planos(MemoriaDosPlanos().apply { indiceFocado = indiceDestacado }))
     }
 
     /**

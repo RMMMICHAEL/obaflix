@@ -31,7 +31,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -43,7 +42,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,10 +62,13 @@ import com.obaflix.bridge.ObaLog
 import com.obaflix.tv.catalogo.ApiObaflix
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
+import com.obaflix.tv.player.AcaoDaEscolha
 import com.obaflix.tv.player.EtapaDaReproducao
+import com.obaflix.tv.player.FOCO_INICIAL_DA_ESCOLHA
 import com.obaflix.tv.player.EventoDaReproducao
 import com.obaflix.tv.player.MotivoDaFalha
 import com.obaflix.tv.player.Pedido
+import com.obaflix.tv.player.acaoDoOk
 import com.obaflix.tv.player.avancar
 import com.obaflix.tv.player.etapaInicial
 import com.obaflix.tv.player.terminouDeVerdade
@@ -95,13 +96,22 @@ import kotlinx.coroutines.delay
  *
  * ## Assinante
  *
- * Mesma coisa: `PERMITIDO` por direito, sem convite, sem promocao. A TV nao
- * sabe o nome do plano e nao precisa: quem decide e o servidor.
+ * Mesma coisa: `PERMITIDO` por direito, sem promocao. A TV nao sabe o nome do
+ * plano e nao precisa: quem decide e o servidor.
+ *
+ * ## Conta gratuita
+ *
+ * Todo inicio de filme ou episodio recebe `PROMOCAO_TV_NECESSARIA`, e o video
+ * abre direto. No fim, a escolha final: um plano abre os planos (sem concluir
+ * nada); "Continuar gratis" pede a conclusao, e so a concessao do servidor abre
+ * o player.
  */
 @Composable
 fun PortaoDeReproducao(camada: Camada.Player) {
     val pedido = camada.pedido
-    var etapa by remember { mutableStateOf(etapaInicial(camada.autorizacaoPrevia)) }
+    var etapa by remember {
+        mutableStateOf(etapaInicial(camada.autorizacaoPrevia, camada.memoria.escolhaPendente))
+    }
 
     fun enviar(evento: EventoDaReproducao) {
         etapa = avancar(etapa, evento)
@@ -118,8 +128,8 @@ fun PortaoDeReproducao(camada: Camada.Player) {
             is EtapaDaReproducao.IniciandoPromocao ->
                 enviar(EventoDaReproducao.PromocaoIniciou(ApiObaflix.iniciarPromocao(atual.desafioId)))
 
-            // Unico ponto que pede a conclusao: so se chega aqui por
-            // `VideoTerminou`, que so nasce do fim real do player.
+            // Unico ponto que pede a conclusao: so se chega aqui por "Continuar
+            // gratis" na escolha final, que so nasce do fim real do player.
             is EtapaDaReproducao.ConcluindoPromocao ->
                 enviar(EventoDaReproducao.PromocaoConcluiu(ApiObaflix.concluirPromocao(atual.desafioId)))
 
@@ -135,27 +145,50 @@ fun PortaoDeReproducao(camada: Camada.Player) {
         enviar(EventoDaReproducao.Voltou)
     }
 
-    val verPlanos = {
-        camada.memoria.foiAosPlanos = true
-        Navegacao.abrirPlanos()
-    }
+    val verPlanos = { Navegacao.abrirPlanos() }
     val voltar = { enviar(EventoDaReproducao.Voltou) }
 
     when (val atual = etapa) {
         is EtapaDaReproducao.Liberada -> TelaPlayer(pedido, credencialInicial = atual.credencial)
 
-        is EtapaDaReproducao.Convite -> TelaConvite(
-            pedido = pedido,
-            focoEmPlanos = camada.memoria.foiAosPlanos,
-            aoAssistir = { enviar(EventoDaReproducao.EscolheuAssistir) },
-            aoVerPlanos = verPlanos,
-        )
-
-        is EtapaDaReproducao.Promocao -> PlayerPromocional(
-            videoUrl = atual.videoUrl,
-            aoTerminar = { enviar(EventoDaReproducao.VideoTerminou) },
-            aoFalhar = { enviar(EventoDaReproducao.VideoFalhou) },
-        )
+        // Um ramo so para as duas etapas: o `PlayerPromocional` fica no mesmo
+        // ponto da composicao quando o video termina, e o player nao e recriado
+        // — o ultimo quadro continua na tela por baixo da escolha.
+        is EtapaDaReproducao.Promocao, is EtapaDaReproducao.EscolhaFinal -> {
+            val escolha = atual as? EtapaDaReproducao.EscolhaFinal
+            val videoUrl = (atual as? EtapaDaReproducao.Promocao)?.videoUrl ?: escolha?.videoUrl
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                if (videoUrl != null) {
+                    PlayerPromocional(
+                        videoUrl = videoUrl,
+                        emExibicao = escolha == null,
+                        aoTerminar = { enviar(EventoDaReproducao.VideoTerminou) },
+                        aoFalhar = { enviar(EventoDaReproducao.VideoFalhou) },
+                    )
+                }
+                if (escolha != null) {
+                    EscolhaFinalDoAnuncio(
+                        focoInicial = camada.memoria.planoEscolhido ?: FOCO_INICIAL_DA_ESCOLHA,
+                        aoEscolher = { alvo ->
+                            when (val acao = acaoDoOk(alvo)) {
+                                // Abrir os planos nao envia evento: a etapa fica
+                                // na escolha, sem conclusao e sem liberacao.
+                                is AcaoDaEscolha.AbrirPlanos -> {
+                                    camada.memoria.escolhaPendente = escolha.desafioId
+                                    camada.memoria.planoEscolhido = alvo
+                                    Navegacao.abrirPlanos(acao.indiceDoPlano)
+                                }
+                                AcaoDaEscolha.ContinuarGratis -> {
+                                    camada.memoria.escolhaPendente = null
+                                    camada.memoria.planoEscolhido = null
+                                    enviar(EventoDaReproducao.EscolheuContinuarGratis)
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        }
 
         is EtapaDaReproducao.Autorizando -> Espera(pedido, "Preparando a reprodução…")
         is EtapaDaReproducao.IniciandoPromocao -> Espera(pedido, "Carregando o vídeo…")
@@ -212,10 +245,6 @@ fun PortaoDeReproducao(camada: Camada.Player) {
     }
 }
 
-internal const val TITULO_DO_CONVITE = "Assista grátis no Obaflix"
-internal const val DESCRICAO_DO_CONVITE =
-    "Assista a um vídeo rápido e continue gratuitamente. Com um plano você remove os anúncios e libera mais benefícios."
-internal const val ROTULO_ASSISTIR_GRATIS = "Assistir gratuitamente"
 internal const val ROTULO_VER_PLANOS = "Ver planos"
 
 /** A arte do conteudo esperando, com uma linha de estado. */
@@ -242,110 +271,6 @@ private fun Espera(pedido: Pedido, texto: String) {
 }
 
 /**
- * A tela anterior ao video.
- *
- * O cursor nasce em "Assistir gratuitamente" — ou em "Ver planos", quando a
- * pessoa acabou de voltar dos planos: devolver o cursor a outro botao seria
- * perder o lugar de onde ela saiu.
- */
-@Composable
-private fun TelaConvite(
-    pedido: Pedido,
-    focoEmPlanos: Boolean,
-    aoAssistir: () -> Unit,
-    aoVerPlanos: () -> Unit,
-) {
-    val assistir = remember { FocusRequester() }
-    val planos = remember { FocusRequester() }
-    var temFoco by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        val alvo = if (focoEmPlanos) planos else assistir
-        repeat(12) {
-            if (temFoco) return@LaunchedEffect
-            withFrameNanos { }
-            runCatching { alvo.requestFocus() }
-            delay(50)
-        }
-    }
-
-    val margem = margemHorizontal()
-
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        ApiObaflix.imagem(pedido.backdrop, "w1280")?.let {
-            AsyncImage(
-                model = it,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.horizontalGradient(
-                    0f to Cores.Fundo.copy(alpha = 0.97f),
-                    0.58f to Cores.Fundo.copy(alpha = 0.86f),
-                    1f to Cores.Fundo.copy(alpha = 0.35f),
-                ),
-            ),
-        )
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = margem, end = margem)
-                .fillMaxWidth(0.66f)
-                .onFocusChanged { temFoco = it.hasFocus },
-        ) {
-            Text(
-                text = "OBAFLIX",
-                color = Cores.Destaque,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 3.sp,
-            )
-            EspacoV(12.dp)
-            Text(
-                text = TITULO_DO_CONVITE,
-                color = Cores.Texto,
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Black,
-                lineHeight = 46.sp,
-            )
-            EspacoV(14.dp)
-            Text(
-                text = DESCRICAO_DO_CONVITE,
-                color = Cores.TextoFraco,
-                fontSize = 20.sp,
-                lineHeight = 29.sp,
-            )
-            EspacoV(12.dp)
-            Text(
-                text = "A seguir: " + pedido.rotuloCompleto,
-                color = Cores.TextoApagado,
-                fontSize = 16.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            EspacoV(30.dp)
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                BotaoTv(
-                    texto = ROTULO_ASSISTIR_GRATIS,
-                    principal = true,
-                    modifier = Modifier.focusRequester(assistir),
-                    aoClicar = aoAssistir,
-                )
-                BotaoTv(
-                    texto = ROTULO_VER_PLANOS,
-                    modifier = Modifier.focusRequester(planos),
-                    aoClicar = aoVerPlanos,
-                )
-            }
-        }
-    }
-}
-
-/**
  * O video promocional.
  *
  * ## Sem pular, sem avancar
@@ -357,17 +282,28 @@ private fun TelaConvite(
  *
  * ## Fim real, erro e interrupcao sao coisas diferentes
  *
- *  - `STATE_ENDED` com a posicao no fim → `aoTerminar`, e so entao a conclusao
- *    e pedida ao servidor;
+ *  - `STATE_ENDED` com a posicao no fim → `aoTerminar`, que leva a escolha
+ *    final — nunca direto a conclusao;
  *  - `STATE_ENDED` longe do fim, ou `onPlayerError` → `aoFalhar`, com opcao de
  *    tentar de novo;
  *  - sair da tela (BACK, Home, camada nova) → nada e enviado. Nao ha conclusao
  *    sem o evento de fim.
  *
  * Um evento que ja encerrou o video nao dispara outro: `encerrado` garante um so.
+ *
+ * ## Depois do fim
+ *
+ * `emExibicao = false`: o player continua composto, parado no ultimo quadro, mas
+ * sem foco, sem teclas e sem textos por cima — quem tem o cursor e a escolha
+ * final desenhada sobre ele.
  */
 @Composable
-private fun PlayerPromocional(videoUrl: String, aoTerminar: () -> Unit, aoFalhar: () -> Unit) {
+private fun PlayerPromocional(
+    videoUrl: String,
+    emExibicao: Boolean,
+    aoTerminar: () -> Unit,
+    aoFalhar: () -> Unit,
+) {
     val contexto = LocalContext.current
     val foco = remember { FocusRequester() }
     val terminar by rememberUpdatedState(aoTerminar)
@@ -431,8 +367,8 @@ private fun PlayerPromocional(videoUrl: String, aoTerminar: () -> Unit, aoFalhar
         onDispose { ciclo.removeObserver(observador) }
     }
 
-    LaunchedEffect(player) {
-        while (true) {
+    LaunchedEffect(player, emExibicao) {
+        while (emExibicao) {
             posicaoMs = player.currentPosition
             if (player.duration > 0) duracaoMs = player.duration
             delay(250)
@@ -441,6 +377,7 @@ private fun PlayerPromocional(videoUrl: String, aoTerminar: () -> Unit, aoFalhar
 
     LaunchedEffect(Unit) {
         repeat(10) {
+            if (!emExibicao) return@LaunchedEffect
             runCatching { foco.requestFocus() }
             delay(50)
         }
@@ -450,9 +387,9 @@ private fun PlayerPromocional(videoUrl: String, aoTerminar: () -> Unit, aoFalhar
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .focusRequester(foco)
-            .focusable()
+            .then(if (emExibicao) Modifier.focusRequester(foco).focusable() else Modifier)
             .onPreviewKeyEvent { evento ->
+                if (!emExibicao) return@onPreviewKeyEvent false
                 when (evento.key) {
                     // Nao consumido: segue para o BackHandler do portao.
                     Key.Back, Key.Escape -> false
@@ -482,52 +419,57 @@ private fun PlayerPromocional(videoUrl: String, aoTerminar: () -> Unit, aoFalhar
             },
         )
 
-        Text(
-            text = "Obaflix · vídeo promocional",
-            color = Color(0xFFD4D4D8),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(28.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color(0x99000000))
-                .padding(horizontal = 10.dp, vertical = 5.dp),
-        )
-
-        if (!pronto) {
+        // Sem `return` antecipado dentro do conteudo: a troca de etapa recompoe
+        // este bloco, e a estrutura tem de continuar estavel (mesma causa do
+        // crash em Perfil corrigido em b9a58e0).
+        if (emExibicao) {
             Text(
-                text = "Carregando o vídeo…",
-                color = Cores.TextoFraco,
-                fontSize = Escala.Corpo,
-                modifier = Modifier.align(Alignment.Center),
+                text = "Obaflix · vídeo promocional",
+                color = Color(0xFFD4D4D8),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(28.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0x99000000))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
             )
-        }
 
-        if (duracaoMs > 0) {
-            val restanteSeg = ((duracaoMs - posicaoMs).coerceAtLeast(0) + 999) / 1000
-            val fracao = (posicaoMs.toFloat() / duracaoMs).coerceIn(0f, 1f)
-            Column(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 48.dp, vertical = 28.dp),
-            ) {
+            if (!pronto) {
                 Text(
-                    text = "Seu conteúdo começa em " + restanteSeg + "s",
-                    color = Cores.Texto,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Carregando o vídeo…",
+                    color = Cores.TextoFraco,
+                    fontSize = Escala.Corpo,
+                    modifier = Modifier.align(Alignment.Center),
                 )
-                EspacoV(8.dp)
-                Box(
+            }
+
+            if (duracaoMs > 0) {
+                val restanteSeg = ((duracaoMs - posicaoMs).coerceAtLeast(0) + 999) / 1000
+                val fracao = (posicaoMs.toFloat() / duracaoMs).coerceIn(0f, 1f)
+                Column(
                     Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = 0.22f)),
+                        .padding(horizontal = 48.dp, vertical = 28.dp),
                 ) {
-                    Box(Modifier.fillMaxWidth(fracao).fillMaxHeight().background(Cores.Destaque))
+                    Text(
+                        text = "O vídeo termina em " + restanteSeg + "s",
+                        color = Cores.Texto,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    EspacoV(8.dp)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.22f)),
+                    ) {
+                        Box(Modifier.fillMaxWidth(fracao).fillMaxHeight().background(Cores.Destaque))
+                    }
                 }
             }
         }

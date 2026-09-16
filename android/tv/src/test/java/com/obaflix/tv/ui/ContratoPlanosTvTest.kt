@@ -33,16 +33,9 @@ class ContratoPlanosTvTest {
     private val telasNovas = listOf("ui/PortaoDeReproducao.kt", "ui/TelaPlanos.kt", "ui/TelaAssinarForaDaTv.kt")
 
     @Test
-    fun `textos da tela anterior ao video`() {
-        val portao = fonte("ui/PortaoDeReproducao.kt")
-        assertTrue(portao.contains("\"Assista grátis no Obaflix\""))
-        assertTrue(
-            portao.contains(
-                "\"Assista a um vídeo rápido e continue gratuitamente. Com um plano você remove os anúncios e libera mais benefícios.\"",
-            ),
-        )
-        assertTrue(portao.contains("\"Assistir gratuitamente\""))
-        assertTrue(portao.contains("\"Ver planos\""))
+    fun `textos da escolha final e das recusas`() {
+        assertTrue(fonte("ui/EscolhaFinalDoAnuncio.kt").contains("\"CONTINUAR GRÁTIS\""))
+        assertTrue(fonte("ui/PortaoDeReproducao.kt").contains("\"Ver planos\""))
     }
 
     @Test

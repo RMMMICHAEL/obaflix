@@ -106,7 +106,7 @@ class AutorizacaoTvTest {
     // ── Etapas ───────────────────────────────────────────────────────────────
 
     @Test
-    fun `assinante vai direto ao player, sem convite`() {
+    fun `assinante vai direto ao player, sem anuncio`() {
         assertEquals(
             EtapaDaReproducao.Liberada(null),
             avancar(EtapaDaReproducao.Autorizando, EventoDaReproducao.Decidiu(DecisaoDeReproducao.Liberada(null))),
@@ -114,15 +114,15 @@ class AutorizacaoTvTest {
     }
 
     @Test
-    fun `gratuito percorre convite, promocao e conclusao ate o player`() {
+    fun `gratuito percorre promocao, escolha final e conclusao ate o player`() {
         var e: EtapaDaReproducao = EtapaDaReproducao.Autorizando
         e = avancar(e, EventoDaReproducao.Decidiu(DecisaoDeReproducao.PromocaoObrigatoria(d)))
-        assertEquals(EtapaDaReproducao.Convite(d), e)
-        e = avancar(e, EventoDaReproducao.EscolheuAssistir)
         assertEquals(EtapaDaReproducao.IniciandoPromocao(d), e)
         e = avancar(e, EventoDaReproducao.PromocaoIniciou(InicioDaPromocaoTv.Iniciada(video, 30)))
         assertEquals(EtapaDaReproducao.Promocao(d, video), e)
         e = avancar(e, EventoDaReproducao.VideoTerminou)
+        assertEquals(EtapaDaReproducao.EscolhaFinal(d, video), e)
+        e = avancar(e, EventoDaReproducao.EscolheuContinuarGratis)
         assertEquals(EtapaDaReproducao.ConcluindoPromocao(d), e)
         e = avancar(e, EventoDaReproducao.PromocaoConcluiu(ConclusaoDaPromocao.Concedida("c_1")))
         assertEquals(EtapaDaReproducao.Liberada("c_1"), e)
@@ -132,8 +132,8 @@ class AutorizacaoTvTest {
     fun `fim de video fora da promocao e ignorado`() {
         val etapas = listOf(
             EtapaDaReproducao.Autorizando,
-            EtapaDaReproducao.Convite(d),
             EtapaDaReproducao.IniciandoPromocao(d),
+            EtapaDaReproducao.EscolhaFinal(d, video),
             EtapaDaReproducao.Falha(MotivoDaFalha.Rede, EtapaDaReproducao.Autorizando),
             EtapaDaReproducao.Saiu,
         )
@@ -145,30 +145,31 @@ class AutorizacaoTvTest {
         val concedida = EventoDaReproducao.PromocaoConcluiu(ConclusaoDaPromocao.Concedida("c_1"))
         val antes = listOf(
             EtapaDaReproducao.Autorizando,
-            EtapaDaReproducao.Convite(d),
             EtapaDaReproducao.IniciandoPromocao(d),
             EtapaDaReproducao.Promocao(d, video),
+            EtapaDaReproducao.EscolhaFinal(d, video),
         )
         antes.forEach { assertEquals(it.toString(), it, avancar(it, concedida)) }
     }
 
     @Test
-    fun `voltar durante a promocao cancela e pergunta de novo, nunca libera`() {
+    fun `voltar durante a promocao cancela a tentativa e sai, nunca libera`() {
         val durante = listOf(
             EtapaDaReproducao.IniciandoPromocao(d),
             EtapaDaReproducao.Promocao(d, video),
+            EtapaDaReproducao.EscolhaFinal(d, video),
+            EtapaDaReproducao.EscolhaFinal(d, null),
             EtapaDaReproducao.ConcluindoPromocao(d),
         )
         durante.forEach {
-            assertEquals(it.toString(), EtapaDaReproducao.Autorizando, avancar(it, EventoDaReproducao.Voltou))
+            assertEquals(it.toString(), EtapaDaReproducao.Saiu, avancar(it, EventoDaReproducao.Voltou))
         }
     }
 
     @Test
-    fun `voltar no convite e nos avisos sai sem prender`() {
+    fun `voltar nos avisos sai sem prender`() {
         val saidas = listOf(
             EtapaDaReproducao.Autorizando,
-            EtapaDaReproducao.Convite(d),
             EtapaDaReproducao.Falha(MotivoDaFalha.Rede, EtapaDaReproducao.Autorizando),
             EtapaDaReproducao.ForaDoPlano,
             EtapaDaReproducao.GratuitoIndisponivel,
@@ -212,14 +213,14 @@ class AutorizacaoTvTest {
     }
 
     @Test
-    fun `escolher assistir duas vezes nao inicia duas promocoes`() {
-        val iniciando = EtapaDaReproducao.IniciandoPromocao(d)
-        assertEquals(iniciando, avancar(iniciando, EventoDaReproducao.EscolheuAssistir))
+    fun `continuar gratis duas vezes nao conclui duas vezes`() {
+        val concluindo = EtapaDaReproducao.ConcluindoPromocao(d)
+        assertEquals(concluindo, avancar(concluindo, EventoDaReproducao.EscolheuContinuarGratis))
     }
 
     @Test
-    fun `camada com decisao previa comeca no convite`() {
-        assertEquals(EtapaDaReproducao.Convite(d), etapaInicial(DecisaoDeReproducao.PromocaoObrigatoria(d)))
+    fun `camada com decisao previa comeca no video`() {
+        assertEquals(EtapaDaReproducao.IniciandoPromocao(d), etapaInicial(DecisaoDeReproducao.PromocaoObrigatoria(d)))
         assertEquals(EtapaDaReproducao.Autorizando, etapaInicial(null))
     }
 
@@ -237,7 +238,7 @@ class AutorizacaoTvTest {
             EventoDaReproducao.Decidiu(DecisaoDeReproducao.ConteudoInexistente),
             EventoDaReproducao.Decidiu(DecisaoDeReproducao.SemSessao),
             EventoDaReproducao.Decidiu(DecisaoDeReproducao.FalhaTemporaria),
-            EventoDaReproducao.EscolheuAssistir,
+            EventoDaReproducao.EscolheuContinuarGratis,
             EventoDaReproducao.PromocaoIniciou(InicioDaPromocaoTv.Iniciada(video, 30)),
             EventoDaReproducao.PromocaoIniciou(InicioDaPromocaoTv.Expirada),
             EventoDaReproducao.PromocaoIniciou(InicioDaPromocaoTv.SemSessao),
@@ -260,6 +261,7 @@ class AutorizacaoTvTest {
             }
         }
         assertTrue("a busca percorreu a promocao inteira", EtapaDaReproducao.ConcluindoPromocao(d) in vistos)
+        assertTrue("a busca passou pela escolha final", EtapaDaReproducao.EscolhaFinal(d, video) in vistos)
         assertTrue(vistos.none { it is EtapaDaReproducao.Liberada })
     }
 }

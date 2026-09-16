@@ -62,13 +62,17 @@ class NavegacaoPlanosTest {
     }
 
     @Test
-    fun `convite lembra que a pessoa foi aos planos`() {
+    fun `escolha final lembra o desafio e o plano ao voltar dos planos`() {
         val player = Camada.Player(pedido)
         Navegacao.abrir(player)
-        player.memoria.foiAosPlanos = true
-        Navegacao.abrirPlanos()
+        player.memoria.escolhaPendente = "desafio_1"
+        player.memoria.planoEscolhido = com.obaflix.tv.player.AlvoDaEscolha.Plus
+        Navegacao.abrirPlanos(indiceDestacado = 1)
+        assertEquals(1, (Navegacao.pilha.last() as Camada.Planos).memoria.indiceFocado)
         Navegacao.voltar()
-        assertTrue((Navegacao.pilha.last() as Camada.Player).memoria.foiAosPlanos)
+        val memoria = (Navegacao.pilha.last() as Camada.Player).memoria
+        assertEquals("desafio_1", memoria.escolhaPendente)
+        assertEquals(com.obaflix.tv.player.AlvoDaEscolha.Plus, memoria.planoEscolhido)
     }
 
     @Test
