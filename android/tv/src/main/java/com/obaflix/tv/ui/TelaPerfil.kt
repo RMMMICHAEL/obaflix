@@ -241,27 +241,27 @@ private fun Secao(
                 fontSize = Escala.Rotulo,
                 modifier = Modifier.padding(start = margem),
             )
-            return@Column
-        }
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
-            contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 10.dp),
-            modifier = Modifier.focusGroup(),
-        ) {
-            itemsIndexed(itens, key = { _, it -> titulo + (it.historyId ?: it.id) }) { indice, item ->
-                Column(
-                    modifier = Modifier.width(if (paisagem) Medidas.PaisagemLargura else Medidas.PosterLargura),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (paisagem) {
-                        CardPaisagem(item, enderecoDe("perf-" + titulo, indice), aoAbrir = { Navegacao.abrirDetalhe(it) })
-                    } else {
-                        CardPoster(item, enderecoDe("perf-" + titulo, indice), aoAbrir = { Navegacao.abrirDetalhe(it) })
+        } else {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(Medidas.EspacoCards),
+                contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 10.dp),
+                modifier = Modifier.focusGroup(),
+            ) {
+                itemsIndexed(itens, key = { _, it -> titulo + (it.historyId ?: it.id) }) { indice, item ->
+                    Column(
+                        modifier = Modifier.width(if (paisagem) Medidas.PaisagemLargura else Medidas.PosterLargura),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (paisagem) {
+                            CardPaisagem(item, enderecoDe("perf-" + titulo, indice), aoAbrir = { Navegacao.abrirDetalhe(it) })
+                        } else {
+                            CardPoster(item, enderecoDe("perf-" + titulo, indice), aoAbrir = { Navegacao.abrirDetalhe(it) })
+                        }
+                        EspacoV(6.dp)
+                        // O botao de remover fica logo abaixo do card: DOWN chega
+                        // nele, OK remove. Fica claro e nao rouba o clique de abrir.
+                        Pilula(texto = rotuloRemover, aoClicar = { aoRemover(item) })
                     }
-                    EspacoV(6.dp)
-                    // O botao de remover fica logo abaixo do card: DOWN chega
-                    // nele, OK remove. Fica claro e nao rouba o clique de abrir.
-                    Pilula(texto = rotuloRemover, aoClicar = { aoRemover(item) })
                 }
             }
         }
