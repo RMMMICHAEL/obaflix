@@ -49,9 +49,33 @@ class LinkDaPaginaDePlanos(private val baseUrl: String) : ResolvedorDeLinkDeAssi
     override suspend fun resolver(plano: PlanoTv): LinkDeAssinatura? = linkDaPaginaDePlanos(baseUrl, plano.id)
 }
 
+/**
+ * O resolvedor do caminho do anuncio: direto ao checkout do plano, na duracao do
+ * preco de entrada que o card mostrou. Plano e preco vem de `/api/billing/plans`;
+ * o APK nao conhece nenhum id.
+ */
+class LinkDoCheckoutDoPlano(
+    private val baseUrl: String,
+    private val preco: PrecoDoPlano,
+) : ResolvedorDeLinkDeAssinatura {
+    override suspend fun resolver(plano: PlanoTv): LinkDeAssinatura? =
+        linkDoCheckoutDoPlano(baseUrl, plano.id, preco.id)
+}
+
+/**
+ * Qual resolvedor a continuacao usa.
+ *
+ * `precoDoCheckout` so vem preenchido pelo caminho do anuncio; a vitrine de
+ * planos continua na pagina de planos, como sempre.
+ */
+fun resolvedorDaContinuacao(baseUrl: String, precoDoCheckout: PrecoDoPlano?): ResolvedorDeLinkDeAssinatura =
+    precoDoCheckout?.let { LinkDoCheckoutDoPlano(baseUrl, it) } ?: LinkDaPaginaDePlanos(baseUrl)
+
 const val CAMINHO_DOS_PLANOS = "/planos"
+const val CAMINHO_DO_CHECKOUT = "/checkout"
 
 private val ID_DE_PLANO = Regex("^[a-z0-9_-]{1,32}$")
+private val ID_DE_PRECO = Regex("^[A-Za-z0-9_-]{1,64}$")
 
 /**
  * Nomes de parametro que nunca vao para um QR.
@@ -73,17 +97,42 @@ private val PARAMETROS_PROIBIDOS = setOf(
  * escolhe o plano la.
  */
 fun linkDaPaginaDePlanos(baseUrl: String, planoId: String? = null): LinkDeAssinatura? {
+    val origem = origemHttps(baseUrl) ?: return null
+    val consulta = planoId?.takeIf { ID_DE_PLANO.matches(it) }?.let { "?plano=$it" } ?: ""
+    val link = LinkDeAssinatura(
+        urlDoQr = "https://" + origem + CAMINHO_DOS_PLANOS + consulta,
+        enderecoLegivel = origem.removePrefix("www.") + CAMINHO_DOS_PLANOS,
+    )
+    return link.takeIf { podeIrParaQr(it.urlDoQr) }
+}
+
+/**
+ * O link direto ao checkout: `/checkout?planoId=<id>&planoPrecoId=<id>`, os
+ * mesmos parametros que a pagina de planos usa ao clicar em Assinar. So ids
+ * publicos — o checkout sem sessao manda ao login e volta ao mesmo endereco.
+ *
+ * `null` se a base nao for https ou um dos ids nao tiver forma de id: sem os
+ * dois o checkout nao seleciona nada. O endereco legivel continua sendo a
+ * pagina de planos: digitar a consulta com o controle nao e realista, e la a
+ * pessoa escolhe o mesmo plano.
+ */
+fun linkDoCheckoutDoPlano(baseUrl: String, planoId: String, precoId: String): LinkDeAssinatura? {
+    val origem = origemHttps(baseUrl) ?: return null
+    if (!ID_DE_PLANO.matches(planoId) || !ID_DE_PRECO.matches(precoId)) return null
+    val link = LinkDeAssinatura(
+        urlDoQr = "https://" + origem + CAMINHO_DO_CHECKOUT + "?planoId=" + planoId + "&planoPrecoId=" + precoId,
+        enderecoLegivel = origem.removePrefix("www.") + CAMINHO_DOS_PLANOS,
+    )
+    return link.takeIf { podeIrParaQr(it.urlDoQr) }
+}
+
+/** `host[:porta]` de uma base https sem usuario na URL; `null` para o resto. */
+private fun origemHttps(baseUrl: String): String? {
     val base = runCatching { URI(baseUrl.trim().trimEnd('/')) }.getOrNull() ?: return null
     val host = base.host
     if (base.scheme != "https" || host.isNullOrBlank() || base.userInfo != null) return null
-
     val porta = if (base.port > 0 && base.port != 443) ":" + base.port else ""
-    val consulta = planoId?.takeIf { ID_DE_PLANO.matches(it) }?.let { "?plano=$it" } ?: ""
-    val link = LinkDeAssinatura(
-        urlDoQr = "https://" + host + porta + CAMINHO_DOS_PLANOS + consulta,
-        enderecoLegivel = host.removePrefix("www.") + porta + CAMINHO_DOS_PLANOS,
-    )
-    return link.takeIf { podeIrParaQr(it.urlDoQr) }
+    return host + porta
 }
 
 /**

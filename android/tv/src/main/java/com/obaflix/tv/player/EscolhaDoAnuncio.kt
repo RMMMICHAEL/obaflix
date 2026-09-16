@@ -60,11 +60,31 @@ private val PLANOS_DA_ESCOLHA = listOf(AlvoDaEscolha.Basico, AlvoDaEscolha.Plus,
 
 /** O que o OK faz em cada alvo. */
 sealed interface AcaoDaEscolha {
-    /** Abre Planos com o card destacado. Nao conclui nada nem libera nada. */
-    data class AbrirPlanos(val indiceDoPlano: Int) : AcaoDaEscolha
+    /** Abre o QR do checkout desse plano. Nao conclui nada nem libera nada. */
+    data class AssinarPlano(val indiceDoPlano: Int) : AcaoDaEscolha
     /** Envia `EscolheuContinuarGratis` a maquina de etapas. */
     data object ContinuarGratis : AcaoDaEscolha
 }
 
 fun acaoDoOk(alvo: AlvoDaEscolha): AcaoDaEscolha =
-    alvo.indiceDoPlano?.let { AcaoDaEscolha.AbrirPlanos(it) } ?: AcaoDaEscolha.ContinuarGratis
+    alvo.indiceDoPlano?.let { AcaoDaEscolha.AssinarPlano(it) } ?: AcaoDaEscolha.ContinuarGratis
+
+/**
+ * A continuacao fora da TV para o plano escolhido na arte do anuncio.
+ *
+ * O plano e o da vitrine que veio de `/api/billing/plans` (mesma ordem de
+ * `TelaPlanos`: Basico, Plus, Premium), e o preco e o `precoDeEntrada` dele —
+ * nenhum id ou valor no APK. `null` sem catalogo, sem o plano ou sem preco
+ * ativo: sem preco o checkout nao teria o que selecionar.
+ */
+fun continuacaoDaEscolha(
+    acao: AcaoDaEscolha.AssinarPlano,
+    catalogo: List<com.obaflix.tv.assinatura.PlanoTv>?,
+): com.obaflix.tv.navegacao.Camada.AssinarForaDaTv? {
+    val plano = catalogo
+        ?.let { com.obaflix.tv.assinatura.planosDaVitrine(it) }
+        ?.getOrNull(acao.indiceDoPlano)
+        ?: return null
+    val preco = plano.precoDeEntrada ?: return null
+    return com.obaflix.tv.navegacao.Camada.AssinarForaDaTv(plano, precoDoCheckout = preco)
+}

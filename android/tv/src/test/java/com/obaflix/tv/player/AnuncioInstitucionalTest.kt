@@ -133,10 +133,10 @@ class AnuncioInstitucionalTest {
     // ── Planos ───────────────────────────────────────────────────────────────
 
     @Test
-    fun `plano abre Planos sem concluir o anuncio`() {
-        assertEquals(AcaoDaEscolha.AbrirPlanos(0), acaoDoOk(AlvoDaEscolha.Basico))
-        assertEquals(AcaoDaEscolha.AbrirPlanos(1), acaoDoOk(AlvoDaEscolha.Plus))
-        assertEquals(AcaoDaEscolha.AbrirPlanos(2), acaoDoOk(AlvoDaEscolha.Premium))
+    fun `plano abre a continuacao sem concluir o anuncio`() {
+        assertEquals(AcaoDaEscolha.AssinarPlano(0), acaoDoOk(AlvoDaEscolha.Basico))
+        assertEquals(AcaoDaEscolha.AssinarPlano(1), acaoDoOk(AlvoDaEscolha.Plus))
+        assertEquals(AcaoDaEscolha.AssinarPlano(2), acaoDoOk(AlvoDaEscolha.Premium))
     }
 
     @Test

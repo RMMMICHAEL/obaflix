@@ -31,11 +31,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.obaflix.tv.BuildConfig
-import com.obaflix.tv.assinatura.LinkDaPaginaDePlanos
 import com.obaflix.tv.assinatura.LinkDeAssinatura
 import com.obaflix.tv.assinatura.ResolvedorDeLinkDeAssinatura
 import com.obaflix.tv.assinatura.formatarPreco
 import com.obaflix.tv.assinatura.podeIrParaQr
+import com.obaflix.tv.assinatura.resolvedorDaContinuacao
 import com.obaflix.tv.navegacao.Camada
 import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.ui.componentes.BotaoTv
@@ -57,7 +57,7 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv) {
-    val resolvedor = remember { LinkDaPaginaDePlanos(BuildConfig.OBAFLIX_URL) }
+    val resolvedor = remember(camada) { resolvedorDaContinuacao(BuildConfig.OBAFLIX_URL, camada.precoDoCheckout) }
     TelaAssinarForaDaTv(camada, resolvedor)
 }
 
@@ -147,7 +147,8 @@ internal fun TelaAssinarForaDaTv(camada: Camada.AssinarForaDaTv, resolvedor: Res
                 )
                 EspacoV(26.dp)
                 BotaoTv(
-                    texto = "Voltar aos planos",
+                    // Pelo anuncio, a volta e a escolha final, nao a vitrine.
+                    texto = if (camada.precoDoCheckout != null) "Voltar" else "Voltar aos planos",
                     principal = true,
                     modifier = Modifier.focusRequester(voltar),
                 ) { Navegacao.voltar() }

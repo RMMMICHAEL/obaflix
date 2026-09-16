@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -69,6 +70,7 @@ import com.obaflix.tv.player.EventoDaReproducao
 import com.obaflix.tv.player.MotivoDaFalha
 import com.obaflix.tv.player.Pedido
 import com.obaflix.tv.player.acaoDoOk
+import com.obaflix.tv.player.continuacaoDaEscolha
 import com.obaflix.tv.player.avancar
 import com.obaflix.tv.player.etapaInicial
 import com.obaflix.tv.player.terminouDeVerdade
@@ -76,6 +78,7 @@ import com.obaflix.tv.sessao.SessaoTv
 import com.obaflix.tv.ui.componentes.BotaoTv
 import com.obaflix.tv.ui.componentes.EspacoV
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * A porta do player: autoriza antes de abrir, e conduz a promocao quando o
@@ -146,6 +149,8 @@ fun PortaoDeReproducao(camada: Camada.Player) {
     }
 
     val verPlanos = { Navegacao.abrirPlanos() }
+    val escopo = rememberCoroutineScope()
+    var buscandoPlanos by remember { mutableStateOf(false) }
     val voltar = { enviar(EventoDaReproducao.Voltou) }
 
     when (val atual = etapa) {
@@ -171,12 +176,28 @@ fun PortaoDeReproducao(camada: Camada.Player) {
                         focoInicial = camada.memoria.planoEscolhido ?: FOCO_INICIAL_DA_ESCOLHA,
                         aoEscolher = { alvo ->
                             when (val acao = acaoDoOk(alvo)) {
-                                // Abrir os planos nao envia evento: a etapa fica
-                                // na escolha, sem conclusao e sem liberacao.
-                                is AcaoDaEscolha.AbrirPlanos -> {
-                                    camada.memoria.escolhaPendente = escolha.desafioId
-                                    camada.memoria.planoEscolhido = alvo
-                                    Navegacao.abrirPlanos(acao.indiceDoPlano)
+                                // Abrir o QR nao envia evento: a etapa fica na
+                                // escolha, sem conclusao e sem liberacao. O BACK
+                                // do QR recompoe esta camada pela memoria.
+                                is AcaoDaEscolha.AssinarPlano -> if (!buscandoPlanos) {
+                                    buscandoPlanos = true
+                                    escopo.launch {
+                                        val destino = continuacaoDaEscolha(acao, ApiObaflix.catalogoDePlanos())
+                                        buscandoPlanos = false
+                                        // A pessoa saiu ou continuou gratis enquanto
+                                        // o catalogo chegava: nada a abrir.
+                                        if (Navegacao.pilha.lastOrNull() === camada && etapa == escolha) {
+                                            camada.memoria.escolhaPendente = escolha.desafioId
+                                            camada.memoria.planoEscolhido = alvo
+                                            // Sem plano ou sem preco no servidor: a
+                                            // vitrine, que ja mostra indisponivel.
+                                            if (destino != null) {
+                                                Navegacao.abrir(destino)
+                                            } else {
+                                                Navegacao.abrirPlanos(acao.indiceDoPlano)
+                                            }
+                                        }
+                                    }
                                 }
                                 AcaoDaEscolha.ContinuarGratis -> {
                                     camada.memoria.escolhaPendente = null

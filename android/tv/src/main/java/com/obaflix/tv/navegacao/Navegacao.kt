@@ -87,7 +87,14 @@ sealed interface Camada {
      * Leva o plano como veio do servidor, para a tela mostrar nome e preco sem
      * uma segunda consulta e sem tabela local.
      */
-    data class AssinarForaDaTv(val plano: com.obaflix.tv.assinatura.PlanoTv) : Camada
+    data class AssinarForaDaTv(
+        val plano: com.obaflix.tv.assinatura.PlanoTv,
+        /**
+         * Preenchido: o QR vai direto ao checkout deste preco (caminho da escolha
+         * final do anuncio). Vazio: pagina de planos, como na vitrine.
+         */
+        val precoDoCheckout: com.obaflix.tv.assinatura.PrecoDoPlano? = null,
+    ) : Camada
 }
 
 /** O que a vitrine lembra entre uma ida e uma volta. So foco — nada de conta. */
