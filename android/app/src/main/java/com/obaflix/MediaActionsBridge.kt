@@ -62,6 +62,11 @@ class MediaActionsBridge(
      * [DownloadService], com escopo proprio.
      */
     private val escopo: CoroutineScope,
+    /**
+     * A origem https de um endereco do proxy local (`LocalMediaServer`), ou
+     * `null` quando a URL nao e dele. Ver [paraTransmissao].
+     */
+    private val origemDoProxyLocal: (String) -> LocalMediaServer.Origem? = { null },
 ) {
 
     private val store = DownloadStore(PrefsKeyValueStore(activity.applicationContext))
@@ -331,7 +336,7 @@ class MediaActionsBridge(
             return
         }
 
-        when (val elegibilidade = CastSourceResolver.classificar(payload, titulo, poster)) {
+        when (val elegibilidade = CastSourceResolver.classificar(paraTransmissao(payload, origemDoProxyLocal), titulo, poster)) {
             is CastElegibilidade.Inelegivel -> {
                 ObaLog.evento("cast", "cast_unavailable", "motivo" to elegibilidade.motivo.name.lowercase())
                 responder(callbackId, recusa(elegibilidade.motivo.name.lowercase()).put("tentarOutraFonte", true))
@@ -373,6 +378,44 @@ class MediaActionsBridge(
 
     private fun recusa(motivo: String) = JSONObject().put("ok", false).put("motivo", motivo)
 
+    internal companion object {
+        /**
+         * O payload de transmissao com a midia de origem no lugar do loopback.
+         *
+         * Dentro do player, episodio Playerflix toca pelo proxy local, e o
+         * "Transmitir" entregava `http://127.0.0.1/...` ao classificador — recusado
+         * como `nao_https`, que a tela mostrava como "Nao foi possivel concluir".
+         * Pela ficha o mesmo conteudo ja chega com a URL https, e por isso la
+         * funcionava. Aqui os dois caminhos passam a entregar a mesma coisa.
+         *
+         * O resto do payload (origem, tipo, validade) nao muda, e a classificacao
+         * continua inteira em [CastSourceResolver]. URL que nao e do proxy passa
+         * intacta.
+         */
+        fun paraTransmissao(
+            payload: JSONObject,
+            origemDoProxyLocal: (String) -> LocalMediaServer.Origem?,
+        ): JSONObject {
+            val origem = origemDoProxyLocal(payload.optString("stream")) ?: return payload
+            return JSONObject(payload.toString()).apply {
+                put("stream", origem.url)
+                if (origem.referer != null) put("referer", origem.referer) else remove("referer")
+                if (origem.userAgent != null) put("userAgent", origem.userAgent) else remove("userAgent")
+            }
+        }
+
+        /**
+         * Expressao JavaScript que devolve o objeto de um JSON em base64 UTF-8.
+         *
+         * `atob` sozinho devolve um byte por caractere (Latin-1): "Padrão", que
+         * em UTF-8 sao dois bytes no "ã", chegava a tela como "PadrÃ£o". Os bytes
+         * voltam a ser UTF-8 pelo `TextDecoder` antes do `JSON.parse`.
+         */
+        fun jsonDeBase64Utf8(b64: String): String =
+            "JSON.parse(new TextDecoder('utf-8').decode(" +
+                "Uint8Array.from(atob('$b64'), function(c) { return c.charCodeAt(0); })))"
+    }
+
     /**
      * Resolve a Promise do lado JS.
      *
@@ -389,7 +432,7 @@ class MediaActionsBridge(
                     var cb = (window._obaflixCallbacks || {})['$callbackId'];
                     if (!cb) return;
                     delete window._obaflixCallbacks['$callbackId'];
-                    try { cb.resolve(JSON.parse(atob('$b64'))); } catch (e) { cb.reject(e); }
+                    try { cb.resolve(${jsonDeBase64Utf8(b64)}); } catch (e) { cb.reject(e); }
                 })()
                 """.trimIndent(),
                 null,
@@ -408,7 +451,7 @@ class MediaActionsBridge(
                 """
                 (function() {
                     if (typeof window.__obaflixDownloadProgress !== 'function') return;
-                    try { window.__obaflixDownloadProgress(JSON.parse(atob('$b64'))); } catch (e) {}
+                    try { window.__obaflixDownloadProgress(${jsonDeBase64Utf8(b64)}); } catch (e) {}
                 })()
                 """.trimIndent(),
                 null,

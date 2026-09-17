@@ -35,13 +35,61 @@ class LocalMediaServer(private val client: OkHttpClient = OkHttpClient()) : Auto
 
     fun stop(id: String) { sessions.remove(id) }
 
+    /** A midia real por tras de um endereco deste proxy, com os headers da sessao. */
+    data class Origem(val url: String, val referer: String?, val userAgent: String?)
+
+    /**
+     * Desfaz um endereco de loopback deste servidor.
+     *
+     * Episodio Playerflix toca por `http://127.0.0.1:<porta>/s/<sessao>?u=...`, e
+     * e esse endereco que o player conhece. Um app externo de transmissao nao
+     * alcanca o loopback do aparelho — nem deveria: precisa da URL https de
+     * origem e dos headers que a sessao ja guarda.
+     *
+     * So responde para a porta deste servidor e uma sessao ativa; a URL devolvida
+     * e a que a propria sessao autorizou (https). Qualquer outra forma: `null`.
+     */
+    fun origemDe(url: String): Origem? {
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+        if (uri.scheme != "http" || uri.host != "127.0.0.1" || uri.port != socket.localPort) return null
+        val partes = uri.path.orEmpty().split('/')
+        if (partes.size != 3 || partes[1] != "s") return null
+        val session = sessions[partes[2]] ?: return null
+        val encoded = uri.rawQuery?.takeIf { it.startsWith("u=") }?.substring(2) ?: return null
+        val upstream = runCatching { String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8) }.getOrNull()
+            ?: return null
+        if (!runCatching { URL(upstream).protocol.equals("https", true) }.getOrDefault(false)) return null
+        return Origem(upstream, session.referer, session.userAgent)
+    }
+
     private fun endpoint(id: String, url: String): String =
         "http://127.0.0.1:${socket.localPort}/s/$id?u=" +
             Base64.getUrlEncoder().withoutPadding().encodeToString(url.toByteArray(Charsets.UTF_8))
 
     private fun acceptLoop() {
         while (!socket.isClosed) runCatching { socket.accept() }.getOrNull()?.let { clientSocket ->
-            pool.execute { clientSocket.use(::handle) }
+            pool.execute { atender(clientSocket) }
+        }
+    }
+
+    /**
+     * Uma conexao do WebView, sem deixar excecao escapar para a thread do pool.
+     *
+     * O player abandona requisicoes o tempo todo — troca de fonte, seek, retomada
+     * de "Continuar assistindo" — e o WebView fecha o socket no meio da resposta.
+     * A escrita seguinte lanca `SocketException: Broken pipe`; sem este cerco ela
+     * virava excecao nao tratada na thread e derrubava o processo do app inteiro.
+     * Upstream fora do ar (timeout, DNS) tem o mesmo efeito e o mesmo tratamento:
+     * a conexao fecha, o player ve a falha da fonte e segue o failover.
+     */
+    internal fun atender(clientSocket: Socket) {
+        try {
+            clientSocket.use(::handle)
+        } catch (e: Exception) {
+            // Sem URL, sem query, sem sessao: so a classe da excecao.
+            runCatching {
+                ObaLog.alerta("media", "local_proxy_conexao_encerrada", "excecao" to e.javaClass.simpleName)
+            }
         }
     }
 
