@@ -83,6 +83,12 @@ function createCanaisCatalogoHandler(d: DependenciasDeCatalogo) {
         {
           canais,
           categorias: categorias.map((c) => ({ id: c, rotulo: ROTULO_DA_CATEGORIA[c] })),
+          // Distingue "seu plano não inclui canais" de "nenhum canal no ar". Sem
+          // isto a TV só via lista vazia e dizia "voltam em breve" a quem, na
+          // verdade, precisa de outro plano. É o nível da própria conta, que ela
+          // já pode deduzir da lista — não expõe nada novo. Campo acrescentado:
+          // clientes antigos ignoram.
+          incluidoNoPlano: nivel !== "nenhum",
         },
         { headers: NO_STORE },
       );

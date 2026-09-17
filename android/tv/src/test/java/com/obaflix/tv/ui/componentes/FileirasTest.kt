@@ -16,11 +16,15 @@ import java.io.File
  * que este projeto ainda nao tem configurado. Nao ha como, em JVM pura, apertar
  * a seta para baixo e conferir onde o cursor parou.
  *
- * O que da para travar aqui e a **fiacao**: que a fileira declara `enter`, que o
- * requisitor de entrada esta no card de indice 0, e que a rolagem volta ao
- * inicio quando o cursor sai — as tres pecas de que o comportamento depende. Se
- * alguem remover qualquer uma numa refatoracao, isto quebra antes de virar um
- * D-Pad que nao responde.
+ * ## Por que nao ha mais teste de `focusProperties.enter`
+ *
+ * Este arquivo chegou a travar so a **fiacao** de um `enter = { primeiro }`
+ * que forcava o foco de entrada para o card de indice 0 (0.7.27). Essa
+ * verificacao de texto passou perfeitamente enquanto o mecanismo travava o
+ * D-pad de verdade em TV fisica: ela provava que o codigo existia, nao que o
+ * foco funcionava. O mecanismo foi revertido (ver comentario em
+ * FileiraCatalogo), e o teste abaixo faz o oposto — impede que ele volte sem
+ * uma validacao real de foco.
  */
 class FileirasTest {
 
@@ -46,36 +50,16 @@ class FileirasTest {
     }
 
     @Test
-    fun `a fileira declara a entrada de foco`() {
-        // `enter` so e consultado quando o foco ENTRA no grupo: seta para baixo e
-        // para cima. E o mecanismo que leva ao primeiro card.
-        assertTrue(
-            "a fileira deixou de declarar focusProperties.enter",
+    fun `enter nao volta sem prova de foco vivo`() {
+        // Trava o oposto do que este arquivo travava antes: `focusProperties`
+        // com `enter =` travou o D-pad em TV fisica na 0.7.27 (ver historico do
+        // commit desta linha) e o unico teste da epoca so conferia o texto no
+        // arquivo — nunca o foco em execucao. Reintroduzir isto exige antes um
+        // teste instrumentado de Compose provando a navegacao em foco vivo;
+        // ate la, este teste falha de proposito para impedir a volta silenciosa.
+        assertFalse(
+            "focusProperties.enter voltou sem teste instrumentado de foco vivo",
             semComentarios.contains("focusProperties") && semComentarios.contains("enter ="),
-        )
-    }
-
-    @Test
-    fun `a entrada aponta para o requisitor do primeiro card`() {
-        assertTrue("enter nao aponta para `primeiro`", semComentarios.contains("enter = { primeiro }"))
-        // E o requisitor tem de estar no indice 0, nao em outro qualquer.
-        assertTrue(
-            "o requisitor de entrada saiu do card de indice 0",
-            semComentarios.contains("if (indice == 0) Modifier.focusRequester(primeiro)"),
-        )
-    }
-
-    @Test
-    fun `a fileira volta ao inicio quando perde o foco`() {
-        // Sem isto, subir de volta para uma fileira rolada pediria foco a um card
-        // que a LazyRow ja descartou, e a seta ficaria sem resposta.
-        assertTrue(
-            "a rolagem nao volta ao inicio ao sair da fileira",
-            semComentarios.contains("scrollToItem(0)"),
-        )
-        assertTrue(
-            "a volta ao inicio deveria acontecer so quando o foco sai",
-            semComentarios.contains("!estado.hasFocus"),
         )
     }
 

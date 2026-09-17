@@ -158,9 +158,14 @@ fun AppTv() {
                     Moldura(aoFocarArte = { fundoDesejado = it })
                 }
                 is Camada.Detalhe -> TelaDetalhe(topo)
-                is Camada.Player -> TelaPlayer(topo.pedido)
+                // `key`: uma camada nova de player — o episodio seguinte que pede
+                // promocao — recomeca o portao do zero, em vez de herdar a etapa
+                // da camada que ela substituiu.
+                is Camada.Player -> androidx.compose.runtime.key(topo) { PortaoDeReproducao(topo) }
                 is Camada.PlayerDeCanal -> TelaPlayerDeCanal(topo.canal)
                 is Camada.Perfil -> TelaPerfil()
+                is Camada.Planos -> TelaPlanos(topo)
+                is Camada.AssinarForaDaTv -> TelaAssinarForaDaTv(topo)
             }
 
             // Atualizacao pronta: dispensavel (BACK ou "Agora nao"), por isso
@@ -344,6 +349,9 @@ private fun BarraTopo(margem: androidx.compose.ui.unit.Dp) {
         }
 
         EspacoH(16.dp)
+        // Planos ao lado de Perfil: conta e plano no mesmo canto da barra.
+        BotaoPlanosDaBarra()
+        EspacoH(10.dp)
         BotaoPerfil(aoAbrir = { Navegacao.abrir(Camada.Perfil) })
     }
 }
