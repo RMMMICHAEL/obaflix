@@ -30,7 +30,15 @@ android {
         }
 
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    // Os testes instrumentados (src/androidTest) rodam num build type proprio,
+    // com pacote proprio: `connectedUiTesteAndroidTest` instala e desinstala
+    // com.obaflix.tv.uiteste, sem tocar no app oficial nem no APK de
+    // homologacao instalado para o smoke (e na sessao guardada nele).
+    testBuildType "uiTeste"
 
     buildFeatures {
         buildConfig true
@@ -55,6 +63,77 @@ android {
             jniDebuggable false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
                 rootProject.file('hardening-rules.pro'), 'proguard-rules.pro'
+        }
+
+        // APK de TESTE: mesmo codigo e mesma assinatura da release (a sessao so
+        // persiste com o certificado aceito em obaflix.allowedSigningCerts), mas
+        // nunca confundivel com ela nem capaz de virar ela:
+        //  - pacote proprio (com.obaflix.tv.homologacao), convive com o oficial;
+        //  - versao com sufixo -homologacao;
+        //  - aponta so para o ambiente isolado, passado explicitamente;
+        //  - auto-atualizacao desligada (manifesto vazio), para nao trocar o APK
+        //    de teste pela release oficial no meio do smoke.
+        // Uso: gradlew :tv:assembleHomologacao -Pobaflix.urlTeste=https://<ambiente-de-teste>
+        // (o Android nao aceita build type comecando com "test")
+        homologacao {
+            initWith release
+            applicationIdSuffix ".homologacao"
+            versionNameSuffix "-homologacao"
+            matchingFallbacks = ['release']
+            def urlTeste = project.findProperty('obaflix.urlTeste')
+            buildConfigField "String", "OBAFLIX_URL", "\"${urlTeste ?: ''}\""
+            buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+        }
+
+        // Alvo dos testes de interface (compose-ui-test). Nao faz rede: a URL e
+        // um dominio .invalid, que nunca resolve, e a auto-atualizacao fica
+        // desligada. O nome nao pode comecar com "test".
+        uiTeste {
+            initWith debug
+            applicationIdSuffix ".uiteste"
+            versionNameSuffix "-uiteste"
+            matchingFallbacks = ['debug']
+            buildConfigField "String", "OBAFLIX_URL", "\"https://ui-teste.invalid\""
+            buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+        }
+    }
+
+    // Sem a URL do ambiente isolado, o build de teste falha em vez de sair
+    // apontando para Production ou para lugar nenhum.
+    gradle.taskGraph.whenReady { grafo ->
+        if (grafo.allTasks.any { it.name.toLowerCase().contains('homologacao') && it.project == project }) {
+            def urlTeste = project.findProperty('obaflix.urlTeste')?.toString()
+            if (!urlTeste?.startsWith('https://')) {
+                throw new GradleException("assembleHomologacao exige -Pobaflix.urlTeste=https://<ambiente-de-teste>")
+            }
+            if (urlTeste == project.property('obaflix.url')) {
+                throw new GradleException("obaflix.urlTeste nao pode ser a URL de Production")
+            }
+
+            // Toda URL do BuildConfig da homologacao — do :tv E do
+            // :core-extractor — tem de ser https e fora de Production. Vazio so
+            // e aceito para campo listado como desligado de proposito, e o app
+            // precisa tratar esse vazio como "desligado" (UpdateChecker/Atualizador,
+            // com teste). Foi um campo vazio fora dessa garantia que derrubou o
+            // APK de homologacao no smoke.
+            def desligadosDeProposito = ['UPDATE_MANIFEST_URL']
+            def producao = project.property('obaflix.url').toString()
+            [project, project(':core-extractor')].each { modulo ->
+                modulo.android.buildTypes.homologacao.buildConfigFields.each { nome, campo ->
+                    if (campo.type != 'String' || !nome.endsWith('URL')) return
+                    def valor = campo.value.toString()
+                    if (valor.startsWith('"') && valor.endsWith('"') && valor.length() >= 2) valor = valor.substring(1, valor.length() - 1)
+                    if (valor.isEmpty()) {
+                        if (!desligadosDeProposito.contains(nome)) {
+                            throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} vazio")
+                        }
+                    } else if (!valor.startsWith('https://')) {
+                        throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} precisa ser https")
+                    } else if (valor == producao || valor.contains('obaflix.online')) {
+                        throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} aponta para Production")
+                    }
+                }
+            }
         }
     }
 
@@ -91,6 +170,24 @@ android {
             }
         }
         buildTypes.release.signingConfig signingConfigs.release
+        // `initWith release` copia a configuracao antes desta atribuicao: sem
+        // repetir aqui, o APK de homologacao sairia sem assinatura.
+        buildTypes.homologacao.signingConfig signingConfigs.release
+    }
+
+    // Sem a chave de release o APK de homologacao nao persistiria a sessao
+    // (assinatura fora de obaflix.allowedSigningCerts) e o smoke daria um
+    // resultado falso. Melhor falhar o build.
+    // So empacotamento exige a chave: os testes da variante (testHomologacaoUnitTest)
+    // rodam sem assinatura.
+    gradle.taskGraph.whenReady { grafo ->
+        // Nomes exatos: o grafo dos testes da variante tambem tem tarefas
+        // internas que comecam com `package`/`assemble` (recursos do teste).
+        def tarefasQueGeramApk = ['assembleHomologacao', 'packageHomologacao', 'bundleHomologacao', 'installHomologacao']
+        def empacota = grafo.allTasks.any { t -> t.project == project && tarefasQueGeramApk.contains(t.name) }
+        if (!keystorePropsFile.exists() && empacota) {
+            throw new GradleException("assembleHomologacao exige android/key.properties com a chave de release")
+        }
     }
 }
 
@@ -133,8 +230,17 @@ dependencies {
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
 
-    // JVM pura. O comportamento de foco do Compose so se prova em aparelho
-    // (exige teste instrumentado com compose-ui-test); o que da para travar aqui
-    // e a aritmetica de colunas e a fiacao da entrada de foco na fileira.
+    // JVM pura: aritmetica de colunas, fiacao da entrada de foco na fileira e
+    // montagem da Home a partir do payload (org.json real — o android.jar de
+    // teste so tem stubs).
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+
+    // Foco do Compose so se prova com a composicao viva: testes instrumentados
+    // no emulador de TV, no build type uiTeste (ver testBuildType).
+    androidTestImplementation platform('androidx.compose:compose-bom:2024.06.00')
+    androidTestImplementation 'androidx.compose.ui:ui-test-junit4'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    uiTesteImplementation 'androidx.compose.ui:ui-test-manifest'
 }

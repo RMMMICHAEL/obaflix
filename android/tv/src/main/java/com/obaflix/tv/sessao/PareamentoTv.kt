@@ -9,6 +9,7 @@ import com.obaflix.bridge.ObaLog
 import com.obaflix.tv.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -197,27 +198,64 @@ object PareamentoTv {
 
     // ── Renovacao e saida ────────────────────────────────────────────────────
 
-    /** Troca o refresh por um par novo. Falhou, a TV volta para o pareamento. */
-    suspend fun renovar(context: Context): Boolean = withContext(Dispatchers.IO) {
-        val refresh = ArmazenamentoSessao.refreshToken(context) ?: return@withContext false
-        val corpo = JSONObject()
-            .put("refreshToken", refresh)
-            .put("fingerprint", fingerprint(context))
+    /**
+     * Uma renovacao por vez no processo inteiro.
+     *
+     * O refresh e rotativo com deteccao de reuso: duas renovacoes simultaneas
+     * com o mesmo token fariam a segunda parecer reuso e derrubariam a familia
+     * inteira — logout por concorrencia, sem ninguem ter feito nada errado.
+     */
+    private val travaDeRenovacao = kotlinx.coroutines.sync.Mutex()
 
-        runCatching {
-            ObaflixApp.httpClient.newCall(post("/api/tv/session", corpo)).execute().use { r ->
-                if (!r.isSuccessful) {
-                    // 401 aqui significa revogado, expirado ou reutilizado. Em
-                    // todos, a credencial local nao serve mais para nada.
-                    if (r.code == 401) ArmazenamentoSessao.limpar(context)
-                    return@use false
+    /** Troca o refresh por um par novo. `true` so quando renovou. */
+    suspend fun renovar(context: Context): Boolean =
+        renovarDetalhado(context) is ResultadoRenovacao.Renovado
+
+    /**
+     * Troca o refresh por um par novo, dizendo por que nao conseguiu.
+     *
+     * So `Recusado` (401) apaga a credencial e manda ao pareamento. Rede, timeout,
+     * 5xx e 429 sao `Temporario`: a credencial fica e quem chamou tenta depois.
+     */
+    suspend fun renovarDetalhado(context: Context): ResultadoRenovacao = travaDeRenovacao.withLock {
+        withContext(Dispatchers.IO) {
+            // Lido dentro da trava: quem esperou pega o refresh que a renovacao
+            // anterior acabou de gravar, e nao o que ja foi usado.
+            val refresh = ArmazenamentoSessao.refreshToken(context)
+                ?: return@withContext ResultadoRenovacao.Temporario("refresh_ilegivel")
+            val corpo = JSONObject()
+                .put("refreshToken", refresh)
+                .put("fingerprint", fingerprint(context))
+
+            runCatching {
+                ObaflixApp.httpClient.newCall(post("/api/tv/session", corpo)).execute().use { r ->
+                    when (val classe = classificarStatusDeRenovacao(r.code)) {
+                        null -> Unit
+                        ResultadoRenovacao.Recusado -> {
+                            // Revogado, expirado, reutilizado ou outro aparelho:
+                            // a credencial local nao serve mais para nada.
+                            ArmazenamentoSessao.limpar(context)
+                            SessaoTv.definirAccessToken(null)
+                            ObaLog.evento(ObaLog.Fase.SESSAO, "tv_refresh_recusado")
+                            SessaoAtual.marcarNaoAutenticado()
+                            return@use classe
+                        }
+                        else -> return@use classe
+                    }
+                    val j = JSONObject(r.body?.string().orEmpty())
+                    val novoRefresh = j.getString("refreshToken")
+                    val deviceId = j.getString("deviceId")
+                    // Disco antes da memoria: o refresh antigo ja morreu no
+                    // servidor, e o novo precisa sobreviver a um desligamento.
+                    ArmazenamentoSessao.salvar(context, novoRefresh, deviceId)
+                    SessaoTv.definirAccessToken(j.getString("accessToken"))
+                    ResultadoRenovacao.Renovado(deviceId)
                 }
-                val j = JSONObject(r.body?.string().orEmpty())
-                ArmazenamentoSessao.salvar(context, j.getString("refreshToken"), j.getString("deviceId"))
-                SessaoTv.definirAccessToken(j.getString("accessToken"))
-                true
+            }.getOrElse {
+                ObaLog.alerta(ObaLog.Fase.SESSAO, "tv_refresh_temporario", "erro" to it.javaClass.simpleName)
+                ResultadoRenovacao.Temporario(it.javaClass.simpleName)
             }
-        }.getOrElse { false }
+        }
     }
 
     /** Sair da conta nesta TV: revoga no servidor e apaga o que estava em disco. */
