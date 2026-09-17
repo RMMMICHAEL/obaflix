@@ -1,8 +1,9 @@
 "use strict";
 
-const { app, BrowserWindow, session, ipcMain, shell, Menu } = require("electron");
+const { app, BrowserWindow, session, ipcMain, shell, Menu, safeStorage } = require("electron");
 const http = require("http");
 const path = require("path");
+const fs = require("fs");
 const crypto = require("crypto");
 const dns = require("dns").promises;
 const net = require("net");
@@ -22,7 +23,17 @@ const {
   retryNativeOptionOnce,
 } = require("./superflix-extractor");
 const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./browser-extractor");
+
+const SPONSORED_LINK_URL = "https://omg10.com/4/11767843";
 const { baixarMidia } = require("./media-download");
+const {
+  DESKTOP_PROTOCOL,
+  callbackInternoSeguro,
+  createPkceFlow,
+  findDeepLinkArg,
+  parseDesktopAuthDeepLink,
+  flowAindaValido,
+} = require("./desktop-auth");
 
 // Qualquer exceção não tratada precisa aparecer no log — antes elas morriam em
 // silêncio e o app só "não fazia nada".
@@ -42,6 +53,25 @@ const LOCAL_SERVER_TOKEN = crypto.randomBytes(32).toString("base64url");
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
+
+function registerDesktopProtocol() {
+  if (process.platform !== "win32") return false;
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      return app.setAsDefaultProtocolClient(
+        DESKTOP_PROTOCOL,
+        process.execPath,
+        [path.resolve(process.argv[1])],
+      );
+    }
+    return app.setAsDefaultProtocolClient(DESKTOP_PROTOCOL);
+  } catch {
+    return false;
+  }
+}
+
+const desktopProtocolRegistered = registerDesktopProtocol();
+const initialDesktopDeepLink = findDeepLinkArg(process.argv);
 
 // Hostnames dos embed players (sem wildcards — usados no handler unificado)
 const EMBED_HOSTNAMES = [
@@ -203,16 +233,134 @@ async function assertPublicHttpsStream(raw) {
 let mainWindow = null;
 let localPort = null;
 
-// ── Instância única ────────────────────────────────────────────────────────────
-// Quando já existe uma instância aberta, `app.quit()` sozinho não impede que o
-// whenReady() abaixo continue montando janela e servidor — foi assim que o boot
-// morria com "Object has been destroyed". O flag corta o bootstrap inteiro.
+// ── Instância única + deep link ────────────────────────────────────────────────
+// Windows entrega obaflix://... pela linha de comando. Se o app já está aberto,
+// a segunda instância repassa o URL para esta; no cold start ele vem em argv.
 const gotLock = app.requestSingleInstanceLock();
+let queuedDesktopDeepLink = initialDesktopDeepLink;
+
 if (!gotLock) { app.quit(); }
 else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
+    const deepLink = findDeepLinkArg(commandLine);
+    if (deepLink) {
+      if (app.isReady()) {
+        handleDesktopAuthDeepLink(deepLink).catch((error) => {
+          log.error("auth.desktop", "falha no deep link", error);
+        });
+      } else {
+        queuedDesktopDeepLink = deepLink;
+      }
+    }
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
   });
+}
+
+let pendingDesktopAuth = null;
+
+function pendingDesktopAuthPath() {
+  return path.join(app.getPath("userData"), "desktop-auth.pending");
+}
+
+function persistPendingDesktopAuth(flow) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Armazenamento seguro indisponível");
+  const encrypted = safeStorage.encryptString(JSON.stringify(flow));
+  fs.writeFileSync(pendingDesktopAuthPath(), encrypted, { mode: 0o600 });
+  pendingDesktopAuth = flow;
+}
+
+function loadPendingDesktopAuth() {
+  if (pendingDesktopAuth) return pendingDesktopAuth;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const encrypted = fs.readFileSync(pendingDesktopAuthPath());
+    const parsed = JSON.parse(safeStorage.decryptString(encrypted));
+    pendingDesktopAuth = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingDesktopAuth() {
+  pendingDesktopAuth = null;
+  try { fs.unlinkSync(pendingDesktopAuthPath()); } catch { /**/ }
+}
+
+async function exchangeDesktopAuth(ticket, verifier) {
+  const exchangeUrl = new URL("/api/desktop-auth/exchange", OBAFLIX_URL).toString();
+  const hidden = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      partition: "persist:obaflix",
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+
+  try {
+    hidden.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    hidden.webContents.on("will-navigate", (event, url) => {
+      if (url !== exchangeUrl) event.preventDefault();
+    });
+    hidden.webContents.on("will-redirect", (event) => event.preventDefault());
+
+    const body = new URLSearchParams({ ticket, verifier }).toString();
+    await hidden.loadURL(exchangeUrl, {
+      postData: [{ type: "rawData", bytes: Buffer.from(body, "utf8") }],
+      extraHeaders: "Content-Type: application/x-www-form-urlencoded\r\nCache-Control: no-store",
+    });
+
+    const ok = await hidden.webContents.executeJavaScript(
+      'document.body?.dataset?.obaflixDesktopAuth === "ok"',
+      true,
+    );
+    if (!ok) throw new Error("Servidor recusou o handoff desktop");
+
+    const ses = session.fromPartition("persist:obaflix");
+    const check = await ses.fetch(new URL("/api/auth/session", OBAFLIX_URL).toString(), {
+      method: "GET",
+      credentials: "include",
+      headers: { "X-Obaflix-Client": "desktop", "Cache-Control": "no-store" },
+    });
+    const data = check.ok ? await check.json().catch(() => null) : null;
+    if (!data?.user?.id) throw new Error("Sessão desktop não foi estabelecida");
+  } finally {
+    if (!hidden.isDestroyed()) hidden.destroy();
+  }
+}
+
+async function handleDesktopAuthDeepLink(raw) {
+  const parsed = parseDesktopAuthDeepLink(raw);
+  if (!parsed) {
+    log.warn("auth.desktop", "deep link rejeitado");
+    return false;
+  }
+
+  const flow = loadPendingDesktopAuth();
+  if (!flowAindaValido(flow, parsed.state)) {
+    clearPendingDesktopAuth();
+    log.warn("auth.desktop", "deep link sem fluxo pendente válido");
+    return false;
+  }
+
+  try {
+    await exchangeDesktopAuth(parsed.ticket, flow.verifier);
+    const destino = callbackInternoSeguro(flow.callbackUrl);
+    clearPendingDesktopAuth();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      await mainWindow.loadURL(new URL(destino, OBAFLIX_URL).toString());
+    }
+    log.info("auth.desktop", "sessão Google concluída");
+    return true;
+  } catch (error) {
+    clearPendingDesktopAuth();
+    throw error;
+  }
 }
 
 // ── Extração com IP do usuário (Node.js, sem CORS) ────────────────────────────
@@ -1099,6 +1247,35 @@ ipcMain.handle("toggle-fullscreen", (event) => {
 });
 ipcMain.handle("get-version", (event) => isTrustedIpc(event) ? app.getVersion() : null);
 
+ipcMain.handle("desktop-google-login", async (event, requestedCallback) => {
+  if (!isTrustedIpc(event)) return { ok: false, error: "Origem não autorizada" };
+
+  const callbackUrl = callbackInternoSeguro(requestedCallback);
+  const flow = createPkceFlow(callbackUrl);
+  try {
+    persistPendingDesktopAuth(flow);
+
+    const startUrl = new URL("/desktop-auth", OBAFLIX_URL);
+    if (
+      startUrl.protocol !== "https:" &&
+      !(startUrl.protocol === "http:" && ["127.0.0.1", "localhost"].includes(startUrl.hostname))
+    ) {
+      throw new Error("Origem de autenticação insegura");
+    }
+    startUrl.searchParams.set("challenge", flow.challenge);
+    startUrl.searchParams.set("state", flow.state);
+    startUrl.searchParams.set("callbackUrl", flow.callbackUrl);
+
+    await shell.openExternal(startUrl.toString());
+    log.info("auth.desktop", "login Google aberto no navegador do sistema");
+    return { ok: true };
+  } catch (error) {
+    clearPendingDesktopAuth();
+    log.error("auth.desktop", "não foi possível iniciar login Google", error);
+    return { ok: false, error: "Não foi possível abrir o login com Google." };
+  }
+});
+
 // ── Download de mídia ─────────────────────────────────────────────────────────
 // Roda no processo principal porque os CDNs exigem Referer/Origin do embed e os
 // segmentos vêm de dezenas de hosts — no renderer cada um esbarraria em CORS.
@@ -1177,6 +1354,32 @@ ipcMain.handle("install-update", (event) => {
   return true;
 });
 
+ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
+  if (!isTrustedIpc(event)) return { opened: false };
+  if (rawUrl !== SPONSORED_LINK_URL) return { opened: false };
+  const janela = BrowserWindow.fromWebContents(event.sender);
+  if (!janela || janela.isDestroyed()) return { opened: false };
+  let perdeuFoco = false;
+  let resolverRetorno;
+  const retorno = new Promise((resolve) => { resolverRetorno = resolve; });
+  const aoPerderFoco = () => { perdeuFoco = true; };
+  const aoRecuperarFoco = () => { if (perdeuFoco) resolverRetorno(true); };
+  janela.on("blur", aoPerderFoco);
+  janela.on("focus", aoRecuperarFoco);
+  const timeout = setTimeout(() => resolverRetorno(false), 4 * 60 * 1000);
+  try {
+    await shell.openExternal(SPONSORED_LINK_URL);
+    const returned = await retorno;
+    return { opened: true, returned };
+  } catch {
+    return { opened: false };
+  } finally {
+    clearTimeout(timeout);
+    janela.removeListener("blur", aoPerderFoco);
+    janela.removeListener("focus", aoRecuperarFoco);
+  }
+});
+
 // Extração nativa multi-provider: o site chama window.obaflixDesktop.extractStream()
 // → ipcRenderer.invoke("extract-stream") → aqui → Node.js fetch com IP do usuário.
 // Cobre qualquer provider com extrator em desktop/electron/extractors.js — a decisão de
@@ -1251,6 +1454,7 @@ app.whenReady().then(async () => {
     empacotado: app.isPackaged,
     site: OBAFLIX_URL,
     logs: dir,
+    protocoloDesktop: desktopProtocolRegistered,
   });
 
   try {
@@ -1258,6 +1462,13 @@ app.whenReady().then(async () => {
     boot.step("servidor_local", { porta: localPort });
     createWindow();
     boot.step("janela");
+    if (queuedDesktopDeepLink) {
+      const deepLink = queuedDesktopDeepLink;
+      queuedDesktopDeepLink = null;
+      handleDesktopAuthDeepLink(deepLink).catch((error) => {
+        log.error("auth.desktop", "falha no deep link inicial", error);
+      });
+    }
     setupUpdater(mainWindow);
     boot.step("updater");
     boot.done();

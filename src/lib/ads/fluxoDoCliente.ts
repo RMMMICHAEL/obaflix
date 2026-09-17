@@ -29,7 +29,7 @@ export type FinalidadeDoPedido = "reproducao" | "download" | "transmissao";
 
 export interface PedidoDeAutorizacao {
   conteudoId: string;
-  conteudoTipo: "filme" | "serie";
+  conteudoTipo: "filme" | "serie" | "canal";
   temporada?: number | null;
   numeroEp?: number | null;
   plataforma: PlataformaDeAnuncio | null;

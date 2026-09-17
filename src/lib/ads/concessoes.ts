@@ -142,15 +142,15 @@ export interface AlvoDeConcessao {
 
 /** Forma canônica do alvo. Filme ignora temporada e episódio. */
 export function chaveDoAlvo(alvo: AlvoDeConcessao): string {
-  return alvo.tipo === "filme"
-    ? `filme:${alvo.conteudoId}`
-    : `serie:${alvo.conteudoId}:${alvo.temporada ?? ""}:${alvo.episodio ?? ""}`;
+  if (alvo.tipo === "filme") return `filme:${alvo.conteudoId}`;
+  if (alvo.tipo === "canal") return `canal:${alvo.conteudoId}`;
+  return `serie:${alvo.conteudoId}:${alvo.temporada ?? ""}:${alvo.episodio ?? ""}`;
 }
 
 function ehAlvo(v: unknown): v is AlvoDeConcessao {
   if (!v || typeof v !== "object") return false;
   const a = v as Record<string, unknown>;
-  return (a.tipo === "filme" || a.tipo === "serie") && typeof a.conteudoId === "string";
+  return (a.tipo === "filme" || a.tipo === "serie" || a.tipo === "canal") && typeof a.conteudoId === "string";
 }
 
 const chaveDesafio = (id: string) => `ads:desafio:${id}`;
@@ -290,7 +290,7 @@ function interpretarDesafio(bruto: unknown, userId: string): Desafio | null {
     const d = (typeof bruto === "string" ? JSON.parse(bruto) : bruto) as Partial<Desafio>;
     if (!d || typeof d !== "object") return null;
     if (typeof d.userId !== "string" || d.userId !== userId) return null;
-    if (d.tipo !== "filme" && d.tipo !== "serie") return null;
+    if (d.tipo !== "filme" && d.tipo !== "serie" && d.tipo !== "canal") return null;
     if (!ehPlataformaDeAnuncio(d.plataforma)) return null;
     const finalidade = d.finalidade === undefined ? "reproducao" : d.finalidade;
     if (!ehFinalidade(finalidade)) return null;
@@ -624,11 +624,16 @@ export async function marcarPago(entrada: {
   alvo: AlvoDeConcessao;
   /** Ausente: a marca do celular/Electron, como sempre foi. Ver `escopoDaTv`. */
   escopo?: string | null;
+  /** Electron: a liberação do conteúdo sobrevive ao fechamento do aplicativo. */
+  persistente?: boolean;
 }): Promise<void> {
   const hash = hashDoAlvo(entrada.userId, entrada.alvo);
-  await getRedis().set(chavePagoNoEscopo(entrada.userId, entrada.finalidade, hash, entrada.escopo), "1", {
-    ex: entrada.escopo ? TTL_RECUPERACAO_TV_S : TTL_PAGO_S,
-  });
+  const chave = chavePagoNoEscopo(entrada.userId, entrada.finalidade, hash, entrada.escopo);
+  if (entrada.persistente) {
+    await getRedis().set(chave, "1");
+  } else {
+    await getRedis().set(chave, "1", { ex: entrada.escopo ? TTL_RECUPERACAO_TV_S : TTL_PAGO_S });
+  }
 }
 
 /** Este alvo já foi pago por esta conta, para esta finalidade, na janela? */

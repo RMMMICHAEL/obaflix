@@ -58,7 +58,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "contaobaanuncio4-dot",
+      "owner": "RMMMICHAEL",
       "repo": "obaflix-releases"
     },
     "extraResources": [
