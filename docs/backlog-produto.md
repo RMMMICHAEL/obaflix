@@ -2,9 +2,11 @@
 
 ## Baseline congelada da Android TV
 
-A Android TV foi fechada e congelada nesta rodada em 2026-09-15.
+A Android TV foi fechada nesta rodada em 2026-09-15 e atualizada em 2026-09-16
+com o anuncio institucional e o checkout direto.
 
-- baseline de codigo homologada: `846d4bf0dee2`;
+- baseline de codigo: `a6bdff5` (0.7.26, versionCode 42);
+- ultima aprovada em TV fisica: `b9a58e0`;
 - branch: `feat/tv-planos-promocao`;
 - PR: `#27`;
 - handoff: [`android-tv-final.md`](android-tv-final.md);
