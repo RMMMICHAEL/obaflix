@@ -34,6 +34,11 @@
 
 import { randomBytes } from "node:crypto";
 
+import { calcularTotal, type PrecosDosAdicionais } from "./precificacao";
+import { classificarOperacao, valorNaoUtilizado, type Duracao, type PeriodoPago } from "./vigencia";
+import { SERVIDOR_VIP_AVULSO_OFERTADO, nomePublicoDoPlano } from "./vitrine";
+import type { MotivoDeRevisao as CodigoDeRevisao } from "./revisao";
+
 // ── Domínio ──────────────────────────────────────────────────────────────────
 
 /**
@@ -70,7 +75,12 @@ export type StatusPedido = (typeof STATUS_PEDIDO)[number];
  */
 export const STATUS_DA_FASE_4 = ["CRIADO", "AGUARDANDO", "FALHOU", "REVISAO_MANUAL"] as const;
 
-export const PROVEDORES_PAGAMENTO = ["blackcat"] as const;
+/**
+ * `simulado` só existe no ambiente isolado de testes (`simulado.ts`). O CHECK de
+ * Production aceita apenas `blackcat`: um pedido simulado não grava lá nem com a
+ * configuração errada.
+ */
+export const PROVEDORES_PAGAMENTO = ["blackcat", "simulado"] as const;
 export type ProvedorPagamento = (typeof PROVEDORES_PAGAMENTO)[number];
 
 /**
@@ -140,11 +150,13 @@ export interface PrecoDoBanco {
   planoId: string;
   rotulo: string;
   precoCentavos: number;
-  duracaoDias: number;
+  /** Exatamente um dos dois, garantido por CHECK. */
+  duracaoDias: number | null;
+  duracaoMeses?: number | null;
   moeda: string;
   ativo: boolean;
   /** `null` quando a linha veio sem o plano relacionado. */
-  plano: { id: string; nome: string; ativo: boolean } | null;
+  plano: { id: string; nome: string; ativo: boolean; ordem?: number; servidorVip?: boolean } | null;
 }
 
 /**
@@ -177,7 +189,9 @@ export interface SnapshotDeCompra {
   planoPrecoId: string;
   valorCentavos: number;
   moeda: string;
-  duracaoDias: number;
+  /** Exatamente um dos dois: dias, ou meses de calendário. */
+  duracaoDias: number | null;
+  duracaoMeses: number | null;
   /** Só para a descrição do item na fatura do provedor. Não autoriza nada. */
   descricao: string;
 }
@@ -215,7 +229,13 @@ export function resolverPreco(
   if (!Number.isInteger(preco.precoCentavos) || preco.precoCentavos <= 0) {
     return { compravel: false, motivo: "valor_invalido" };
   }
-  if (!Number.isInteger(preco.duracaoDias) || preco.duracaoDias <= 0) {
+  // Exatamente uma duração: dias ou meses de calendário. As duas, ou nenhuma, é
+  // linha incoerente — o CHECK do banco recusa, e aqui é a segunda camada.
+  const dias = preco.duracaoDias;
+  const meses = preco.duracaoMeses;
+  const temDias = typeof dias === "number" && Number.isInteger(dias) && dias > 0;
+  const temMeses = typeof meses === "number" && Number.isInteger(meses) && meses >= 1 && meses <= 24;
+  if (temDias === temMeses) {
     return { compravel: false, motivo: "duracao_invalida" };
   }
   if (!(MOEDAS_SUPORTADAS as readonly string[]).includes(preco.moeda)) {
@@ -229,8 +249,9 @@ export function resolverPreco(
       planoPrecoId: preco.id,
       valorCentavos: preco.precoCentavos,
       moeda: preco.moeda,
-      duracaoDias: preco.duracaoDias,
-      descricao: `${preco.plano.nome} — ${preco.rotulo}`,
+      duracaoDias: temDias ? (dias as number) : null,
+      duracaoMeses: temMeses ? (meses as number) : null,
+      descricao: `${nomePublicoDoPlano(preco.plano.id, preco.plano.nome)} — ${preco.rotulo}`,
     },
   };
 }
@@ -378,22 +399,146 @@ export interface ProvedorPix {
 /** O que o banco precisa saber fazer. Implementado sobre o Prisma na rota. */
 export interface RepositorioDePedidos {
   buscarPreco(planoPrecoId: string): Promise<PrecoDoBanco | null>;
-  criar(dados: NovoPedido): Promise<{ id: string }>;
+  /** Preços mensais ativos dos adicionais deste plano. */
+  buscarAdicionais(planoId: string): Promise<PrecosDosAdicionais>;
+  /** Assinaturas ATIVAS da conta que ainda não terminaram: a vigente e as agendadas. */
+  periodosEmAberto(userId: string, agora: Date): Promise<PeriodoPago[]>;
+  /** Há caso de revisão pendente para esta conta? Checagem barata, antes de tudo. */
+  revisaoPendente(userId: string): Promise<boolean>;
+  /**
+   * Grava o pedido `CRIADO`. `null` quando a conta tem revisão pendente: a
+   * implementação repete a checagem com a conta travada, na mesma transação da
+   * gravação — é o que vale com requisições simultâneas.
+   */
+  criar(dados: NovoPedido): Promise<{ id: string } | null>;
   registrarVenda(
     pedidoId: string,
     dados: { transacaoId: string; expiraEm: Date },
   ): Promise<void>;
+  /** Com `REVISAO_MANUAL`, abre o caso com o `motivo` na mesma transação. */
   registrarFalha(
     pedidoId: string,
-    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string },
+    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string; motivo?: CodigoDeRevisao },
   ): Promise<void>;
 }
+
+export type OperacaoDoPedido = "nova" | "renovacao" | "upgrade" | "downgrade";
 
 export interface NovoPedido extends SnapshotDeCompra {
   userId: string;
   provedor: ProvedorPagamento;
   status: "CRIADO";
   refExterna: string;
+  telasAdicionais: number;
+  servidorVip: boolean;
+  valorPlanoCentavos: number;
+  valorAdicionaisCentavos: number;
+  creditoCentavos: number;
+  operacao: OperacaoDoPedido;
+  assinaturasSubstituidas: string[];
+  /** Estimativa para a resposta; o início real é recalculado na confirmação. Não é coluna. */
+  iniciaEmPrevisto: Date;
+}
+
+// ── A composição da compra ───────────────────────────────────────────────────
+
+export type CodigoDeCompraRecusada =
+  | "duracao_invalida"
+  | "telas_acima_do_limite"
+  | "adicional_indisponivel"
+  | "servidor_vip_ja_incluso"
+  | "credito_maior_que_compra"
+  | "parametros_invalidos";
+
+export interface CompraMontada {
+  /** `valorCentavos` já é o valor a cobrar: plano + adicionais − crédito. */
+  snapshot: SnapshotDeCompra;
+  valorPlanoCentavos: number;
+  valorAdicionaisCentavos: number;
+  creditoCentavos: number;
+  operacao: OperacaoDoPedido;
+  assinaturasSubstituidas: string[];
+  telasAdicionais: number;
+  servidorVip: boolean;
+  iniciaEmPrevisto: Date;
+}
+
+/**
+ * Plano na duração escolhida + adicionais + operação + crédito. Função pura.
+ *
+ * Tudo sai de dados do servidor: preço e duração do snapshot (`PlanoPreco`),
+ * preços mensais dos adicionais (`PlanoAdicionalPreco`), ordem e VIP incluso do
+ * plano, e os períodos em aberto da conta.
+ *
+ * Regras aprovadas:
+ *  - adicionais custam `mensal × meses cobráveis` e acompanham o período inteiro;
+ *  - renovação e downgrade não geram crédito (começam no fim do que já foi pago);
+ *  - upgrade credita o não utilizado do vigente e o valor integral dos agendados;
+ *  - o crédito precisa ser **coberto** pela compra: crédito maior ou igual ao
+ *    total é recusado (`credito_maior_que_compra`) — não há saldo a guardar, nem
+ *    PIX de valor zero.
+ */
+export function montarCompra(entrada: {
+  snapshot: SnapshotDeCompra;
+  plano: { ordem: number; servidorVip: boolean };
+  adicionais: PrecosDosAdicionais;
+  telasAdicionais: number;
+  servidorVip: boolean;
+  periodos: PeriodoPago[];
+  agora: Date;
+  /** Injetável só para teste; em produção é `SERVIDOR_VIP_AVULSO_OFERTADO`. */
+  servidorVipOfertado?: boolean;
+}): { ok: true; compra: CompraMontada } | { ok: false; codigo: CodigoDeCompraRecusada } {
+  const { snapshot } = entrada;
+  const duracao: Duracao | null =
+    typeof snapshot.duracaoMeses === "number"
+      ? { tipo: "meses", meses: snapshot.duracaoMeses }
+      : typeof snapshot.duracaoDias === "number"
+        ? { tipo: "dias", dias: snapshot.duracaoDias }
+        : null;
+  if (!duracao) return { ok: false, codigo: "duracao_invalida" };
+
+  const total = calcularTotal({
+    precoPlanoCentavos: snapshot.valorCentavos,
+    duracao,
+    telasAdicionais: entrada.telasAdicionais,
+    servidorVip: entrada.servidorVip,
+    planoIncluiServidorVip: entrada.plano.servidorVip === true,
+    servidorVipOfertado: entrada.servidorVipOfertado ?? SERVIDOR_VIP_AVULSO_OFERTADO,
+    adicionais: entrada.adicionais,
+  });
+  if (!total.ok) return { ok: false, codigo: total.codigo };
+
+  const operacao = classificarOperacao({
+    periodos: entrada.periodos,
+    plano: { id: snapshot.planoId, ordem: entrada.plano.ordem },
+    agora: entrada.agora,
+  });
+
+  let credito = 0;
+  let substituidas: string[] = [];
+  if (operacao.tipo === "upgrade") {
+    substituidas = operacao.substitui;
+    credito = entrada.periodos
+      .filter((p) => substituidas.includes(p.id))
+      .reduce((soma, p) => soma + valorNaoUtilizado(p, entrada.agora), 0);
+    if (credito >= total.totalCentavos) return { ok: false, codigo: "credito_maior_que_compra" };
+  }
+
+  return {
+    ok: true,
+    compra: {
+      snapshot: { ...snapshot, valorCentavos: total.totalCentavos - credito },
+      valorPlanoCentavos: total.baseCentavos,
+      valorAdicionaisCentavos: total.telasCentavos + total.servidorVipCentavos,
+      creditoCentavos: credito,
+      operacao: operacao.tipo,
+      assinaturasSubstituidas: substituidas,
+      telasAdicionais: entrada.telasAdicionais,
+      servidorVip: entrada.servidorVip,
+      iniciaEmPrevisto: operacao.iniciaEm,
+    },
+  };
 }
 
 // ── O serviço ────────────────────────────────────────────────────────────────
@@ -403,6 +548,9 @@ export interface EntradaDoPedido {
   planoId: string;
   planoPrecoId: string;
   pagador: DadosDoPagador;
+  /** Escolhas do cliente. Preço, limite e disponibilidade são do servidor. */
+  telasAdicionais?: number;
+  servidorVip?: boolean;
 }
 
 export interface DependenciasDoPedido {
@@ -410,6 +558,10 @@ export interface DependenciasDoPedido {
   provedor: ProvedorPix;
   /** Injetável para o teste não depender de `randomBytes` real. */
   gerarRef?: () => string;
+  /** Relógio injetável; produção usa `new Date()`. */
+  agora?: () => Date;
+  /** Quem processa a cobrança. Padrão `blackcat`. */
+  nomeDoProvedor?: ProvedorPagamento;
 }
 
 /** Por que um pedido foi parar em `REVISAO_MANUAL`. Só para log sanitizado. */
@@ -423,9 +575,15 @@ export type ResultadoDoPedido =
       valorCentavos: number;
       moeda: string;
       expiraEm: Date;
+      operacao: OperacaoDoPedido;
+      creditoCentavos: number;
+      iniciaEmPrevisto: Date;
       pix: { qrCode: string; copiaECola: string; qrCodeBase64: string | null };
     }
   | { situacao: "nao_compravel"; motivo: MotivoNaoCompravel }
+  | { situacao: "compra_recusada"; codigo: CodigoDeCompraRecusada }
+  /** Conta com pagamento em revisão: nenhuma compra nova até o caso ser resolvido. */
+  | { situacao: "revisao_pendente" }
   | { situacao: "falha_no_provedor"; falha: FalhaDoProvedor; pedidoId: string }
   | { situacao: "revisao_manual"; pedidoId: string; motivo: MotivoDeRevisao };
 
@@ -477,22 +635,57 @@ export async function criarPedidoPix(
   const { repo, provedor } = deps;
   const gerarRef = deps.gerarRef ?? gerarRefExterna;
 
+  // Revisão pendente bloqueia qualquer compra da conta: um segundo pagamento
+  // enquanto o primeiro está em análise é exatamente o que a mensagem ao
+  // comprador pede para não acontecer. `criar` repete a checagem com trava.
+  if (await repo.revisaoPendente(entrada.userId)) return { situacao: "revisao_pendente" };
+
   const preco = await repo.buscarPreco(entrada.planoPrecoId);
   const resolucao = resolverPreco(preco, entrada.planoId);
   if (!resolucao.compravel) {
     return { situacao: "nao_compravel", motivo: resolucao.motivo };
   }
 
-  const snapshot = resolucao.snapshot;
+  const agora = deps.agora ? deps.agora() : new Date();
+  const [adicionais, periodos] = await Promise.all([
+    repo.buscarAdicionais(resolucao.snapshot.planoId),
+    repo.periodosEmAberto(entrada.userId, agora),
+  ]);
+  const montagem = montarCompra({
+    snapshot: resolucao.snapshot,
+    plano: { ordem: preco?.plano?.ordem ?? 0, servidorVip: preco?.plano?.servidorVip === true },
+    adicionais,
+    telasAdicionais: entrada.telasAdicionais ?? 0,
+    servidorVip: entrada.servidorVip === true,
+    periodos,
+    agora,
+  });
+  if (!montagem.ok) return { situacao: "compra_recusada", codigo: montagem.codigo };
+
+  const { compra } = montagem;
+  // A partir daqui, `snapshot.valorCentavos` é o valor a cobrar (plano +
+  // adicionais − crédito), calculado só com dados do servidor.
+  const snapshot = compra.snapshot;
   const refExterna = gerarRef();
 
-  const { id: pedidoId } = await repo.criar({
+  const criado = await repo.criar({
     ...snapshot,
     userId: entrada.userId,
-    provedor: "blackcat",
+    provedor: deps.nomeDoProvedor ?? "blackcat",
     status: "CRIADO",
     refExterna,
+    telasAdicionais: compra.telasAdicionais,
+    servidorVip: compra.servidorVip,
+    valorPlanoCentavos: compra.valorPlanoCentavos,
+    valorAdicionaisCentavos: compra.valorAdicionaisCentavos,
+    creditoCentavos: compra.creditoCentavos,
+    operacao: compra.operacao,
+    assinaturasSubstituidas: compra.assinaturasSubstituidas,
+    iniciaEmPrevisto: compra.iniciaEmPrevisto,
   });
+  // Uma revisão foi aberta entre a primeira checagem e a gravação.
+  if (!criado) return { situacao: "revisao_pendente" };
+  const pedidoId = criado.id;
 
   const resultado = await provedor.criarVenda({
     refExterna,
@@ -513,6 +706,7 @@ export async function criarPedidoPix(
       await repo.registrarFalha(pedidoId, {
         status: "REVISAO_MANUAL",
         transacaoId: resultado.transacaoId,
+        motivo: "criacao_falha_com_transacao",
       });
       return { situacao: "revisao_manual", pedidoId, motivo: resultado.falha };
     }
@@ -537,6 +731,7 @@ export async function criarPedidoPix(
     await repo.registrarFalha(pedidoId, {
       status: "REVISAO_MANUAL",
       transacaoId: venda.transacaoId,
+      motivo: "criacao_valor_divergente",
     });
     return { situacao: "revisao_manual", pedidoId, motivo: "valor_divergente" };
   }
@@ -553,6 +748,9 @@ export async function criarPedidoPix(
     valorCentavos: snapshot.valorCentavos,
     moeda: snapshot.moeda,
     expiraEm: venda.expiraEm,
+    operacao: compra.operacao,
+    creditoCentavos: compra.creditoCentavos,
+    iniciaEmPrevisto: compra.iniciaEmPrevisto,
     pix: {
       qrCode: venda.qrCode,
       copiaECola: venda.copiaECola,

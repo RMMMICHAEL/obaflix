@@ -92,9 +92,9 @@ describe("mapeamento de entitlement, campo a campo", () => {
   });
 
   /** Decisões tomadas fora da matriz escrita. Ficam travadas para não derivarem. */
-  test("qualidade: basic e plus em hd, premium em 4k", () => {
+  test("qualidade prevista: basic hd, plus fhd, premium 4k", () => {
     assert.equal(PLANO_BASIC.resolucaoMax, "hd");
-    assert.equal(PLANO_PLUS.resolucaoMax, "hd");
+    assert.equal(PLANO_PLUS.resolucaoMax, "fhd");
     assert.equal(PLANO_PREMIUM.resolucaoMax, "4k");
   });
 
@@ -390,15 +390,14 @@ describe("seed da matriz: cria se faltar, nunca sobrescreve", () => {
 
 describe("o que a matriz NÃO promete", () => {
   /**
-   * Premium fala em "servidores VIP", mas não existe hoje separação de fontes
-   * por plano no backend — `fontes.ts` monta a mesma lista para todo mundo.
-   * Enquanto isso for verdade, não pode existir um campo que finja a
-   * diferenciação: um booleano `servidorVip` gravado e não aplicado viraria
-   * texto de vitrine sustentado por nada.
+   * `servidorVip` é a única exceção, e só porque agora é aplicado: o direito
+   * resolvido em `entitlements` filtra os vídeos premium em `cinevs.ts` (extract
+   * e fonte-nativa), e está registrado em `direitosAplicados`. Qualquer outro
+   * campo de fonte/servidor/suporte continua sendo promessa sem enforcement.
    */
   test("nenhum campo de fonte/servidor VIP foi inventado no plano", () => {
     for (const p of [PLANO_GRATUITO, ...PLANOS_COMERCIAIS]) {
-      const campos = Object.keys(p).join(" ").toLowerCase();
+      const campos = Object.keys(p).filter((k) => k !== "servidorVip").join(" ").toLowerCase();
       for (const inventado of ["vip", "servidor", "fonte", "suporte", "prioritario"]) {
         assert.equal(
           campos.includes(inventado),

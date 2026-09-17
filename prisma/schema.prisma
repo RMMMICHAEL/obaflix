@@ -383,10 +383,17 @@ model Plano {
   /// "nenhum" | "limitado" | "completo"
   tvNivel String @default("limitado")
 
+  /// Servidor VIP incluso no plano. Default `false`, como todo direito aqui.
+  /// Não é o único caminho: o adicional avulso fica em `Assinatura.servidorVip`.
+  /// Quem decide o acesso é o direito efetivo (`plano OR adicional`), resolvido
+  /// em `entitlements.ts` — nunca o nome do plano.
+  servidorVip Boolean @default(false)
+
   criadoEm     DateTime @default(now())
   atualizadoEm DateTime @updatedAt
 
   precos      PlanoPreco[]
+  adicionais  PlanoAdicionalPreco[]
   assinaturas Assinatura[]
   pedidos     PedidoPagamento[]
 
@@ -402,9 +409,14 @@ model PlanoPreco {
   planoId String
   plano   Plano  @relation(fields: [planoId], references: [id], onDelete: Cascade)
 
-  /// O que o usuário lê: "Mensal", "6 meses", "Anual".
-  rotulo      String
-  duracaoDias Int
+  /// O que o usuário lê: "30 dias", "5 meses", "1 ano".
+  rotulo String
+
+  /// Exatamente um dos dois (CHECK `PlanoPreco_duracao_check`). Dias somam
+  /// 24 h cada; meses somam meses de calendário no horário de Brasília, com o
+  /// último dia do mês quando o dia não existe (`billing/vigencia.ts`).
+  duracaoDias  Int?
+  duracaoMeses Int?
 
   /// **Centavos, inteiro, sempre.** Nunca float — 8.90 não existe em binário e
   /// o erro aparece na conferência do webhook, que compara o valor pago com o
@@ -425,6 +437,29 @@ model PlanoPreco {
   pedidos     PedidoPagamento[]
 
   @@index([planoId, ativo, ordem])
+}
+
+/// Preço mensal de um adicional de um plano: tela extra ou servidor VIP avulso.
+///
+/// Mensal porque o adicional acompanha a duração inteira da assinatura: o total
+/// é `precoMensalCentavos × meses cobráveis` (30 dias = 1 mês). No máximo um
+/// preço ativo por (plano, tipo) — índice único parcial no SQL.
+model PlanoAdicionalPreco {
+  id      String @id @default(cuid())
+  planoId String
+  plano   Plano  @relation(fields: [planoId], references: [id], onDelete: Cascade)
+
+  /// "tela" | "servidor_vip"
+  tipo String
+
+  precoMensalCentavos Int
+  moeda               String  @default("BRL")
+  ativo               Boolean @default(true)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  @@index([planoId, ativo])
 }
 
 /// A assinatura de uma conta.
@@ -472,6 +507,14 @@ model Assinatura {
   /// e não `Restrict`.
   pedidoId String?          @unique
   pedido   PedidoPagamento? @relation(fields: [pedidoId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// Telas extras compradas com este período (0 a 2, CHECK). Acompanham a
+  /// duração inteira; somam-se a `Plano.telasMax` no direito efetivo.
+  telasAdicionais Int @default(0)
+
+  /// Servidor VIP avulso comprado com este período. O direito efetivo é
+  /// `Plano.servidorVip OR Assinatura.servidorVip`.
+  servidorVip Boolean @default(false)
 
   /// Anotação de suporte. Nunca dado de pagamento, nunca documento.
   observacao String?
@@ -542,9 +585,28 @@ model PedidoPagamento {
   valorCentavos Int
   moeda         String @default("BRL")
 
-  /// Snapshot de `PlanoPreco.duracaoDias`. CHECK `> 0`. É o que a Fase 5 usa
-  /// para calcular `terminaEm` sem reler a tabela de preços.
-  duracaoDias Int
+  /// Snapshot da duração de `PlanoPreco`: exatamente um dos dois (CHECK). É o
+  /// que a confirmação usa para calcular `terminaEm` sem reler a tabela.
+  duracaoDias  Int?
+  duracaoMeses Int?
+
+  /// Adicionais comprados, em snapshot. Viram colunas da `Assinatura` criada.
+  telasAdicionais Int     @default(0)
+  servidorVip     Boolean @default(false)
+
+  /// Composição do valor cobrado: `valorCentavos = valorPlanoCentavos +
+  /// valorAdicionaisCentavos - creditoCentavos` (CHECK). `valorPlanoCentavos`
+  /// é null só em pedidos anteriores a esta estrutura.
+  valorPlanoCentavos      Int?
+  valorAdicionaisCentavos Int  @default(0)
+  /// Crédito do período não utilizado, calculado pelo servidor. Só em upgrade.
+  creditoCentavos         Int  @default(0)
+
+  /// "nova" | "renovacao" | "upgrade" | "downgrade" — decidida no servidor.
+  operacao String @default("nova")
+
+  /// Ids das assinaturas que o upgrade substitui e cujo valor foi creditado.
+  assinaturasSubstituidas String[] @default([])
 
   /// Nossa referência, gerada no servidor com 128 bits de aleatoriedade e
   /// enviada à Blackcat em `externalRef`. Imprevisível de propósito: um id
@@ -571,6 +633,7 @@ model PedidoPagamento {
   /// da FK criada na Fase 4; nenhuma linha é criada por esta fase.
   assinatura Assinatura?
   eventos    EventoPagamento[]
+  revisoes   RevisaoPagamento[]
 
   /// "os pedidos desta conta, do mais novo para o mais velho" — a listagem de
   /// suporte e a trava de retentativa.
@@ -595,6 +658,64 @@ model EventoPagamento {
   @@unique([provedor, transacaoId, evento, statusInformado])
   @@index([pedidoId, recebidoEm])
   @@index([resultado, recebidoEm])
+}
+
+// ── Revisão manual de pagamentos ─────────────────────────────────────────────
+//
+// PROPOSTA DE SCHEMA, SEM MIGRATION. Os dois modelos abaixo exigem tabelas que
+// não existem em banco nenhum. O SQL proposto está em
+// docs/revisao-manual-pagamentos.md; criar ou aplicar a migration depende de
+// autorização explícita.
+
+/// Um caso de revisão de um pedido. No máximo um PENDENTE por pedido (índice
+/// único parcial no SQL proposto — o Prisma 5 não o expressa).
+model RevisaoPagamento {
+  id       String          @id @default(cuid())
+  pedidoId String
+  pedido   PedidoPagamento @relation(fields: [pedidoId], references: [id], onDelete: NoAction)
+  /// Desnormalizado de propósito: a trava de compra por conta e a consulta
+  /// administrativa filtram por conta sem juntar com o pedido.
+  userId   String
+
+  /// Código interno do primeiro motivo (`MOTIVOS_DE_REVISAO` em
+  /// src/lib/billing/revisao.ts). Motivos posteriores ficam no histórico.
+  motivo   String
+  /// "PENDENTE" | "RESOLVIDA" (CHECK no SQL proposto).
+  status   String
+  /// Código da resolução (`RESOLUCOES_DE_REVISAO`). Nulo enquanto pendente.
+  resolucao String?
+
+  abertaEm     DateTime  @default(now())
+  resolvidaEm  DateTime?
+  atualizadoEm DateTime  @updatedAt
+
+  eventos RevisaoPagamentoEvento[]
+
+  @@index([status, abertaEm])
+  @@index([userId, status])
+  @@index([pedidoId])
+}
+
+/// Histórico imutável de um caso: abertura, motivos, ações executadas ou
+/// recusadas e resolução. Nunca guarda payload do provedor nem dado pessoal.
+model RevisaoPagamentoEvento {
+  id        String           @id @default(cuid())
+  revisaoId String
+  revisao   RevisaoPagamento @relation(fields: [revisaoId], references: [id], onDelete: NoAction)
+  /// "aberta" | "motivo_registrado" | "acao_executada" | "acao_recusada" | "resolvida"
+  tipo      String
+  /// Código interno: motivo, ação ou `acao:recusa`.
+  codigo    String
+  /// "sistema", "token_admin" ou o id do usuário admin.
+  ator      String
+  /// Texto curto do operador (ações administrativas). Sem dado de pagamento.
+  observacao String?
+  /// Chave enviada pelo operador. Única: repetir a mesma ação não a executa de
+  /// novo — devolve o registro anterior.
+  chaveIdempotencia String? @unique
+  criadoEm  DateTime @default(now())
+
+  @@index([revisaoId, criadoEm])
 }
 
 // ── Canais ao vivo ───────────────────────────────────────────────────────────

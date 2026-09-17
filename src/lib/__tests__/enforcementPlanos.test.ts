@@ -454,7 +454,7 @@ describe("o seed e o script de ajuste, como código", () => {
   test("o ajuste exige --apply e recusa se sobrar inversão", () => {
     assert.ok(ajuste.includes('process.argv.includes("--apply")'));
     assert.match(ajuste, /RECUSADO/);
-    assert.ok(ajuste.includes("inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS })"));
+    assert.ok(ajuste.includes("inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false })"));
   });
 
   /** Não toca em ehPadrao: mudar isso poderia deixar o sistema sem plano padrão. */

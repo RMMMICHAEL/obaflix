@@ -25,6 +25,8 @@
 //   • nada é servido por proxy público a partir daqui.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { videoPermitidoPorVip, type DireitoServidorVip } from "./servidorVipRegra";
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -351,6 +353,12 @@ export interface CineVsQuery {
   titleHint?: string;
   /** true = ignora o gate CINEVS_ENABLED (execução local de diagnóstico). */
   diagnostic?: boolean;
+  /**
+   * Direito `servidorVip` da conta, resolvido no servidor (`servidorVipDaConta`).
+   * `false`: vídeo `is_premium` não é listado nem resolvido. `undefined`: direito
+   * não modelado — nenhum filtro, comportamento anterior.
+   */
+  servidorVip?: DireitoServidorVip;
 }
 
 // ── Pipeline principal ───────────────────────────────────────────────────────
@@ -470,7 +478,11 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
 
     // TODAS as opcoes viram fontes rotuladas — e nao so a primeira que resolve.
     // Listar nao custa chamada nenhuma: `/videos` ja foi buscado acima.
-    const fontes = rotularFontes(videos, {
+    // Servidor VIP: sem o direito, video `is_premium` nao entra na lista, nao e
+    // escolhido automaticamente e, pedido por id, nao e resolvido. O filtro vem
+    // antes de rotular para a lista devolvida ao cliente ja sair sem eles.
+    const permitidos = videos.filter((v) => videoPermitidoPorVip(Boolean(v.is_premium), q.servidorVip));
+    const fontes = rotularFontes(permitidos, {
       temAssinatura: vData.has_subscription !== false,
       temVip: vData.has_vip_access !== false,
     });
@@ -486,6 +498,11 @@ export async function extractCineVs(q: CineVsQuery): Promise<CineVsResult | null
     const pedida = q.videoId ? porId(q.videoId) : null;
     if (q.videoId && !pedida) {
       log("video_inexistente", { videoId: q.videoId });
+      return null;
+    }
+    // Caminho direto: um `videoId` premium conhecido nao abre sem o direito.
+    if (pedida && !videoPermitidoPorVip(Boolean(pedida.is_premium), q.servidorVip)) {
+      log("fonte_indisponivel", { videoId: pedida.id, motivo: "requer servidor VIP" });
       return null;
     }
     if (pedida) {

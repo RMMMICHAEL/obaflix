@@ -6,12 +6,14 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
-import { criarProvedorBlackcat } from "@/lib/billing/blackcat";
+import { provedorDeCobranca } from "@/lib/billing/simulado";
 import {
   identificadorComercial,
   montarPagador,
   type CorpoDoPagador,
 } from "@/lib/billing/pagador";
+import { validarOpcoesComerciais, type CorpoDasOpcoes } from "@/lib/billing/opcoes";
+import { abrirRevisao, travarContaParaCobranca, MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 import {
   campoFinanceiroNoCorpo,
   cobrancaPixAtiva,
@@ -26,20 +28,27 @@ import {
  * **Esta rota não ativa assinatura.** Ela devolve um QR. Nenhuma resposta dela,
  * nenhum retorno do cliente para ela e nenhuma visita a `invoiceUrl` concede
  * direito. A única transição para `PAGO` acontece na confirmação
- * servidor→servidor da Fase 5, que ainda não existe.
+ * servidor→servidor (`billing/confirmacao.ts`).
  *
  * A rota é fina de propósito: ela cuida do que é HTTP — flag, origem, sessão,
  * IP, limite, tamanho e forma do corpo — e entrega o resto a
  * `criarPedidoPix`, que é onde a regra vive e onde os testes a alcançam sem
  * `NextRequest`, sem banco e sem rede.
  *
- * **Não existe `GET` nesta fase.** Consultar estado de pedido é polling, e
- * polling pertence à fase que tem o que consultar.
+ * ## Assinatura vigente
+ *
+ * Não é mais recusada. O servidor classifica a compra (`vigencia.ts`):
+ * renovação do mesmo plano soma ao vencimento; downgrade começa no fim do
+ * período pago; upgrade é imediato, com crédito proporcional do que não foi
+ * usado, calculado aqui e nunca informado pelo cliente.
+ *
+ * **Não existe `GET` nesta rota.** O estado do pedido é consultado em
+ * `/api/billing/orders/[id]`.
  */
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
-/** Um corpo de dois identificadores e três campos curtos. 2 KB sobra. */
+/** Identificadores, pagador e opções curtas. 2 KB sobra. */
 const LIMITE_DO_CORPO = 2048;
 
 // ── Limites ──────────────────────────────────────────────────────────────────
@@ -73,17 +82,24 @@ function erro(status: number, codigo: string, mensagem: string) {
 const INDISPONIVEL = () =>
   erro(503, "cobranca_indisponivel", "Pagamento temporariamente indisponível");
 
+/** Mensagens das recusas de composição da compra. Códigos estáveis, sem detalhe interno. */
+const MENSAGEM_DA_RECUSA: Record<string, string> = {
+  duracao_invalida: "Duração indisponível",
+  telas_acima_do_limite: "Limite de telas adicionais excedido",
+  adicional_indisponivel: "Adicional indisponível",
+  servidor_vip_ja_incluso: "O servidor VIP já está incluso neste plano",
+  credito_maior_que_compra: "Escolha uma duração que cubra o crédito do seu plano atual",
+  parametros_invalidos: "Parâmetros inválidos",
+};
+
 // ── Corpo ────────────────────────────────────────────────────────────────────
 
 /**
- * O corpo aceito: dois identificadores comerciais e os dados do pagador que a
- * Blackcat exige e o nosso banco não tem.
- *
- * A validação de cada campo vive em `@/lib/billing/pagador` — um módulo de rota
- * só pode exportar os verbos HTTP, então funções deixadas aqui seriam
- * inalcançáveis pelos testes.
+ * O corpo aceito: dois identificadores comerciais, os dados do pagador que a
+ * Blackcat exige e o nosso banco não tem, e as opções (cupom, telas extras, VIP
+ * avulso). Nenhum campo de valor.
  */
-interface Corpo extends CorpoDoPagador {
+interface Corpo extends CorpoDoPagador, CorpoDasOpcoes {
   planoId?: unknown;
   planoPrecoId?: unknown;
 }
@@ -96,9 +112,6 @@ interface Corpo extends CorpoDoPagador {
  * Fica aqui, e não em `pedidos.ts`, para o serviço permanecer sem import de
  * Prisma — é o que permite os testes exercitarem todos os caminhos sem
  * `DATABASE_URL`.
- *
- * `select` explícito em `buscarPreco`: a consulta traz o que decide a compra e
- * nada mais.
  */
 const repositorio: RepositorioDePedidos = {
   async buscarPreco(planoPrecoId) {
@@ -110,21 +123,69 @@ const repositorio: RepositorioDePedidos = {
         rotulo: true,
         precoCentavos: true,
         duracaoDias: true,
+        duracaoMeses: true,
         moeda: true,
         ativo: true,
-        plano: { select: { id: true, nome: true, ativo: true } },
+        plano: { select: { id: true, nome: true, ativo: true, ordem: true, servidorVip: true } },
       },
     });
   },
 
-  async criar(dados: NovoPedido) {
-    const { descricao: _descricao, ...colunas } = dados;
-    // `descricao` é do snapshot em memória, para a fatura do provedor. Não vira
-    // coluna: repetir o nome comercial do plano numa linha por tentativa de
-    // compra não responde nenhuma pergunta que `planoId` já não responda.
-    return prisma.pedidoPagamento.create({
-      data: colunas,
+  async buscarAdicionais(planoId) {
+    const linhas = await prisma.planoAdicionalPreco.findMany({
+      where: { planoId, ativo: true, moeda: "BRL" },
+      select: { tipo: true, precoMensalCentavos: true },
+    });
+    return {
+      telaMensalCentavos: linhas.find((l) => l.tipo === "tela")?.precoMensalCentavos ?? null,
+      servidorVipMensalCentavos: linhas.find((l) => l.tipo === "servidor_vip")?.precoMensalCentavos ?? null,
+    };
+  },
+
+  async periodosEmAberto(userId, agora) {
+    const linhas = await prisma.assinatura.findMany({
+      where: { userId, status: "ATIVA", terminaEm: { gt: agora } },
+      select: {
+        id: true, planoId: true, iniciaEm: true, terminaEm: true,
+        plano: { select: { ordem: true } },
+        pedido: { select: { valorCentavos: true } },
+      },
+    });
+    // Período sem pedido (cortesia, admin) não gera crédito: não houve pagamento.
+    return linhas.map((l) => ({
+      id: l.id,
+      planoId: l.planoId,
+      ordemDoPlano: l.plano.ordem,
+      iniciaEm: l.iniciaEm,
+      terminaEm: l.terminaEm,
+      valorPagoCentavos: l.pedido?.valorCentavos ?? 0,
+    }));
+  },
+
+  async revisaoPendente(userId) {
+    const caso = await prisma.revisaoPagamento.findFirst({
+      where: { userId, status: "PENDENTE" },
       select: { id: true },
+    });
+    return caso !== null;
+  },
+
+  async criar(dados: NovoPedido) {
+    const { descricao: _descricao, iniciaEmPrevisto: _inicio, ...colunas } = dados;
+    // `descricao` e `iniciaEmPrevisto` ficam em memória: um vai para a fatura do
+    // provedor, o outro para a resposta. O início real é decidido na confirmação.
+    //
+    // Conta travada durante a checagem e a gravação. Quem abre revisão usa a
+    // mesma trava; com requisições simultâneas, uma espera a outra e a checagem
+    // enxerga o caso que acabou de ser gravado.
+    return prisma.$transaction(async (tx) => {
+      await travarContaParaCobranca(tx, colunas.userId);
+      const pendente = await tx.revisaoPagamento.findFirst({
+        where: { userId: colunas.userId, status: "PENDENTE" },
+        select: { id: true },
+      });
+      if (pendente) return null;
+      return tx.pedidoPagamento.create({ data: colunas, select: { id: true } });
     });
   },
 
@@ -135,10 +196,16 @@ const repositorio: RepositorioDePedidos = {
     });
   },
 
-  async registrarFalha(pedidoId, { status, transacaoId }) {
-    await prisma.pedidoPagamento.update({
-      where: { id: pedidoId },
-      data: transacaoId ? { status, transacaoId } : { status },
+  async registrarFalha(pedidoId, { status, transacaoId, motivo }) {
+    const data = transacaoId ? { status, transacaoId } : { status };
+    if (status !== "REVISAO_MANUAL") {
+      await prisma.pedidoPagamento.update({ where: { id: pedidoId }, data });
+      return;
+    }
+    // Pedido em revisão e caso aberto juntos: nunca um sem o outro.
+    await prisma.$transaction(async (tx) => {
+      const pedido = await tx.pedidoPagamento.update({ where: { id: pedidoId }, data, select: { userId: true } });
+      await abrirRevisao(tx, { pedidoId, userId: pedido.userId, motivo: motivo ?? "criacao_falha_com_transacao" });
     });
   },
 };
@@ -174,23 +241,10 @@ export async function POST(req: NextRequest) {
   }
   const userId = usuario.userId;
 
-  // Não cobramos de novo uma conta que já tem assinatura válida. Upgrade,
-  // renovação e prorrata exigem regra comercial explícita; não são inferidos.
-  const assinaturaAtiva = await prisma.assinatura.findFirst({
-    where: { userId, status: "ATIVA", iniciaEm: { lte: new Date() }, terminaEm: { gt: new Date() } },
-    select: { id: true },
-  });
-  if (assinaturaAtiva) {
-    return erro(409, "assinatura_ativa", "Você já possui uma assinatura ativa");
-  }
-
-  // 5. Limites. Os dois sempre, e nesta ordem: a conta é o sujeito da cobrança,
+  // 4. Limites. Os dois sempre, e nesta ordem: a conta é o sujeito da cobrança,
   //    o IP é o que impede contornar o limite da conta criando contas.
   //
-  //    `checkRateLimit` resolve o Redis por dentro, e em produção sem Upstash
-  //    `getRedis()` lança. **Dinheiro não falha aberto**: o `catch` recusa, em
-  //    vez de deixar passar. Um limite que some quando o Redis some não é
-  //    limite, e aqui cada passagem é uma venda no painel do provedor.
+  //    **Dinheiro não falha aberto**: o `catch` recusa, em vez de deixar passar.
   try {
     const [porConta, porIp] = await Promise.all([
       checkRateLimit(`billing:orders:user:${userId}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS),
@@ -198,9 +252,6 @@ export async function POST(req: NextRequest) {
     ]);
     if (!porConta.allowed || !porIp.allowed) {
       audit("rate_limited", { userId, ip, ua, detail: "/billing/orders" });
-      // Sem contador, sem `Retry-After` calculado a partir do estado interno e
-      // sem dizer qual dos dois limites bateu — nada que ajude a calibrar uma
-      // tentativa seguinte.
       return erro(429, "muitas_tentativas", "Muitas tentativas. Tente mais tarde");
     }
   } catch {
@@ -208,7 +259,7 @@ export async function POST(req: NextRequest) {
     return INDISPONIVEL();
   }
 
-  // 6. Corpo, com teto pequeno.
+  // 5. Corpo, com teto pequeno.
   let corpo: Corpo;
   try {
     corpo = await readJsonBody<Corpo>(req, LIMITE_DO_CORPO);
@@ -219,14 +270,24 @@ export async function POST(req: NextRequest) {
     return erro(400, "parametros_invalidos", "Parâmetros inválidos");
   }
 
-  // 7. A fronteira de confiança, explícita. Nenhum destes campos influenciaria
-  //    a cobrança de qualquer forma — o valor sai do banco. Recusar em vez de
-  //    ignorar existe para a fronteira ficar inequívoca: quem manda `amount`
-  //    está errado sobre como esta API funciona, e um 201 cobrando outro valor
-  //    deixaria a dúvida de pé.
+  // 6. A fronteira de confiança, explícita. Valor, total, crédito ou preço no
+  //    corpo são recusados — o servidor calcula tudo.
   const proibido = campoFinanceiroNoCorpo(corpo as Record<string, unknown>);
   if (proibido) {
     return erro(400, "campo_nao_permitido", "Parâmetros inválidos");
+  }
+
+  // 7. Opções: cupom (indisponível), telas extras e VIP avulso (formato). O
+  //    código vai para o log; o valor do cupom, não.
+  const opcoes = validarOpcoesComerciais(corpo as CorpoDasOpcoes);
+  if (!opcoes.ok) {
+    audit("billing_order_failed", { userId, ip, ua, detail: `opcoes: ${opcoes.codigo}` });
+    const mensagem = opcoes.codigo === "cupom_invalido"
+      ? "Cupom inválido"
+      : opcoes.codigo === "adicional_indisponivel"
+        ? "Adicional indisponível"
+        : "Parâmetros inválidos";
+    return erro(opcoes.codigo === "parametros_invalidos" ? 400 : 422, opcoes.codigo, mensagem);
   }
 
   const planoId = identificadorComercial(corpo.planoId);
@@ -240,8 +301,6 @@ export async function POST(req: NextRequest) {
     select: { nome: true, email: true },
   });
   if (!conta) {
-    // Sessão válida para uma conta que não existe mais. Não é 401 (o token está
-    // bom) e não é 500 (nada quebrou) — é um pedido que não pode ser atendido.
     return erro(401, "acesso_negado", "Acesso negado");
   }
 
@@ -251,46 +310,47 @@ export async function POST(req: NextRequest) {
   }
 
   // O provedor é montado ANTES de qualquer escrita: sem chave de API, a resposta
-  // é 503 e **nenhum pedido é criado**. Falha de configuração nossa não pode
-  // deixar linha de cobrança pendurada no banco.
-  const provedor = criarProvedorBlackcat();
+  // é 503 e **nenhum pedido é criado**.
+  // Blackcat, ou a simulação — só com as três condições do ambiente isolado.
+  const { provedor, nome: nomeDoProvedor } = provedorDeCobranca();
   if (!provedor) {
     audit("billing_order_failed", { userId, ip, ua, detail: "provedor nao configurado" });
     return INDISPONIVEL();
   }
 
-  // 8–13. Preço do banco, snapshot, pedido CRIADO, chamada, conferência de valor
-  //       e AGUARDANDO. Tudo em `criarPedidoPix`.
+  // 8. Preço, adicionais, operação e crédito do banco; snapshot; pedido CRIADO;
+  //    chamada; conferência de valor; AGUARDANDO. Tudo em `criarPedidoPix`.
   let resultado;
   try {
-    resultado = await criarPedidoPix({ userId, planoId, planoPrecoId, pagador }, {
-      repo: repositorio,
-      provedor,
-    });
+    resultado = await criarPedidoPix(
+      {
+        userId, planoId, planoPrecoId, pagador,
+        telasAdicionais: opcoes.telasAdicionais,
+        servidorVip: opcoes.servidorVip,
+      },
+      { repo: repositorio, provedor, nomeDoProvedor },
+    );
   } catch {
-    // Banco fora, ou a gravação do `transacaoId` falhou depois de a venda existir
-    // no provedor. Nenhum detalhe sai daqui — nem mensagem, nem stack, nem SQL.
     audit("billing_order_failed", { userId, ip, ua, detail: "erro interno" });
     return INDISPONIVEL();
   }
 
   if (resultado.situacao === "nao_compravel") {
-    // 422 e não 404: os identificadores podem existir perfeitamente — o que não
-    // existe é a possibilidade de comprá-los agora. O motivo interno vai para o
-    // log; o cliente recebe um código só, para não conseguir sondar quais
-    // preços estão ativos.
     audit("billing_order_failed", { userId, ip, ua, detail: `nao compravel: ${resultado.motivo}` });
     return erro(422, "plano_indisponivel", "Plano indisponível para compra");
   }
 
+  if (resultado.situacao === "revisao_pendente") {
+    audit("billing_order_blocked_review", { userId, ip, ua, detail: "/billing/orders" });
+    return erro(409, "pagamento_em_revisao", MENSAGEM_DE_REVISAO_AO_COMPRADOR);
+  }
+
+  if (resultado.situacao === "compra_recusada") {
+    audit("billing_order_failed", { userId, ip, ua, detail: `compra recusada: ${resultado.codigo}` });
+    return erro(422, resultado.codigo, MENSAGEM_DA_RECUSA[resultado.codigo] ?? "Parâmetros inválidos");
+  }
+
   if (resultado.situacao === "revisao_manual") {
-    // Existe uma venda no provedor que não podemos usar: valor diferente do
-    // combinado, estado que não é `PENDING`, ou já vencida. Não entregamos o PIX
-    // como sucesso e nada é ativado. Para o cliente é indistinguível de uma
-    // falha de gateway — e é assim que deve ser.
-    //
-    // O `motivo` é um código do conjunto fechado de `MotivoDeRevisao`, nunca
-    // texto do provedor.
     audit("billing_order_failed", {
       userId, ip, ua,
       detail: `revisao manual (${resultado.motivo}): pedido ${resultado.pedidoId}`,
@@ -308,19 +368,12 @@ export async function POST(req: NextRequest) {
 
   audit("billing_order_created", {
     userId, ip, ua,
-    detail: `pedido ${resultado.pedidoId}`,
+    detail: `pedido ${resultado.pedidoId} operacao:${resultado.operacao}`,
   });
 
-  // 14. A resposta, no nosso contrato.
-  //
-  // O QR e o copia-e-cola vão aqui — resposta autenticada, `no-store`, para quem
-  // acabou de criar o pedido. **Não são persistidos e não são logados**: guardar
-  // o copia-e-cola transformaria um vazamento de backup em meio de pagamento
-  // utilizável.
-  //
-  // Fora daqui, de propósito: `transactionId` (o cliente trabalha com o nosso
-  // `pedidoId`), `netAmount`, `fees`, `invoiceUrl`, `refExterna`, nome do
-  // provedor e qualquer parte do payload da Blackcat.
+  // 9. A resposta, no nosso contrato. O QR e o copia-e-cola não são persistidos
+  //    nem logados. `operacao`, `creditoCentavos` e `iniciaEm` explicam o valor;
+  //    o início definitivo é recalculado na confirmação.
   return NextResponse.json(
     {
       pedidoId: resultado.pedidoId,
@@ -328,6 +381,9 @@ export async function POST(req: NextRequest) {
       valorCentavos: resultado.valorCentavos,
       moeda: resultado.moeda,
       expiraEm: resultado.expiraEm.toISOString(),
+      operacao: resultado.operacao,
+      creditoCentavos: resultado.creditoCentavos,
+      iniciaEm: resultado.iniciaEmPrevisto.toISOString(),
       pix: {
         qrCode: resultado.pix.qrCode,
         qrCodeBase64: resultado.pix.qrCodeBase64,

@@ -1,0 +1,44 @@
+# Ambiente ISOLADO de testes. Somente nomes; nenhum valor real aqui.
+#
+# Cada valor abaixo precisa ser EXCLUSIVO deste ambiente. Reaproveitar qualquer
+# um de Production (ou do Preview atual, que usa o banco de Production) quebra
+# o isolamento. Ver docs/ambiente-teste.md.
+
+# ── Identificacao ────────────────────────────────────────────────────────────
+OBAFLIX_AMBIENTE=teste
+# UUID gravado em _ObaflixAmbiente pelo 01-marcador-do-banco-de-teste.sql
+OBAFLIX_AMBIENTE_ID=
+
+# ── Banco exclusivo (projeto novo, dados ficticios) ──────────────────────────
+DATABASE_URL=
+DIRECT_URL=
+
+# ── Redis exclusivo (banco Upstash novo) ─────────────────────────────────────
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+REDIS_URL=
+
+# ── Sessao: segredo proprio; URL do deploy de teste ──────────────────────────
+NEXTAUTH_SECRET=
+NEXTAUTH_URL=
+NEXT_PUBLIC_SITE_URL=
+
+# ── Operacao: valores proprios ───────────────────────────────────────────────
+ADMIN_SECRET_TOKEN=
+CRON_SECRET=
+
+# ── Monetizacao: ligada SO aqui ──────────────────────────────────────────────
+MONETIZACAO_ATIVA=true
+BLACKCAT_PIX_ATIVO=true
+BLACKCAT_CONFIRMACAO_ATIVA=true
+
+# ── Pagamento: ver docs/ambiente-teste.md §4 ─────────────────────────────────
+# Sandbox do provedor, se houver: chave de sandbox e base de sandbox.
+BLACKCAT_API_KEY=
+BLACKCAT_API_BASE_URL=
+# Segredo proprio do caminho do webhook deste ambiente.
+BLACKCAT_WEBHOOK_PATH_SECRET=
+
+# ── Canais: Worker de teste (opcional, so para smoke de canais) ──────────────
+CANAIS_MEDIA_BASE=
+CANAIS_MEDIA_SIGNING_SECRET=

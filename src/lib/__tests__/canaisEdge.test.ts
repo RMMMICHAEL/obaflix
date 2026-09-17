@@ -239,9 +239,19 @@ test("handoff: grant A → renovação → grant B, com grace e revogação", as
       }
     });
 
-    await t.test("A continua valendo DURANTE a grace — é o que salva o player", async () => {
+    await t.test("A continua valendo DURANTE a grace — é o que salva o player", async (t2) => {
       // Este é o teste que a versão anterior não tinha, e o defeito que ele
       // pega: sem grace, girar o nonce mataria o player no mesmo instante.
+      //
+      // Relógio congelado nesta verificação. O manifesto assina cada segmento
+      // com `e = segundo atual + TTL`; comparar com `segmentosDeB`, cunhado
+      // subtestes antes, falhava sempre que uma fronteira de segundo caía entre
+      // as duas requisições (reproduzido forçando a fronteira: mesmo caminho,
+      // `e` +1 e `k` diferente). A comparação continua exata — só passa a ser
+      // entre dois manifestos do mesmo instante.
+      const instante = Date.now();
+      t2.mock.method(Date, "now", () => instante);
+
       const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
       assert.equal(r.status, 200, "a geração anterior tem de sobreviver à janela");
 
@@ -250,9 +260,18 @@ test("handoff: grant A → renovação → grant B, com grace e revogação", as
       }
 
       // E o manifesto antigo já devolve segmentos da geração NOVA, que é o que
-      // faz o handoff ser quase invisível.
+      // faz o handoff ser quase invisível: assinados com o nonce de B, iguais
+      // aos que o manifesto de B entrega no mesmo instante.
       const doAntigo = segmentosDe(await r.text());
-      assert.deepEqual(doAntigo, segmentosDeB, "durante a grace, A serve segmentos de B");
+      const rB = await tratarCanal(new Request(urlDoManifesto(B.sessionId, B.exp, B.sig)), ENV);
+      const deB = segmentosDe(await rB.text());
+      assert.equal(deB.length, 2);
+      assert.deepEqual(doAntigo, deB, "durante a grace, A serve segmentos de B");
+      assert.deepEqual(
+        doAntigo.map((u) => new URL(u).pathname),
+        segmentosDeB.map((u) => new URL(u).pathname),
+        "mesmos recursos que B já entregava",
+      );
     });
 
     await t.test("A morre DEPOIS da grace", async () => {
@@ -383,18 +402,37 @@ test("descobertas concorrentes de bases diferentes não trocam os ids", async ()
 
     // Os ids são diferentes (bases diferentes) e cada um resolve para o SEU
     // host — a asserção que o índice mutável não sustentava.
+    //
+    // Qual das duas chamadas pega `manifestoA` da fila não é garantido: a ordem
+    // das buscas ao CDN depende de como as etapas assíncronas (Redis, HMAC) se
+    // intercalam. Com a ordem perturbada, `resp1` recebeu `manifestoB` e a
+    // versão posicional falhava sem defeito nenhum no Worker. Então cada
+    // segmento é casado com o manifesto que ele de fato veio: pelo upstream que
+    // ele busca.
     const id1 = new URL(seg1).pathname.split("/")[4];
     const id2 = new URL(seg2).pathname.split("/")[4];
     assert.notEqual(id1, id2);
-    assert.equal(amb.redis.dados.get(chaveDaBase(id1)), "https://segmentos.example.test/x/");
-    assert.equal(amb.redis.dados.get(chaveDaBase(id2)), "https://outro.example.test/y/");
 
-    // E buscar cada segmento vai ao host certo.
-    amb.buscas.length = 0;
-    await tratarCanal(new Request(seg1), ENV);
-    await tratarCanal(new Request(seg2), ENV);
-    assert.ok(amb.buscas.some((u) => u === "https://segmentos.example.test/x/s1.ts"));
-    assert.ok(amb.buscas.some((u) => u === "https://outro.example.test/y/s2.ts"));
+    const upstreamDe = async (seg: string) => {
+      amb.buscas.length = 0;
+      await tratarCanal(new Request(seg), ENV);
+      assert.equal(amb.buscas.length, 1, "um segmento, uma busca upstream");
+      return amb.buscas[0];
+    };
+    const pares = [
+      { id: id1, upstream: await upstreamDe(seg1) },
+      { id: id2, upstream: await upstreamDe(seg2) },
+    ];
+
+    // Os dois recursos foram buscados, cada um no seu host...
+    assert.deepEqual(
+      pares.map((p) => p.upstream).sort(),
+      ["https://outro.example.test/y/s2.ts", "https://segmentos.example.test/x/s1.ts"],
+    );
+    // ...e o id de cada segmento aponta para a base do próprio upstream.
+    for (const p of pares) {
+      assert.equal(amb.redis.dados.get(chaveDaBase(p.id)), p.upstream.replace(/[^/]+$/, ""));
+    }
   } finally {
     amb.restaurar();
   }

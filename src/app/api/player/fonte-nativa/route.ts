@@ -7,6 +7,7 @@ import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { resolverFonte, ambienteDaSessao, resolvidoNoServidor } from "@/lib/fontes";
 import { extractCineVs } from "@/lib/cinevs";
+import { servidorVipDaConta } from "@/lib/servidorVip";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -136,6 +137,9 @@ export async function POST(req: NextRequest) {
       season: Number(alvo.searchParams.get("season") ?? 1),
       episode: Number(alvo.searchParams.get("episode") ?? 1),
       titleHint: alvo.searchParams.get("q") ?? "",
+      // Vídeo premium só para quem tem o direito. Decidido aqui, no servidor,
+      // nunca por campo do cliente.
+      servidorVip: await servidorVipDaConta(userId),
     }).catch(() => null);
 
     if (!cv?.streamUrl) {

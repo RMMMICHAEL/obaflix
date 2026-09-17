@@ -86,7 +86,12 @@ function LoginForm() {
 
         <p className="text-zinc-500 text-sm text-center mt-5">
           Não tem conta?{" "}
-          <Link href="/cadastro" className="text-red-400 hover:text-red-300">Criar conta</Link>
+          <Link
+            href={callbackUrl === "/" ? "/cadastro" : `/cadastro?callbackUrl=${encodeURIComponent(callbackUrl)}`}
+            className="text-red-400 hover:text-red-300"
+          >
+            Criar conta
+          </Link>
         </p>
       </div>
     </div>
