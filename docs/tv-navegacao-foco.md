@@ -1,11 +1,11 @@
 # Android TV - Navegacao por foco
 
-> **Baseline final desta rodada:** `a6bdff5` (0.7.26). A arquitetura de foco da Home
+> **Baseline final homologada desta rodada:** `a6bdff5` (0.7.26). A arquitetura de foco da Home
 > nao mudou desde `846d4bf0dee2`, onde foi estabilizada.
 > Branch `feat/tv-planos-promocao`, PR `#27`, fechamento tecnico em 2026-09-15, atualizado em 2026-09-16.
 > Handoff completo: [`android-tv-final.md`](android-tv-final.md).
 
-O commit acima e a referencia do codigo que produziu o APK final.
+O commit acima e a referencia do codigo que produziu o APK homologado.
 Commits posteriores exclusivamente documentais nao substituem essa baseline de codigo.
 
 ## Decisao canonica

@@ -5,8 +5,8 @@
 A Android TV foi fechada nesta rodada em 2026-09-15 e atualizada em 2026-09-16
 com o anuncio institucional e o checkout direto.
 
-- baseline de codigo: `a6bdff5` (0.7.26, versionCode 42);
-- ultima aprovada em TV fisica: `b9a58e0`;
+- baseline de codigo homologada em TV fisica: `a6bdff5` (0.7.26, versionCode 42);
+- baseline historica anterior: `b9a58e0`;
 - branch: `feat/tv-planos-promocao`;
 - PR: `#27`;
 - handoff: [`android-tv-final.md`](android-tv-final.md);

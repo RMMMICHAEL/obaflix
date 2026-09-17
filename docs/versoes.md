@@ -12,24 +12,24 @@ onde o build sai e onde a cópia distribuível é guardada.
 
 Atualizado originalmente em **2026-09-02**; handoff final da Android TV acrescentado em **2026-09-15** e atualizado em **2026-09-16**.
 
-### Baseline final da Android TV
+### Baseline final homologada da Android TV
 
-> Esta secao identifica a baseline de codigo e o APK final desta rodada.
+> Esta secao identifica a baseline de codigo e o APK homologado desta rodada.
 > Ela nao representa autorizacao automatica para publicacao ou merge.
 
 | Campo | Valor |
 |---|---|
 | Branch | `feat/tv-planos-promocao` |
 | PR | `#27` |
-| Commit de codigo | `a6bdff5` |
+| Commit de codigo homologado | `a6bdff5` |
 | VersionName base | `0.7.26` |
 | VersionCode | `42` |
 | VersionName homologacao | `0.7.26-homologacao` |
 | Pacote homologacao | `com.obaflix.tv.homologacao` |
-| APK final | `android/tv/build/outputs/apk/homologacao/tv-homologacao.apk` |
+| APK homologado | `android/tv/build/outputs/apk/homologacao/tv-homologacao.apk` |
 | SHA-256 daquele APK | `27E084134B4EE51F505F4D3D5AECB5B6293C8BECD45288AECAA6661DEF1D3C3A` |
-| Validacao | JVM e build OK; TV fisica deste APK pendente |
-| Ultima aprovada em TV fisica | `b9a58e0` (0.7.25/41), APK `BA86293F37D7788E8E6488EF58E51A0089B6A2CFC6FE0693492F4275D95B1996` |
+| Validacao | JVM, build e TV fisica aprovados |
+| Baseline historica anterior | `b9a58e0` (0.7.25/41), APK `BA86293F37D7788E8E6488EF58E51A0089B6A2CFC6FE0693492F4275D95B1996` |
 
 O SHA acima identifica somente aquele binario.
 

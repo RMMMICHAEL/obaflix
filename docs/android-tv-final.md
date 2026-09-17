@@ -12,26 +12,25 @@ Isto nao significa publicacao em Production nem autorizacao automatica de merge.
 
 - branch: `feat/tv-planos-promocao`;
 - PR: `#27` (`https://github.com/RMMMICHAEL/obaflix/pull/27`), aberto;
-- commit de codigo final: `a6bdff592b63f139b5b0c5274c2cd39fb622950c` (`a6bdff5`);
+- commit de codigo homologado: `a6bdff592b63f139b5b0c5274c2cd39fb622950c` (`a6bdff5`);
 - versao: `0.7.26` (versionCode `42`);
 - merge: nao realizado;
 - Production: nao alterada.
 
 Commits posteriores exclusivamente de documentacao podem mover o HEAD da branch.
-Para identificar o codigo que gerou o APK final, use sempre `a6bdff5`.
+Para identificar o codigo que gerou o APK homologado, use sempre `a6bdff5`.
 
 ### Situacao da validacao
 
 | Baseline | Codigo | APK SHA-256 | Validacao |
 |---|---|---|---|
 | `0.7.25` (41) | `846d4bf0dee2` | `423795074125a1a308d418a53ccfcae71cb235f3d4aa51df95314c3b686e1035` | emulador; crash em Perfil — **substituida** |
-| `0.7.25` (41) | `b9a58e0e34f1` | `BA86293F37D7788E8E6488EF58E51A0089B6A2CFC6FE0693492F4275D95B1996` | emulador e **TV fisica aprovadas** — **substituida** |
-| **`0.7.26` (42)** | **`a6bdff5`** | **`27E084134B4EE51F505F4D3D5AECB5B6293C8BECD45288AECAA6661DEF1D3C3A`** | JVM e build OK; anuncio validado no emulador; **TV fisica deste APK pendente** |
+| `0.7.25` (41) | `b9a58e0e34f1` | `BA86293F37D7788E8E6488EF58E51A0089B6A2CFC6FE0693492F4275D95B1996` | emulador e TV fisica — historica, **substituida** |
+| **`0.7.26` (42)** | **`a6bdff5`** | **`27E084134B4EE51F505F4D3D5AECB5B6293C8BECD45288AECAA6661DEF1D3C3A`** | JVM, build e **TV fisica aprovados** — **baseline atual** |
 
-`b9a58e0` foi a ultima baseline aprovada em TV fisica. `a6bdff5` a substitui com o
-anuncio institucional e o checkout direto; o resto do comportamento e o mesmo.
-O QR direto ao checkout e o APK `27E0…` ainda precisam do roteiro de TV fisica
-abaixo antes de serem chamados de homologados em aparelho.
+`a6bdff5` e a baseline homologada em TV fisica. Ela substitui a baseline historica
+`b9a58e0` com o anuncio institucional e o checkout direto; o resto do
+comportamento e o mesmo.
 
 ## Onde fica a Android TV
 
@@ -65,7 +64,7 @@ Pontos principais:
 
 A baseline nao deve ser confundida com uma release publica.
 
-## APK final
+## APK homologado
 
 Saida do Gradle:
 
@@ -96,10 +95,10 @@ Resultado detalhado do ambiente:
 
 `docs/ambiente-teste-resultado.md`
 
-### Configuracao de servidor para o anuncio
+### Configuracao de servidor do anuncio
 
-Sem estas variaveis o servidor responde `ANUNCIO_INDISPONIVEL` e a TV mostra
-"Reproducao gratuita indisponivel agora" — o anuncio nao aparece:
+Referencia para qualquer ambiente novo. Sem estas variaveis o servidor responde
+`ANUNCIO_INDISPONIVEL` e a TV mostra "Reproducao gratuita indisponivel agora":
 
 - `PROMOCAO_TV_VIDEO_URL` = `https://app.obaflix.online/anuncio.mp4`;
 - `PROMOCAO_TV_DURACAO_SEG` = `10` ou `11` (o video tem 11,24 s; o servidor
@@ -211,9 +210,26 @@ comportamento da busca 2D padrao e foi aceito como **nao bloqueante**.
 **Nao reintroduzir `focusProperties.enter`** para corrigir isso: a tentativa da
 versao 0.7.27 congelava o D-pad de forma reproduzivel em TV fisica.
 
-## Homologacao em TV fisica de `b9a58e0` (APK `BA86…1996`)
+## Homologacao em TV fisica de `a6bdff5` (APK `27E0…3C3A`)
 
-Aprovado, sem crash:
+`0.7.26-homologacao`, versionCode `42`. Nenhum crash.
+
+| Verificacao | Resultado |
+|---|---|
+| Instalacao por atualizacao | PASS |
+| Login preservado | PASS |
+| Home | PASS |
+| Anuncio antes de filme | PASS |
+| Escolha de plano | PASS |
+| QR direto ao checkout | PASS |
+| BACK do QR retorna a escolha final sem repetir o video | PASS |
+| `CONTINUAR GRÁTIS` libera o conteudo | PASS |
+| Anuncio antes de episodio | PASS |
+| Crash | NAO |
+
+## Historico: homologacao em TV fisica de `b9a58e0` (APK `BA86…1996`)
+
+Baseline anterior, substituida por `a6bdff5`. Aprovado, sem crash:
 
 - atualizacao sobre instalacao existente preservou o login; Home autenticada;
 - Perfil e Planos abriram;
@@ -223,18 +239,6 @@ Aprovado, sem crash:
 - logout foi ao pareamento e permaneceu la apos reabrir e reboot; novo login OK;
 - detalhe abriu; Assistir mostrou "Reproducao gratuita indisponivel agora",
   conforme o ambiente de homologacao.
-
-## Roteiro pendente para `a6bdff5` (APK `27E0…3C3A`)
-
-1. instalar por cima de `b9a58e0` (versionCode 41 → 42) e confirmar login preservado;
-2. repetir o roteiro de TV fisica acima;
-3. com as variaveis do anuncio configuradas no ambiente isolado, conta gratuita:
-   filme e episodio abrem o video; fim para na escolha final com foco em Basico;
-4. conferir o alinhamento das bordas de foco sobre os tres cards;
-5. OK em Basico, Plus e Premium: QR abre o checkout do plano certo no celular;
-   BACK volta a escolha final sem repetir o video;
-6. `CONTINUAR GRÁTIS` libera o conteudo;
-7. conta assinante: sem anuncio.
 
 ## Commits finais de codigo
 
@@ -251,7 +255,7 @@ Anteriores: `b9a58e0` (crash em Perfil), `846d4bf0dee2` (navegacao entre fileira
 3. conferir `android/tv/README.md`;
 4. localizar a branch `feat/tv-planos-promocao`;
 5. localizar o PR `#27`;
-6. usar `a6bdff5` como baseline de codigo;
+6. usar `a6bdff5` como baseline de codigo homologada;
 7. reproduzir o smoke antes de alterar foco;
 8. repetir JVM, build, assinatura e smoke depois da mudanca.
 

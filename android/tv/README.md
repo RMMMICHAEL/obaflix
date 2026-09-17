@@ -10,7 +10,7 @@ Arquitetura de foco:
 
 [`../../docs/tv-navegacao-foco.md`](../../docs/tv-navegacao-foco.md)
 
-## Baseline final
+## Baseline homologada
 
 - branch: `feat/tv-planos-promocao`;
 - PR: `#27`;
@@ -21,7 +21,7 @@ Arquitetura de foco:
 - package: `com.obaflix.tv.homologacao`;
 - Activity: `com.obaflix.tv.MainActivity`.
 
-APK final:
+APK homologado:
 
 `build/outputs/apk/homologacao/tv-homologacao.apk`
 
@@ -29,9 +29,9 @@ SHA-256 daquele binario:
 
 `27E084134B4EE51F505F4D3D5AECB5B6293C8BECD45288AECAA6661DEF1D3C3A`
 
-Esse SHA identifica apenas aquele build. Validacao em TV fisica deste APK
-pendente; a ultima aprovada em TV fisica foi `b9a58e0` (APK `BA86…1996`).
-Ver `docs/android-tv-final.md`.
+Esse SHA identifica apenas aquele build. Homologado em TV fisica (anuncio,
+QR direto ao checkout e `CONTINUAR GRÁTIS` aprovados, sem crash). Baseline
+historica anterior: `b9a58e0`. Ver `docs/android-tv-final.md`.
 
 ## Foco
 
