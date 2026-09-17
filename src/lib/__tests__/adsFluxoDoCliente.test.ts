@@ -235,9 +235,9 @@ describe("o player pergunta antes de abrir sessão", () => {
    * externos — `setWindowOpenHandler` no main, que só aceita `https:` e manda ao
    * navegador do sistema. Nenhuma ponte nova, nenhum `nodeIntegration`.
    */
-  test("o Direct Link usa window.open, sem ponte nova", () => {
+  test("o Direct Link usa a ponte restrita do Electron", () => {
     const hook = readFileSync(join(raiz, "src/components/player/useAnuncio.tsx"), "utf8");
-    assert.match(hook, /window\.open\(entrada\.directLink/);
+    assert.match(hook, /\.openSponsoredLink\(entrada\.directLink\)/);
 
     // Sem comentários: o cabeçalho do hook cita `nodeIntegration` e
     // `contextIsolation` exatamente para dizer que não os toca, e leria como se

@@ -66,13 +66,13 @@ class ErroDeCanal extends Error {
  * resolvido em vez de voltar ao provider. Ausente, ou recusado, é o caminho
  * completo.
  */
-async function pedirConcessao(canalId: string, sessionId?: string): Promise<ResultadoDePedido> {
+async function pedirConcessao(canalId: string, sessionId?: string, concessaoAnuncio?: string | null): Promise<ResultadoDePedido> {
   let r: Response;
   try {
     r = await fetch(`/api/canais/${encodeURIComponent(canalId)}/play`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify(sessionId ? { sessionId } : {}),
+      body: JSON.stringify(sessionId ? { sessionId } : concessaoAnuncio ? { concessao: concessaoAnuncio } : {}),
     });
   } catch {
     return { ok: false, definitivo: false };
@@ -105,7 +105,7 @@ async function pedirConcessao(canalId: string, sessionId?: string): Promise<Resu
   return { ok: true, concessao: corpo };
 }
 
-export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFechar: () => void }) {
+export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: ItemDeCanal; onFechar: () => void; concessaoAnuncio?: string | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [estado, setEstado] = useState<Estado>({ fase: "pedindo" });
   const [tentativa, setTentativa] = useState(0);
@@ -133,7 +133,7 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
 
     const handoff = criarHandoff({
       canalId: canal.id,
-      pedir: pedirConcessao,
+      pedir: (canalId, sessionId) => pedirConcessao(canalId, sessionId, sessionId ? null : concessaoAnuncio),
       trocarFonte: (url) => {
         aplicar(url);
         setEstado((anterior) =>
@@ -150,7 +150,7 @@ export function PlayerDeCanal({ canal, onFechar }: { canal: ItemDeCanal; onFecha
     void handoff.iniciar();
     return () => handoff.parar();
     // `tentativa` recria o handoff inteiro — é o botão "tentar de novo".
-  }, [canal.id, tentativa]);
+  }, [canal.id, concessaoAnuncio, tentativa]);
 
   // ── HLS ────────────────────────────────────────────────────────────────────
   useEffect(() => {

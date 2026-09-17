@@ -876,10 +876,11 @@ sequenceDiagram
 
 ### 11.2 A limitação, dita com clareza
 
-Um Direct Link aberto em navegador externo **não prova que o usuário
-visualizou a página nem que a manteve aberta**. O processo do Obaflix perde a
-visão no instante em que o navegador assume. Não existe callback, não existe
-postback documentado, não existe medida de tempo confiável.
+Um Direct Link aberto em navegador externo **não prova que o usuário permaneceu
+com a aba aberta durante todo o intervalo**. O Electron confirma que o sistema
+aceitou a abertura e que o aplicativo perdeu e recuperou o foco; o servidor
+controla o tempo mínimo e só então emite a concessão vinculada à conta e ao
+conteúdo. Não há callback ou postback documentado para este link.
 
 | | HARD VERIFIED AD | SOFT VERIFIED AD |
 |---|---|---|

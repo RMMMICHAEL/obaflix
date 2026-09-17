@@ -71,9 +71,14 @@ interface PonteDeAnuncioAndroid {
   mostrarAnuncio?: (capability: string, desafioId: string) => void;
 }
 
+interface PonteDesktop {
+  openSponsoredLink?: (url: string) => Promise<{ opened?: boolean; returned?: boolean }>;
+}
+
 declare global {
   interface Window {
     obaflixAds?: PonteDeAnuncioAndroid;
+    obaflixDesktop?: PonteDesktop;
     /** Resolvida pelo nativo quando o anúncio fecha. Ver `AdsScript`. */
     __obaflixAnuncioConcluido?: (desafioId: string, concluido: boolean) => void;
   }
@@ -144,7 +149,7 @@ export function useAnuncio() {
         setModal({ fase: "convite", finalidade: entrada.finalidade ?? "reproducao" });
 
         // O convite fica esperando a escolha; quem continua é `aoConfirmar`.
-        aceitarRef.current = () => {
+        aceitarRef.current = async () => {
           if (entrada.plataforma === "android") {
             const ponte = window.obaflixAds;
             const capability = ponte?.capability;
@@ -168,20 +173,29 @@ export function useAnuncio() {
             return;
           }
 
-          // Electron: `window.open` é interceptado por `setWindowOpenHandler` no
-          // main, que só abre `https:` via `shell.openExternal`. Nenhuma ponte
-          // nova, nenhum `nodeIntegration`, nenhum relaxamento de
-          // `contextIsolation` — o caminho já existia para links externos.
-          if (entrada.directLink) window.open(entrada.directLink, "_blank", "noopener,noreferrer");
+          // Electron confirma pelo IPC que o sistema aceitou abrir exatamente o
+          // link homologado. Depois aguardamos a janela perder e recuperar foco;
+          // a validação de tempo e a concessão continuam no servidor.
+          const ponte = window.obaflixDesktop;
+          if (!entrada.directLink || !ponte?.openSponsoredLink) {
+            encerrar(false);
+            return;
+          }
+          setModal({ fase: "aguardando", segundosRestantes: ESPERA_ELECTRON_S });
+          const abertura: { opened?: boolean; returned?: boolean } = await ponte
+            .openSponsoredLink(entrada.directLink)
+            .catch(() => ({ opened: false }));
+          if (abertura?.opened !== true || abertura?.returned !== true) {
+            encerrar(false);
+            return;
+          }
 
           let restantes = ESPERA_ELECTRON_S;
-          setModal({ fase: "aguardando", segundosRestantes: restantes });
           const timer = setInterval(() => {
             restantes -= 1;
             if (restantes <= 0) {
               clearInterval(timer);
               limparRef.current = null;
-              // Sem clique extra: passado o tempo do anúncio, a ação continua.
               encerrar(true);
               return;
             }
@@ -282,22 +296,24 @@ export function ModalDeAnuncio(props: {
         {estado.fase === "convite" && (
           <>
             <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
-              Assista a um anúncio
+              Continue assistindo gratuitamente
             </h2>
-            <p className="mt-2 text-sm text-gray-400">{textoDoConvite(estado.finalidade)}</p>
+            <p className="mt-2 text-sm text-gray-400">
+              Os anúncios ajudam a pagar os servidores. {textoDoConvite(estado.finalidade)}
+            </p>
             <button
               type="button"
               onClick={aoConfirmar}
               className="mt-5 w-full rounded-full bg-white py-3 text-sm font-bold text-black"
             >
-              Assistir anúncio
+              Continuar gratuitamente
             </button>
             <button
               type="button"
               onClick={aoAssinar}
               className="mt-2 w-full rounded-full border border-white/15 py-3 text-sm font-semibold text-white hover:bg-white/10"
             >
-              Assinar um plano
+              Ver planos e remover anúncios
             </button>
           </>
         )}
@@ -316,7 +332,7 @@ export function ModalDeAnuncio(props: {
             <p className="mt-2 text-sm text-gray-400">
               {estado.segundosRestantes > 0
                 ? `Continuamos sozinhos em ${estado.segundosRestantes}s.`
-                : "Continuando…"}
+                : "Volte ao Obaflix para continuar."}
             </p>
           </>
         )}

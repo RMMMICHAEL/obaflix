@@ -6,6 +6,21 @@ export function deveFazerPolling(status: string) {
   return !STATUS_TERMINAIS_DO_PEDIDO.has(status);
 }
 
+export function acaoComercialDoPlano({
+  compravel,
+  planoAtual,
+  assinaturaAtiva,
+}: {
+  compravel: boolean;
+  planoAtual: boolean;
+  assinaturaAtiva: boolean;
+}) {
+  if (!compravel) return { disponivel: false, rotulo: "Indisponível" };
+  if (assinaturaAtiva && planoAtual) return { disponivel: true, rotulo: "Renovar" };
+  if (assinaturaAtiva) return { disponivel: true, rotulo: "Alterar plano" };
+  return { disponivel: true, rotulo: "Assinar" };
+}
+
 /**
  * O valor nunca faz parte do contrato enviado pelo navegador.
  *
