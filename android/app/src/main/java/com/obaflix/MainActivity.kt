@@ -195,6 +195,8 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             webView = webView,
             capability = bridgeCapability,
             escopo = lifecycleScope,
+            // Lido na hora do pedido: o servidor e recriado junto com a WebView.
+            origemDoProxyLocal = { url -> localMediaServer?.origemDe(url) },
         )
         webView.addJavascriptInterface(
             mediaBridge!!,
