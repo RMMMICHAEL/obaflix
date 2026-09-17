@@ -2,10 +2,15 @@ package com.obaflix.tv.sessao
 
 import android.content.Context
 import com.obaflix.bridge.ObaLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Estado de autenticacao do aplicativo — fonte unica de verdade.
@@ -21,8 +26,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * discordarem sobre se ha sessao.
  */
 sealed interface EstadoApp {
-    /** Verificando o que esta guardado. Estado inicial, nunca volta a ele. */
+    /** Verificando o que esta guardado. Estado inicial. */
     data object Inicializando : EstadoApp
+
+    /**
+     * Ha credencial guardada, mas nao deu para renova-la ainda (sem rede,
+     * timeout, servidor fora). Continua no carregamento, sem mostrar login.
+     */
+    data class Reconectando(val tentativa: Int) : EstadoApp
 
     /** Sem sessao valida: a tela de pareamento assume. */
     data object NaoAutenticado : EstadoApp
@@ -40,10 +51,28 @@ object SessaoAtual {
      * Tempo minimo de splash.
      *
      * Sem ele, uma verificacao rapida faz a tela piscar entre logo e conteudo.
-     * Fica dentro de `restaurar` para a raiz continuar com tres estados limpos,
-     * em vez de somar um booleano de "ja deu tempo" ao lado do estado real.
+     * Fica dentro de `restaurar` para a raiz continuar com estados limpos, em vez
+     * de somar um booleano de "ja deu tempo" ao lado do estado real.
      */
     private const val SPLASH_MINIMO_MS = 600L
+
+    /** Uma restauracao por processo, mesmo com a Activity recriada. */
+    private val restaurando = AtomicBoolean(false)
+
+    /**
+     * Escopo do processo, nao da tela.
+     *
+     * A restauracao pode ficar minutos esperando a rede. Presa ao
+     * `LaunchedEffect` da Activity, uma recriacao (tema, retorno do sistema)
+     * cancelaria o laco e a TV ficaria parada no carregamento.
+     */
+    private val escopo = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** Chamado pela raiz. Idempotente: a segunda chamada nao abre outro laco. */
+    fun iniciarRestauracao(context: Context) {
+        val app = context.applicationContext
+        escopo.launch { restaurar(app) }
+    }
 
     fun marcarAutenticado(deviceId: String?) {
         ObaLog.evento(ObaLog.Fase.SESSAO, "estado_autenticado")
@@ -58,29 +87,40 @@ object SessaoAtual {
     /**
      * Decide o estado inicial a partir do que esta em disco.
      *
-     * Com refresh guardado, renova antes de perguntar: o access token vive so em
-     * memoria e nao sobrevive ao fechamento do aplicativo, entao toda abertura
-     * depois da primeira passa por aqui. Renovou, entra direto na Home sem
-     * mostrar QR nenhum.
+     * O access token vive so em memoria e nao sobrevive ao fechamento do
+     * aplicativo, entao toda abertura com credencial guardada renova antes de
+     * entrar. Falha temporaria (rede ainda subindo depois de ligar a TV, timeout,
+     * servidor fora) **nao** e logout: fica em `Reconectando` e tenta de novo.
+     * So a recusa do servidor ou a ausencia de credencial levam ao pareamento.
+     *
+     * Roda uma vez por processo. Uma Activity recriada com a sessao ja decidida
+     * nao refaz a verificacao — antes, uma falha de rede nesse momento derrubava
+     * para o pareamento quem ja estava dentro.
      */
     suspend fun restaurar(context: Context) {
-        val comeco = System.currentTimeMillis()
+        if (_estado.value !is EstadoApp.Inicializando) return
+        if (!restaurando.compareAndSet(false, true)) return
 
-        val temRefresh = ArmazenamentoSessao.refreshToken(context) != null
-        val renovou = if (temRefresh) PareamentoTv.renovar(context) else false
+        val comeco = System.currentTimeMillis()
+        val decisao = restaurarSessao(
+            ler = { ArmazenamentoSessao.leitura(context) },
+            renovar = { PareamentoTv.renovarDetalhado(context) },
+            esperar = { delay(it) },
+            aoAguardar = { tentativa, motivo ->
+                ObaLog.alerta(ObaLog.Fase.SESSAO, "restauracao_adiada", "tentativa" to tentativa, "motivo" to motivo)
+                // O pareamento pode ter terminado por outro caminho no meio.
+                if (_estado.value !is EstadoApp.Autenticado) _estado.value = EstadoApp.Reconectando(tentativa)
+            },
+        )
 
         val decorrido = System.currentTimeMillis() - comeco
         if (decorrido < SPLASH_MINIMO_MS) delay(SPLASH_MINIMO_MS - decorrido)
 
-        // Publica pelos mesmos metodos que todo o resto usa. Atribuir
-        // `_estado.value` direto daqui funcionava, mas pulava o log — e foi
-        // exatamente o que deixou a inicializacao invisivel no logcat.
-        if (renovou) {
-            marcarAutenticado(ArmazenamentoSessao.deviceId(context))
-        } else {
-            // Sem refresh, ou refresh recusado (expirado, revogado, reutilizado).
-            // Em qualquer um dos casos o caminho e o mesmo: parear de novo.
-            marcarNaoAutenticado()
+        // Publica pelos mesmos metodos que todo o resto usa, para o log contar a
+        // inicializacao inteira.
+        when (decisao) {
+            is DecisaoDeAbertura.Entrar -> marcarAutenticado(decisao.deviceId)
+            DecisaoDeAbertura.Parear -> marcarNaoAutenticado()
         }
     }
 }

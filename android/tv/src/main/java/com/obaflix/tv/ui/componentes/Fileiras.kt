@@ -6,21 +6,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.obaflix.tv.catalogo.Fileira
 import com.obaflix.tv.catalogo.Item
 import com.obaflix.tv.ui.Medidas
-import kotlinx.coroutines.launch
 
 /**
  * Fileira horizontal do catalogo — o item_home_column da referencia.
@@ -34,18 +26,18 @@ import kotlinx.coroutines.launch
  * alcancava um no ja reciclado pela LazyRow e o app caia com "LayoutCoordinate
  * operations are only valid when isAttached is true" ao navegar.
  *
- * ## Entrar na fileira sempre pelo primeiro card
+ * ## Por que nao ha `focusProperties.enter` aqui
  *
- * A busca de foco 2D do Compose escolhe, ao descer, o card geometricamente mais
- * proximo — o que preserva a coluna. Numa grade isso e o certo; numa fileira de
- * carrossel, nao: quem estava no 5o card de "Em alta" descia e caia no 5o de
- * "Populares", uma posicao que nao escolheu e que muitas vezes esta fora da
- * tela porque as fileiras tem larguras de card diferentes.
- *
- * `enter` resolve na origem certa: ele so e consultado quando o foco **entra**
- * no grupo, ou seja, nas setas para cima e para baixo. Esquerda e direita
- * andam dentro do mesmo grupo e nao passam por aqui — a navegacao horizontal
- * fica exatamente como estava.
+ * Uma tentativa anterior (0.7.27) forcava o foco de entrada para o card de
+ * indice 0 via `focusProperties { enter = { primeiro } }`, para nao cair no
+ * card geometricamente mais proximo de uma fileira vizinha de largura
+ * diferente. Em TV fisica isso travava o app de forma reproduzivel: descer o
+ * D-pad para a fileira seguinte congelava a navegacao por completo, sem
+ * excecao reconhecida pela rede de seguranca do isAttached em MainActivity —
+ * o unico teste existente verificava a presenca do texto no arquivo, nao o
+ * foco vivo (ver comentario em FileirasTest.kt). Sem um teste instrumentado
+ * de Compose para provar a correcao antes de reintroduzi-la, o comportamento
+ * volta a ser so a busca 2D padrao do Compose.
  */
 @Composable
 fun FileiraCatalogo(
@@ -54,55 +46,45 @@ fun FileiraCatalogo(
     aoFocar: (Item) -> Unit,
     aoAbrir: (Item) -> Unit,
 ) {
-    val rolagem = rememberLazyListState()
-    val escopo = rememberCoroutineScope()
-    val primeiro = remember { FocusRequester() }
+    // Fileira sem card nao participa da navegacao.
+    if (fileira.itens.isEmpty()) return
 
     Column {
         TituloSecao(fileira.titulo, Modifier.padding(start = margem))
         LazyRow(
-            state = rolagem,
             horizontalArrangement = EspacoEntreCards,
             contentPadding = PaddingValues(start = margem, end = margem, top = 4.dp, bottom = 10.dp),
-            modifier = Modifier
-                .focusGroup()
-                .focusProperties { enter = { primeiro } }
-                // Devolve a fileira ao inicio quando o cursor sai dela.
-                //
-                // Nao e cosmetico: `enter` pede foco ao card de indice 0, e a
-                // LazyRow descarta o que esta fora da janela. Sem isto, subir de
-                // volta para uma fileira que ficou rolada la no meio pediria foco
-                // a um no que nao existe mais, e a seta simplesmente nao
-                // responderia. Rolar ao sair garante que o indice 0 esta sempre
-                // composto quando alguem entra.
-                //
-                // A restauracao entre telas (Foco.kt) nao se perde com isso: ela
-                // pede foco direto ao card salvo, e com a fileira no inicio os
-                // primeiros cards continuam compostos — que ja era a unica
-                // situacao em que ela funcionava, porque a tela de baixo nao fica
-                // composta sob o overlay e a rolagem se perde de qualquer forma.
-                .onFocusChanged { estado ->
-                    if (!estado.hasFocus && rolagem.firstVisibleItemIndex != 0) {
-                        escopo.launch { runCatching { rolagem.scrollToItem(0) } }
-                    }
-                },
+            modifier = Modifier.focusGroup(),
         ) {
             itemsIndexed(
                 fileira.itens,
                 key = { _, item -> fileira.id + item.chaveProgresso },
             ) { indice, item ->
                 val chave = enderecoDe(fileira.id, indice)
-                // So o primeiro card carrega o requisitor de entrada da fileira.
-                val entrada = if (indice == 0) Modifier.focusRequester(primeiro) else Modifier
                 if (fileira.paisagem) {
-                    CardPaisagem(item, chave, aoFocar = aoFocar, modifier = entrada, aoAbrir = aoAbrir)
+                    CardPaisagem(
+                        item = item,
+                        chaveFoco = chave,
+                        aoFocar = aoFocar,
+                        aoAbrir = aoAbrir,
+                    )
                 } else {
-                    CardPoster(item, chave, aoFocar = aoFocar, modifier = entrada, aoAbrir = aoAbrir)
+                    CardPoster(item, chave, aoFocar = aoFocar, aoAbrir = aoAbrir)
                 }
             }
         }
     }
 }
+
+/**
+ * Fileiras que participam da navegacao: somente as que possuem card.
+ */
+fun fileirasNavegaveis(fileiras: List<Fileira>): List<Fileira> =
+    fileiras.filter { it.itens.isNotEmpty() }
+
+/** A Home possui ao menos um alvo navegavel. */
+fun homeNavegavel(home: com.obaflix.tv.catalogo.Home): Boolean =
+    home.destaques.isNotEmpty() || fileirasNavegaveis(home.fileiras).isNotEmpty()
 
 /**
  * Quantas colunas cabem na largura util. A referencia usa 6 para o catalogo;

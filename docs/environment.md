@@ -53,6 +53,26 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `BLACKCAT_API_KEY` | Chave administrativa da Blackcat. **Servidor apenas** | — (a rota responde 503 sem ela) |
 | `BLACKCAT_API_BASE_URL` | Base alternativa do provedor, só para teste/staging. Precisa ser `https:` | a URL oficial documentada |
 | `ANUNCIO_DIRECT_LINK_URL` | URL do anúncio que o Electron abre no navegador externo. **Servidor apenas**, `https:` obrigatório | — (sem ela, a reprodução é liberada sem anúncio) |
+| `PROMOCAO_TV_VIDEO_URL` | Vídeo promocional próprio exibido na Android TV antes da reprodução gratuita (R2). **Servidor apenas**, `https:` obrigatório, sem usuário/senha na URL | — (sem ela, conta gratuita na TV recebe `ANUNCIO_INDISPONIVEL`) |
+| `PROMOCAO_TV_DURACAO_SEG` | Duração confiável do vídeo, inteiro de 10 a 180. É o tempo mínimo entre início e conclusão | — (obrigatória junto da URL) |
+| `PROMOCAO_TV_VERSAO` | Identificador da peça, `[A-Za-z0-9._-]{1,32}`. Vai para o log | `1` |
+
+### `PROMOCAO_TV_*`
+
+Configuração da promoção interna da Android TV, lida em
+`src/lib/ads/promocaoTv.ts`. Trocar o vídeo não exige publicar APK: basta
+alterar as variáveis e fazer deploy.
+
+- **A duração é autorização, não só apresentação.** `/api/ads/complete` só emite
+  concessão se entre o início (gravado pelo servidor) e a conclusão passar a
+  duração congelada no desafio. Configure o valor **real** do arquivo: menor
+  deixa concluir antes do fim; maior faz a conclusão legítima ser recusada.
+- **Falha fecha.** Ausente ou inválida, nenhuma promoção é aberta e nada é
+  liberado: conta gratuita na TV vê "Reprodução gratuita indisponível agora".
+- **Nunca `NEXT_PUBLIC_`**, nunca no `BuildConfig` do APK. O log registra só o
+  host da URL e a versão.
+- **Upload do vídeo definitivo no R2 não faz parte do código.** Em Preview, use
+  um MP4 de teste `https:` com a duração correspondente.
 
 ### `ANUNCIO_DIRECT_LINK_URL`
 

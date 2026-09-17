@@ -44,33 +44,64 @@ export type ConteudoDeAnuncio = "filme" | "serie";
  *
  * É o que impede o `ambiente` declarado pelo cliente de virar caminho de fuga.
  */
-export type PlataformaDeExibicao = "android" | "electron" | "web";
+export type PlataformaDeExibicao = "android" | "electron" | "android_tv" | "web";
+
+/**
+ * A plataforma que vale para a decisão.
+ *
+ * **`android_tv` nunca vem do corpo.** Ela sai da credencial: `getUserFromRequest`
+ * só aceita `Bearer` emitido para TV, com aparelho pareado. Duas consequências,
+ * ambas travadas por teste:
+ *
+ *   - uma TV que declare `android` continua sendo TV. Sem isso, um aparelho
+ *     modificado escaparia da promoção de duração controlada pelo servidor para o
+ *     interstitial de 6 segundos do celular;
+ *   - um cliente de cookie que declare `android_tv` cai em `web`, sem meio de
+ *     exibição. Declarar TV não abre nada.
+ *
+ * O resto segue a regra de sempre: só `android` e `electron` são aceitos como
+ * declaração, e o desconhecido cai no caso mais restritivo.
+ */
+export function plataformaDaRequisicao(
+  declarada: unknown,
+  credencial: { origem: "cookie" | "bearer"; deviceId: string | null },
+): PlataformaDeExibicao {
+  if (credencial.origem === "bearer" && typeof credencial.deviceId === "string" && credencial.deviceId !== "") {
+    return "android_tv";
+  }
+  return declarada === "android" || declarada === "electron" ? declarada : "web";
+}
 
 /**
  * Como o anúncio seria exibido nesta plataforma, ou `null` quando não há meio.
  *
- * Os dois meios desta fase, e só eles:
+ * Os meios, e só eles:
  *
  *   - **`unity`** — interstitial nativo, no aplicativo Android móvel;
  *   - **`direct_link`** — URL aberta no navegador externo, no Electron, e só
- *     quando `ANUNCIO_DIRECT_LINK_URL` está configurada e é `https:`.
+ *     quando `ANUNCIO_DIRECT_LINK_URL` está configurada e é `https:`;
+ *   - **`promocao_tv`** — vídeo próprio do Obaflix, na Android TV, e só quando
+ *     `PROMOCAO_TV_*` está configurada e válida (`./promocaoTv.ts`).
  *
- * `null` em três casos, todos tratados igual: navegador comum (não é superfície
- * de reprodução desta fase — ver `src/config/site-mode.ts`, o streaming web
- * nasce fechado), plataforma omitida, e Electron sem Direct Link configurado.
+ * `null` nos casos restantes, todos tratados igual: navegador comum (não é
+ * superfície de reprodução desta fase — ver `src/config/site-mode.ts`, o
+ * streaming web nasce fechado), plataforma omitida, Electron sem Direct Link e
+ * TV sem promoção configurada.
  *
  * **`null` não libera nada.** Ele leva a `ANUNCIO_INDISPONIVEL`, que é recusa —
  * a alternativa seria liberar conteúdo justamente quando a monetização não
  * funciona, e é exatamente esse fail-open que esta função existe para fechar.
  */
-export type MeioDeExibicao = "unity" | "direct_link";
+export type MeioDeExibicao = "unity" | "direct_link" | "promocao_tv";
 
 export function meioDeExibicao(
   plataforma: PlataformaDeExibicao | null,
   temDirectLink: boolean,
+  temPromocaoTv = false,
 ): MeioDeExibicao | null {
   if (plataforma === "android") return "unity";
   if (plataforma === "electron") return temDirectLink ? "direct_link" : null;
+  if (plataforma === "android_tv") return temPromocaoTv ? "promocao_tv" : null;
   return null;
 }
 
@@ -134,6 +165,37 @@ export function janelaAnuncioHoras(direitos: DireitosDoPlano): number {
   return typeof h === "number" && Number.isInteger(h) && h >= 1
     ? h
     : JANELA_ANUNCIO_HORAS_PADRAO;
+}
+
+/**
+ * A política da Android TV, separada da do celular de propósito.
+ *
+ * **Promoção antes de cada filme ou episódio novo.** Não herda a cadência de
+ * `episodiosPorAnuncio` e não lê nem escreve o contador de episódios: o que a
+ * conta faz no celular não muda o que a TV cobra, e vice-versa.
+ *
+ * `liberadoNesteAparelho` é a única exceção, e é **recuperação**, não cota:
+ * este mesmo aparelho concluiu a promoção deste mesmo conteúdo há pouco (ver
+ * `TTL_RECUPERACAO_TV_S`). Cobre resposta perdida, player que caiu e voltar ao
+ * mesmo episódio — nunca outro conteúdo, outro aparelho ou outra plataforma.
+ *
+ * A TV não tem meio para download nem transmissão: nessas finalidades a conta
+ * sujeita a anúncio recebe recusa, nunca liberação.
+ */
+export type DecisaoDePromocaoTv =
+  | { decisao: "permitido"; via: "sem_anuncios" | "recuperacao_no_aparelho" }
+  | { decisao: "promocao_necessaria" }
+  | { decisao: "sem_meio" };
+
+export function decidirPromocaoTv(fatos: {
+  direitos: DireitosDoPlano;
+  finalidade: "reproducao" | "download" | "transmissao";
+  liberadoNesteAparelho: boolean;
+}): DecisaoDePromocaoTv {
+  if (!exigeAnuncio(fatos.direitos)) return { decisao: "permitido", via: "sem_anuncios" };
+  if (fatos.finalidade !== "reproducao") return { decisao: "sem_meio" };
+  if (fatos.liberadoNesteAparelho === true) return { decisao: "permitido", via: "recuperacao_no_aparelho" };
+  return { decisao: "promocao_necessaria" };
 }
 
 /** `true` quando esta conta está sujeita a anúncio. */

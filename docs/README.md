@@ -31,6 +31,9 @@
 | [`recovery.md`](recovery.md) | Fallback, renovação de token, auto-avanço, recuperação de erros |
 | [`electron.md`](electron.md) | App desktop: IPC, bypass CDN, auto-update |
 | [`android.md`](android.md) | App Android: WebView, bridge, extração nativa, diferenças |
+| [`android-tv-final.md`](android-tv-final.md) | **Android TV: baseline final homologada, commit de referencia, APK, smoke e handoff de manutencao** |
+| [`tv-navegacao-foco.md`](tv-navegacao-foco.md) | Android TV: arquitetura canonica de foco e regressões que nao devem ser reintroduzidas |
+| [`backlog-produto.md`](backlog-produto.md) | Prioridades posteriores ao fechamento da Android TV |
 | [`versoes.md`](versoes.md) | Versão corrente de cada aplicativo nativo, onde os artefatos ficam e como gerar |
 | [`auth.md`](auth.md) | Autenticação, sessões, admin, CORS |
 | [`database.md`](database.md) | Schema Prisma, modelos, índices |

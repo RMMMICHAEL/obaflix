@@ -29,7 +29,7 @@ import com.obaflix.tv.BuildConfig
  * um problema, e a primeira coisa a perguntar.
  */
 @Composable
-fun TelaSplash() {
+fun TelaSplash(mensagem: String? = null) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -53,6 +53,15 @@ fun TelaSplash() {
                 fontSize = Escala.Titulo,
                 textAlign = TextAlign.Center,
             )
+            if (mensagem != null) {
+                Box(modifier = Modifier.height(16.dp))
+                Text(
+                    text = mensagem,
+                    color = Cores.TextoFraco,
+                    fontSize = Escala.Rotulo,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
 
         Box(
