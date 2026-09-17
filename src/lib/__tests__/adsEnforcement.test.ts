@@ -319,35 +319,103 @@ describe("o que o servidor NÃO aceita como prova", () => {
   });
 });
 
-describe("Android TV continua sem anúncios", () => {
+/**
+ * Marcas de SDK/serviço de anúncios de terceiros.
+ *
+ * Coordenadas Gradle, pacotes Java/Kotlin, classes de entrada e chaves de
+ * manifesto — o que aparece quando uma rede externa é incorporada. Não é uma
+ * lista de palavras: "anuncio" e "ads" genéricos ficam de fora de propósito,
+ * porque a TV tem o anúncio institucional próprio (vídeo do Obaflix servido
+ * pelo nosso servidor, conclusão validada em `/api/ads/complete`).
+ */
+const SDKS_DE_ANUNCIO_DE_TERCEIROS: { rede: string; padrao: RegExp }[] = [
+  { rede: "Unity Ads", padrao: /com\.unity3d\.ads|unity-ads|\bUnityAds\b|\bIUnityAds\w*/ },
+  { rede: "Google Mobile Ads / AdMob", padrao: /play-services-ads|com\.google\.android\.gms\.ads|\bMobileAds\b|\bAdMob\b|gms\.ads\.APPLICATION_ID/i },
+  { rede: "Google IMA", padrao: /com\.google\.ads\.interactivemedia|media3-exoplayer-ima|exoplayer\.ima\b|\bImaAdsLoader\b/ },
+  { rede: "AppLovin", padrao: /com\.applovin|\bAppLovin\w*|applovin-sdk/i },
+  { rede: "ironSource / LevelPlay", padrao: /com\.ironsource|com\.unity3d\.mediation|\bIronSource\b|\bLevelPlay\w*/i },
+  { rede: "Meta Audience Network", padrao: /com\.facebook\.ads|audience-network-sdk|\bAudienceNetworkAds\b/ },
+  { rede: "Pangle", padrao: /com\.bytedance\.sdk\.openadsdk|com\.pangle|\bPAGSdk\b/ },
+  { rede: "Vungle / Liftoff", padrao: /com\.vungle/ },
+  { rede: "Chartboost", padrao: /com\.chartboost/ },
+  { rede: "InMobi", padrao: /com\.inmobi/ },
+  { rede: "Mintegral", padrao: /com\.mbridge|com\.mintegral/ },
+  { rede: "Start.io", padrao: /com\.startapp/ },
+  { rede: "Yandex Ads", padrao: /com\.yandex\.mobile\.ads/ },
+  { rede: "AdColony", padrao: /com\.adcolony/ },
+  { rede: "Amazon Publisher Services", padrao: /com\.amazon\.device\.ads/ },
+];
+
+/** Arquivos do módulo em que um SDK se manifestaria. Imagens e vídeos não carregam SDK. */
+const EXTENSOES_VARRIDAS = /\.(kt|kts|java|gradle|xml|pro|properties|toml|json)$/i;
+
+function marcasDeSdkDeTerceiros(texto: string): string[] {
+  return SDKS_DE_ANUNCIO_DE_TERCEIROS.filter(({ padrao }) => padrao.test(texto)).map(({ rede }) => rede);
+}
+
+describe("Android TV sem SDK de anúncios de terceiros", () => {
   /**
-   * Cenário 17. A política desta fase é explícita: nenhum SDK, nenhum modal,
-   * nenhuma mudança de reprodução na TV. O teste lê o módulo `:tv` inteiro.
+   * Cenário 17, na política atual: a TV pode exibir o anúncio institucional
+   * próprio, mas não incorpora rede, SDK nem serviço de anúncios externo.
+   * O teste lê o módulo `:tv` inteiro — build, manifesto, código e regras.
    */
-  test("o módulo :tv não tem dependência nem código de anúncio", () => {
+  test("o build.gradle do :tv não depende de rede de anúncios", () => {
     const gradle = readFileSync(join(raiz, "android/tv/build.gradle"), "utf8");
-    for (const rede of ["unity", "admob", "play-services-ads", "applovin", "ironsource"]) {
-      assert.equal(
-        gradle.toLowerCase().includes(rede),
-        false,
-        `:tv não pode depender de ${rede}`,
-      );
-    }
+    assert.deepEqual(marcasDeSdkDeTerceiros(gradle), [], ":tv não pode depender de SDK de anúncios de terceiros");
   });
 
-  test("nenhum arquivo de anúncio no código-fonte da TV", async () => {
+  test("nenhum import, dependência ou identificador de SDK de terceiros no módulo :tv", async () => {
     const { readdirSync, statSync } = await import("node:fs");
     const encontrados: string[] = [];
 
     const varrer = (dir: string) => {
       for (const nome of readdirSync(dir)) {
         const caminho = join(dir, nome);
-        if (statSync(caminho).isDirectory()) varrer(caminho);
-        else if (/ad(s|gate)|anuncio|unity/i.test(nome)) encontrados.push(caminho);
+        if (statSync(caminho).isDirectory()) {
+          if (nome !== "build") varrer(caminho);
+        } else if (EXTENSOES_VARRIDAS.test(nome)) {
+          for (const rede of marcasDeSdkDeTerceiros(readFileSync(caminho, "utf8"))) {
+            encontrados.push(`${caminho}: ${rede}`);
+          }
+        }
       }
     };
-    varrer(join(raiz, "android/tv/src"));
+    varrer(join(raiz, "android/tv"));
 
-    assert.deepEqual(encontrados, [], "a TV não deve ter arquivo de anúncio");
+    assert.deepEqual(encontrados, [], "a TV não deve incorporar SDK de anúncios de terceiros");
+  });
+
+  test("o detector reconhece as redes e aceita o anúncio institucional próprio", () => {
+    // Sem isto, um padrão quebrado deixaria o teste acima passando em silêncio.
+    const proibidos = [
+      `implementation 'com.unity3d.ads:unity-ads:4.9.2'`,
+      `import com.unity3d.ads.UnityAds`,
+      `implementation 'com.google.android.gms:play-services-ads:23.0.0'`,
+      `import com.google.android.gms.ads.MobileAds`,
+      `<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" />`,
+      `implementation 'androidx.media3:media3-exoplayer-ima:1.3.1'`,
+      `import com.applovin.sdk.AppLovinSdk`,
+      `import com.ironsource.mediationsdk.IronSource`,
+      `import com.facebook.ads.AudienceNetworkAds`,
+      `import com.bytedance.sdk.openadsdk.api.init.PAGSdk`,
+      `import com.vungle.ads.VungleAds`,
+      `import com.chartboost.sdk.Chartboost`,
+    ];
+    for (const linha of proibidos) {
+      assert.notDeepEqual(marcasDeSdkDeTerceiros(linha), [], `deveria detectar: ${linha}`);
+    }
+
+    const permitidos = [
+      `package com.obaflix.tv.player`,
+      `fun EscolhaFinalDoAnuncio(focoInicial: AlvoDaEscolha, aoEscolher: (AlvoDaEscolha) -> Unit)`,
+      `R.drawable.anuncio_escolha_final`,
+      `ApiObaflix.concluirPromocao(atual.desafioId) // "/api/ads/complete"`,
+      `class AnuncioInstitucionalTest`,
+      `import androidx.media3.exoplayer.ExoPlayer`,
+      `val downloads = loads + uploads`,
+    ];
+    for (const linha of permitidos) {
+      assert.deepEqual(marcasDeSdkDeTerceiros(linha), [], `não deveria detectar: ${linha}`);
+    }
   });
 });
