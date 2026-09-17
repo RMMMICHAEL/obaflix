@@ -22,9 +22,16 @@ data class CastSource(
     val titulo: String,
     val poster: String?,
 ) {
-    /** MIME que o app externo usa para escolher o demuxer. */
+    /**
+     * MIME que o app externo usa para escolher o demuxer.
+     *
+     * Em minusculas: a resolucao de Intent compara o tipo exatamente como o app
+     * declara no manifesto. O Web Video Cast declara `application/x-mpegurl`;
+     * com `application/x-mpegURL` o sistema nao encontra a Activity e o
+     * "Transmitir" falha com `falha_ao_abrir`.
+     */
     val mimeType: String
-        get() = if (kind == MediaKind.HLS) "application/x-mpegURL" else "video/mp4"
+        get() = if (kind == MediaKind.HLS) "application/x-mpegurl" else "video/mp4"
 }
 
 enum class MotivoSemCast {

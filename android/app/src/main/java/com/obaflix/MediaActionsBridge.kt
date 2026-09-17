@@ -351,16 +351,18 @@ class MediaActionsBridge(
                     "host" to ObaLog.host(fonte.url),
                 )
                 activity.runOnUiThread {
-                    val aberto = runCatching {
-                        activity.startActivity(WebVideoCast.intent(fonte))
-                        true
-                    }.getOrDefault(false)
+                    val abertura = runCatching { activity.startActivity(WebVideoCast.intent(fonte)) }
 
-                    if (aberto) {
+                    if (abertura.isSuccess) {
                         ObaLog.evento("cast", "cast_external_open", "pacote" to WebVideoCast.PACOTE)
                         responder(callbackId, JSONObject().put("ok", true))
                     } else {
-                        ObaLog.evento("cast", "cast_unavailable", "motivo" to "falha_ao_abrir")
+                        // So a classe da excecao: a mensagem pode carregar o Intent (URL, token).
+                        ObaLog.evento(
+                            "cast", "cast_unavailable",
+                            "motivo" to "falha_ao_abrir",
+                            "excecao" to abertura.exceptionOrNull()?.javaClass?.simpleName,
+                        )
                         responder(callbackId, recusa("falha_ao_abrir"))
                     }
                 }
