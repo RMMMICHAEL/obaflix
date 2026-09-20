@@ -1121,6 +1121,17 @@ function setupWebContents() {
   const isAppUrl = (raw) => {
     try { return new URL(raw).origin === OBAFLIX_ORIGIN; } catch { return false; }
   };
+  // Planos e Checkout: mesmo sendo do proprio site, saem para o navegador do
+  // sistema. O fluxo de assinatura/pagamento (login externo, PIX/Blackcat) foi
+  // desenhado para o browser e nao deve ficar preso na janela do app. Cobre
+  // /planos, /checkout e subrotas; o resto do site continua navegando interno.
+  const isRotaExterna = (raw) => {
+    try {
+      const u = new URL(raw);
+      if (u.origin !== OBAFLIX_ORIGIN) return false;
+      return /^\/(planos|checkout)(?:\/|$)/.test(u.pathname);
+    } catch { return false; }
+  };
   const openExternalHttp = (raw) => {
     try {
       const parsed = new URL(raw);
@@ -1129,7 +1140,7 @@ function setupWebContents() {
   };
 
   wc.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url)) { openExternalHttp(url); return { action: "deny" }; }
+    if (!isAppUrl(url) || isRotaExterna(url)) { openExternalHttp(url); return { action: "deny" }; }
     return { action: "allow" };
   });
 
@@ -1138,7 +1149,7 @@ function setupWebContents() {
       const parsed = new URL(url);
       const isLocalWrapper = parsed.origin === `http://127.0.0.1:${localPort}` &&
         parsed.searchParams.get("token") === LOCAL_SERVER_TOKEN;
-      if (!isAppUrl(url) && !isLocalWrapper) {
+      if ((!isAppUrl(url) && !isLocalWrapper) || isRotaExterna(url)) {
         event.preventDefault();
         openExternalHttp(url);
       }
