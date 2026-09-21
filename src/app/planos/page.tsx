@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { useEffect, useMemo, useState } from "react";
 
 type Preco = {
@@ -212,13 +213,13 @@ export default function PlanosPage() {
 
                   <div className="mt-7">
                     {podeAssinar ? (
-                      <Link
+                      <LinkAssinatura
                         href={`/checkout?planoId=${encodeURIComponent(plano.id)}`}
                         className="flex h-12 w-full items-center justify-center rounded-xl text-base font-black transition group-hover:brightness-110"
                         style={{ backgroundColor: tema.cor, color: tema.texto }}
                       >
                         {rotuloAcao}
-                      </Link>
+                      </LinkAssinatura>
                     ) : atual ? (
                       <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-400">
                         Este é o seu plano

@@ -1121,6 +1121,17 @@ function setupWebContents() {
   const isAppUrl = (raw) => {
     try { return new URL(raw).origin === OBAFLIX_ORIGIN; } catch { return false; }
   };
+  // Planos e Checkout: mesmo sendo do proprio site, saem para o navegador do
+  // sistema. O fluxo de assinatura/pagamento (login externo, PIX/Blackcat) foi
+  // desenhado para o browser e nao deve ficar preso na janela do app. Cobre
+  // /planos, /checkout e subrotas; o resto do site continua navegando interno.
+  const isRotaExterna = (raw) => {
+    try {
+      const u = new URL(raw);
+      if (u.origin !== OBAFLIX_ORIGIN) return false;
+      return /^\/(planos|checkout)(?:\/|$)/.test(u.pathname);
+    } catch { return false; }
+  };
   const openExternalHttp = (raw) => {
     try {
       const parsed = new URL(raw);
@@ -1129,7 +1140,7 @@ function setupWebContents() {
   };
 
   wc.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url)) { openExternalHttp(url); return { action: "deny" }; }
+    if (!isAppUrl(url) || isRotaExterna(url)) { openExternalHttp(url); return { action: "deny" }; }
     return { action: "allow" };
   });
 
@@ -1138,7 +1149,7 @@ function setupWebContents() {
       const parsed = new URL(url);
       const isLocalWrapper = parsed.origin === `http://127.0.0.1:${localPort}` &&
         parsed.searchParams.get("token") === LOCAL_SERVER_TOKEN;
-      if (!isAppUrl(url) && !isLocalWrapper) {
+      if ((!isAppUrl(url) && !isLocalWrapper) || isRotaExterna(url)) {
         event.preventDefault();
         openExternalHttp(url);
       }
@@ -1273,6 +1284,35 @@ ipcMain.handle("desktop-google-login", async (event, requestedCallback) => {
     clearPendingDesktopAuth();
     log.error("auth.desktop", "não foi possível iniciar login Google", error);
     return { ok: false, error: "Não foi possível abrir o login com Google." };
+  }
+});
+
+// Rotas de assinatura (/planos, /checkout) iniciadas pela UI por navegação
+// client-side do Next (next/link, History API). O will-navigate e o
+// setWindowOpenHandler já desviam navegação full-page e window.open para o
+// navegador do sistema, mas o pushState do roteador não passa por eles — então
+// o renderer chama esta ponte. A validação é a mesma do guard de navegação:
+// exatamente a origem do site e somente /planos e /checkout, sobre https (ou
+// http em localhost no desenvolvimento). Nunca abre um destino arbitrário.
+const ROTA_EXTERNA_DESKTOP = /^\/(?:planos|checkout)(?:[/?#]|$)/;
+ipcMain.handle("desktop-open-external", async (event, rawUrl) => {
+  if (!isTrustedIpc(event)) return { ok: false };
+  if (typeof rawUrl !== "string") return { ok: false };
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return { ok: false }; }
+  const esquemaSeguro =
+    parsed.protocol === "https:" ||
+    (parsed.protocol === "http:" && ["127.0.0.1", "localhost"].includes(parsed.hostname));
+  if (!esquemaSeguro || parsed.origin !== OBAFLIX_ORIGIN || !ROTA_EXTERNA_DESKTOP.test(parsed.pathname)) {
+    return { ok: false };
+  }
+  try {
+    await shell.openExternal(parsed.href);
+    log.info("nav", "rota de assinatura aberta no navegador do sistema", { path: parsed.pathname });
+    return { ok: true };
+  } catch (error) {
+    log.error("nav", "falha ao abrir rota de assinatura externa", error);
+    return { ok: false };
   }
 });
 
