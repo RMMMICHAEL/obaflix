@@ -39,7 +39,10 @@ jobs:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}            # base64 do .pfx
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --x64 --publish onTag
+        # -c explícito: garante o uso do electron-builder.yml corrigido (artifactName +
+        # signtoolOptions) e NÃO o bloco `build` antigo do package.json (que coexiste na
+        # branch de release). Mesma config validada no dry-run local.
+        run: npx electron-builder --win --x64 -c electron-builder.yml --publish onTag
 
       - name: GATE 4 — validar nome do asset no latest.yml
         working-directory: desktop
