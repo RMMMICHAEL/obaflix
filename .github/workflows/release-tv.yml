@@ -1,0 +1,79 @@
+# PROPOSTA de workflow — build assinado do Android TV (GATE 1)
+# Aplicar no REPO DO APP em `.github/workflows/release-tv.yml`.
+# Mesmo keystore do app móvel (cert SHA-256 bdf64ebf… == obaflix.allowedSigningCerts).
+# Sem secrets no arquivo: keystore e senhas vêm de GitHub Secrets.
+name: release-tv
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit/tag a construir (RC pentestado)"
+        required: true
+        default: "4c752ea29e81242b170306e18761d6fafd56ea16"
+
+jobs:
+  assemble-tv:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout (ref fixo = RC pentestado)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Materializar keystore + key.properties (de Secrets, efêmero)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_STORE_PW: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEY_PW: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/obaflix-release.jks"
+          # key.properties gerado em runtime; nunca commitado (está no .gitignore)
+          {
+            echo "storeFile=$RUNNER_TEMP/obaflix-release.jks"
+            echo "storePassword=$KS_STORE_PW"
+            echo "keyAlias=$KS_ALIAS"
+            echo "keyPassword=$KS_KEY_PW"
+          } > key.properties
+
+      - name: Build TV release (assinado pelo gradle signingConfig)
+        run: ./gradlew :tv:assembleRelease --no-daemon
+
+      - name: Localizar APK + checksum
+        id: apk
+        run: |
+          set -euo pipefail
+          APK=$(find tv/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK"
+
+      - name: GATE — verificar cert de assinatura (== allowedSigningCerts)
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
+          "$APKSIGNER" verify --print-certs "${{ steps.apk.outputs.path }}" | tee certs.txt
+          # cert SHA-256 esperado do keystore oficial:
+          grep -iq "bdf64ebf3cc9f841a05d4a60d67c39bc957f69c0f4fd6b66c0465901f6a0de04" certs.txt \
+            || { echo "::error::cert de assinatura != allowedSigningCerts"; exit 1; }
+          echo "GATE1 OK: TV assinada com o certificado oficial"
+
+      - name: Limpar segredos efêmeros
+        if: always()
+        run: rm -f key.properties "$RUNNER_TEMP/obaflix-release.jks" || true
+
+      - name: Publicar APK TV
+        uses: actions/upload-artifact@v4
+        with:
+          name: obaflix-tv-release
+          path: android/tv/build/outputs/apk/release/*.apk

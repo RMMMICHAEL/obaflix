@@ -1,0 +1,69 @@
+# PROPOSTA de configuração de build assinado do Electron — GATE 2 + GATE 4
+# ---------------------------------------------------------------------------
+# Aplicar no REPO DO APP (branch de release), em `desktop/electron-builder.yml`,
+# SUBSTITUINDO o bloco `build` embutido hoje em `desktop/package.json`.
+# NÃO faz parte do RC congelado 4c752ea (que permanece intocado).
+# NÃO contém segredos: o certificado vem por env (CSC_LINK/CSC_KEY_PASSWORD).
+#
+# Este arquivo é uma RÉPLICA FIEL do bloco `build` do RC + APENAS 2 mudanças:
+#   • GATE 4: win.artifactName sem espaços (instalador e latest.yml usam o mesmo nome)
+#   • GATE 2: win.signtoolOptions.signingHashAlgorithms (assina no build → sha512 coerente)
+# Tudo mais (files, extraResources/ffmpeg, nsis, publish owner/repo) é idêntico ao RC,
+# para o drop-in não regredir o empacotamento (ex.: bundling do ffmpeg).
+
+appId: com.obaflix.app
+productName: Obaflix
+copyright: Copyright © 2026 Obaflix
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - "electron/**/*"
+  - "!electron/**/*.backup"
+  - "!electron/**/*.backup-*"
+  - "!electron/**/*.bak"
+  - "assets/**/*"
+  - "node_modules/**/*"
+  - "!node_modules/ffmpeg-static/**"
+
+# Mantido do RC: bundla o ffmpeg como recurso (usado por electron/ffmpeg-bin.js).
+extraResources:
+  - from: "node_modules/ffmpeg-static/ffmpeg.exe"
+    to: "ffmpeg/ffmpeg.exe"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  requestedExecutionLevel: asInvoker
+  # ── GATE 4: nome de asset sem espaços (bate com latest.yml) ──
+  artifactName: "Obaflix-Setup-${version}.exe"
+  # ── GATE 2: assinatura Authenticode ──
+  # electron-builder 26.x: opções de signtool ficam sob `win.signtoolOptions`
+  # (não mais na raiz de `win`). O certificado vem por env no CI:
+  #   CSC_LINK          = base64 do .pfx  OU  caminho do .pfx
+  #   CSC_KEY_PASSWORD  = senha do .pfx
+  signtoolOptions:
+    signingHashAlgorithms: [sha256]
+    # Token EV (HSM/USB): usar certificateSubjectName com o cert no store da
+    # máquina de build em vez de CSC_LINK:
+    # certificateSubjectName: "Obaflix"
+    # timeStampServer/rfc3161TimeStampServer: default do electron-builder já usa RFC3161.
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  deleteAppDataOnUninstall: false
+  shortcutName: Obaflix
+
+# publish completo (owner/repo) — sem isto o electron-builder falha em
+# computeChannelNames ("Cannot read properties of null (reading 'channel')")
+# ao gerar o feed do updater. Idêntico ao RC.
+publish:
+  provider: github
+  owner: RMMMICHAEL
+  repo: obaflix-releases
