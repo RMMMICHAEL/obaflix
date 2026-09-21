@@ -1,0 +1,74 @@
+# PROPOSTA de workflow — build + assinatura Authenticode do Electron (GATE 2/4)
+# Aplicar no REPO DO APP em `.github/workflows/release-electron.yml`.
+# Assina SEMPRE dentro do CI (nunca no .exe congelado). Sem secrets no arquivo.
+name: release-electron
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit/tag a construir (usar o RC pentestado)"
+        required: true
+        default: "4c752ea29e81242b170306e18761d6fafd56ea16"
+
+permissions:
+  contents: write   # publicar o release no GitHub (feed do updater)
+
+jobs:
+  build-sign:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (ref fixo = RC pentestado)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Instalar deps do desktop
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build + assinar (electron-builder)
+        working-directory: desktop
+        env:
+          # Certificado Authenticode — configurados como GitHub Secrets:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}            # base64 do .pfx
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --x64 --publish onTag
+
+      - name: GATE 4 — validar nome do asset no latest.yml
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -e
+          echo "== latest.yml =="; cat dist/latest.yml
+          # Falha se houver espaço no nome do arquivo, ou se o exe com espaço existir
+          if grep -Eq 'url:\s*Obaflix Setup' dist/latest.yml; then
+            echo "::error::latest.yml ainda referencia nome com espaços"; exit 1; fi
+          if ! grep -Eq 'url:\s*Obaflix-Setup-[0-9].*\.exe' dist/latest.yml; then
+            echo "::error::latest.yml não referencia Obaflix-Setup-<versão>.exe"; exit 1; fi
+          test -f "dist/Obaflix-Setup-"*".exe" || { echo "::error::exe sem hífens não encontrado"; exit 1; }
+          echo "GATE4 OK: nome de asset coerente"
+
+      - name: GATE 2 — verificar assinatura Authenticode
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter 'Obaflix-Setup-*.exe' | Select-Object -First 1
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          Write-Host "Status:" $sig.Status "Signer:" $sig.SignerCertificate.Subject
+          if ($sig.Status -ne 'Valid') { Write-Error "Assinatura inválida: $($sig.Status)"; exit 1 }
+
+      - name: Publicar artefatos (exe + blockmap + latest.yml)
+        uses: actions/upload-artifact@v4
+        with:
+          name: obaflix-electron-signed
+          path: |
+            desktop/dist/Obaflix-Setup-*.exe
+            desktop/dist/Obaflix-Setup-*.exe.blockmap
+            desktop/dist/latest.yml
