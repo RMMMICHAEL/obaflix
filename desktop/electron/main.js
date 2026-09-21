@@ -1287,6 +1287,35 @@ ipcMain.handle("desktop-google-login", async (event, requestedCallback) => {
   }
 });
 
+// Rotas de assinatura (/planos, /checkout) iniciadas pela UI por navegação
+// client-side do Next (next/link, History API). O will-navigate e o
+// setWindowOpenHandler já desviam navegação full-page e window.open para o
+// navegador do sistema, mas o pushState do roteador não passa por eles — então
+// o renderer chama esta ponte. A validação é a mesma do guard de navegação:
+// exatamente a origem do site e somente /planos e /checkout, sobre https (ou
+// http em localhost no desenvolvimento). Nunca abre um destino arbitrário.
+const ROTA_EXTERNA_DESKTOP = /^\/(?:planos|checkout)(?:[/?#]|$)/;
+ipcMain.handle("desktop-open-external", async (event, rawUrl) => {
+  if (!isTrustedIpc(event)) return { ok: false };
+  if (typeof rawUrl !== "string") return { ok: false };
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return { ok: false }; }
+  const esquemaSeguro =
+    parsed.protocol === "https:" ||
+    (parsed.protocol === "http:" && ["127.0.0.1", "localhost"].includes(parsed.hostname));
+  if (!esquemaSeguro || parsed.origin !== OBAFLIX_ORIGIN || !ROTA_EXTERNA_DESKTOP.test(parsed.pathname)) {
+    return { ok: false };
+  }
+  try {
+    await shell.openExternal(parsed.href);
+    log.info("nav", "rota de assinatura aberta no navegador do sistema", { path: parsed.pathname });
+    return { ok: true };
+  } catch (error) {
+    log.error("nav", "falha ao abrir rota de assinatura externa", error);
+    return { ok: false };
+  }
+});
+
 // ── Download de mídia ─────────────────────────────────────────────────────────
 // Roda no processo principal porque os CDNs exigem Referer/Origin do embed e os
 // segmentos vêm de dezenas de hosts — no renderer cada um esbarraria em CORS.

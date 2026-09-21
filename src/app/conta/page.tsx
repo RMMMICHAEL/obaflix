@@ -4,7 +4,7 @@ import { signOut, useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
-import Link from "next/link";
+import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
@@ -54,7 +54,7 @@ export default function ContaPage() {
         <h2 className="text-lg font-semibold text-white">Meu plano</h2>
         <p className="mt-1 text-sm text-zinc-400">Plano atual: {comercial?.plano.nome ?? "Carregando…"}</p>
         {comercial?.assinatura && <p className="mt-1 text-sm text-zinc-400">Válido até {new Date(comercial.assinatura.terminaEm).toLocaleDateString("pt-BR")}</p>}
-        <Link href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</Link>
+        <LinkAssinatura href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</LinkAssinatura>
       </section>
 
       <section className="mb-10">

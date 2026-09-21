@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -328,7 +329,7 @@ function CheckoutConteudo() {
               >
                 Ir para minha conta
               </Link>
-              <Link href="/planos" className="ml-4 text-sm underline">Ver planos</Link>
+              <LinkAssinatura href="/planos" className="ml-4 text-sm underline">Ver planos</LinkAssinatura>
             </div>
           ) : temPix(pedido) ? (
             <div className="mt-7 grid gap-6 md:grid-cols-[240px_1fr]">
@@ -374,7 +375,7 @@ function CheckoutConteudo() {
         <div className="mx-auto max-w-3xl rounded-2xl border border-white/10 bg-white/5 p-8">
           <h1 className="text-2xl font-black">Plano indisponível</h1>
           <p className="mt-2 text-zinc-400">Volte à vitrine e escolha um plano disponível.</p>
-          <Link href="/planos" className="mt-5 inline-block underline">Voltar aos planos</Link>
+          <LinkAssinatura href="/planos" className="mt-5 inline-block underline">Voltar aos planos</LinkAssinatura>
         </div>
       </main>
     );
@@ -383,7 +384,7 @@ function CheckoutConteudo() {
   return (
     <main className="min-h-screen bg-[#101014] px-5 pb-14 pt-20 text-white md:px-8" style={fundo}>
       <div className="mx-auto max-w-6xl">
-        <Link href="/planos" className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</Link>
+        <LinkAssinatura href="/planos" className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</LinkAssinatura>
 
         <header className="mt-6">
           <div className="flex flex-wrap items-center gap-3">

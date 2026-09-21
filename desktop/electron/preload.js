@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // recebe somente o ticket assinado pelo protocolo obaflix://.
   startGoogleLogin: (callbackUrl) => ipcRenderer.invoke("desktop-google-login", callbackUrl),
 
+  // Assinatura/pagamento (/planos, /checkout) abrem no navegador do sistema.
+  // O clique num next/link navega por History API e escapa do will-navigate;
+  // por isso o renderer entrega a URL aqui. O main valida origem + rota antes
+  // de shell.openExternal — o renderer nunca escolhe um destino arbitrário.
+  openExternal: (url) => ipcRenderer.invoke("desktop-open-external", url),
+
   // Abre somente o Direct Link homologado e confirma que o SO aceitou a abertura.
   openSponsoredLink: (url) => ipcRenderer.invoke("open-sponsored-link", url),
 
