@@ -66,4 +66,4 @@ nsis:
 publish:
   provider: github
   owner: RMMMICHAEL
-  repo: obaflix-releases
+  repo: obaflix          # publica no próprio repo (GITHUB_TOKEN padrão basta; sem PAT cross-repo)
