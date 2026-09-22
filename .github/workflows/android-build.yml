@@ -47,7 +47,7 @@ jobs:
       - name: Check keystore
         id: keystore
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "available=true" >> $GITHUB_OUTPUT
@@ -58,10 +58,10 @@ jobs:
       - name: Build Release APK
         if: steps.keystore.outputs.available == 'true'
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > android/obaflix.jks
           cat > android/key.properties << EOF
@@ -70,7 +70,7 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
-          cd android && ./gradlew assembleRelease --no-daemon
+          cd android && ./gradlew :app:assembleRelease --no-daemon
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
