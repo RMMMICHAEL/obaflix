@@ -76,6 +76,27 @@ export function monetizacaoAtiva(
 }
 
 /**
+ * Flag servidor-only, **exclusiva da promoção interna da Android TV**.
+ *
+ * Existe para a TV exibir seu vídeo institucional em Production **sem** ligar o
+ * enforcement global de `MONETIZACAO_ATIVA` (limite de telas, catálogo,
+ * downloads, anúncio do celular, Direct Link do Electron). Ela nunca é uma
+ * segunda `MONETIZACAO_ATIVA`: só é consultada em conjunto com
+ * `plataforma === "android_tv"`, e apenas para o fluxo de promoção da TV
+ * (`/playback/authorize`, `/ads/promocao/iniciar`, `/ads/complete` e o consumo
+ * da concessão em `/player/fontes`). Web, Android móvel e Electron seguem
+ * exatamente o comportamento de `MONETIZACAO_ATIVA=false`.
+ *
+ * Mesma leitura estrita de `monetizacaoAtiva`: **só a string exata `"true"`
+ * liga**. Sem `NEXT_PUBLIC_`. `env` é injetável para o teste.
+ */
+export function promocaoTvAtiva(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.PROMOCAO_TV_ATIVA === "true";
+}
+
+/**
  * O direito que responde por este tipo de conteúdo. Função total e pura.
  *
  * Comparação estrita com `true` de propósito: se um dia um direito chegar

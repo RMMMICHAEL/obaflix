@@ -9,6 +9,7 @@ import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
+import { plataformaDaRequisicao } from "@/lib/ads/politica";
 import type { AlvoDeConcessao } from "@/lib/ads/concessoes";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
@@ -278,6 +279,8 @@ export async function POST(req: NextRequest) {
       concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
       finalidade,
       alvo,
+      // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
+      plataforma: plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario),
     });
     if (!liberacao.liberado) {
       audit("playback_negado", { userId, ip, ua, detail: `/fontes acao: ${liberacao.motivo} finalidade:${finalidade}` });
@@ -415,6 +418,8 @@ export async function POST(req: NextRequest) {
     concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
     finalidade,
     alvo,
+    // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
+    plataforma: plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario),
   });
   if (!anuncio.liberado) {
     audit("playback_negado", { userId, ip, ua, detail: `/fontes: ${anuncio.motivo} finalidade:${finalidade}` });

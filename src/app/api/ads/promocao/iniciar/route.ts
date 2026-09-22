@@ -5,7 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva } from "@/lib/playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva } from "@/lib/playbackAuthorization";
 import { iniciarPromocao } from "@/lib/ads/concessoes";
 import { hostParaLog } from "@/lib/ads/directLink";
 
@@ -44,6 +44,7 @@ const JANELA_SEGUNDOS = 3600;
 export interface DependenciasDeInicio {
   getUserFromRequest?: typeof getUserFromRequest;
   monetizacaoAtiva?: () => boolean;
+  promocaoTvAtiva?: () => boolean;
   checkRateLimit?: typeof checkRateLimit;
   iniciarPromocao?: typeof iniciarPromocao;
   isIpBlocked?: typeof isIpBlocked;
@@ -54,6 +55,7 @@ export interface DependenciasDeInicio {
 function createIniciarPromocaoHandler(deps: DependenciasDeInicio = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
+  const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const iniciar = deps.iniciarPromocao ?? iniciarPromocao;
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
@@ -88,8 +90,11 @@ function createIniciarPromocaoHandler(deps: DependenciasDeInicio = {}) {
     const userId = usuario.userId;
 
     // Mesmo motivo de `/ads/complete`: com o enforcement desligado ninguém
-    // recebe desafio, e responder aqui só pré-fabricaria estado.
-    if (!flagAtiva()) {
+    // recebe desafio, e responder aqui só pré-fabricaria estado. `PROMOCAO_TV_ATIVA`
+    // também abre esta porta — a rota já exige credencial de TV (`bearer` +
+    // `deviceId`, abaixo) e um desafio que o servidor emitiu para este aparelho,
+    // então só a Android TV com desafio válido passa.
+    if (!flagAtiva() && !promoTvAtiva()) {
       return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
     }
 
