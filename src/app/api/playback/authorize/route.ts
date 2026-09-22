@@ -6,7 +6,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { prisma } from "@/lib/prisma";
-import { direitoDeCatalogo, monetizacaoAtiva } from "@/lib/playbackAuthorization";
+import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
@@ -149,6 +149,7 @@ async function conteudoExisteNoCatalogo(alvo: AlvoDeConcessao): Promise<boolean>
 export interface DependenciasDeAutorizacao {
   getUserFromRequest?: typeof getUserFromRequest;
   monetizacaoAtiva?: () => boolean;
+  promocaoTvAtiva?: () => boolean;
   entitlementsDoUsuario?: typeof entitlementsDoUsuario;
   registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
   emitirPasse?: typeof emitirPasse;
@@ -164,6 +165,7 @@ export interface DependenciasDeAutorizacao {
 function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
+  const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
   const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
   const criarPasse = deps.emitirPasse ?? emitirPasse;
@@ -237,7 +239,14 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const plataforma = plataformaDaRequisicao(corpo.plataforma, usuario);
 
   // ── Flag desligada: permitido, sem consultar nada ──────────────────────────
-  if (!flagAtiva()) {
+  //
+  // `PROMOCAO_TV_ATIVA` liga o enforcement APENAS para a Android TV (e só o
+  // fluxo de promoção dela). A plataforma vem da credencial acima
+  // (`plataformaDaRequisicao`), nunca do corpo — um cliente de cookie/celular
+  // que declare `android_tv` já caiu em `web`, então não alcança este ramo.
+  // Web, Android móvel e Electron seguem o bypass de sempre com global desligada.
+  const enforcarPromocaoTv = promoTvAtiva() && plataforma === "android_tv";
+  if (!flagAtiva() && !enforcarPromocaoTv) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 

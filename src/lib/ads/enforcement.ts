@@ -22,9 +22,9 @@
  */
 
 import { entitlementsDoUsuario } from "../entitlements";
-import { monetizacaoAtiva } from "../playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva } from "../playbackAuthorization";
 import { consumirConcessao, type AlvoDeConcessao, type FinalidadeDeConcessao } from "./concessoes";
-import { exigeAnuncio, type ConteudoDeAnuncio } from "./politica";
+import { exigeAnuncio, type ConteudoDeAnuncio, type PlataformaDeExibicao } from "./politica";
 import type { Entitlements } from "../entitlements";
 
 export type ResultadoDeAnuncio =
@@ -32,8 +32,14 @@ export type ResultadoDeAnuncio =
   | { liberado: false; motivo: "sem_concessao" | "concessao_invalida" | "indeterminado" };
 
 export interface OpcoesDeEnforcement {
-  /** A flag já interpretada. Injetável para o teste não mexer no ambiente. */
+  /** A flag global (`MONETIZACAO_ATIVA`) já interpretada. Injetável para o teste. */
   ativa?: boolean;
+  /**
+   * A flag da promoção da TV (`PROMOCAO_TV_ATIVA`) já interpretada. Só tem efeito
+   * quando `entrada.plataforma === "android_tv"`: cobra a concessão da TV sem
+   * ligar o enforcement para Web/Android/Electron. Injetável para o teste.
+   */
+  promocaoTvAtiva?: boolean;
   /** Como resolver os direitos. Injetável para dispensar banco e Redis. */
   resolver?: (userId: string) => Promise<Entitlements>;
   /** Como consumir a concessão. Injetável pelo mesmo motivo. */
@@ -69,10 +75,19 @@ export async function autorizarPorAnuncio(
     finalidade?: FinalidadeDeConcessao;
     /** O conteúdo pedido. Concessão com alvo só é aceita para o mesmo alvo. */
     alvo?: AlvoDeConcessao | null;
+    /**
+     * Plataforma da credencial (`plataformaDaRequisicao`), não do corpo. Só
+     * `"android_tv"` reage a `PROMOCAO_TV_ATIVA`; ausente/`web` segue a global.
+     */
+    plataforma?: PlataformaDeExibicao;
   },
   opcoes: OpcoesDeEnforcement = {},
 ): Promise<ResultadoDeAnuncio> {
-  const ativa = opcoes.ativa ?? monetizacaoAtiva();
+  // Global liga para todos; a flag da TV liga SÓ para `android_tv`. Assim a TV
+  // cobra a concessão da promoção sem reativar o enforcement de Web/Android/Electron.
+  const global = opcoes.ativa ?? monetizacaoAtiva();
+  const tvAtiva = opcoes.promocaoTvAtiva ?? promocaoTvAtiva();
+  const ativa = global || (tvAtiva && entrada.plataforma === "android_tv");
   if (!ativa) return { liberado: true, via: "flag_desligada" };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;

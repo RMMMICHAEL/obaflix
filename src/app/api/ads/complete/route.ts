@@ -5,7 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva } from "@/lib/playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   TTL_CONCESSAO_PROMOCAO_TV_S,
@@ -91,6 +91,7 @@ interface Corpo {
 export interface DependenciasDeConclusao {
   getUserFromRequest?: typeof getUserFromRequest;
   monetizacaoAtiva?: () => boolean;
+  promocaoTvAtiva?: () => boolean;
   checkRateLimit?: typeof checkRateLimit;
   consumirDesafio?: typeof consumirDesafio;
   emitirConcessao?: typeof emitirConcessao;
@@ -105,6 +106,7 @@ export interface DependenciasDeConclusao {
 function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
+  const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const consumir = deps.consumirDesafio ?? consumirDesafio;
   const emitir = deps.emitirConcessao ?? emitirConcessao;
@@ -145,7 +147,10 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // Com o enforcement desligado ninguém deveria chegar aqui — `/authorize`
   // responde PERMITIDO sem abrir desafio. Recusar em vez de emitir concessão
   // fecha a porta de pré-fabricar concessões antes de a monetização ligar.
-  if (!flagAtiva()) {
+  // `PROMOCAO_TV_ATIVA` também abre a porta, mas só para concluir desafio de TV:
+  // a checagem por plataforma vem depois, quando o desafio já foi carregado.
+  const globalAtiva = flagAtiva();
+  if (!globalAtiva && !promoTvAtiva()) {
     return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
   }
 
@@ -189,6 +194,16 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     // desafios alheios.
     await registrarAbuso(ip);
     audit("play_token_rejected", { userId, ip, ua, detail: "/ads/complete: desafio inválido" });
+    return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
+  }
+
+  // Só a flag da TV ligada (global desligada): APENAS desafio de promoção da TV
+  // conclui. Um desafio de Android móvel ou Electron não vira concessão porque
+  // `PROMOCAO_TV_ATIVA` está ligada — ela não reativa o enforcement deles. O
+  // desafio já foi consumido acima, então a tentativa queima o id.
+  if (!globalAtiva && desafio.plataforma !== "android_tv") {
+    await registrarAbuso(ip);
+    audit("play_token_rejected", { userId, ip, ua, detail: `/ads/complete: nao-TV so com PROMOCAO_TV_ATIVA plataforma:${desafio.plataforma}` });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
