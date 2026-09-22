@@ -135,7 +135,9 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
     nota:
       "`decidirAnuncio` sai no primeiro `if` para quem tem `false`, e é isso que " +
       "mantém Basic, Plus e Premium fora do fluxo publicitário — por direito, " +
-      "nunca por nome de plano. Para quem tem `true`, `/api/playback/authorize` " +
+      "nunca por nome de plano. Na Android TV o meio é a promoção interna " +
+      "(`ads/promocaoTv.ts`), com início e duração validados no servidor. " +
+      "Para quem tem `true`, `/api/playback/authorize` " +
       "decide por finalidade: reprodução segue a política (filme pede anúncio; " +
       "série, o N-ésimo episódio distinto) e o que passa sem anúncio recebe um " +
       "passe de uso único; download e transmissão pedem anúncio por ação. " +
@@ -163,6 +165,17 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
       "`expire` do contador só é aplicado na criação, então a janela começa no " +
       "primeiro episódio do ciclo e não é empurrada a cada episódio novo — sem " +
       "isso, quem assiste continuamente nunca fecharia o ciclo.",
+  },
+  servidorVip: {
+    estado: "aplicado",
+    onde: "src/lib/servidorVip.ts",
+    nota:
+      "Direito efetivo = `Plano.servidorVip` OU adicional da assinatura, resolvido " +
+      "em `entitlements.ts`. `servidorVipDaConta` o lê atrás de MONETIZACAO_ATIVA, e " +
+      "`extractCineVs` deixa de listar, escolher ou resolver vídeo `is_premium` sem " +
+      "ele — inclusive por `videoId` direto, em /api/player/extract e " +
+      "/api/player/fonte-nativa. Flag desligada: nenhum filtro. Fora da vitrine e " +
+      "do checkout até a oferta ser liberada.",
   },
 };
 

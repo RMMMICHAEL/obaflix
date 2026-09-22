@@ -50,8 +50,12 @@ try { require("dotenv").config(); } catch { /* sem dotenv, usa vars do ambiente 
 const prisma = new PrismaClient({ log: ["error"] });
 const aplicar = process.argv.includes("--apply");
 
-/** Só os campos de direito. `id`, `nome`, `ordem`, `ativo` e `ehPadrao` ficam fora. */
-const DIREITOS: DireitosDoPlano = {
+/**
+ * Só os campos de direito. `id`, `nome`, `ordem`, `ativo` e `ehPadrao` ficam fora.
+ * `servidorVip` também: a coluna depende da migration 20260913 e o gratuito já
+ * nasce `false` pelo default dela.
+ */
+const DIREITOS: Omit<DireitosDoPlano, "servidorVip"> = {
   anunciosObrigatorios: PLANO_GRATUITO.anunciosObrigatorios,
   episodiosPorAnuncio: PLANO_GRATUITO.episodiosPorAnuncio,
   janelaAnuncioHoras: PLANO_GRATUITO.janelaAnuncioHoras,
@@ -106,7 +110,7 @@ async function main() {
   }
 
   // ── A checagem que impede trocar uma incoerência por outra ────────────────
-  const restantes = inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS });
+  const restantes = inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false });
   if (restantes.length) {
     console.log("\n── RECUSADO ──────────────────────────────────────────────");
     console.log("Depois deste ajuste o gratuito AINDA entregaria mais que um plano pago:\n");

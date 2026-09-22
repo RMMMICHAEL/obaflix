@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.focusGroup
@@ -56,6 +57,8 @@ import com.obaflix.tv.ui.componentes.LinhaMeta
 import com.obaflix.tv.ui.componentes.escalaFoco
 import com.obaflix.tv.ui.componentes.escalar
 import com.obaflix.tv.ui.componentes.focavel
+import com.obaflix.tv.ui.componentes.homeNavegavel
+import com.obaflix.tv.ui.componentes.fileirasNavegaveis
 import kotlinx.coroutines.delay
 
 /**
@@ -99,7 +102,9 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
     // Enquanto o cursor estiver na barra de abas, a Home nao o toma: quem
     // atravessa as opcoes de cima precisa continuar em cima.
     EfeitoRestauraFoco(
-        pronto = home != null,
+        // So quando ha alvo de foco: Home sem card mostra aviso, e pedir foco a
+        // uma lista vazia seria insistir num grupo sem filho.
+        pronto = home?.let { homeNavegavel(it) } == true,
         primeiro = conteinerFoco,
         temFoco = { temFoco },
         tag = "Home",
@@ -132,40 +137,18 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
     val dados = home
     Box(Modifier.fillMaxWidth().weight(1f)) {
         when {
-            dados != null -> LazyColumn(
-                state = rolagem,
+            dados != null && homeNavegavel(dados) -> ListaDaHome(
+                dados = dados,
+                margem = margem,
+                aoFocarArte = aoFocarArte,
+                aoAbrir = { Navegacao.abrirDetalhe(it) },
+                rolagem = rolagem,
                 modifier = Modifier
                     .fillMaxSize()
                     .focusRequester(conteinerFoco)
                     .focusGroup()
                     .onFocusChanged { temFoco = it.hasFocus },
-                contentPadding = PaddingValues(top = 8.dp, bottom = margemVertical()),
-                verticalArrangement = Arrangement.spacedBy(Medidas.EspacoFileiras),
-            ) {
-                // A seta para cima, na primeira fileira visivel, volta para a
-                // opcao da aba aberta — e nao para a opcao que estiver acima na
-                // geometria. Vale so para a primeira: nas de baixo, subir
-                // continua andando de fileira em fileira.
-                val subirParaAba = Modifier.focusProperties { up = focoMoldura.requisitorAtivo }
-                if (dados.destaques.isNotEmpty()) {
-                    item(key = "destaques") {
-                        Box(subirParaAba) {
-                            DestaqueDuplo(dados.destaques, margem, aoFocarArte)
-                        }
-                    }
-                }
-                itemsIndexed(dados.fileiras, key = { _, f -> f.id }) { indice, fileira ->
-                    val primeira = indice == 0 && dados.destaques.isEmpty()
-                    Box(if (primeira) subirParaAba else Modifier) {
-                        FileiraCatalogo(
-                            fileira = fileira,
-                            margem = margem,
-                            aoFocar = { aoFocarArte(it.background) },
-                            aoAbrir = { Navegacao.abrirDetalhe(it) },
-                        )
-                    }
-                }
-            }
+            )
 
             erro -> Aviso(
                 texto = "Não foi possível carregar o catálogo.",
@@ -173,7 +156,64 @@ fun ColumnScope.TelaHome(aoFocarArte: (String?) -> Unit) {
                 aoAgir = { recarga++ },
             )
 
+            // Payload valido sem nenhum card: aviso, nunca uma lista sem alvo
+            // de foco.
+            dados != null -> Aviso(
+                texto = "Nenhum título disponível no momento.",
+                acao = "Tentar de novo",
+                aoAgir = { recarga++ },
+            )
+
             else -> Aviso(texto = "Carregando o catálogo…")
+        }
+    }
+}
+
+/**
+ * Lista vertical da Home: destaques e fileiras.
+ *
+ * So entra fileira com card (fileirasNavegaveis). Separada de TelaHome para o
+ * teste instrumentado compor exatamente esta lista, sem rede nem cache.
+ */
+@Composable
+internal fun ListaDaHome(
+    dados: Home,
+    margem: androidx.compose.ui.unit.Dp,
+    aoFocarArte: (String?) -> Unit,
+    aoAbrir: (Item) -> Unit,
+    modifier: Modifier = Modifier,
+    rolagem: LazyListState = rememberLazyListState(),
+) {
+    val focoMoldura = com.obaflix.tv.ui.componentes.LocalFocoMoldura.current
+    val fileiras = remember(dados.fileiras) { fileirasNavegaveis(dados.fileiras) }
+    LazyColumn(
+        state = rolagem,
+        modifier = modifier,
+        contentPadding = PaddingValues(top = 8.dp, bottom = margemVertical()),
+        verticalArrangement = Arrangement.spacedBy(Medidas.EspacoFileiras),
+    ) {
+        // A seta para cima, na primeira fileira visivel, volta para a
+        // opcao da aba aberta — e nao para a opcao que estiver acima na
+        // geometria. Vale so para a primeira: nas de baixo, subir
+        // continua andando de fileira em fileira.
+        val subirParaAba = Modifier.focusProperties { up = focoMoldura.requisitorAtivo }
+        if (dados.destaques.isNotEmpty()) {
+            item(key = "destaques") {
+                Box(subirParaAba) {
+                    DestaqueDuplo(dados.destaques, margem, aoFocarArte)
+                }
+            }
+        }
+        itemsIndexed(fileiras, key = { _, f -> f.id }) { indice, fileira ->
+            val primeira = indice == 0 && dados.destaques.isEmpty()
+            Box(if (primeira) subirParaAba else Modifier) {
+                FileiraCatalogo(
+                    fileira = fileira,
+                    margem = margem,
+                    aoFocar = { aoFocarArte(it.background) },
+                    aoAbrir = aoAbrir,
+                )
+            }
         }
     }
 }

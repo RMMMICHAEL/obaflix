@@ -76,6 +76,22 @@ const PUBLICO = [
   "/parear",
   "/login",
   "/cadastro",
+  // Bootstrap do login desktop (Electron). Roda no NAVEGADOR do sistema — o
+  // Electron abre esta página via shell.openExternal porque o Google recusa
+  // WebView embutida. Logo ela chega SEM o User-Agent `ObaflixDesktop/` e sem o
+  // header `x-obaflix-client`, então precisa ficar pública ou o navegador cai na
+  // landing e o signIn("google") nunca dispara. Não é streaming: só inicia o
+  // OAuth e volta ao app por obaflix://auth/callback. `/api/desktop-auth/*` já
+  // é público via `/api`.
+  "/desktop-auth",
+  // Assinatura. Abertas para o navegador do celular continuar o que começou na
+  // TV (QR em `/planos?plano=<id>`). Nenhuma delas é interface de streaming: não
+  // listam catálogo nem reproduzem nada, e cada ação continua exigindo sessão —
+  // `/checkout` manda para `/login` quem não tem, e as rotas de cobrança
+  // conferem sessão, origem e limite no servidor.
+  "/planos",
+  "/checkout",
+  "/conta",
   "/admin",
   "/api",
   "/robots.txt",

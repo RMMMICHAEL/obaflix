@@ -8,9 +8,14 @@ import { audit } from "@/lib/auditLog";
 import { monetizacaoAtiva } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
+  TTL_CONCESSAO_PROMOCAO_TV_S,
   consumirDesafio,
   emitirConcessao,
+  escopoDaTv,
+  esquecerInicioDaPromocao,
+  inicioDaPromocao,
   marcarPago,
+  promocaoCumprida,
   type NivelDeVerificacao,
 } from "@/lib/ads/concessoes";
 
@@ -24,12 +29,14 @@ import {
  *
  * Ela sabe que abriu um desafio para esta conta há pouco tempo, e que alguém com
  * a sessão dessa conta voltou com o id. **Ela não sabe que o anúncio foi
- * assistido.** Nenhuma das duas redes desta fase confirma isso fora de banda:
+ * assistido.** Nenhum dos meios desta fase confirma isso fora de banda:
  *
  *  - **Electron / Direct Link** — o link abre no navegador do sistema. Não há
  *    callback nenhum; o navegador não fala com a gente.
  *  - **Android / Unity interstitial** — o SDK avisa o próprio aplicativo que o
  *    anúncio fechou. Quem nos conta é o cliente.
+ *  - **Android TV / promoção interna** — o fim do vídeo é observado pelo player
+ *    da TV. Quem nos conta, de novo, é o cliente.
  *
  * Por isso a concessão nasce marcada `verificacao: "soft"`, e é assim que ela
  * entra no log. **Não há verificação forte aqui, e fingir que há seria pior do
@@ -47,9 +54,17 @@ import {
  *  3. **rate limit por conta** — pedir concessão em série custa 429;
  *  4. **concessão presa à conta e à finalidade**, de uso único e com TTL.
  *
- * Nada disso impede um cliente modificado de fechar o anúncio e chamar esta
- * rota. Impede replay, forja de desafio, automação rápida e reaproveitamento —
- * que é o teto honesto sem SSV.
+ * Na TV, dois passos a mais, ambos do servidor:
+ *
+ *  5. **sequência** — a conclusão exige o início gravado por
+ *     `/api/ads/promocao/iniciar`. Sem início, não há promoção a concluir;
+ *  6. **duração da peça** — entre início e conclusão precisa passar a duração
+ *     congelada no desafio, e só o aparelho que abriu o desafio conclui.
+ *
+ * Nada disso impede um cliente modificado de esperar o tempo sem exibir o vídeo
+ * e chamar esta rota. Impede replay, forja de desafio, pular o vídeo, conclusão
+ * antecipada, uso por outro aparelho e reaproveitamento — que é o teto honesto
+ * sem uma prova de exibição fora do cliente.
  */
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
@@ -80,6 +95,8 @@ export interface DependenciasDeConclusao {
   consumirDesafio?: typeof consumirDesafio;
   emitirConcessao?: typeof emitirConcessao;
   marcarPago?: typeof marcarPago;
+  inicioDaPromocao?: typeof inicioDaPromocao;
+  esquecerInicioDaPromocao?: typeof esquecerInicioDaPromocao;
   isIpBlocked?: typeof isIpBlocked;
   recordAbuseAttempt?: typeof recordAbuseAttempt;
   agora?: () => number;
@@ -92,6 +109,8 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const consumir = deps.consumirDesafio ?? consumirDesafio;
   const emitir = deps.emitirConcessao ?? emitirConcessao;
   const marcarPagoDoAlvo = deps.marcarPago ?? marcarPago;
+  const lerInicio = deps.inicioDaPromocao ?? inicioDaPromocao;
+  const esquecerInicio = deps.esquecerInicioDaPromocao ?? esquecerInicioDaPromocao;
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
   const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
   const agora = deps.agora ?? Date.now;
@@ -179,7 +198,8 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // anúncio caber no intervalo não é um anúncio assistido — é automação, ou um
   // cliente que pulou a etapa. O desafio já foi consumido acima, então a
   // tentativa custa: quem tentar de novo precisa de um desafio novo.
-  const decorrido = agora() - desafio.criadoEm;
+  const instante = agora();
+  const decorrido = instante - desafio.criadoEm;
   if (decorrido < TEMPO_MINIMO_DE_ANUNCIO_MS) {
     audit("playback_negado", {
       userId, ip, ua,
@@ -191,7 +211,53 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     );
   }
 
-  // Sempre "soft" nesta fase. Ver o cabeçalho: nenhuma das duas redes confirma
+  // ── Android TV: sequência e duração da promoção ───────────────────────────
+  //
+  // O desafio já foi consumido: qualquer recusa daqui para baixo o queima, e a
+  // TV precisa voltar a `/authorize`. É o que impede sondar a conclusão em
+  // série até o tempo passar — e, para quem assistiu de verdade, não custa nada,
+  // porque a conclusão legítima só é enviada no fim do vídeo.
+  const ehPromocaoTv = desafio.plataforma === "android_tv";
+  if (ehPromocaoTv) {
+    // Só o aparelho que abriu. `consumirDesafio` já recusou desafio de TV sem
+    // promoção ou sem aparelho, então os dois existem aqui.
+    if (!desafio.promocao || !usuario.deviceId || desafio.dispositivo !== usuario.deviceId) {
+      await registrarAbuso(ip);
+      audit("play_token_rejected", { userId, ip, ua, detail: "/ads/complete: promocao de outro aparelho" });
+      return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
+    }
+
+    let iniciadaEm: number | null;
+    try {
+      iniciadaEm = await lerInicio(desafioId);
+    } catch {
+      return NextResponse.json(
+        { error: "Serviço temporariamente indisponível" },
+        { status: 503, headers: NO_STORE },
+      );
+    }
+
+    if (iniciadaEm === null) {
+      audit("playback_negado", { userId, ip, ua, detail: "/ads/complete promocao sem inicio" });
+      return NextResponse.json(
+        { error: "Acesso negado", codigo: "promocao_nao_iniciada" },
+        { status: 403, headers: NO_STORE },
+      );
+    }
+
+    if (!promocaoCumprida(iniciadaEm, instante, desafio.promocao.duracaoMs)) {
+      audit("playback_negado", {
+        userId, ip, ua,
+        detail: `/ads/complete promocao antecipada (${instante - iniciadaEm}ms de ${desafio.promocao.duracaoMs}ms)`,
+      });
+      return NextResponse.json(
+        { error: "Acesso negado", codigo: "anuncio_nao_concluido" },
+        { status: 403, headers: NO_STORE },
+      );
+    }
+  }
+
+  // Sempre "soft" nesta fase. Ver o cabeçalho: nenhum meio confirma
   // servidor→servidor, e a constante não é parametrizável pelo cliente de
   // propósito — um campo no corpo que elevasse o nível seria o próprio buraco.
   const verificacao: NivelDeVerificacao = "soft";
@@ -199,11 +265,15 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // Finalidade e alvo vêm do DESAFIO, gravado pelo servidor quando decidiu cobrar
   // o anúncio — nunca do corpo desta requisição. Um anúncio visto para baixar não
   // vira concessão de reprodução, nem de outro conteúdo.
+  //
+  // Na TV a concessão vive o mesmo que um passe: ela é usada no mesmo instante,
+  // para abrir o conteúdo que ficou esperando.
   const concessao = await emitir({
     userId,
     finalidade: desafio.finalidade,
     verificacao,
     alvo: desafio.alvo,
+    ttlS: ehPromocaoTv ? TTL_CONCESSAO_PROMOCAO_TV_S : undefined,
   });
 
   // Reprodução paga fica paga para aquele alvo durante a janela da concessão:
@@ -211,11 +281,31 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // episódio) recebe passe sem outro anúncio. Download e transmissão são
   // pontuais e não recebem marca. Falhar ao marcar custa, no pior caso, um
   // anúncio a mais — nunca acesso indevido — e por isso não derruba a resposta.
+  //
+  // Na TV é também o que cobre a resposta perdida: se a concessão não chegar ao
+  // aparelho, a nova pergunta a `/authorize` encontra o alvo pago e recebe passe
+  // — sem segunda promoção e sem segunda concessão deste desafio.
   if (desafio.finalidade === "reproducao" && desafio.alvo) {
     try {
-      await marcarPagoDoAlvo({ userId, finalidade: desafio.finalidade, alvo: desafio.alvo });
+      // A TV marca no escopo do aparelho: a promoção dela não dispensa o anúncio
+      // do celular, e o anúncio do celular não dispensa a promoção dela.
+      await marcarPagoDoAlvo({
+        userId,
+        finalidade: desafio.finalidade,
+        alvo: desafio.alvo,
+        escopo: ehPromocaoTv && desafio.dispositivo ? escopoDaTv(desafio.dispositivo) : undefined,
+        persistente: desafio.plataforma === "electron",
+      });
     } catch {
       /* conveniência, não autorização */
+    }
+  }
+
+  if (ehPromocaoTv) {
+    try {
+      await esquecerInicio(desafioId);
+    } catch {
+      /* o TTL apaga de qualquer forma */
     }
   }
 

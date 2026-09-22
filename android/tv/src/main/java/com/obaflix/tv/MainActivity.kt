@@ -127,13 +127,18 @@ private fun Raiz() {
     val context = LocalContext.current
     val estado by SessaoAtual.estado.collectAsState()
 
-    // Roda uma vez por processo. Reentrar na composicao — troca de tema, giro,
-    // recomposicao — nao dispara outra verificacao, entao nao ha como cair num
-    // ciclo de checar sessao e voltar para o splash.
-    LaunchedEffect(Unit) { SessaoAtual.restaurar(context) }
+    // Roda uma vez por processo, no escopo do processo. Reentrar na composicao —
+    // troca de tema, Activity recriada — nao dispara outra verificacao nem
+    // cancela a que esta esperando a rede.
+    LaunchedEffect(Unit) { SessaoAtual.iniciarRestauracao(context) }
 
-    when (estado) {
+    when (val atual = estado) {
         is EstadoApp.Inicializando -> TelaSplash()
+        // Ha login guardado e a rede ainda nao respondeu: continua carregando.
+        // A tela de pareamento so aparece quando o servidor recusar a credencial.
+        is EstadoApp.Reconectando -> TelaSplash(
+            mensagem = if (atual.tentativa >= 2) "Sem conexão. Tentando entrar na sua conta…" else "Conectando…",
+        )
         is EstadoApp.NaoAutenticado -> TelaPareamento()
         // Depois do QR Code a pessoa cai direto na Home nova. Nao existe mais
         // tela intermediaria de fundacao: o aplicativo de release vai do

@@ -495,8 +495,54 @@ existe como valor no tipo e nenhum caminho o emite.
 
 #### Android TV
 
-**Sem anúncios nesta fase.** A dependência do Unity está só no `:app`, e
-`AdsContratoTest` lê o `build.gradle` do `:tv` para garantir que continue assim.
+**Promoção interna antes da reprodução gratuita — sem SDK de anúncio.** A
+dependência do Unity continua só no `:app`, e `AdsContratoTest` lê o
+`build.gradle` do `:tv` para garantir que continue assim. O que a TV exibe é um
+vídeo próprio do Obaflix, configurado no servidor (`PROMOCAO_TV_*`, ver
+`docs/environment.md`) — trocar o vídeo não exige APK novo.
+
+Os direitos são os mesmos de celular e Electron; o meio e a **frequência** são
+próprios. Na TV, conta gratuita vê a promoção antes de **cada** filme ou
+episódio novo (`decidirPromocaoTv`), sem a cadência de episódios do celular, sem
+tocar no contador dele e com marca de recuperação separada por aparelho — ver
+`docs/tv-planos-publicacao.md`, seção 4:
+
+| Passo | Rota | O que o servidor confere |
+|---|---|---|
+| decisão | `POST /api/playback/authorize` → `PROMOCAO_TV_NECESSARIA` + `desafioId` | credencial de TV (`Bearer` com `deviceId`), direito de catálogo, conteúdo existente, configuração válida |
+| início | `POST /api/ads/promocao/iniciar` → `{ videoUrl, duracaoSeg, versao }` | desafio da conta **e** do aparelho; instante gravado por `SET NX` — retry não reinicia |
+| conclusão | `POST /api/ads/complete` → `{ concessao }` | início gravado; `agora − início ≥ duração congelada − 1 s`; mesmo aparelho; desafio consumido por `DEL` |
+| aplicação | `POST /api/player/fontes` com `concessao` | uso único, mesma conta, finalidade e conteúdo — **sem mudança nesta rota** |
+
+Decisões novas no contrato, só para credencial de TV: `PROMOCAO_TV_NECESSARIA`
+e `NEGADO` (`conteudo_indisponivel_no_plano`). Android 1.0.17 e Electron seguem
+recebendo exatamente o que recebiam.
+
+**A plataforma sai da credencial.** `plataformaDaRequisicao` devolve
+`android_tv` para `Bearer` de TV, qualquer que seja o `plataforma` do corpo; um
+cookie que declare `android_tv` cai em `web`, sem meio de exibição. A TV não
+escapa para o interstitial de 6 s do celular, e nenhum cliente escolhe a
+promoção declarando plataforma.
+
+**Garantias e limites.** O servidor prova que o desafio foi emitido por ele para
+esta conta e este aparelho, que a sessão começou, que passou a duração inteira
+do vídeo entre início e conclusão pelo relógio dele, e que a concessão abre um
+conteúdo, uma finalidade, uma vez, por 5 min. **Não prova que o vídeo foi
+exibido**: um cliente modificado pode esperar o tempo sem mostrar nada. É
+`verificacao: "soft"`, como os demais meios. O evento de fim do player dispara a
+conclusão, mas não é prova sozinho.
+
+**Resposta perdida.** Se a concessão não chega à TV, a nova pergunta a
+`/authorize` encontra a marca de pago e recebe passe — sem segunda promoção e
+sem segunda concessão do mesmo desafio.
+
+**Com `MONETIZACAO_ATIVA` desligada**, `/authorize` responde `PERMITIDO` sem
+consultar nada e a TV abre o player como antes (uma requisição curta a mais por
+reprodução, sem banco nem Redis); `iniciar` e `complete` respondem 404.
+
+**Servidor VIP continua não modelado** (ver 5.3). A vitrine da TV mostra "VIP
+opcional/incluso" como informação comercial, e nenhuma rota filtra fonte por
+plano — fazer isso exige coluna em `Plano` e migration, fora desta etapa.
 
 **`canaisNivel` vale sempre, com a flag ligada ou desligada.** É a única exceção
 da tabela, e é deliberada: a flag existe para não mudar comportamento
@@ -830,10 +876,11 @@ sequenceDiagram
 
 ### 11.2 A limitação, dita com clareza
 
-Um Direct Link aberto em navegador externo **não prova que o usuário
-visualizou a página nem que a manteve aberta**. O processo do Obaflix perde a
-visão no instante em que o navegador assume. Não existe callback, não existe
-postback documentado, não existe medida de tempo confiável.
+Um Direct Link aberto em navegador externo **não prova que o usuário permaneceu
+com a aba aberta durante todo o intervalo**. O Electron confirma que o sistema
+aceitou a abertura e que o aplicativo perdeu e recuperou o foco; o servidor
+controla o tempo mínimo e só então emite a concessão vinculada à conta e ao
+conteúdo. Não há callback ou postback documentado para este link.
 
 | | HARD VERIFIED AD | SOFT VERIFIED AD |
 |---|---|---|
@@ -1291,7 +1338,7 @@ Resumindo o estado atual: **direito conhecido vem do Postgres ou de cache válid
 | Filmes | direto | modal + Direct Link se gratuito | modal + SDK se gratuito | por política (seção 12) |
 | Séries | direto | idem, a cada N episódios | idem, a cada N episódios | por política |
 | Canais | por nível | por nível (+ Direct Link se gratuito) | por nível (+ SDK se gratuito) | por nível |
-| Anúncios | nenhum | Direct Link (SOFT) | SDK recompensado (HARD com SSV) | **[D-14]** — recomendo nenhum |
+| Anúncios | nenhum | Direct Link (SOFT) | SDK recompensado (HARD com SSV) | promoção interna própria (SOFT) — ver D-14 |
 | Assinatura | servidor | servidor | servidor | servidor |
 | PIX | backend | backend | backend | **[D-15]** QR na TV ou "assine no celular"? |
 | Interface | React | **a mesma React** | **a mesma React** | Compose própria |
@@ -1360,7 +1407,7 @@ automação, não usuário impaciente.
 | **D-11** | Webhook Blackcat **nunca é prova suficiente sozinho**: confirmar `PAID` servidor→servidor e validar valor e transação, sempre. Verificar com a Blackcat se existe segredo, HMAC ou allowlist | seção 14.2 |
 | **D-12** | Rotação de sessão web: **adiado**, PR próprio, fora deste escopo | — |
 | **D-13** | Dados pessoais do pagamento: **retenção mínima necessária** | seção 15.3 |
-| **D-14** | **Sem anúncios na Android TV.** O gratuito na TV é *limitado*, não *com anúncio* | seção 20 |
+| **D-14** | **Revista:** sem SDK de anúncio na Android TV, mas com **promoção interna própria** (vídeo do Obaflix no R2) antes da reprodução gratuita, atrás de `MONETIZACAO_ATIVA`. Assinantes não veem promoção | seção 5.4, "Android TV" |
 | **D-15** | Pagamento na TV **por QR, concluído no celular**. Sem checkout por D-pad | seção 20 |
 
 Duas decisões estruturais confirmadas junto com essas, e que valem repetir aqui

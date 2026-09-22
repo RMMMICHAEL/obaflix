@@ -6,10 +6,15 @@ import { getServerSession } from "next-auth";
 import { prisma } from "./prisma";
 import { checkRateLimit } from "./requestSecurity";
 import crypto from "crypto";
+import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
-const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
-const USE_SECURE_COOKIES = process.env.NODE_ENV === "production" || process.env.NEXTAUTH_URL?.startsWith("https://") === true;
+export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+export const USE_SECURE_COOKIES = process.env.NODE_ENV === "production" || process.env.NEXTAUTH_URL?.startsWith("https://") === true;
+export const SESSION_COOKIE_NAME = `${USE_SECURE_COOKIES ? "__Secure-" : ""}next-auth.session-token`;
+
+export const encodeObaflixSession = (params: Parameters<typeof encodeNextAuthJwt>[0]) => encodeNextAuthJwt(params);
+export const decodeObaflixSession = (params: Parameters<typeof decodeNextAuthJwt>[0]) => decodeNextAuthJwt(params);
 
 /**
  * Autoriza apenas usuários autenticados com role "admin".
@@ -78,12 +83,16 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
 
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt", maxAge: SESSION_MAX_AGE },
-  jwt: { maxAge: SESSION_MAX_AGE },
+  jwt: {
+    maxAge: SESSION_MAX_AGE,
+    encode: encodeObaflixSession,
+    decode: decodeObaflixSession,
+  },
   useSecureCookies: USE_SECURE_COOKIES,
   pages: { signIn: "/login" },
   cookies: {
     sessionToken: {
-      name: `${USE_SECURE_COOKIES ? "__Secure-" : ""}next-auth.session-token`,
+      name: SESSION_COOKIE_NAME,
       options: {
         httpOnly: true,
         secure: USE_SECURE_COOKIES,
@@ -144,9 +153,46 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }: any) {
-      if (user) {
+    async signIn({ user, account, profile }: any) {
+      if (account?.provider !== "google") return true;
+
+      const email = typeof user?.email === "string"
+        ? user.email.normalize("NFKC").toLowerCase().trim()
+        : "";
+      if (!email || profile?.email_verified !== true) return false;
+
+      // Sem adapter OAuth, o id que o Google entrega nao e User.id. O Obaflix
+      // vincula apenas a uma conta que ja existe; login nunca cria ou altera linha.
+      const local = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true, email: true, nome: true, avatar: true, role: true },
+      });
+      if (!local) return false;
+
+      user.id = local.id;
+      user.email = local.email;
+      user.name = local.nome;
+      user.image = local.avatar;
+      user.role = local.role;
+      return true;
+    },
+    async jwt({ token, user, account }: any) {
+      if (account?.provider === "google" && typeof token.email === "string") {
+        const email = token.email.normalize("NFKC").toLowerCase().trim();
+        const local = await prisma.user.findUnique({
+          where: { email },
+          select: { id: true, nome: true, avatar: true, role: true },
+        });
+        if (local) {
+          token.id = local.id;
+          token.sub = local.id;
+          token.role = local.role;
+          token.name = local.nome;
+          token.picture = local.avatar;
+        }
+      } else if (user) {
         token.id = user.id;
+        token.sub = user.id;
         token.role = user.role ?? "user";
       }
       return token;

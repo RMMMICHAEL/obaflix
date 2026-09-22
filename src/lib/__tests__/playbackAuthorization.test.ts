@@ -36,6 +36,7 @@ function direitos(over: Partial<DireitosDoPlano> = {}): DireitosDoPlano {
     perfisMax: 1,
     resolucaoMax: "4k",
     tvNivel: "completo",
+    servidorVip: false,
     ...over,
   };
 }

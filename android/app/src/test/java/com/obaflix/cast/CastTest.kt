@@ -25,7 +25,7 @@ class CastSourceResolverTest {
     fun `hls elegivel usa o mime de HLS`() {
         val r = elegivel(payload("stream" to "https://cdn.exemplo.com/m.m3u8", "tipo" to "hls"))
         assertEquals(MediaKind.HLS, r.source.kind)
-        assertEquals("application/x-mpegURL", r.source.mimeType)
+        assertEquals("application/x-mpegurl", r.source.mimeType)
         assertEquals("Episodio 1", r.source.titulo)
     }
 
@@ -100,9 +100,17 @@ class WebVideoCastTest {
     @Test
     fun `leva mime titulo e poster`() {
         val spec = WebVideoCast.especificacao(fonte())
-        assertEquals("application/x-mpegURL", spec.mimeType)
+        assertEquals("application/x-mpegurl", spec.mimeType)
         assertEquals("Episodio 1", spec.titulo)
         assertEquals("https://img.exemplo/p.jpg", spec.poster)
+    }
+
+    @Test
+    fun `mime HLS vai em minusculas para o Intent resolver`() {
+        // Regressao: "application/x-mpegURL" nao casa com o filtro do Web Video Cast.
+        val mime = WebVideoCast.especificacao(fonte()).mimeType
+        assertEquals(mime.lowercase(), mime)
+        assertEquals("application/x-mpegurl", mime)
     }
 
     @Test

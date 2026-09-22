@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
+import { servidorVipDaConta, type DireitoServidorVip } from "@/lib/servidorVip";
 import { assertAllowedMediaUrl } from "@/lib/mediaProviders";
 import { ehHostHide, ordemEspelhosHide, validarMasterHide } from "@/lib/hideMaster";
 import { extractCineVs, type CineVsFonte, type CineVsSubtitle } from "@/lib/cinevs";
@@ -1086,7 +1087,10 @@ type ResultadoExtracao = {
   corsLiberado?: boolean;
 };
 
-async function doExtract(url: string): Promise<ResultadoExtracao> {
+async function doExtract(
+  url: string,
+  opcoes: { servidorVip?: DireitoServidorVip } = {},
+): Promise<ResultadoExtracao> {
   const parsed = await assertAllowedMediaUrl(url);
   const hostname = parsed.hostname;
   const pathname = parsed.pathname;
@@ -1104,7 +1108,7 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
     const linkParam = parsed.searchParams.get("link");
     if (!linkParam) return { stream: url, tipo: "iframe", motivo: "sem_link_vast" };
     const innerUrl = Buffer.from(linkParam, "base64").toString("utf-8");
-    return doExtract(innerUrl);
+    return doExtract(innerUrl, opcoes);
   }
 
   if (hostname.includes("voltz.php") || pathname.includes("voltz.php")) {
@@ -1235,6 +1239,8 @@ async function doExtract(url: string): Promise<ResultadoExtracao> {
         episode: Number(parsed.searchParams.get("episode") ?? 1),
         titleHint: parsed.searchParams.get("q") ?? "",
         videoId: videoEscolhido,
+        // Direito resolvido no GET, a partir da sessão — nunca da URL recebida.
+        servidorVip: opcoes.servidorVip,
       });
       if (cv?.streamUrl) {
         streamUrl = cv.streamUrl;
@@ -1346,7 +1352,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const result = await Promise.race([
-      doExtract(url),
+      doExtract(url, { servidorVip: await servidorVipDaConta(userId) }),
       new Promise<ResultadoExtracao>((resolve) =>
         setTimeout(() => resolve({ stream: url, tipo: "iframe", motivo: "timeout" }), EXTRACT_TIMEOUT_MS)
       ),

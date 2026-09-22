@@ -157,8 +157,18 @@ describe("CHECKs: código e banco não podem divergir", () => {
     );
   });
 
-  test("o CHECK de provedor bate com PROVEDORES_PAGAMENTO", () => {
-    assert.ok(migracaoCodigo.includes(emSql(PROVEDORES_PAGAMENTO)));
+  /**
+   * `simulado` está no código e **fora** do CHECK de Production, de propósito:
+   * só o script do banco de teste o aceita. Assim um pedido simulado não grava
+   * em Production nem com configuração errada.
+   */
+  test("o CHECK de provedor de Production é o código sem 'simulado'; o de teste é o código inteiro", async () => {
+    const { readFileSync } = await import("node:fs");
+    const deProducao = PROVEDORES_PAGAMENTO.filter((p) => p !== "simulado");
+    assert.deepEqual(deProducao, ["blackcat"]);
+    assert.ok(migracaoCodigo.includes(`CHECK ("provedor" ${emSql(deProducao)})`));
+    const soTeste = readFileSync("scripts/ambiente-teste/03-provedor-simulado-somente-teste.sql", "utf8");
+    assert.ok(soTeste.includes(`CHECK ("provedor" ${emSql(PROVEDORES_PAGAMENTO)})`));
   });
 
   /**
