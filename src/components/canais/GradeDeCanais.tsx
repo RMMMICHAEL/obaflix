@@ -5,6 +5,7 @@ import { Search, Tv } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
 import { CardDeCanal } from "./CardDeCanal";
 import { PlayerDeCanal } from "./PlayerDeCanal";
+import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
 
 /**
  * A tela de canais do app (Android em WebView) e do Electron.
@@ -55,10 +56,12 @@ function normalizar(s: string): string {
 }
 
 export function GradeDeCanais() {
+  const anuncio = useAnuncio();
   const [estado, setEstado] = useState<Estado>({ fase: "carregando" });
   const [categoria, setCategoria] = useState("todos");
   const [busca, setBusca] = useState("");
   const [aberto, setAberto] = useState<ItemDeCanal | null>(null);
+  const [concessaoAnuncio, setConcessaoAnuncio] = useState<string | null>(null);
   const [tentativa, setTentativa] = useState(0);
 
   useEffect(() => {
@@ -200,13 +203,40 @@ export function GradeDeCanais() {
         ) : (
           <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
             {visiveis.map((canal) => (
-              <CardDeCanal key={canal.id} canal={canal} onAbrir={setAberto} />
+              <CardDeCanal
+                key={canal.id}
+                canal={canal}
+                onAbrir={async (selecionado) => {
+                  const desktop = typeof window !== "undefined" && !!window.obaflixDesktop;
+                  const android = typeof window !== "undefined" && !!window.obaflixAds;
+                  if (!desktop && !android) {
+                    setAberto(selecionado);
+                    return;
+                  }
+                  const fluxo = await anuncio.executarFluxoDeAnuncio({
+                    conteudoId: selecionado.id,
+                    conteudoTipo: "canal",
+                    plataforma: desktop ? "electron" : "android",
+                    finalidade: "reproducao",
+                  }, anuncio.portas);
+                  if (fluxo.situacao === "liberado") {
+                    setConcessaoAnuncio(fluxo.concessao);
+                    setAberto(selecionado);
+                  }
+                }}
+              />
             ))}
           </div>
         )}
       </Moldura>
 
-      {aberto && <PlayerDeCanal canal={aberto} onFechar={() => setAberto(null)} />}
+      {aberto && <PlayerDeCanal canal={aberto} concessaoAnuncio={concessaoAnuncio} onFechar={() => setAberto(null)} />}
+      <ModalDeAnuncio
+        estado={anuncio.modal}
+        aoConfirmar={anuncio.aoConfirmar}
+        aoFechar={anuncio.aoFechar}
+        aoAssinar={anuncio.aoAssinar}
+      />
     </>
   );
 }

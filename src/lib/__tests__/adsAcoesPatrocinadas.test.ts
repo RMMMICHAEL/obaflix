@@ -176,7 +176,7 @@ describe("convite do modal", () => {
 
   test("o modal tem Assistir anúncio, Assinar um plano e X; não tem Agora não", () => {
     const hook = readFileSync(join(raiz, "src/components/player/useAnuncio.tsx"), "utf8");
-    assert.ok(hook.includes("Assista a um anúncio"));
+    assert.ok(hook.includes("Continue assistindo gratuitamente"));
     assert.ok(hook.includes("Assistir anúncio"));
     assert.ok(hook.includes("Assinar um plano"));
     assert.match(hook, /aria-label="Fechar"/);

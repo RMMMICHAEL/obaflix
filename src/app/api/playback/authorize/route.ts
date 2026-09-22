@@ -214,7 +214,11 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
-  const conteudoTipo = corpo.conteudoTipo === "serie" ? "serie" : "filme";
+  const conteudoTipo = corpo.conteudoTipo === "serie"
+    ? "serie"
+    : corpo.conteudoTipo === "canal"
+      ? "canal"
+      : "filme";
   const conteudoId = identificador(corpo.conteudoId);
   if (!conteudoId) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
@@ -261,7 +265,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // mostrar "Ver planos" em vez de um erro de servidor — e impede abrir uma
   // promoção para um conteúdo que o plano não alcança. Os direitos já estão
   // resolvidos: nenhuma consulta a mais.
-  if (plataforma === "android_tv" && !direitoDeCatalogo(direitos, conteudoTipo)) {
+  if (plataforma === "android_tv" && conteudoTipo !== "canal" && !direitoDeCatalogo(direitos, conteudoTipo)) {
     audit("playback_negado", { userId, ip, ua, detail: `authorize tv negado tipo:${conteudoTipo}` });
     return NextResponse.json(
       { decisao: "NEGADO", codigo: "conteudo_indisponivel_no_plano" },

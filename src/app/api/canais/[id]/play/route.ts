@@ -8,6 +8,7 @@ import { entitlementsDoUsuario, EntitlementsIndefinidos } from "@/lib/entitlemen
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/auditLog";
+import { autorizarPorAnuncio, type ResultadoDeAnuncio } from "@/lib/ads/enforcement";
 import { autorizarCanal } from "@/lib/canais/acesso";
 import { ehProviderConhecido, type ProviderDeCanal } from "@/lib/canais/providers";
 import { resolverCanal, FalhaNaResolucao, type FonteDeCanalResolvida } from "@/lib/canais/resolver";
@@ -86,7 +87,7 @@ export interface DependenciasDePlay {
   recordAbuseAttempt: (ip: string) => Promise<void>;
   getUserFromRequest: (req: NextRequest) => Promise<{ userId: string } | null>;
   checkRateLimit: (key: string, limit: number, janelaS: number) => Promise<{ allowed: boolean }>;
-  lerCorpo: (req: NextRequest) => Promise<{ sessionId?: unknown }>;
+  lerCorpo: (req: NextRequest) => Promise<{ sessionId?: unknown; concessao?: unknown }>;
   buscarCanal: (id: string) => Promise<CanalDoBanco | null>;
   nivelDaConta: (userId: string) => Promise<string>;
   resolver: (provider: ProviderDeCanal, providerChannelId: string) => Promise<FonteDeCanalResolvida>;
@@ -100,6 +101,12 @@ export interface DependenciasDePlay {
     canalId: string;
     sessionId: string;
   }) => Promise<Concessao | null>;
+  autorizarAnuncio?: (e: {
+    userId: string;
+    tipo: "canal";
+    concessao: string | null;
+    alvo: { tipo: "canal"; conteudoId: string; temporada: null; episodio: null };
+  }) => Promise<ResultadoDeAnuncio>;
   audit: typeof audit;
 }
 
@@ -172,6 +179,22 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
         : negar(404, "canal_indisponivel");
     }
 
+    const corpo: { sessionId?: unknown; concessao?: unknown } = await d.lerCorpo(req).catch(() => ({}));
+    const sessionIdPedido = sessionIdDoCorpo(corpo);
+
+    // Renovação da sessão já aberta não cobra de novo. Toda abertura nova passa
+    // pelo mesmo enforcement de filmes/episódios e a concessão usa o id canônico
+    // do canal retornado pelo banco, nunca o slug fornecido pelo cliente.
+    if (!sessionIdPedido) {
+      const anuncio = await (d.autorizarAnuncio ?? (async () => ({ liberado: true as const, via: "flag_desligada" as const })))({
+        userId: usuario.userId,
+        tipo: "canal",
+        concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
+        alvo: { tipo: "canal", conteudoId: canal.id, temporada: null, episodio: null },
+      });
+      if (!anuncio.liberado) return negar(anuncio.motivo === "indeterminado" ? 503 : 403, "anuncio_necessario");
+    }
+
     const baseDoEdge = d.env.CANAIS_MEDIA_BASE;
     if (!baseDoEdge) {
       // Sem edge configurado, a alternativa seria devolver o upstream ao
@@ -179,9 +202,6 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
       // permanente, e entregá-la uma vez é entregá-la para sempre.
       return negar(503, "midia_indisponivel");
     }
-
-    const corpo = await d.lerCorpo(req).catch(() => ({}));
-    const sessionIdPedido = sessionIdDoCorpo(corpo);
 
     let concessao: Concessao | null = null;
 
@@ -251,7 +271,7 @@ export const POST = Object.assign(createPlayCanalHandler({
   checkRateLimit,
   // Corpo minúsculo e opcional: só `{ sessionId }`. 1 KB é folga de sobra, e
   // um corpo ausente é o caso normal da primeira chamada.
-  lerCorpo: (req) => readJsonBody<{ sessionId?: unknown }>(req, 1024),
+  lerCorpo: (req) => readJsonBody<{ sessionId?: unknown; concessao?: unknown }>(req, 1024),
   buscarCanal: (id) =>
     prisma.canal.findFirst({
       // Aceita id ou slug: o cliente React navega por slug, o Kotlin guarda id.
@@ -270,5 +290,6 @@ export const POST = Object.assign(createPlayCanalHandler({
   resolver: resolverCanal,
   criarSessao: criarSessaoDeCanal,
   renovarSessao: renovarSessaoDeCanal,
+  autorizarAnuncio: (entrada) => autorizarPorAnuncio(entrada),
   audit,
 }), { createForTest: createPlayCanalHandler });

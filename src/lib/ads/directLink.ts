@@ -1,12 +1,11 @@
 /**
- * O Direct Link do Electron — a URL que abre no navegador externo.
+ * O Direct Link homologado do Electron — a URL que abre no navegador externo.
  *
  * ## Por que ela não está no repositório, e não pode estar
  *
- * A URL da rede de anúncios carrega o identificador da conta de publisher. Quem
- * a tem consegue gerar impressões fora do aplicativo, e tráfego artificial não
- * dá receita: dá suspensão da conta. Então ela é **configuração de produção**,
- * lida do ambiente do servidor, e o repositório nunca a vê.
+ * O valor aprovado fica fixo no servidor e é repetido na allowlist do processo
+ * principal do Electron. Um override de ambiente só é aceito quando é idêntico,
+ * para uma configuração antiga não transformar o IPC em abridor genérico.
  *
  * Três consequências disso, todas deliberadas:
  *
@@ -29,6 +28,9 @@ export type ResolucaoDoDirectLink =
   /** Não configurado, ou configurado com valor inaceitável. */
   | { situacao: "indisponivel" };
 
+/** Direct Link homologado para a monetização gratuita do Electron. */
+export const DIRECT_LINK_ELECTRON = "https://omg10.com/4/11767843";
+
 /**
  * Lê e valida a URL do ambiente.
  *
@@ -46,7 +48,7 @@ export type ResolucaoDoDirectLink =
 export function resolverDirectLink(
   env: Record<string, string | undefined> = process.env,
 ): ResolucaoDoDirectLink {
-  const bruta = env.ANUNCIO_DIRECT_LINK_URL;
+  const bruta = env.ANUNCIO_DIRECT_LINK_URL ?? DIRECT_LINK_ELECTRON;
   if (typeof bruta !== "string" || bruta.trim() === "") return { situacao: "indisponivel" };
 
   let url: URL;
@@ -56,6 +58,7 @@ export function resolverDirectLink(
     return { situacao: "indisponivel" };
   }
   if (url.protocol !== "https:") return { situacao: "indisponivel" };
+  if (url.toString() !== new URL(DIRECT_LINK_ELECTRON).toString()) return { situacao: "indisponivel" };
 
   return { situacao: "ok", url: url.toString() };
 }

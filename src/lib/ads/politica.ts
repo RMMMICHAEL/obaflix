@@ -30,7 +30,7 @@
 import type { DireitosDoPlano } from "../planos";
 
 /** O que o usuário está tentando abrir. */
-export type ConteudoDeAnuncio = "filme" | "serie";
+export type ConteudoDeAnuncio = "filme" | "serie" | "canal";
 
 /**
  * Onde o cliente diz estar. **Não é autoridade de direito.**
@@ -226,7 +226,7 @@ export function decidirAnuncio(fatos: FatosDaDecisao): DecisaoDeAnuncio {
     return { decisao: "permitido", via: "concessao" };
   }
 
-  if (fatos.tipo === "filme") {
+  if (fatos.tipo === "filme" || fatos.tipo === "canal") {
     return { decisao: "anuncio_necessario" };
   }
 
