@@ -48,7 +48,9 @@ jobs:
           } > key.properties
 
       - name: Build TV release (assinado pelo gradle signingConfig)
-        run: ./gradlew :tv:assembleRelease --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew :tv:assembleRelease --no-daemon
 
       - name: Localizar APK + checksum
         id: apk
