@@ -97,6 +97,28 @@ export function promocaoTvAtiva(
 }
 
 /**
+ * Flag servidor-only, **exclusiva do anúncio do Android móvel (Unity)**.
+ *
+ * A irmã de `promocaoTvAtiva`, para a outra plataforma que monetiza. Existe para
+ * o celular voltar a exigir o interstitial do Unity em Production **sem** ligar o
+ * enforcement global de `MONETIZACAO_ATIVA` (limite de telas, catálogo,
+ * downloads, promoção da TV, Direct Link do Electron). Nunca é uma segunda
+ * `MONETIZACAO_ATIVA`: só é consultada em conjunto com `plataforma === "android"`,
+ * e apenas para o fluxo publicitário do celular (`/playback/authorize`,
+ * `/ads/complete` e o consumo da concessão em `/player/fontes`). Web, Android TV
+ * e Electron seguem exatamente o comportamento de `MONETIZACAO_ATIVA=false` — a
+ * TV continua reagindo só a `PROMOCAO_TV_ATIVA`.
+ *
+ * Mesma leitura estrita de `monetizacaoAtiva`: **só a string exata `"true"`
+ * liga**. Sem `NEXT_PUBLIC_`. `env` é injetável para o teste.
+ */
+export function anuncioAndroidAtivo(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.ANUNCIO_ANDROID_ATIVO === "true";
+}
+
+/**
  * O direito que responde por este tipo de conteúdo. Função total e pura.
  *
  * Comparação estrita com `true` de propósito: se um dia um direito chegar

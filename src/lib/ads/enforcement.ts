@@ -22,7 +22,7 @@
  */
 
 import { entitlementsDoUsuario } from "../entitlements";
-import { monetizacaoAtiva, promocaoTvAtiva } from "../playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "../playbackAuthorization";
 import { consumirConcessao, type AlvoDeConcessao, type FinalidadeDeConcessao } from "./concessoes";
 import { exigeAnuncio, type ConteudoDeAnuncio, type PlataformaDeExibicao } from "./politica";
 import type { Entitlements } from "../entitlements";
@@ -40,6 +40,12 @@ export interface OpcoesDeEnforcement {
    * ligar o enforcement para Web/Android/Electron. Injetável para o teste.
    */
   promocaoTvAtiva?: boolean;
+  /**
+   * A flag do anúncio do Android móvel (`ANUNCIO_ANDROID_ATIVO`) já interpretada.
+   * Só tem efeito quando `entrada.plataforma === "android"`: cobra a concessão do
+   * Unity sem ligar o enforcement para Web/Electron/TV. Injetável para o teste.
+   */
+  anuncioAndroidAtivo?: boolean;
   /** Como resolver os direitos. Injetável para dispensar banco e Redis. */
   resolver?: (userId: string) => Promise<Entitlements>;
   /** Como consumir a concessão. Injetável pelo mesmo motivo. */
@@ -83,11 +89,17 @@ export async function autorizarPorAnuncio(
   },
   opcoes: OpcoesDeEnforcement = {},
 ): Promise<ResultadoDeAnuncio> {
-  // Global liga para todos; a flag da TV liga SÓ para `android_tv`. Assim a TV
-  // cobra a concessão da promoção sem reativar o enforcement de Web/Android/Electron.
+  // Global liga para todos; cada flag específica liga SÓ para a sua plataforma:
+  // a da TV para `android_tv`, a do Android para `android`. Assim cada uma cobra a
+  // sua concessão sem reativar o enforcement das outras (Web/Electron seguem a
+  // global, que está desligada).
   const global = opcoes.ativa ?? monetizacaoAtiva();
   const tvAtiva = opcoes.promocaoTvAtiva ?? promocaoTvAtiva();
-  const ativa = global || (tvAtiva && entrada.plataforma === "android_tv");
+  const androidAtiva = opcoes.anuncioAndroidAtivo ?? anuncioAndroidAtivo();
+  const ativa =
+    global ||
+    (tvAtiva && entrada.plataforma === "android_tv") ||
+    (androidAtiva && entrada.plataforma === "android");
   if (!ativa) return { liberado: true, via: "flag_desligada" };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;

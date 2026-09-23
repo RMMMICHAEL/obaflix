@@ -5,7 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva, promocaoTvAtiva } from "@/lib/playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   TTL_CONCESSAO_PROMOCAO_TV_S,
@@ -92,6 +92,7 @@ export interface DependenciasDeConclusao {
   getUserFromRequest?: typeof getUserFromRequest;
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
+  anuncioAndroidAtivo?: () => boolean;
   checkRateLimit?: typeof checkRateLimit;
   consumirDesafio?: typeof consumirDesafio;
   emitirConcessao?: typeof emitirConcessao;
@@ -107,6 +108,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
+  const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const consumir = deps.consumirDesafio ?? consumirDesafio;
   const emitir = deps.emitirConcessao ?? emitirConcessao;
@@ -147,10 +149,13 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // Com o enforcement desligado ninguém deveria chegar aqui — `/authorize`
   // responde PERMITIDO sem abrir desafio. Recusar em vez de emitir concessão
   // fecha a porta de pré-fabricar concessões antes de a monetização ligar.
-  // `PROMOCAO_TV_ATIVA` também abre a porta, mas só para concluir desafio de TV:
-  // a checagem por plataforma vem depois, quando o desafio já foi carregado.
+  // `PROMOCAO_TV_ATIVA` e `ANUNCIO_ANDROID_ATIVO` também abrem a porta, cada uma
+  // só para concluir o desafio da sua plataforma: a checagem por plataforma vem
+  // depois, quando o desafio já foi carregado.
   const globalAtiva = flagAtiva();
-  if (!globalAtiva && !promoTvAtiva()) {
+  const tvAtiva = promoTvAtiva();
+  const androidAtiva = anuncioAndroid();
+  if (!globalAtiva && !tvAtiva && !androidAtiva) {
     return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
   }
 
@@ -197,14 +202,20 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
   }
 
-  // Só a flag da TV ligada (global desligada): APENAS desafio de promoção da TV
-  // conclui. Um desafio de Android móvel ou Electron não vira concessão porque
-  // `PROMOCAO_TV_ATIVA` está ligada — ela não reativa o enforcement deles. O
-  // desafio já foi consumido acima, então a tentativa queima o id.
-  if (!globalAtiva && desafio.plataforma !== "android_tv") {
-    await registrarAbuso(ip);
-    audit("play_token_rejected", { userId, ip, ua, detail: `/ads/complete: nao-TV so com PROMOCAO_TV_ATIVA plataforma:${desafio.plataforma}` });
-    return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
+  // Global desligada: cada flag específica só conclui o desafio da SUA
+  // plataforma. Com só a da TV, um desafio de Android/Electron não vira concessão;
+  // com só a do Android, um desafio de TV/Electron não vira. As flags não
+  // reativam o enforcement das outras plataformas. O desafio já foi consumido
+  // acima, então a tentativa recusada queima o id.
+  if (!globalAtiva) {
+    const plataformaPermitida =
+      (tvAtiva && desafio.plataforma === "android_tv") ||
+      (androidAtiva && desafio.plataforma === "android");
+    if (!plataformaPermitida) {
+      await registrarAbuso(ip);
+      audit("play_token_rejected", { userId, ip, ua, detail: `/ads/complete: plataforma ${desafio.plataforma} sem flag correspondente (global off)` });
+      return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
+    }
   }
 
   // ── Tempo mínimo, medido pelo nosso relógio ───────────────────────────────
