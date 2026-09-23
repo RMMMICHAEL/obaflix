@@ -6,7 +6,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { prisma } from "@/lib/prisma";
-import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva } from "@/lib/playbackAuthorization";
+import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
@@ -150,6 +150,7 @@ export interface DependenciasDeAutorizacao {
   getUserFromRequest?: typeof getUserFromRequest;
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
+  anuncioAndroidAtivo?: () => boolean;
   entitlementsDoUsuario?: typeof entitlementsDoUsuario;
   registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
   emitirPasse?: typeof emitirPasse;
@@ -166,6 +167,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const usuarioDaRequisicao = deps.getUserFromRequest ?? getUserFromRequest;
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
+  const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
   const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
   const criarPasse = deps.emitirPasse ?? emitirPasse;
@@ -240,13 +242,16 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
 
   // ── Flag desligada: permitido, sem consultar nada ──────────────────────────
   //
-  // `PROMOCAO_TV_ATIVA` liga o enforcement APENAS para a Android TV (e só o
-  // fluxo de promoção dela). A plataforma vem da credencial acima
-  // (`plataformaDaRequisicao`), nunca do corpo — um cliente de cookie/celular
-  // que declare `android_tv` já caiu em `web`, então não alcança este ramo.
-  // Web, Android móvel e Electron seguem o bypass de sempre com global desligada.
+  // Cada flag específica liga o enforcement APENAS para a sua plataforma:
+  // `PROMOCAO_TV_ATIVA` para a Android TV (fluxo de promoção) e
+  // `ANUNCIO_ANDROID_ATIVO` para o Android móvel (interstitial Unity). A
+  // plataforma vem de `plataformaDaRequisicao` acima: `android_tv` só da
+  // credencial, `android` só quando o cliente nativo a declara (a mesma lógica
+  // que a global já usa) — um cookie/web que declare `android_tv` caiu em `web`.
+  // Web e Electron seguem o bypass de sempre com a global desligada.
   const enforcarPromocaoTv = promoTvAtiva() && plataforma === "android_tv";
-  if (!flagAtiva() && !enforcarPromocaoTv) {
+  const enforcarAnuncioAndroid = anuncioAndroid() && plataforma === "android";
+  if (!flagAtiva() && !enforcarPromocaoTv && !enforcarAnuncioAndroid) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 
