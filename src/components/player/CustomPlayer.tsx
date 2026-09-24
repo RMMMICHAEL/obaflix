@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, PictureInPicture2, Settings2, Check } from "lucide-react";
 import { AndroidMediaActions } from "@/components/android/AndroidMediaActions";
 import { pidDeEpisodio, pidDeFilme, rotuloDeEpisodio } from "@/lib/androidMedia";
+import { fetchComPrazo, PRAZO_FONTES_MS } from "@/lib/androidCast";
 import { useRouter } from "next/navigation";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
@@ -643,20 +644,29 @@ export function CustomPlayer({
       Object.assign(new Error(`acao interrompida: ${motivo}`), { name: "AcaoInterrompida", motivo });
     let res: Response;
     try {
-      res = await fetch("/api/player/fontes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessao: sessaoFontesRef.current,
-          acao: true,
-          finalidade,
-          ...(concessao ? { concessao } : {}),
-          conteudoId,
-          conteudoTipo,
-          temporada: temporada ?? null,
-          numeroEp: numeroEp ?? null,
-        }),
-      });
+      // Com prazo: depois do anúncio, esta é a única etapa de rede da ação no
+      // player. Estourar aqui vira "servidores indisponíveis" e o botão volta a
+      // ocioso, em vez de girar sem fim. Reabrir pediria anúncio de novo, então
+      // não há retentativa — é terminal, como as demais falhas desta chamada.
+      res = await fetchComPrazo(
+        "/api/player/fontes",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessao: sessaoFontesRef.current,
+            acao: true,
+            finalidade,
+            ...(concessao ? { concessao } : {}),
+            conteudoId,
+            conteudoTipo,
+            temporada: temporada ?? null,
+            numeroEp: numeroEp ?? null,
+          }),
+        },
+        PRAZO_FONTES_MS,
+        "fontes",
+      );
     } catch {
       throw interrompida("servidores_indisponiveis");
     }

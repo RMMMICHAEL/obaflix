@@ -313,6 +313,23 @@ class MediaActionsBridge(
 
     // -- Cast -----------------------------------------------------------------
 
+    /**
+     * O Web Video Cast esta instalado?
+     *
+     * Consulta sincrona e barata (so o PackageManager), pensada para o lado web
+     * perguntar **antes** de pedir anuncio ou resolver fonte: sem o app externo
+     * nao ha destino para a midia, e nao ha por que o usuario assistir a um
+     * anuncio ou esperar uma extracao que terminaria em "app ausente". Reusa
+     * [WebVideoCast.instalado], a mesma checagem que [solicitarCast] ja faz.
+     *
+     * Nao expoe nada sensivel: devolve so um booleano.
+     */
+    @JavascriptInterface
+    fun castAppInstalado(capability: String): Boolean {
+        if (!autorizado(capability)) return false
+        return WebVideoCast.instalado(activity)
+    }
+
     @JavascriptInterface
     fun solicitarCast(capability: String, callbackId: String, payloadJson: String) {
         if (!autorizado(capability) || !idValido(callbackId) || payloadJson.length > 65536) return
@@ -370,10 +387,26 @@ class MediaActionsBridge(
         }
     }
 
+    /**
+     * Leva a pessoa a ficha do Web Video Cast na loja e diz se conseguiu.
+     *
+     * Resolve a Promise do lado JS com `{ ok }` — `true` quando a loja (nativa
+     * ou, no fallback, o navegador) abriu; `false` quando nenhuma das duas
+     * resolve, o que acontece em aparelho AOSP sem Play Store nem navegador. O
+     * lado web usa esse retorno para mostrar um erro curto no proprio modal, em
+     * vez de deixar a pessoa achando que saiu para a loja quando nada abriu.
+     *
+     * `abrirNaLoja` roda na UI thread (dispara `startActivity`); a resposta so e
+     * enviada depois, ja com o resultado. Nenhum dado sensivel sai daqui.
+     */
     @JavascriptInterface
-    fun instalarAppDeCast(capability: String) {
-        if (!autorizado(capability)) return
-        activity.runOnUiThread { WebVideoCast.abrirNaLoja(activity) }
+    fun instalarAppDeCast(capability: String, callbackId: String) {
+        if (!autorizado(capability) || !idValido(callbackId)) return
+        activity.runOnUiThread {
+            val aberto = runCatching { WebVideoCast.abrirNaLoja(activity) }.getOrDefault(false)
+            if (!aberto) ObaLog.evento("cast", "cast_store_unavailable")
+            responder(callbackId, JSONObject().put("ok", aberto))
+        }
     }
 
     // -- Resposta ao JS -------------------------------------------------------

@@ -278,7 +278,9 @@ describe("enforcement de download e transmissão fica no servidor", () => {
 
   test("fora do player a sessão da ação nasce com finalidade e concessão", () => {
     assert.ok(fora.includes("await liberar(finalidade)"));
-    assert.ok(fora.indexOf("await liberar(finalidade)") < fora.indexOf('fetch("/api/player/fontes"'));
+    // A abertura da sessão passou a ter prazo (fetchComPrazo); o que importa é a
+    // ordem: a liberação (anúncio) vem antes da chamada a /api/player/fontes.
+    assert.ok(fora.indexOf("await liberar(finalidade)") < fora.indexOf('"/api/player/fontes"'));
     assert.ok(fora.includes("finalidade,"));
     assert.ok(fora.includes("{ concessao }"));
   });
@@ -288,6 +290,8 @@ describe("enforcement de download e transmissão fica no servidor", () => {
     assert.ok(acoes.includes('resolverFonte(tentativa, "transmissao", liberar)'));
     assert.ok(acoes.includes("<ModalDeAnuncio"));
     assert.ok(acoes.includes('resultado.motivo === "cancelado"'));
-    assert.ok(acoes.includes("ehAcaoCancelada(erro)"));
+    // A transmissão agora é orquestrada por transmitirComCast; o cancelamento
+    // é o caso "cancelado", que volta ao estado anterior sem mensagem.
+    assert.ok(acoes.includes('case "cancelado"'));
   });
 });
