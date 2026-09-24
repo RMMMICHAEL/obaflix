@@ -6,6 +6,28 @@ export function deveFazerPolling(status: string) {
   return !STATUS_TERMINAIS_DO_PEDIDO.has(status);
 }
 
+/**
+ * A fonte (`src`) da imagem do QR, a partir do `qrCodeBase64` do provedor.
+ *
+ * A documentação atual da Blackcat devolve `qrCodeBase64` já como
+ * `data:image/png;base64,...`; versões antigas devolviam base64 puro. Esta
+ * função normaliza os dois **sem tocar no conteúdo** e sem nunca duplicar o
+ * prefixo — antes o checkout concatenava `data:image/png;base64,` sempre, o que
+ * gerava `data:image/png;base64,data:image/png;base64,...` e uma imagem
+ * quebrada quando o provedor já mandava o data URI.
+ *
+ *   - já é um data URI de imagem → usa direto;
+ *   - base64 puro               → recebe o prefixo PNG.
+ *
+ * `null`/vazio → `null`: sem imagem de QR, o checkout mostra só o copia-e-cola,
+ * que é o que efetivamente paga o PIX.
+ */
+export function fonteDaImagemQr(qrCodeBase64: string | null | undefined): string | null {
+  const valor = qrCodeBase64?.trim();
+  if (!valor) return null;
+  return /^data:image\//i.test(valor) ? valor : `data:image/png;base64,${valor}`;
+}
+
 export function acaoComercialDoPlano({
   compravel,
   planoAtual,

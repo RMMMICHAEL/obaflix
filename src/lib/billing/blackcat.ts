@@ -168,6 +168,14 @@ export type LeituraDaVenda =
       situacao: "recusada";
       transacaoId: string;
       falha: "estado_externo_inesperado" | "resposta_incompleta";
+      /**
+       * O `expiresAt` do provedor, quando veio válido, **mesmo que a recusa
+       * tenha sido por outro dado do PIX faltando**. É o que permite persistir
+       * `expiraEm` junto do `transacaoId` no caso de revisão: sem ele,
+       * `confirmar_nao_pago` não consegue resolver um `PENDING` por expiração e a
+       * revisão fica presa. Ausente quando a própria data veio inválida.
+       */
+      expiraEm?: Date;
     };
 
 /**
@@ -197,9 +205,16 @@ export function interpretarVenda(
 
   // Daqui para baixo sabemos que existe uma venda no provedor. Toda recusa
   // passa a carregar o `transacaoId`, porque é ele que permite a Fase 5
-  // investigar em vez de descartar.
-  const recusar = (falha: "estado_externo_inesperado" | "resposta_incompleta") =>
-    ({ situacao: "recusada", transacaoId, falha }) as const;
+  // investigar em vez de descartar. Quando o `expiresAt` já foi lido e é válido,
+  // a recusa carrega também `expiraEm` — sem ele a revisão nasce sem prazo e
+  // `confirmar_nao_pago` não consegue resolvê-la por expiração.
+  const recusar = (
+    falha: "estado_externo_inesperado" | "resposta_incompleta",
+    expiraEm?: Date,
+  ): LeituraDaVenda =>
+    expiraEm
+      ? { situacao: "recusada", transacaoId, falha, expiraEm }
+      : { situacao: "recusada", transacaoId, falha };
 
   // Comparação estrita com a string exata. Sem `toUpperCase()`, sem aceitar
   // variação: um estado que não é o documentado é um estado sobre o qual não
@@ -218,20 +233,33 @@ export function interpretarVenda(
   if (!pagamento || typeof pagamento !== "object") return recusar("resposta_incompleta");
   const p = pagamento as Record<string, unknown>;
 
+  // `expiresAt` é lido primeiro, de propósito: se o PIX vier incompleto por
+  // outro campo, ainda queremos preservar o prazo na revisão. `null` quando a
+  // data faltou ou veio impossível de interpretar.
+  const expiraEmBruto = typeof p.expiresAt === "string" ? new Date(p.expiresAt) : null;
+  const expiraEm =
+    expiraEmBruto && !Number.isNaN(expiraEmBruto.getTime()) ? expiraEmBruto : null;
+
   const qrCode = typeof p.qrCode === "string" ? p.qrCode.trim() : "";
   const copiaECola = typeof p.copyPaste === "string" ? p.copyPaste.trim() : "";
-  if (!qrCode || !copiaECola) return recusar("resposta_incompleta");
 
-  // `qrCodeBase64` é conveniência de renderização: o cliente consegue desenhar o
-  // QR a partir de `qrCode`. Exigi-lo faria uma resposta funcionalmente completa
-  // ser descartada; os outros dois não têm substituto e são obrigatórios.
+  // `qrCodeBase64` é uma representação de QR já pronta para desenhar (o checkout
+  // renderiza a imagem a partir dela). É normalizada só no trim — o conteúdo
+  // sensível não é tocado — e permanece opcional.
   const qrCodeBase64 = typeof p.qrCodeBase64 === "string" && p.qrCodeBase64.trim()
-    ? p.qrCodeBase64
+    ? p.qrCodeBase64.trim()
     : null;
 
-  if (typeof p.expiresAt !== "string") return recusar("resposta_incompleta");
-  const expiraEm = new Date(p.expiresAt);
-  if (Number.isNaN(expiraEm.getTime())) return recusar("resposta_incompleta");
+  // O copia-e-cola é obrigatório e insubstituível: é ele que paga o PIX. Além
+  // dele, basta **uma** representação de QR utilizável — `qrCode` (o payload que
+  // o cliente pode desenhar) ou `qrCodeBase64` (a imagem pronta). Recusar por
+  // faltar uma representação redundante quando a outra veio era o que mandava
+  // PIX pagável para REVISAO_MANUAL sem necessidade.
+  if (!copiaECola || (!qrCode && !qrCodeBase64)) {
+    return recusar("resposta_incompleta", expiraEm ?? undefined);
+  }
+
+  if (!expiraEm) return recusar("resposta_incompleta");
 
   // Um PIX que já nasce vencido não é pagável, e entregá-lo ao usuário seria
   // mandá-lo tentar pagar algo que o provedor já recusa. É estado externo
@@ -239,7 +267,9 @@ export function interpretarVenda(
   // está errado é o que ela diz.
   //
   // `<=` e não `<`: expirar exatamente agora já não dá tempo de pagar.
-  if (expiraEm.getTime() <= agora.getTime()) return recusar("estado_externo_inesperado");
+  if (expiraEm.getTime() <= agora.getTime()) {
+    return recusar("estado_externo_inesperado", expiraEm);
+  }
 
   return {
     situacao: "ok",
@@ -405,7 +435,11 @@ export function provedorComConfiguracao(
       }
       if (leitura.situacao === "recusada") {
         // Com `transacaoId`: o serviço manda para REVISAO_MANUAL, não FALHOU.
-        return { ok: false, falha: leitura.falha, transacaoId: leitura.transacaoId };
+        // `expiraEm` viaja junto quando o provedor deu um prazo válido, para a
+        // revisão poder ser resolvida por expiração mais tarde.
+        return leitura.expiraEm
+          ? { ok: false, falha: leitura.falha, transacaoId: leitura.transacaoId, expiraEm: leitura.expiraEm }
+          : { ok: false, falha: leitura.falha, transacaoId: leitura.transacaoId };
       }
 
       // Nenhuma conferência de VALOR aqui, e é deliberado: o snapshot do pedido

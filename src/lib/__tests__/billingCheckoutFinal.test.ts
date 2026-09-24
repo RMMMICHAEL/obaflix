@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as plansGet } from "../../app/api/billing/plans/route";
 import { GET as meGet } from "../../app/api/billing/me/route";
 import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
-import { acaoComercialDoPlano, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
+import { acaoComercialDoPlano, corpoCriarPedido, deveFazerPolling, fonteDaImagemQr, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
 const createPlansHandler = plansGet.createForTest;
@@ -61,6 +61,25 @@ test("checkout envia somente seleção e pagador, e encerra polling em todo esta
   assert.equal(deveFazerPolling("AGUARDANDO"), true);
   assert.match(mensagemErroCheckout("assinatura_ativa"), /assinatura ativa/);
   assert.match(mensagemErroCheckout("plano_indisponivel"), /indisponível/);
+});
+
+test("a fonte da imagem do QR normaliza sem duplicar o prefixo (requisitos 1 e 2)", () => {
+  // Requisito 1: já vem como data URI da documentação atual da Blackcat — usa
+  // direto, sem ganhar um segundo prefixo.
+  assert.equal(
+    fonteDaImagemQr("data:image/png;base64,AAAA"),
+    "data:image/png;base64,AAAA",
+  );
+  assert.equal(fonteDaImagemQr("data:image/jpeg;base64,BBBB"), "data:image/jpeg;base64,BBBB");
+  // Requisito 2: base64 puro (formato antigo) recebe o prefixo PNG.
+  assert.equal(fonteDaImagemQr("AAAA"), "data:image/png;base64,AAAA");
+  // Nunca produz o prefixo duplicado que quebrava a imagem.
+  assert.equal(fonteDaImagemQr("data:image/png;base64,AAAA")?.includes("base64,data:"), false);
+  assert.equal((fonteDaImagemQr("AAAA")!.match(/data:image/g) ?? []).length, 1);
+  // Sem QR base64 → null: o checkout mostra só o copia-e-cola.
+  assert.equal(fonteDaImagemQr(null), null);
+  assert.equal(fonteDaImagemQr(undefined), null);
+  assert.equal(fonteDaImagemQr("   "), null);
 });
 
 test("vitrine comercial permite renovar e mudar plano com assinatura ativa", () => {

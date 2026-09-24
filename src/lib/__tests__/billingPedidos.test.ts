@@ -98,7 +98,7 @@ const VENDA_OK: VendaPixCriada = {
 function provedorFalso(
   resposta:
     | { ok: true; venda: VendaPixCriada }
-    | { ok: false; falha: FalhaDoProvedor; transacaoId?: string },
+    | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date },
 ) {
   const chamadas: PedidoParaProvedor[] = [];
   const provedor: ProvedorPix = {
@@ -541,6 +541,45 @@ describe("falha com transação conhecida vira REVISAO_MANUAL", () => {
       assert.equal("pix" in r, false, "não devolve PIX");
     });
   }
+
+  /**
+   * Requisito 7, no nível do serviço: uma falha com transação **e prazo válido**
+   * grava `expiraEm` junto do `transacaoId` na revisão. É o que impede a revisão
+   * de nascer sem prazo (`expiraEm=NULL`) e travar `confirmar_nao_pago`. Não
+   * concede direito: o status escrito continua sendo `REVISAO_MANUAL`.
+   */
+  test("resposta_incompleta com transação e prazo grava expiraEm na revisão", async () => {
+    const prazo = new Date("2026-09-30T12:00:00.000Z");
+    const { repo, gravacoes, statusEscritos } = repositorioFalso(PRECO);
+    const { provedor } = provedorFalso({
+      ok: false,
+      falha: "resposta_incompleta",
+      transacaoId: "TXN-EXTERNA-9",
+      expiraEm: prazo,
+    });
+
+    const r = await criarPedidoPix(ENTRADA, { repo, provedor });
+
+    assert.equal(r.situacao, "revisao_manual");
+    assert.deepEqual(statusEscritos(), ["CRIADO", "REVISAO_MANUAL"]);
+    const registro = gravacoes.find((g) => g.op === "registrarFalha");
+    assert.equal(registro?.transacaoId, "TXN-EXTERNA-9");
+    assert.deepEqual(registro?.expiraEm, prazo, "o prazo precisa sobreviver para a reconciliação");
+  });
+
+  /** Sem prazo válido não há `expiraEm` a gravar: nada é inventado. */
+  test("falha com transação mas sem prazo não grava expiraEm", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO);
+    const { provedor } = provedorFalso({
+      ok: false,
+      falha: "resposta_incompleta",
+      transacaoId: "TXN-EXTERNA-9",
+    });
+
+    await criarPedidoPix(ENTRADA, { repo, provedor });
+
+    assert.equal(gravacoes.find((g) => g.op === "registrarFalha")?.expiraEm, undefined);
+  });
 
   test("a mesma falha SEM transação vira FALHOU, e não grava transacaoId", async () => {
     const { repo, gravacoes, statusEscritos } = repositorioFalso(PRECO);

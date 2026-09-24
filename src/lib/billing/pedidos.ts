@@ -383,7 +383,7 @@ export type FalhaDoProvedor =
  */
 export type ResultadoCriacaoPix =
   | { ok: true; venda: VendaPixCriada }
-  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string };
+  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date };
 
 /**
  * A porta do gateway.
@@ -415,10 +415,17 @@ export interface RepositorioDePedidos {
     pedidoId: string,
     dados: { transacaoId: string; expiraEm: Date },
   ): Promise<void>;
-  /** Com `REVISAO_MANUAL`, abre o caso com o `motivo` na mesma transação. */
+  /**
+   * Com `REVISAO_MANUAL`, abre o caso com o `motivo` na mesma transação.
+   *
+   * `expiraEm` é preservado quando o provedor deu um prazo válido, mesmo que o
+   * PIX tenha vindo incompleto: é o que evita a revisão nascer sem prazo e
+   * impedir `confirmar_nao_pago` de resolvê-la por expiração. Nunca concede
+   * direito — `REVISAO_MANUAL` não é um estado que autorize.
+   */
   registrarFalha(
     pedidoId: string,
-    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string; motivo?: CodigoDeRevisao },
+    dados: { status: "FALHOU" | "REVISAO_MANUAL"; transacaoId?: string; expiraEm?: Date; motivo?: CodigoDeRevisao },
   ): Promise<void>;
 }
 
@@ -706,6 +713,10 @@ export async function criarPedidoPix(
       await repo.registrarFalha(pedidoId, {
         status: "REVISAO_MANUAL",
         transacaoId: resultado.transacaoId,
+        // Quando o provedor deu um prazo válido, ele é preservado junto da
+        // transação — mesmo com o PIX incompleto. Sem isso a revisão nasce com
+        // `expiraEm` nulo e a resolução por expiração fica impossível.
+        ...(resultado.expiraEm ? { expiraEm: resultado.expiraEm } : {}),
         motivo: "criacao_falha_com_transacao",
       });
       return { situacao: "revisao_manual", pedidoId, motivo: resultado.falha };
@@ -731,6 +742,9 @@ export async function criarPedidoPix(
     await repo.registrarFalha(pedidoId, {
       status: "REVISAO_MANUAL",
       transacaoId: venda.transacaoId,
+      // A venda existe e tem prazo válido; preservá-lo mantém a revisão
+      // resolvível por expiração, sem conceder nada.
+      expiraEm: venda.expiraEm,
       motivo: "criacao_valor_divergente",
     });
     return { situacao: "revisao_manual", pedidoId, motivo: "valor_divergente" };
