@@ -74,6 +74,11 @@ export type AuditEvent =
   // leva só a classificação segura da falha e ids permitidos — nunca
   // transactionId completo, chave, corpo do provedor ou dado do cliente.
   | "billing_review_provider_failed"
+  // Resposta 2xx da consulta de status que o parser recusou: diagnóstico
+  // ESTRUTURAL apenas — `detail` leva só flags de presença/tipo (e o typeof de
+  // amount, nunca o valor). Nunca transactionId real, status literal, amount,
+  // paidAt, corpo cru, headers, chave ou dado do cliente.
+  | "billing_confirmation_shape"
   | "billing_order_blocked_review";
 
 interface AuditMeta {
