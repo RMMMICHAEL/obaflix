@@ -15,7 +15,9 @@
  * **Nada do corpo da resposta vira log ou erro visível.** A resposta traz QR,
  * copia-e-cola e dados do pagador. `console.log` de `body` aqui colocaria meio
  * de pagamento no Vercel Logs. O que sai daqui para o log é o motivo
- * classificado e, quando houver, o status HTTP — nada mais.
+ * classificado e, quando houver, o status HTTP — nada mais. A única exceção é o
+ * diagnóstico ESTRUTURAL da resposta de status (`diagnosticarRespostaConfirmacao`):
+ * ele registra apenas flags de presença/tipo — nunca um valor do corpo.
  *
  * **Nenhuma URL vem do cliente.** O endpoint é montado a partir de uma base fixa
  * (ou de `BLACKCAT_API_BASE_URL`, variável de servidor). Não existe caminho em
@@ -46,6 +48,7 @@
  * como sucesso, e em nenhuma hipótese vira `PAGO`. Ver `interpretarVenda`.
  */
 
+import { audit } from "@/lib/auditLog";
 import type {
   PedidoParaProvedor,
   ProvedorPix,
@@ -319,15 +322,129 @@ export function interpretarConfirmacao(bruto: unknown): ConfirmacaoBlackcat | nu
   return { transactionId, status: d.status as StatusBlackcat, amount, paidAt };
 }
 
-export function criarConfirmadorBlackcat(env: Record<string, string | undefined> = process.env, buscar: typeof fetch = fetch) {
+/**
+ * Radiografia ESTRUTURAL de uma resposta 2xx que `interpretarConfirmacao`
+ * recusou. Só flags de presença/tipo e o `typeof` de `amount` — **nenhum
+ * valor**. Não há como transactionId real, status literal, amount, paidAt,
+ * documento, e-mail, telefone, chave ou corpo cru atravessar este resultado: o
+ * que sai são booleanos e um nome de tipo. É o que permite descobrir QUAL campo
+ * do contrato diverge sem registrar dado sensível.
+ *
+ * Puro e sem efeito: quem loga é o confirmador, e só com o que sai daqui.
+ */
+export interface DiagnosticoRespostaConfirmacao {
+  raizObjeto: boolean;
+  successPresente: boolean;
+  successBooleano: boolean;
+  successTrue: boolean;
+  dataPresente: boolean;
+  dataObjeto: boolean;
+  transactionIdPresente: boolean;
+  transactionIdString: boolean;
+  transactionIdNaoVazio: boolean;
+  statusPresente: boolean;
+  statusString: boolean;
+  statusReconhecido: boolean;
+  amountPresente: boolean;
+  /** `typeof data.amount` — categoria ("number"/"string"/…), nunca o valor. */
+  amountTipo: string;
+  amountNumero: boolean;
+  amountInteiro: boolean;
+  paidAtPresente: boolean;
+  paidAtString: boolean;
+  paidAtDataValida: boolean;
+}
+
+export function diagnosticarRespostaConfirmacao(bruto: unknown): DiagnosticoRespostaConfirmacao {
+  const raizObjeto = !!bruto && typeof bruto === "object";
+  const raiz = (raizObjeto ? bruto : {}) as Record<string, unknown>;
+
+  const successPresente = Object.prototype.hasOwnProperty.call(raiz, "success");
+  const successBooleano = typeof raiz.success === "boolean";
+  const successTrue = raiz.success === true;
+
+  const dataPresente = Object.prototype.hasOwnProperty.call(raiz, "data");
+  const dataBruta = raiz.data;
+  const dataObjeto = !!dataBruta && typeof dataBruta === "object";
+  const d = (dataObjeto ? dataBruta : {}) as Record<string, unknown>;
+
+  const transactionIdPresente = Object.prototype.hasOwnProperty.call(d, "transactionId");
+  const transactionIdString = typeof d.transactionId === "string";
+  const transactionIdNaoVazio = transactionIdString && (d.transactionId as string).trim().length > 0;
+
+  const statusPresente = Object.prototype.hasOwnProperty.call(d, "status");
+  const statusString = typeof d.status === "string";
+  const statusReconhecido =
+    statusString && ["PENDING", "PAID", "CANCELLED", "REFUNDED"].includes(d.status as string);
+
+  const amountPresente = Object.prototype.hasOwnProperty.call(d, "amount");
+  const amountTipo = typeof d.amount;
+  const amountNumero = amountTipo === "number";
+  const amountInteiro = amountNumero && Number.isInteger(d.amount as number);
+
+  const paidAtPresente = Object.prototype.hasOwnProperty.call(d, "paidAt");
+  const paidAtString = typeof d.paidAt === "string";
+  const paidAtDataValida = paidAtString && !Number.isNaN(new Date(d.paidAt as string).getTime());
+
+  return {
+    raizObjeto, successPresente, successBooleano, successTrue, dataPresente, dataObjeto,
+    transactionIdPresente, transactionIdString, transactionIdNaoVazio,
+    statusPresente, statusString, statusReconhecido,
+    amountPresente, amountTipo, amountNumero, amountInteiro,
+    paidAtPresente, paidAtString, paidAtDataValida,
+  };
+}
+
+/**
+ * Serializa o diagnóstico em `chave=valor` para o `detail` do audit. Como a
+ * entrada é só booleano e nome de tipo, a string resultante é segura por
+ * construção — não existe caminho por onde um valor sensível entre.
+ */
+export function formatarDiagnosticoConfirmacao(
+  extras: { jsonParseOk: boolean; contentTypeJson: boolean },
+  diag: DiagnosticoRespostaConfirmacao | null,
+): string {
+  const partes = [
+    `jsonParseOk=${extras.jsonParseOk}`,
+    `contentTypeJson=${extras.contentTypeJson}`,
+  ];
+  if (diag) {
+    for (const [chave, valor] of Object.entries(diag)) partes.push(`${chave}=${valor}`);
+  }
+  return partes.join(" ");
+}
+
+export function criarConfirmadorBlackcat(
+  env: Record<string, string | undefined> = process.env,
+  buscar: typeof fetch = fetch,
+  registrar: typeof audit = audit,
+) {
   const config = lerConfiguracao(env); if (!config) return null;
   return async (transactionId: string): Promise<ResultadoConfirmacaoBlackcat> => {
     let resposta: Response;
     try { resposta = await buscar(`${config.baseUrl}/sales/${encodeURIComponent(transactionId)}/status`, { method: "GET", headers: { "X-API-Key": config.apiKey }, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_CONFIRMACAO_MS) }); }
     catch (erro) { return { ok: false, falha: erro instanceof Error && (erro.name === "TimeoutError" || erro.name === "AbortError") ? "timeout" : "rede" }; }
+    // !ok mantém a classificação por status HTTP, sem tocar no corpo.
     if (!resposta.ok) return { ok: false, falha: resposta.status === 404 ? "nao_encontrada" : [401, 403, 422].includes(resposta.status) ? "recusada" : "indisponivel" };
-    try { const confirmacao = interpretarConfirmacao(await resposta.json()); return confirmacao ? { ok: true, confirmacao } : { ok: false, falha: "resposta_invalida" }; }
-    catch { return { ok: false, falha: "resposta_invalida" }; }
+
+    // 2xx: aqui mora o `resposta_invalida`. Um diagnóstico ESTRUTURAL (só
+    // presença/tipo, nunca valores) é registrado para revelar QUAL campo do
+    // contrato diverge — sem que o parser financeiro seja afrouxado.
+    const contentTypeJson = /application\/json/i.test(resposta.headers.get("content-type") ?? "");
+    let corpo: unknown;
+    try { corpo = await resposta.json(); }
+    catch {
+      registrar("billing_confirmation_shape", { detail: formatarDiagnosticoConfirmacao({ jsonParseOk: false, contentTypeJson }, null) });
+      return { ok: false, falha: "resposta_invalida" };
+    }
+
+    const confirmacao = interpretarConfirmacao(corpo);
+    if (confirmacao) return { ok: true, confirmacao };
+
+    registrar("billing_confirmation_shape", {
+      detail: formatarDiagnosticoConfirmacao({ jsonParseOk: true, contentTypeJson }, diagnosticarRespostaConfirmacao(corpo)),
+    });
+    return { ok: false, falha: "resposta_invalida" };
   };
 }
 

@@ -10,6 +10,8 @@ import {
   provedorComConfiguracao,
   criarConfirmadorBlackcat,
   interpretarConfirmacao,
+  diagnosticarRespostaConfirmacao,
+  formatarDiagnosticoConfirmacao,
 } from "../billing/blackcat";
 import type { PedidoParaProvedor } from "../billing/pedidos";
 
@@ -77,6 +79,126 @@ describe("confirmação autoritativa", () => {
     assert.deepEqual(await forma!("t"), { ok: false, falha: "resposta_invalida" });
     const naoJson = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => new Response("<html>", { status: 200 }));
     assert.deepEqual(await naoJson!("t"), { ok: false, falha: "resposta_invalida" });
+  });
+});
+
+/**
+ * Diagnóstico ESTRUTURAL da resposta de status: puro, só flags de presença/tipo.
+ *
+ * Nunca revela valores. É o que permite descobrir POR QUE uma resposta 2xx foi
+ * recusada (o caso real `provedor_resposta_invalida`) sem afrouxar o parser
+ * financeiro nem logar nada sensível.
+ */
+describe("diagnosticarRespostaConfirmacao: estrutura, nunca valores", () => {
+  const oficial = { success: true, data: { transactionId: "TXN-9", status: "PAID", amount: 1000, paidAt: "2026-09-24T12:00:00.000Z" } };
+
+  test("a resposta oficial válida passa em todas as flags", () => {
+    const d = diagnosticarRespostaConfirmacao(oficial);
+    assert.equal(d.raizObjeto, true);
+    assert.equal(d.successPresente, true); assert.equal(d.successBooleano, true); assert.equal(d.successTrue, true);
+    assert.equal(d.dataPresente, true); assert.equal(d.dataObjeto, true);
+    assert.equal(d.transactionIdPresente, true); assert.equal(d.transactionIdString, true); assert.equal(d.transactionIdNaoVazio, true);
+    assert.equal(d.statusPresente, true); assert.equal(d.statusString, true); assert.equal(d.statusReconhecido, true);
+    assert.equal(d.amountPresente, true); assert.equal(d.amountTipo, "number"); assert.equal(d.amountNumero, true); assert.equal(d.amountInteiro, true);
+    assert.equal(d.paidAtPresente, true); assert.equal(d.paidAtString, true); assert.equal(d.paidAtDataValida, true);
+  });
+
+  const casos: [string, unknown, Partial<Record<string, unknown>>][] = [
+    ["raiz não-objeto", "<html>", { raizObjeto: false, successPresente: false, dataPresente: false }],
+    ["raiz null", null, { raizObjeto: false }],
+    ["success ausente", { data: oficial.data }, { successPresente: false, successBooleano: false, successTrue: false }],
+    ["success false", { success: false, data: oficial.data }, { successPresente: true, successBooleano: true, successTrue: false }],
+    ["success não-booleano", { success: "true", data: oficial.data }, { successPresente: true, successBooleano: false, successTrue: false }],
+    ["data ausente", { success: true }, { dataPresente: false, dataObjeto: false, transactionIdPresente: false }],
+    ["data não-objeto", { success: true, data: "x" }, { dataPresente: true, dataObjeto: false }],
+    ["transactionId ausente", { success: true, data: { status: "PAID", amount: 1 } }, { transactionIdPresente: false, transactionIdString: false, transactionIdNaoVazio: false }],
+    ["transactionId numérico", { success: true, data: { transactionId: 123, status: "PAID", amount: 1 } }, { transactionIdPresente: true, transactionIdString: false, transactionIdNaoVazio: false }],
+    ["transactionId vazio", { success: true, data: { transactionId: "   ", status: "PAID", amount: 1 } }, { transactionIdString: true, transactionIdNaoVazio: false }],
+    ["status ausente", { success: true, data: { transactionId: "t", amount: 1 } }, { statusPresente: false, statusString: false, statusReconhecido: false }],
+    ["status desconhecido", { success: true, data: { transactionId: "t", status: "PROCESSANDO", amount: 1 } }, { statusPresente: true, statusString: true, statusReconhecido: false }],
+    ["amount ausente", { success: true, data: { transactionId: "t", status: "PAID" } }, { amountPresente: false, amountTipo: "undefined", amountNumero: false, amountInteiro: false }],
+    ["amount string", { success: true, data: { transactionId: "t", status: "PAID", amount: "1000" } }, { amountPresente: true, amountTipo: "string", amountNumero: false, amountInteiro: false }],
+    ["amount float", { success: true, data: { transactionId: "t", status: "PAID", amount: 10.5 } }, { amountTipo: "number", amountNumero: true, amountInteiro: false }],
+    ["paidAt numérico", { success: true, data: { transactionId: "t", status: "PAID", amount: 1, paidAt: 123 } }, { paidAtPresente: true, paidAtString: false, paidAtDataValida: false }],
+    ["paidAt data inválida", { success: true, data: { transactionId: "t", status: "PAID", amount: 1, paidAt: "ontem" } }, { paidAtString: true, paidAtDataValida: false }],
+  ];
+
+  for (const [nome, corpo, esperado] of casos) {
+    test(`flags corretas: ${nome}`, () => {
+      const d = diagnosticarRespostaConfirmacao(corpo) as unknown as Record<string, unknown>;
+      for (const [k, v] of Object.entries(esperado)) assert.equal(d[k], v, `${k} deveria ser ${v}`);
+    });
+  }
+
+  /**
+   * A garantia central: o diagnóstico e sua string de log NÃO contêm valores
+   * sensíveis — nem o transactionId, nem o status literal, nem o amount, nem o
+   * paidAt, nem documento/e-mail/telefone que por acaso venham no corpo.
+   */
+  test("nem o diagnóstico nem a string de log carregam valores sensíveis", () => {
+    const corpoComSegredo = {
+      success: true,
+      data: {
+        transactionId: "TXN-SEGREDO-123456",
+        status: "STATUS-SECRETO",
+        amount: "999999",
+        paidAt: "2026-01-02T03:04:05.000Z",
+        customer: { document: "12345678901", email: "vitima@example.test", phone: "11999999999" },
+        qrCode: "00020126-QR-SECRETO",
+      },
+    };
+    const diag = diagnosticarRespostaConfirmacao(corpoComSegredo);
+    const texto = formatarDiagnosticoConfirmacao({ jsonParseOk: true, contentTypeJson: true }, diag);
+    for (const proibido of ["TXN-SEGREDO-123456", "STATUS-SECRETO", "999999", "2026-01-02", "12345678901", "vitima@example.test", "11999999999", "QR-SECRETO"]) {
+      assert.equal(JSON.stringify(diag).includes(proibido), false, `diag não pode conter ${proibido}`);
+      assert.equal(texto.includes(proibido), false, `log não pode conter ${proibido}`);
+    }
+    // O que ele PODE dizer é a estrutura: aqui o amount veio string.
+    assert.match(texto, /amountTipo=string/);
+    assert.match(texto, /statusReconhecido=false/);
+  });
+
+  test("json inválido/HTML: o diagnóstico é null e o log só marca jsonParseOk/contentType", () => {
+    const texto = formatarDiagnosticoConfirmacao({ jsonParseOk: false, contentTypeJson: false }, null);
+    assert.equal(texto, "jsonParseOk=false contentTypeJson=false");
+  });
+});
+
+describe("o confirmador só loga quando a estrutura é recusada", () => {
+  const espiao = () => {
+    const eventos: { detail?: string }[] = [];
+    const registrar = ((_e: unknown, meta: { detail?: string }) => { eventos.push(meta); }) as any;
+    return { eventos, registrar };
+  };
+
+  test("resposta válida: nenhum diagnóstico é emitido", async () => {
+    const { eventos, registrar } = espiao();
+    const c = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => respostaStatus({ transactionId: "t", status: "PAID", amount: 1 }), registrar);
+    const r = await c!("t");
+    assert.equal(r.ok, true);
+    assert.equal(eventos.length, 0, "resposta válida não pode gerar log estrutural");
+  });
+
+  test("2xx com estrutura recusada: emite diagnóstico estrutural, sem valores", async () => {
+    const { eventos, registrar } = espiao();
+    const c = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => respostaStatus({ transactionId: "TXN-REAL-9", status: "PENDENTE-ERRADO", amount: "50" }), registrar);
+    const r = await c!("t");
+    assert.deepEqual(r, { ok: false, falha: "resposta_invalida" });
+    assert.equal(eventos.length, 1);
+    const detail = eventos[0].detail ?? "";
+    assert.match(detail, /jsonParseOk=true/);
+    assert.match(detail, /statusReconhecido=false/);
+    assert.match(detail, /amountTipo=string/);
+    for (const proibido of ["TXN-REAL-9", "PENDENTE-ERRADO", "50"]) assert.equal(detail.includes(proibido), false);
+  });
+
+  test("2xx não-JSON: emite jsonParseOk=false e devolve resposta_invalida", async () => {
+    const { eventos, registrar } = espiao();
+    const c = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => new Response("<html>erro</html>", { status: 200, headers: { "content-type": "text/html" } }), registrar);
+    const r = await c!("t");
+    assert.deepEqual(r, { ok: false, falha: "resposta_invalida" });
+    assert.equal(eventos.length, 1);
+    assert.match(eventos[0].detail ?? "", /jsonParseOk=false contentTypeJson=false/);
   });
 });
 
