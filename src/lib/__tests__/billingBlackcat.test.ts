@@ -47,10 +47,11 @@ const respostaStatus = (data: Record<string, unknown>) => new Response(JSON.stri
 describe("confirmação autoritativa", () => {
   test("GET codifica a transação, usa chave e no-store", async () => {
     let url = ""; let init: RequestInit | undefined;
-    const confirmar = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "teste" }, async (u, i) => { url=String(u); init=i; return respostaStatus({transactionId:"a/b",status:"PAID",amount:100}); });
+    const confirmar = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "teste" }, async (u, i) => { url=String(u); init=i; return respostaStatus({transactionId:"a/b",status:"PAID",amount:100,paidAt:"2026-09-24T12:00:00.000Z"}); });
     const r=await confirmar!("a/b"); assert.equal(r.ok,true); assert.match(url,/a%2Fb\/status$/); assert.equal((init?.headers as Record<string,string>)["X-API-Key"],"teste"); assert.equal(init?.cache,"no-store"); assert.ok(init?.signal);
   });
-  for (const status of ["PENDING","PAID","CANCELLED","REFUNDED"] as const) test(`${status} é aceito`,()=>assert.equal(interpretarConfirmacao({success:true,data:{transactionId:"t",status,amount:100}})?.status,status));
+  // PAID exige `paidAt` datável; os demais status são aceitos sem ele.
+  for (const status of ["PENDING","PAID","CANCELLED","REFUNDED"] as const) test(`${status} é aceito`,()=>{ const data: Record<string, unknown> = {transactionId:"t",status,amount:100}; if(status==="PAID") data.paidAt="2026-09-24T12:00:00.000Z"; assert.equal(interpretarConfirmacao({success:true,data})?.status,status); });
   test("success falso e formatos inválidos são recusados",()=>{
     for(const body of [{success:false,data:{transactionId:"t",status:"PAID",amount:1}},{success:true},{success:true,data:{status:"PAID",amount:1}},{success:true,data:{transactionId:"t",status:"X",amount:1}},{success:true,data:{transactionId:"t",status:"PAID",amount:"1"}},{success:true,data:{transactionId:"t",status:"PAID",amount:1.1}},{success:true,data:{transactionId:"t",status:"PAID",amount:1,paidAt:"x"}}]) assert.equal(interpretarConfirmacao(body),null);
   });
@@ -79,6 +80,72 @@ describe("confirmação autoritativa", () => {
     assert.deepEqual(await forma!("t"), { ok: false, falha: "resposta_invalida" });
     const naoJson = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => new Response("<html>", { status: 200 }));
     assert.deepEqual(await naoJson!("t"), { ok: false, falha: "resposta_invalida" });
+  });
+});
+
+/**
+ * A regra de `paidAt`, isolada — é a correção que destrava a reconciliação.
+ *
+ * Uma transação **não paga** traz `paidAt: null` (não ausente). Isso é uma
+ * resposta normal e precisa ser aceita para PENDING/CANCELLED/REFUNDED. `PAID`,
+ * ao contrário, exige o instante: sem `paidAt` datável não é um pago confiável.
+ * Nada mais é afrouxado.
+ */
+describe("interpretarConfirmacao: paidAt null é ausência de pagamento", () => {
+  const corpo = (extra: Record<string, unknown>) => ({ success: true, data: { transactionId: "t", amount: 1000, ...extra } });
+  const DATA = "2026-09-24T12:00:00.000Z";
+
+  test("PENDING com paidAt:null é aceito, e paidAt interno é null", () => {
+    const c = interpretarConfirmacao(corpo({ status: "PENDING", paidAt: null }));
+    assert.equal(c?.status, "PENDING");
+    assert.equal(c?.paidAt, null);
+  });
+
+  test("PENDING sem paidAt é aceito", () => {
+    assert.equal(interpretarConfirmacao(corpo({ status: "PENDING" }))?.status, "PENDING");
+  });
+
+  for (const status of ["CANCELLED", "REFUNDED"] as const) {
+    test(`${status} com paidAt:null é aceito`, () => {
+      const c = interpretarConfirmacao(corpo({ status, paidAt: null }));
+      assert.equal(c?.status, status);
+      assert.equal(c?.paidAt, null);
+    });
+  }
+
+  test("PAID com paidAt data válida é aceito e vira Date", () => {
+    const c = interpretarConfirmacao(corpo({ status: "PAID", paidAt: DATA }));
+    assert.equal(c?.status, "PAID");
+    assert.deepEqual(c?.paidAt, new Date(DATA));
+  });
+
+  test("PAID com paidAt:null é recusado", () => {
+    assert.equal(interpretarConfirmacao(corpo({ status: "PAID", paidAt: null })), null);
+  });
+
+  test("PAID sem paidAt é recusado", () => {
+    assert.equal(interpretarConfirmacao(corpo({ status: "PAID" })), null);
+  });
+
+  const invalidos: [string, unknown][] = [
+    ["paidAt número", 123],
+    ["paidAt objeto", { quando: DATA }],
+    ["paidAt array", [DATA]],
+    ["paidAt booleano", true],
+    ["paidAt string inválida", "ontem"],
+  ];
+  for (const [nome, paidAt] of invalidos) {
+    test(`${nome} recusa até com status não-PAID`, () => {
+      // Tipo/inválido errado é recusado em qualquer status — só null/undefined/data string passam.
+      assert.equal(interpretarConfirmacao(corpo({ status: "PENDING", paidAt })), null);
+      assert.equal(interpretarConfirmacao(corpo({ status: "PAID", paidAt })), null);
+    });
+  }
+
+  test("nada além de paidAt foi afrouxado: amount string e status alternativo seguem recusados", () => {
+    assert.equal(interpretarConfirmacao(corpo({ status: "PAID", amount: "1000", paidAt: DATA })), null);
+    assert.equal(interpretarConfirmacao({ success: true, data: { transactionId: "t", status: "PROCESSANDO", amount: 1000, paidAt: null } }), null);
+    assert.equal(interpretarConfirmacao({ data: { transactionId: "t", status: "PENDING", amount: 1000, paidAt: null } }), null, "success ausente segue recusado");
   });
 });
 
@@ -173,7 +240,7 @@ describe("o confirmador só loga quando a estrutura é recusada", () => {
 
   test("resposta válida: nenhum diagnóstico é emitido", async () => {
     const { eventos, registrar } = espiao();
-    const c = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => respostaStatus({ transactionId: "t", status: "PAID", amount: 1 }), registrar);
+    const c = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => respostaStatus({ transactionId: "t", status: "PAID", amount: 1, paidAt: "2026-09-24T12:00:00.000Z" }), registrar);
     const r = await c!("t");
     assert.equal(r.ok, true);
     assert.equal(eventos.length, 0, "resposta válida não pode gerar log estrutural");

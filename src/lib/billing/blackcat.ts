@@ -317,8 +317,28 @@ export function interpretarConfirmacao(bruto: unknown): ConfirmacaoBlackcat | nu
   const transactionId = typeof d.transactionId === "string" ? d.transactionId.trim() : "";
   const amount = d.amount;
   if (!transactionId || !["PENDING", "PAID", "CANCELLED", "REFUNDED"].includes(String(d.status)) || typeof amount !== "number" || !Number.isInteger(amount)) return null;
+
+  // `paidAt` é o instante do pagamento — e uma transação **não paga** o traz como
+  // `null`, não ausente. O provedor devolve `paidAt: null` numa resposta normal
+  // de PENDING/CANCELLED/REFUNDED, e tratar isso como corpo inválido era o que
+  // prendia a reconciliação (o caso real diagnosticado). Regras:
+  //   - `undefined` ou `null` → sem pagamento (`paidAt` interno = null);
+  //   - string de data válida → `Date`;
+  //   - string inválida ou qualquer outro tipo (número, objeto) → recusa.
+  // Nada mais é afrouxado: `amount` continua inteiro, `status` continua no
+  // conjunto fechado, envelope continua exigindo `success:true` e `data` objeto.
   let paidAt: Date | null = null;
-  if (d.paidAt !== undefined) { if (typeof d.paidAt !== "string") return null; paidAt = new Date(d.paidAt); if (Number.isNaN(paidAt.getTime())) return null; }
+  if (d.paidAt !== undefined && d.paidAt !== null) {
+    if (typeof d.paidAt !== "string") return null;
+    paidAt = new Date(d.paidAt);
+    if (Number.isNaN(paidAt.getTime())) return null;
+  }
+
+  // `PAID` sem um `paidAt` datável não é um pago confiável: exige a comprovação
+  // temporal. `PAID` com `null`/ausente continua inválido — é o que impede tomar
+  // por confirmado um pagamento sem instante.
+  if (d.status === "PAID" && paidAt === null) return null;
+
   return { transactionId, status: d.status as StatusBlackcat, amount, paidAt };
 }
 
