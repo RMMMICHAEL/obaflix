@@ -5,12 +5,12 @@ import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
+import QRCode from "qrcode";
 import {
   corpoCriarPedido,
   descricaoDaOperacao,
   deveFazerPolling,
   destinoDoLoginDoCheckout,
-  fonteDaImagemQr,
   mensagemErroCheckout,
 } from "@/lib/billing/checkout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
@@ -127,6 +127,23 @@ function CheckoutConteudo() {
   const [carregandoPedido, setCarregandoPedido] = useState(true);
   const [confirmado, setConfirmado] = useState(false);
   const [enviando, setEnviando] = useState(false);
+  const [qrSrc, setQrSrc] = useState<string | null>(null);
+
+  // O provedor devolve o payload EMV do PIX (o mesmo "copia e cola"), não uma
+  // imagem — então o QR é desenhado no cliente a partir do copia-e-cola. Isso
+  // vale para qualquer PSP e não depende de o gateway mandar um PNG pronto.
+  useEffect(() => {
+    const copiaECola = pedido && temPix(pedido) ? pedido.pix.copiaECola : null;
+    if (!copiaECola) {
+      setQrSrc(null);
+      return;
+    }
+    let vivo = true;
+    QRCode.toDataURL(copiaECola, { width: 240, margin: 1, errorCorrectionLevel: "M" })
+      .then((url) => { if (vivo) setQrSrc(url); })
+      .catch(() => { if (vivo) setQrSrc(null); });
+    return () => { vivo = false; };
+  }, [pedido]);
 
   const planoId = query.get("planoId");
   const precoDaUrl = query.get("planoPrecoId");
@@ -334,11 +351,11 @@ function CheckoutConteudo() {
             </div>
           ) : temPix(pedido) ? (
             <div className="mt-7 grid gap-6 md:grid-cols-[240px_1fr]">
-              {fonteDaImagemQr(pedido.pix.qrCodeBase64) && (
+              {qrSrc && (
                 <img
                   className="h-60 w-60 rounded-2xl bg-white p-3"
                   alt="QR Code PIX"
-                  src={fonteDaImagemQr(pedido.pix.qrCodeBase64)!}
+                  src={qrSrc}
                 />
               )}
               <div>
