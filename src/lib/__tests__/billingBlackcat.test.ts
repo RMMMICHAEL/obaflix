@@ -415,7 +415,10 @@ describe("interpretarVenda: nada é aceito sem conferir", () => {
     ["amount fracionário", respostaDeSucesso({ amount: 18.9 }), "resposta_incompleta"],
     ["sem paymentData", respostaDeSucesso({ paymentData: undefined }), "resposta_incompleta"],
     [
-      "sem qrCode",
+      // Nenhuma representação de QR (nem `qrCode` nem `qrCodeBase64`): aí não há
+      // como o cliente desenhar nem exibir o QR, e a recusa é correta. Ter uma
+      // das duas basta — ver os casos aceitos adiante.
+      "sem nenhuma representação de QR",
       respostaDeSucesso({ paymentData: { copyPaste: "c", expiresAt: DAQUI_A_2_DIAS } }),
       "resposta_incompleta",
     ],
@@ -450,11 +453,12 @@ describe("interpretarVenda: nada é aceito sem conferir", () => {
   }
 
   /**
-   * `qrCodeBase64` é conveniência de renderização — o cliente desenha o QR a
-   * partir de `qrCode`. Exigi-lo faria uma resposta funcionalmente completa ser
-   * descartada; os outros dois não têm substituto.
+   * `copyPaste` é obrigatório e insubstituível; além dele basta **uma**
+   * representação de QR. Aqui vem `qrCode` sem `qrCodeBase64`: a venda é aceita,
+   * e o `qrCodeBase64` fica `null` — nesse caso o checkout mostra só o
+   * copia-e-cola, sem imagem. (Requisito 5.)
    */
-  test("qrCodeBase64 ausente não invalida a venda", () => {
+  test("qrCodeBase64 ausente não invalida a venda (qrCode presente)", () => {
     const leitura = interpretarVenda(
       respostaDeSucesso({
         paymentData: { qrCode: "q", copyPaste: "c", expiresAt: DAQUI_A_2_DIAS },
@@ -462,6 +466,93 @@ describe("interpretarVenda: nada é aceito sem conferir", () => {
     );
     assert.equal(leitura.situacao, "ok");
     assert.equal(vendaDe(leitura)?.qrCodeBase64, null);
+  });
+
+  /**
+   * O espelho do caso acima, e a correção que motiva a branch: `qrCode` ausente
+   * mas `qrCodeBase64` presente é uma resposta funcionalmente completa — o
+   * checkout desenha a imagem a partir do `qrCodeBase64`. Antes isto ia para
+   * REVISAO_MANUAL sem necessidade. (Requisito 4.)
+   */
+  test("qrCode ausente + qrCodeBase64 válido + copyPaste válido é aceito", () => {
+    const leitura = interpretarVenda(
+      respostaDeSucesso({
+        paymentData: {
+          qrCodeBase64: "data:image/png;base64,AAAA",
+          copyPaste: "c",
+          expiresAt: DAQUI_A_2_DIAS,
+        },
+      }),
+    );
+    assert.equal(leitura.situacao, "ok");
+    assert.equal(vendaDe(leitura)?.qrCode, "");
+    assert.equal(vendaDe(leitura)?.qrCodeBase64, "data:image/png;base64,AAAA");
+  });
+
+  /**
+   * `qrCodeBase64` é normalizado só no trim — o conteúdo sensível não é tocado.
+   */
+  test("qrCodeBase64 é preservado sem alterar o conteúdo (só trim)", () => {
+    const leitura = interpretarVenda(
+      respostaDeSucesso({
+        paymentData: {
+          qrCode: "q",
+          qrCodeBase64: "  data:image/png;base64,ZZZZ  ",
+          copyPaste: "c",
+          expiresAt: DAQUI_A_2_DIAS,
+        },
+      }),
+    );
+    assert.equal(vendaDe(leitura)?.qrCodeBase64, "data:image/png;base64,ZZZZ");
+  });
+
+  /**
+   * Requisito 7: uma recusa por PIX incompleto **preserva** o `expiresAt` do
+   * provedor em `expiraEm`, desde que a data em si seja válida. É o que impede a
+   * revisão de nascer sem prazo — sem `expiraEm`, `confirmar_nao_pago` não
+   * resolve um `PENDING` por expiração e o caso fica preso.
+   */
+  test("recusa com transação e expiresAt válido carrega expiraEm", () => {
+    // Sem nenhuma representação de QR → recusada, mas com prazo válido.
+    const leitura = interpretarVenda(
+      respostaDeSucesso({ paymentData: { copyPaste: "c", expiresAt: DAQUI_A_2_DIAS } }),
+    );
+    assert.equal(leitura.situacao, "recusada");
+    assert.equal(leitura.situacao === "recusada" && leitura.falha, "resposta_incompleta");
+    assert.equal(
+      leitura.situacao === "recusada" && leitura.transacaoId,
+      "TXN-1733654321-ABC123",
+    );
+    assert.deepEqual(
+      leitura.situacao === "recusada" ? leitura.expiraEm : null,
+      new Date(DAQUI_A_2_DIAS),
+    );
+  });
+
+  /**
+   * Já um `expiresAt` inválido não vira `expiraEm`: não há prazo a preservar, e
+   * inventar um seria fabricar informação de reconciliação.
+   */
+  test("recusa com expiresAt inválido não carrega expiraEm", () => {
+    const leitura = interpretarVenda(
+      respostaDeSucesso({ paymentData: { copyPaste: "c", expiresAt: "ontem" } }),
+    );
+    assert.equal(leitura.situacao, "recusada");
+    assert.equal(leitura.situacao === "recusada" && leitura.expiraEm, undefined);
+  });
+
+  /**
+   * O provedor devolve a venda ao serviço já com `expiraEm` no ramo de falha,
+   * para `criarPedidoPix` persistir junto da transação na revisão.
+   */
+  test("criarVenda propaga expiraEm na recusa com transação", async () => {
+    const { buscar } = fetchFalso(
+      json(respostaDeSucesso({ paymentData: { copyPaste: "c", expiresAt: DAQUI_A_2_DIAS } }), 201),
+    );
+    const r = await provedorComConfiguracao(CONFIG, buscar).criarVenda(PEDIDO);
+    assert.equal(r.ok, false);
+    assert.equal(r.ok === false && r.transacaoId, "TXN-1733654321-ABC123");
+    assert.deepEqual(r.ok === false ? r.expiraEm : null, new Date(DAQUI_A_2_DIAS));
   });
 });
 

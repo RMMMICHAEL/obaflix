@@ -196,8 +196,14 @@ const repositorio: RepositorioDePedidos = {
     });
   },
 
-  async registrarFalha(pedidoId, { status, transacaoId, motivo }) {
-    const data = transacaoId ? { status, transacaoId } : { status };
+  async registrarFalha(pedidoId, { status, transacaoId, expiraEm, motivo }) {
+    // `expiraEm` só é gravado quando o provedor deu um prazo válido: preserva a
+    // informação necessária para reconciliar a revisão sem conceder direito.
+    const data = {
+      status,
+      ...(transacaoId ? { transacaoId } : {}),
+      ...(expiraEm ? { expiraEm } : {}),
+    };
     if (status !== "REVISAO_MANUAL") {
       await prisma.pedidoPagamento.update({ where: { id: pedidoId }, data });
       return;

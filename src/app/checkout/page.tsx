@@ -10,6 +10,7 @@ import {
   descricaoDaOperacao,
   deveFazerPolling,
   destinoDoLoginDoCheckout,
+  fonteDaImagemQr,
   mensagemErroCheckout,
 } from "@/lib/billing/checkout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
@@ -333,11 +334,11 @@ function CheckoutConteudo() {
             </div>
           ) : temPix(pedido) ? (
             <div className="mt-7 grid gap-6 md:grid-cols-[240px_1fr]">
-              {pedido.pix.qrCodeBase64 && (
+              {fonteDaImagemQr(pedido.pix.qrCodeBase64) && (
                 <img
                   className="h-60 w-60 rounded-2xl bg-white p-3"
                   alt="QR Code PIX"
-                  src={`data:image/png;base64,${pedido.pix.qrCodeBase64}`}
+                  src={fonteDaImagemQr(pedido.pix.qrCodeBase64)!}
                 />
               )}
               <div>
