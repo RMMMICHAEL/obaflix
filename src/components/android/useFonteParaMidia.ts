@@ -3,6 +3,13 @@
 import { useCallback, useRef } from "react";
 import { fontesCandidatas } from "@/lib/androidMedia";
 import { AcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
+import {
+  corridaComPrazo,
+  fetchComPrazo,
+  PRAZO_EXTRACAO_MS,
+  PRAZO_FONTE_NATIVA_MS,
+  PRAZO_FONTES_MS,
+} from "@/lib/androidCast";
 
 /**
  * Resolve fontes para baixar ou transmitir, fora do player.
@@ -99,19 +106,27 @@ export function useFonteParaMidia({
 
       let res: Response;
       try {
-        res = await fetch("/api/player/fontes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conteudoId,
-            conteudoTipo,
-            temporada: temporada ?? null,
-            numeroEp: numeroEp ?? null,
-            ambiente: "android",
-            finalidade,
-            ...(concessao ? { concessao } : {}),
-          }),
-        });
+        // Com prazo: abrir a sessão é a etapa que carrega o anúncio já
+        // consumido, então um estouro aqui é terminal (vira AcaoInterrompida) —
+        // reabrir a sessão pediria um segundo anúncio, o que não pode acontecer.
+        res = await fetchComPrazo(
+          "/api/player/fontes",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conteudoId,
+              conteudoTipo,
+              temporada: temporada ?? null,
+              numeroEp: numeroEp ?? null,
+              ambiente: "android",
+              finalidade,
+              ...(concessao ? { concessao } : {}),
+            }),
+          },
+          PRAZO_FONTES_MS,
+          "fontes",
+        );
       } catch {
         throw new AcaoInterrompida("servidores_indisponiveis");
       }
@@ -163,11 +178,19 @@ export function useFonteParaMidia({
       const alvo = atual.candidatas[tentativa];
       if (!alvo) return null;
 
-      const res = await fetch("/api/player/fonte-nativa", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessao: atual.sessao, fonteId: alvo.id }),
-      });
+      // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
+      // servidor (EtapaExpirada sobe como falha de servidor) e a procura segue
+      // para o próximo, sem novo anúncio.
+      const res = await fetchComPrazo(
+        "/api/player/fonte-nativa",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessao: atual.sessao, fonteId: alvo.id }),
+        },
+        PRAZO_FONTE_NATIVA_MS,
+        "fonte-nativa",
+      );
       if (!res.ok) throw new Error("fonte_falhou");
       const nativa = await res.json();
 
@@ -196,7 +219,14 @@ export function useFonteParaMidia({
       }
       if (!nativa?.embedUrl) throw new Error("fonte_falhou");
 
-      const dados = await ponte.extractStream(nativa.embedUrl);
+      // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
+      // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
+      // próximo, ainda sem novo anúncio.
+      const dados = await corridaComPrazo(
+        ponte.extractStream(nativa.embedUrl),
+        PRAZO_EXTRACAO_MS,
+        "extracao",
+      );
       if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
 
       // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o

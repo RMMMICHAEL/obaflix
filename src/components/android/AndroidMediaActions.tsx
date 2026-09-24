@@ -3,13 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Cast, Check, Download, Loader2, X } from "lucide-react";
 import { DownloadQualityModal, type Qualidade } from "./DownloadQualityModal";
+import { CastAppModal } from "./CastAppModal";
 import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
-import {
-  AcaoInterrompida,
-  ehAcaoCancelada,
-  ehAcaoInterrompida,
-  liberarAcao,
-} from "@/lib/ads/acaoPatrocinada";
+import { AcaoInterrompida, liberarAcao } from "@/lib/ads/acaoPatrocinada";
 import {
   alvoDoPid,
   linhaDiagDownload,
@@ -17,6 +13,12 @@ import {
   pontesDeMidia,
   procurarFonteDeDownload,
 } from "@/lib/androidMedia";
+import {
+  corridaComPrazo,
+  PRAZO_CAST_MS,
+  transmitirComCast,
+  type RespostaDeCast,
+} from "@/lib/androidCast";
 
 /**
  * Botões de Baixar e Transmitir do aplicativo Android.
@@ -93,8 +95,32 @@ type Ponte = {
   requestDownload?: (p: Record<string, unknown>) => Promise<Resposta>;
   discardDownloadSource?: () => void;
   requestCast?: (p: Record<string, unknown>) => Promise<Resposta>;
-  installCastApp?: () => void;
+  /**
+   * O Web Video Cast está instalado? Consulta barata, feita antes de pedir
+   * anúncio ou resolver fonte. Pode ser síncrona ou Promise, conforme a ponte;
+   * ausente nas versões antigas — aí o fluxo normal (que rechecа no nativo) cobre.
+   */
+  isCastAppInstalled?: () => boolean | Promise<boolean>;
+  /** Abre a ficha na loja. Devolve `{ ok }` (loja abriu ou não). */
+  installCastApp?: () => void | Promise<RespostaDeCast | void>;
 };
+
+/**
+ * O app externo de transmissão está instalado?
+ *
+ * Sem a ponte de checagem (versão antiga do app, ou falha na consulta) devolve
+ * `true`: não bloqueia a transmissão — o próprio `requestCast` recheca no nativo
+ * e ainda oferece a instalação. Bloquear por não conseguir perguntar seria pior
+ * que o comportamento anterior.
+ */
+async function castAppInstalado(p: Ponte): Promise<boolean> {
+  if (!p.isCastAppInstalled) return true;
+  try {
+    return !!(await Promise.resolve(p.isCastAppInstalled()));
+  } catch {
+    return true;
+  }
+}
 
 function ponte(): Ponte | null {
   if (typeof window === "undefined") return null;
@@ -172,6 +198,8 @@ export function AndroidMediaActions({
   const [aviso, setAviso] = useState<string | null>(null);
   const [modal, setModal] = useState<{ sondagemId: string; qualidades: Qualidade[] } | null>(null);
   const [enviando, setEnviando] = useState(false);
+  /** Modal "Aplicativo necessário". `null` fechado; `erro`/`ocupado` são o estado dele. */
+  const [castModal, setCastModal] = useState<{ erro?: string | null; ocupado?: boolean } | null>(null);
 
   const falhar = useCallback((setEstado: (e: Estado) => void, motivo?: string) => {
     setEstado("erro");
@@ -282,47 +310,101 @@ export function AndroidMediaActions({
 
   // -- Transmitir ------------------------------------------------------------
 
-  const transmitir = useCallback(async () => {
+  /**
+   * A transmissão em si, uma vez que o app externo já foi confirmado.
+   *
+   * A decisão inteira vive em `transmitirComCast` (pura, testável): verifica o
+   * app antes de qualquer anúncio, tenta até três servidores sem reabrir o
+   * anúncio, e estoura o prazo de cada etapa em vez de girar para sempre. Aqui
+   * só se traduz o resultado para a interface.
+   */
+  const executarTransmissao = useCallback(async () => {
     const p = ponte();
     if (!p?.requestCast) return;
+    const requestCast = p.requestCast;
     setCast("trabalhando");
     setAviso(null);
 
-    let ultimo: Resposta | null = null;
-    for (let tentativa = 0; tentativa < 3; tentativa++) {
-      let fonte: FonteResolvida | null;
-      try {
-        fonte = await resolverFonte(tentativa, "transmissao", liberar);
-      } catch (erro) {
-        // Fechar o convite ou ir assinar: volta ao estado anterior, sem mensagem.
-        if (ehAcaoCancelada(erro)) {
-          setCast("ocioso");
-          return;
-        }
-        // Recusa comercial: mensagem própria, nunca a de servidor ou de mídia.
-        if (ehAcaoInterrompida(erro)) {
-          falhar(setCast, erro.motivo);
-          return;
-        }
-        // Só este servidor falhou. A liberação já foi feita e a sessão é a
-        // mesma: o próximo servidor não pede anúncio de novo.
-        continue;
-      }
-      if (!fonte) break;
+    const resultado = await transmitirComCast({
+      appInstalado: () => castAppInstalado(p),
+      resolverFonte: (tentativa) => resolverFonte(tentativa, "transmissao", liberar),
+      // Prazo do cast: uma entrega presa (nativo sem responder) não segura o botão.
+      requestCast: (fonte) =>
+        corridaComPrazo(
+          requestCast({ ...fonte, pid, titulo, poster: poster ?? null }),
+          PRAZO_CAST_MS,
+          "cast",
+        ) as Promise<RespostaDeCast>,
+    });
 
-      const r = await p
-        .requestCast({ ...fonte, pid, titulo, poster: poster ?? null })
-        .catch(() => ({ ok: false }) as Resposta);
-      ultimo = r;
-      if (r.ok) {
+    switch (resultado.tipo) {
+      case "precisa_app":
+        // Nenhum anúncio foi pedido nem fonte resolvida: só o convite ao app.
+        setCast("ocioso");
+        setCastModal({});
+        return;
+      case "ok":
         concluir(setCast);
         return;
-      }
-      if (!r.tentarOutraFonte) break;
+      case "cancelado":
+        // Fechar o convite ou ir assinar: volta ao estado anterior, sem mensagem.
+        setCast("ocioso");
+        return;
+      case "erro":
+        // Caso raro: o app sumiu entre a checagem e a entrega. Oferece instalar.
+        if (resultado.podeInstalar) {
+          setCast("ocioso");
+          setCastModal({});
+          return;
+        }
+        falhar(setCast, resultado.motivo);
+        return;
     }
-    if (ultimo?.podeInstalar) ponte()?.installCastApp?.();
-    falhar(setCast, ultimo?.motivo);
   }, [pid, titulo, poster, resolverFonte, liberar, concluir, falhar]);
+
+  /** O toque no botão "Transmitir" — o mesmo em hero, episódio e player. */
+  const transmitir = executarTransmissao;
+
+  // -- Modal "Aplicativo necessário" ----------------------------------------
+
+  /** "Baixar aplicativo": leva à loja e mantém o modal aberto para o retorno. */
+  const baixarAppDeCast = useCallback(async () => {
+    const p = ponte();
+    if (!p?.installCastApp) return;
+    setCastModal((m) => (m ? { ...m, erro: undefined, ocupado: true } : m));
+    let abriu = true;
+    try {
+      const r = await Promise.resolve(p.installCastApp());
+      // Ponte antiga devolvia void; só um `ok:false` explícito conta como falha.
+      abriu = !(r && typeof r === "object" && (r as RespostaDeCast).ok === false);
+    } catch {
+      abriu = false;
+    }
+    setCastModal((m) =>
+      m
+        ? {
+            ocupado: false,
+            erro: abriu
+              ? undefined
+              : "Não foi possível abrir a loja. Procure por Web Video Cast na Play Store.",
+          }
+        : m,
+    );
+  }, []);
+
+  /** "Transmitir" dentro do modal: recheca e, se instalado, segue o fluxo. */
+  const transmitirDoModal = useCallback(async () => {
+    const p = ponte();
+    if (!p) return;
+    if (!(await castAppInstalado(p))) {
+      setCastModal({
+        erro: "Ainda não encontramos o app. Conclua a instalação e toque em Transmitir.",
+      });
+      return;
+    }
+    setCastModal(null);
+    await executarTransmissao();
+  }, [executarTransmissao]);
 
   if (!disponivel) return null;
 
@@ -371,6 +453,16 @@ export function AndroidMediaActions({
           ocupado={enviando}
           onEscolher={escolherQualidade}
           onFechar={fecharModal}
+        />
+      )}
+
+      {castModal && (
+        <CastAppModal
+          erro={castModal.erro}
+          ocupado={castModal.ocupado}
+          onBaixar={baixarAppDeCast}
+          onTransmitir={transmitirDoModal}
+          onFechar={() => setCastModal(null)}
         />
       )}
     </>

@@ -520,8 +520,26 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
                         });
                     },
 
+                    // Consulta sincrona: sem o app externo nao ha destino para a
+                    // midia, entao o lado web pergunta ANTES de pedir anuncio ou
+                    // resolver fonte. Falha na ponte nunca trava a transmissao —
+                    // devolve false e o fluxo normal (que recheca) assume dali.
+                    isCastAppInstalled: function() {
+                        try { return !!window._obaflixMedia.castAppInstalado(bridgeCapability); }
+                        catch (e) { return false; }
+                    },
+
                     installCastApp: function() {
-                        window._obaflixMedia.instalarAppDeCast(bridgeCapability);
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            try {
+                                window._obaflixMedia.instalarAppDeCast(bridgeCapability, id);
+                            } catch (e) {
+                                delete window._obaflixCallbacks[id];
+                                reject(e);
+                            }
+                        });
                     },
                     // Igual ao preload.js do Electron: so registra o callback.
                     // Quem chama e o lado nativo (MainActivity.notificarAtualizacaoPronta),
