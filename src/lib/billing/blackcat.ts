@@ -291,9 +291,17 @@ export function classificarStatus(status: number): "recusado" | "indisponivel" {
 
 export type StatusBlackcat = "PENDING" | "PAID" | "CANCELLED" | "REFUNDED";
 export type ConfirmacaoBlackcat = { transactionId: string; status: StatusBlackcat; amount: number; paidAt: Date | null };
+/**
+ * Por que a consulta autoritativa não devolveu um status. Conjunto fechado, sem
+ * campo livre: a mensagem crua da Blackcat não entra aqui. `nao_encontrada` e
+ * `recusada` vêm de 4xx (não adianta repetir); `indisponivel` de 429/5xx (pode
+ * adiantar); `resposta_invalida` de corpo/forma que a validação recusa.
+ */
+export type FalhaConfirmacaoBlackcat =
+  | "timeout" | "rede" | "nao_encontrada" | "recusada" | "indisponivel" | "resposta_invalida";
 export type ResultadoConfirmacaoBlackcat =
   | { ok: true; confirmacao: ConfirmacaoBlackcat }
-  | { ok: false; falha: "timeout" | "rede" | "nao_encontrada" | "recusada" | "indisponivel" | "resposta_invalida" };
+  | { ok: false; falha: FalhaConfirmacaoBlackcat };
 
 /** Contrato documentado de GET /sales/{transactionId}/status; nada cru sai daqui. */
 export function interpretarConfirmacao(bruto: unknown): ConfirmacaoBlackcat | null {

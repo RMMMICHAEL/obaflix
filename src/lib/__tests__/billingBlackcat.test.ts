@@ -53,7 +53,31 @@ describe("confirmação autoritativa", () => {
     for(const body of [{success:false,data:{transactionId:"t",status:"PAID",amount:1}},{success:true},{success:true,data:{status:"PAID",amount:1}},{success:true,data:{transactionId:"t",status:"X",amount:1}},{success:true,data:{transactionId:"t",status:"PAID",amount:"1"}},{success:true,data:{transactionId:"t",status:"PAID",amount:1.1}},{success:true,data:{transactionId:"t",status:"PAID",amount:1,paidAt:"x"}}]) assert.equal(interpretarConfirmacao(body),null);
   });
   test("status HTTP é fechado",async()=>{ for(const [http,falha] of [[401,"recusada"],[403,"recusada"],[404,"nao_encontrada"],[422,"recusada"],[429,"indisponivel"],[500,"indisponivel"]] as const){ const c=criarConfirmadorBlackcat({BLACKCAT_API_KEY:"x"},async()=>new Response("{}",{status:http})); const r=await c!("t"); assert.deepEqual(r,{ok:false,falha}); } });
-  test("timeout e rede não confirmam",async()=>{ for(const e of [Object.assign(new Error(),{name:"TimeoutError"}),new Error("rede")]){const c=criarConfirmadorBlackcat({BLACKCAT_API_KEY:"x"},async()=>{throw e});const r=await c!("t");assert.equal(r.ok,false);} });
+  test("timeout e rede não confirmam",async()=>{ for(const [e,falha] of [[Object.assign(new Error(),{name:"TimeoutError"}),"timeout"],[Object.assign(new Error(),{name:"AbortError"}),"timeout"],[new Error("rede"),"rede"]] as const){const c=criarConfirmadorBlackcat({BLACKCAT_API_KEY:"x"},async()=>{throw e as Error});const r=await c!("t");assert.deepEqual(r,{ok:false,falha});} });
+
+  /**
+   * Sem configuração válida o confirmador **não existe** — devolve `null`, e é a
+   * revisão que traduz isso em `configuracao`. Cobre chave ausente e confirmação
+   * ativa sem NEXTAUTH_URL/segredo do webhook (o caso que prende a revisão em
+   * `provedor_indisponivel` sem sequer consultar a Blackcat).
+   */
+  test("config inválida faz o confirmador ser null", () => {
+    assert.equal(criarConfirmadorBlackcat({}), null);
+    assert.equal(criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "   " }), null);
+    assert.equal(criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x", BLACKCAT_CONFIRMACAO_ATIVA: "true" }), null);
+    assert.ok(criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }), "só a chave já basta quando a confirmação não está ativa");
+  });
+
+  /**
+   * HTTP 200 mas corpo que a validação recusa (forma inválida ou não-JSON) vira
+   * `resposta_invalida` — não um status inventado.
+   */
+  test("200 com corpo inválido vira resposta_invalida", async () => {
+    const forma = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => respostaStatus({ status: "PAID", amount: 1 }));
+    assert.deepEqual(await forma!("t"), { ok: false, falha: "resposta_invalida" });
+    const naoJson = criarConfirmadorBlackcat({ BLACKCAT_API_KEY: "x" }, async () => new Response("<html>", { status: 200 }));
+    assert.deepEqual(await naoJson!("t"), { ok: false, falha: "resposta_invalida" });
+  });
 });
 
 /** O corpo que a documentação da Blackcat descreve para uma criação bem-sucedida. */

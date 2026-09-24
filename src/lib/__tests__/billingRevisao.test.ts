@@ -478,7 +478,7 @@ function bancoDeRevisao(inicial: { pedido: any; assinaturas?: any[] }) {
       },
     },
     revisaoPagamento: {
-      findUnique: async () => ({ id: estado.revisao.id, status: estado.revisao.status, pedido: { userId: estado.pedido.userId, transacaoId: estado.pedido.transacaoId } }),
+      findUnique: async () => ({ id: estado.revisao.id, status: estado.revisao.status, pedidoId: estado.pedido.id, pedido: { userId: estado.pedido.userId, transacaoId: estado.pedido.transacaoId } }),
     },
     // Trava por conta + serializável: uma transação por vez.
     $transaction: (fn: any) => {
@@ -561,14 +561,51 @@ describe("executarAcaoDeRevisao", () => {
     assert.deepEqual(estado.eventos.map((e) => [e.tipo, e.codigo]), [["acao_recusada", "ativar:pagamento_nao_confirmado"]]);
   });
 
-  test("provedor indisponível: 503, sem efeito", async () => {
+  test("provedor sem status: 503, sem efeito, e a classificação real é preservada", async () => {
     const { banco, estado } = bancoDeRevisao({ pedido: pedidoEm() });
     const r = await executarAcaoDeRevisao(
       { revisaoId: "rev-1", acao: "confirmar_estorno", chaveIdempotencia: CHAVE, ator: "admin-1" },
       { banco, agora: () => AGORA, invalidar: async () => {}, consultar: async () => ({ ok: false as const, falha: "timeout" as any }) },
     );
-    assert.deepEqual(r, { ok: false, status: 503, codigo: "provedor_indisponivel" });
+    // Continua 503 (regra financeira intacta), mas o código agora diz QUAL foi a
+    // falha em vez do genérico `provedor_indisponivel`.
+    assert.deepEqual(r, { ok: false, status: 503, codigo: "provedor_timeout" });
     assert.equal(estado.pedido.status, "REVISAO_MANUAL");
+    assert.deepEqual(estado.eventos.map((e) => e.codigo), ["confirmar_estorno:provedor_timeout"]);
+  });
+
+  /**
+   * O motivo desta fase: antes, toda falha do provedor virava
+   * `provedor_indisponivel` e não dava para saber por que a revisão estava
+   * presa. Cada classificação passa a ter um código seguro próprio — sem nunca
+   * mudar o desfecho financeiro (503, nada muda, revisão continua PENDENTE).
+   */
+  describe("a classificação da falha do provedor é preservada", () => {
+    const casos: [string | null, string][] = [
+      [null, "provedor_configuracao"],           // confirmador nem existe (config)
+      ["timeout", "provedor_timeout"],
+      ["rede", "provedor_rede"],
+      ["nao_encontrada", "provedor_nao_encontrado"],
+      ["recusada", "provedor_recusado"],
+      ["indisponivel", "provedor_indisponivel"],
+      ["resposta_invalida", "provedor_resposta_invalida"],
+    ];
+    for (const [falha, codigo] of casos) {
+      test(`${falha ?? "configuracao (confirmador null)"} -> ${codigo}`, async () => {
+        const { banco, estado } = bancoDeRevisao({ pedido: pedidoEm() });
+        const consultar = falha === null
+          ? null
+          : (async () => ({ ok: false as const, falha: falha as any }));
+        const r = await executarAcaoDeRevisao(
+          { revisaoId: "rev-1", acao: "reconsultar", chaveIdempotencia: `chave-diag-${falha ?? "config"}-01`, ator: "admin-1" },
+          { banco, agora: () => AGORA, invalidar: async () => {}, consultar },
+        );
+        assert.deepEqual(r, { ok: false, status: 503, codigo });
+        assert.equal(estado.pedido.status, "REVISAO_MANUAL");
+        assert.equal(estado.revisao.status, "PENDENTE");
+        assert.deepEqual(estado.eventos.map((e) => e.codigo), [`reconsultar:${codigo}`]);
+      });
+    }
   });
 
   test("estorno de upgrade: confirmar estorno e recompor, cada um uma vez", async () => {

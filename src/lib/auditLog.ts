@@ -70,6 +70,10 @@ export type AuditEvent =
   // bloqueada por caso pendente. `detail` leva só códigos internos e ids.
   | "billing_review_action"
   | "billing_review_action_refused"
+  // Consulta autoritativa ao provedor não trouxe status na revisão. `detail`
+  // leva só a classificação segura da falha e ids permitidos — nunca
+  // transactionId completo, chave, corpo do provedor ou dado do cliente.
+  | "billing_review_provider_failed"
   | "billing_order_blocked_review";
 
 interface AuditMeta {

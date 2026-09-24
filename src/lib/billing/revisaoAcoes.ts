@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { invalidarEntitlements } from "@/lib/entitlements";
 import { audit } from "@/lib/auditLog";
-import type { ConfirmacaoBlackcat, ResultadoConfirmacaoBlackcat } from "./blackcat";
+import type { ConfirmacaoBlackcat, FalhaConfirmacaoBlackcat, ResultadoConfirmacaoBlackcat } from "./blackcat";
 import { confirmadorDeCobranca } from "./simulado";
 import { duracaoDoPedido, planejarAtivacao } from "./confirmacao";
 import {
@@ -219,6 +219,32 @@ export interface DependenciasDaAcao {
 
 const CHAVE_VALIDA = /^[A-Za-z0-9_-]{16,100}$/;
 
+/**
+ * Por que a consulta autoritativa não trouxe um status, do ponto de vista da
+ * ação de revisão. `configuracao` é o caso em que o confirmador **nem existe**
+ * (`lerConfiguracao` devolveu null: chave ausente, ou confirmação ativa com
+ * `NEXTAUTH_URL`/segredo do webhook inválidos) — a Blackcat não chega a ser
+ * consultada. Os demais vêm da própria consulta.
+ */
+export type FalhaDoProvedorNaRevisao = "configuracao" | FalhaConfirmacaoBlackcat;
+
+/**
+ * A regra financeira não muda: sem status do provedor, a ação é recusada e o
+ * caso continua preso. O que muda é só o **diagnóstico**: em vez de colapsar
+ * tudo em `provedor_indisponivel`, o código real da falha é registrado no log do
+ * servidor e devolvido à rota admin como um código seguro. Nenhum destes
+ * carrega dado sensível — nem transactionId, nem corpo da Blackcat.
+ */
+export const CODIGO_SEGURO_DO_PROVEDOR: Record<FalhaDoProvedorNaRevisao, string> = {
+  configuracao: "provedor_configuracao",
+  timeout: "provedor_timeout",
+  rede: "provedor_rede",
+  nao_encontrada: "provedor_nao_encontrado",
+  recusada: "provedor_recusado",
+  indisponivel: "provedor_indisponivel",
+  resposta_invalida: "provedor_resposta_invalida",
+};
+
 function ehAcao(v: unknown): v is AcaoDeRevisao {
   return typeof v === "string" && (ACOES_DE_REVISAO as readonly string[]).includes(v);
 }
@@ -266,16 +292,31 @@ export async function executarAcaoDeRevisao(
 
   const caso = await banco.revisaoPagamento.findUnique({
     where: { id: entrada.revisaoId },
-    select: { id: true, status: true, pedido: { select: { userId: true, transacaoId: true } } },
+    select: { id: true, status: true, pedidoId: true, pedido: { select: { userId: true, transacaoId: true } } },
   });
   if (!caso) return { ok: false, status: 404, codigo: "revisao_nao_encontrada" };
   if (caso.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" };
 
   // A consulta ao provedor fica fora da transação: rede não segura trava.
+  //
+  // A classificação REAL da falha é preservada em `falhaProvedor` — antes ela
+  // era descartada e toda falha do provedor virava indistintamente
+  // `provedor_indisponivel`, o que impedia saber se o caso estava preso por
+  // configuração, timeout, 4xx, 5xx ou resposta inválida. A regra financeira
+  // não muda: sem `confirmacao`, `planejarResolucao` recusa do mesmo jeito.
   let confirmacao: ConfirmacaoBlackcat | null = null;
-  if (acao !== "encerrar_sem_alteracao" && caso.pedido.transacaoId && consultar) {
-    const externo = await consultar(caso.pedido.transacaoId).catch(() => null);
-    confirmacao = externo && externo.ok ? externo.confirmacao : null;
+  let falhaProvedor: FalhaDoProvedorNaRevisao | null = null;
+  if (acao !== "encerrar_sem_alteracao" && caso.pedido.transacaoId) {
+    if (!consultar) {
+      // `confirmadorDeCobranca()` devolveu null: `lerConfiguracao` recusou a
+      // configuração e a Blackcat nem chega a ser consultada.
+      falhaProvedor = "configuracao";
+    } else {
+      const externo = await consultar(caso.pedido.transacaoId).catch(() => null);
+      if (externo && externo.ok) confirmacao = externo.confirmacao;
+      else if (externo) falhaProvedor = externo.falha;
+      else falhaProvedor = "rede"; // consultar lançou apesar de não dever.
+    }
   }
 
   let resposta: ResultadoDaAcao;
@@ -308,10 +349,17 @@ export async function executarAcaoDeRevisao(
       });
 
       if (!plano.ok) {
+        // Quando a recusa foi por falta de status do provedor, o código real
+        // (configuração/timeout/rede/404/4xx/5xx/inválida) substitui o genérico
+        // `provedor_indisponivel` no evento e na resposta — sem alterar o
+        // desfecho financeiro nem o status HTTP (503 continua sendo 503).
+        const codigoDiag = plano.codigo === "provedor_indisponivel" && falhaProvedor
+          ? CODIGO_SEGURO_DO_PROVEDOR[falhaProvedor]
+          : plano.codigo;
         await tx.revisaoPagamentoEvento.create({
-          data: { revisaoId: caso.id, tipo: "acao_recusada", codigo: `${acao}:${plano.codigo}`, ator: entrada.ator, observacao, chaveIdempotencia: chave },
+          data: { revisaoId: caso.id, tipo: "acao_recusada", codigo: `${acao}:${codigoDiag}`, ator: entrada.ator, observacao, chaveIdempotencia: chave },
         });
-        return { ok: false, status: plano.codigo === "provedor_indisponivel" ? 503 : 422, codigo: plano.codigo } as const;
+        return { ok: false, status: plano.codigo === "provedor_indisponivel" ? 503 : 422, codigo: codigoDiag } as const;
       }
 
       const ef = plano.efeito;
@@ -403,6 +451,16 @@ export async function executarAcaoDeRevisao(
       try { await invalidar(caso.pedido.userId); } catch { audit("billing_entitlements_invalidation_failed", { userId: caso.pedido.userId, detail: "apos_revisao" }); }
     }
   } else {
+    // Diagnóstico autoritativo, só com ids permitidos e a classificação —
+    // nunca transactionId completo, chave, corpo da Blackcat, QR/copia-e-cola
+    // ou dado do cliente. É o que permite descobrir por que a consulta ao
+    // provedor não trouxe status sem vazar nada sensível.
+    if (falhaProvedor) {
+      audit("billing_review_provider_failed", {
+        userId: caso.pedido.userId,
+        detail: `falha=${falhaProvedor} revisao=${caso.id} pedido=${caso.pedidoId}`,
+      });
+    }
     audit("billing_review_action_refused", { userId: caso.pedido.userId, detail: `revisao ${caso.id} ${acao}: ${resposta.codigo}` });
   }
   return resposta;
