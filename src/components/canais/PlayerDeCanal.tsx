@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
 import {
-  criarHandoff,
-  type ConcessaoDeCanal,
+  criarControleDeCanal,
+  type ControleDeCanal,
   type ResultadoDePedido,
 } from "@/lib/canais/handoff";
 
@@ -60,19 +60,25 @@ class ErroDeCanal extends Error {
 }
 
 /**
- * Pede — ou renova — a concessão.
+ * Pede a URL de reprodução ao `/play`.
  *
- * `sessionId` presente é renovação: o servidor reaproveita o upstream já
- * resolvido em vez de voltar ao provider. Ausente, ou recusado, é o caminho
- * completo.
+ * `reresolucao=false` é a abertura (pode cobrar anúncio); `true` é a continuação
+ * após um erro de reprodução — o servidor resolve de novo e devolve uma
+ * `streamUrl` nova, sem cobrar anúncio outra vez.
  */
-async function pedirConcessao(canalId: string, sessionId?: string, concessaoAnuncio?: string | null): Promise<ResultadoDePedido> {
+async function pedirConcessao(
+  canalId: string,
+  reresolucao: boolean,
+  concessaoAnuncio?: string | null,
+): Promise<ResultadoDePedido> {
   let r: Response;
   try {
     r = await fetch(`/api/canais/${encodeURIComponent(canalId)}/play`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify(sessionId ? { sessionId } : concessaoAnuncio ? { concessao: concessaoAnuncio } : {}),
+      body: JSON.stringify(
+        reresolucao ? { reresolucao: true } : concessaoAnuncio ? { concessao: concessaoAnuncio } : {},
+      ),
     });
   } catch {
     return { ok: false, definitivo: false };
@@ -97,12 +103,16 @@ async function pedirConcessao(canalId: string, sessionId?: string, concessaoAnun
     if (r.status === 404) {
       return { ok: false, definitivo: true, mensagem: "Canal indisponível no momento." };
     }
-    // 429 e 5xx: passageiros. O vídeo segue pela concessão atual e tenta de novo.
+    // 429 e 5xx: passageiros. O controle tenta de novo, sob o teto.
     return { ok: false, definitivo: false };
   }
 
-  const corpo = (await r.json()) as ConcessaoDeCanal;
-  return { ok: true, concessao: corpo };
+  // Só a `streamUrl` sai do servidor. Nada é guardado além do estado do player.
+  const corpo = (await r.json()) as { streamUrl?: unknown };
+  if (typeof corpo.streamUrl !== "string" || !corpo.streamUrl) {
+    return { ok: false, definitivo: false };
+  }
+  return { ok: true, streamUrl: corpo.streamUrl };
 }
 
 export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: ItemDeCanal; onFechar: () => void; concessaoAnuncio?: string | null }) {
@@ -119,37 +129,46 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
    */
   const trocarRef = useRef<((url: string) => void) | null>(null);
   const pendenteRef = useRef<string | null>(null);
+  /** O controle vive numa ref para o efeito do HLS alcançar `aoErroDeReproducao`. */
+  const controleRef = useRef<ControleDeCanal | null>(null);
 
   function aplicar(url: string) {
     if (trocarRef.current) trocarRef.current(url);
     else pendenteRef.current = url;
   }
 
-  // ── Protocolo de concessão e renovação ─────────────────────────────────────
+  // ── Concessão e re-resolução em erro ────────────────────────────────────────
   useEffect(() => {
     setEstado({ fase: "pedindo" });
     trocarRef.current = null;
     pendenteRef.current = null;
 
-    const handoff = criarHandoff({
+    const controle = criarControleDeCanal({
       canalId: canal.id,
-      pedir: (canalId, sessionId) => pedirConcessao(canalId, sessionId, sessionId ? null : concessaoAnuncio),
+      pedir: (canalId, reresolucao) =>
+        pedirConcessao(canalId, reresolucao, reresolucao ? null : concessaoAnuncio),
       trocarFonte: (url) => {
         aplicar(url);
         setEstado((anterior) =>
           anterior.fase === "tocando" ? anterior : { fase: "tocando", primeiraUrl: url },
         );
       },
-      aoPerder: (mensagem) => setEstado({ fase: "erro", mensagem, podeTentarDeNovo: false }),
+      // Esgotado o teto de re-resoluções, oferece o "tentar de novo" manual, que
+      // recria o controle e zera a contagem.
+      aoPerder: (mensagem) => setEstado({ fase: "erro", mensagem, podeTentarDeNovo: true }),
       agenda: {
         agendar: (fn, ms) => window.setTimeout(fn, ms),
         cancelar: (id) => window.clearTimeout(id),
       },
     });
+    controleRef.current = controle;
 
-    void handoff.iniciar();
-    return () => handoff.parar();
-    // `tentativa` recria o handoff inteiro — é o botão "tentar de novo".
+    void controle.iniciar();
+    return () => {
+      controle.parar();
+      controleRef.current = null;
+    };
+    // `tentativa` recria o controle inteiro — é o botão "tentar de novo".
   }, [canal.id, concessaoAnuncio, tentativa]);
 
   // ── HLS ────────────────────────────────────────────────────────────────────
@@ -164,12 +183,17 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
     // Safari e a WebView do Android tocam HLS nativamente; aí o hls.js só
     // acrescentaria uma camada de buffer sobre algo que já funciona.
     if (video.canPlayType("application/vnd.apple.mpegurl") !== "") {
+      // HLS nativo (Safari, WebView do Android): o erro do elemento dispara a
+      // mesma re-resolução controlada do caminho hls.js.
+      const aoErroNativo = () => controleRef.current?.aoErroDeReproducao();
+      video.addEventListener("error", aoErroNativo);
       trocarRef.current = (url) => {
         video.src = url;
         void video.play().catch(() => {});
       };
       trocarRef.current(pendenteRef.current ?? estado.primeiraUrl);
       pendenteRef.current = null;
+      destruir = () => video.removeEventListener("error", aoErroNativo);
     } else {
       void import("hls.js").then(({ default: Hls }) => {
         if (cancelado || !Hls.isSupported()) return;
@@ -182,14 +206,11 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
         hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => {}));
         hls.on(Hls.Events.ERROR, (_e, dados) => {
           if (!dados.fatal) return;
-          // Erro fatal num canal ao vivo costuma ser a fonte caindo. Vira estado
-          // de erro com ação manual, e não repetição automática: insistir
-          // sozinho contra um canal fora do ar vira tempestade no edge.
-          setEstado({
-            fase: "erro",
-            mensagem: "A transmissão foi interrompida.",
-            podeTentarDeNovo: true,
-          });
+          // Erro fatal num canal ao vivo costuma ser a fonte do provider caindo
+          // ou rotacionando. Re-resolve de forma controlada: o controle pede uma
+          // `streamUrl` nova ao `/play` e a troca; o teto por janela vive nele e,
+          // esgotado, chama `aoPerder`. Sem repetição infinita.
+          controleRef.current?.aoErroDeReproducao();
         });
 
         // **Aqui** o player migra de verdade.
