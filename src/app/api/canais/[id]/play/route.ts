@@ -10,13 +10,12 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/auditLog";
 import { autorizarPorAnuncio, type ResultadoDeAnuncio } from "@/lib/ads/enforcement";
 import { autorizarCanal } from "@/lib/canais/acesso";
-import { ehProviderConhecido, type ProviderDeCanal } from "@/lib/canais/providers";
-import { resolverCanal, FalhaNaResolucao, type FonteDeCanalResolvida } from "@/lib/canais/resolver";
 import {
-  criarSessaoDeCanal,
-  renovarSessaoDeCanal,
-  type Concessao,
-} from "@/lib/canais/sessao";
+  ehProviderConhecido,
+  hostDeMidiaPermitido,
+  type ProviderDeCanal,
+} from "@/lib/canais/providers";
+import { resolverCanal, FalhaNaResolucao, type FonteDeCanalResolvida } from "@/lib/canais/resolver";
 
 /**
  * `POST /api/canais/[id]/play` — a concessão de reprodução.
@@ -26,19 +25,31 @@ import {
  * isso é filtro de vitrine: quem chegar aqui com um id que descobriu de outro
  * jeito passa pela mesma checagem completa.
  *
- * ## Também é o ponto de reautorização
+ * ## O que esta rota entrega
  *
- * A concessão vale poucos minutos de propósito (`TTL_GRANT_S`). O cliente volta
- * aqui antes de vencer, mandando `{ sessionId }` no corpo, e o que acontece é
- * uma reautorização de verdade: autentica de novo, relê entitlement, reaplica
- * rate limit e **rotaciona o nonce** da sessão — o que invalida na hora todas as
- * URLs emitidas antes, mesmo as que ainda estariam dentro da validade.
+ * Resolve a fonte no servidor e devolve ao cliente **apenas a `streamUrl`
+ * validada** — a URL de mídia que o aparelho busca **direto**, pelo próprio IP.
+ * Isso porque medimos que o provider libera IP residencial e bloqueia egress de
+ * datacenter (Vercel/Cloudflare): quem tem de buscar a mídia é o aparelho, não a
+ * nossa infra. Não há mais proxy de mídia pelo Worker no caminho de canal, nem
+ * URL assinada, nem sessão no Redis para o edge.
  *
- * A renovação **não** volta ao provider: reaproveita o upstream já resolvido. Um
- * espectador de uma hora custaria doze buscas na página do player se
- * re-resolvesse a cada vez, e a proteção sairia cara no lugar errado. Quando a
- * sessão passa do teto absoluto, a renovação falha e o caminho completo assume —
- * que é também quando vale a pena reconferir se o provider trocou a mídia.
+ * O que **nunca** sai daqui: `providerChannelId`, host da página do player,
+ * template do provider, Referer. A resolução dinâmica continua exclusivamente no
+ * backend (`resolverCanal`), e a URL final não é persistida em lugar nenhum — o
+ * catálogo e os bundles seguem sem upstream. Limitação consciente: a `streamUrl`
+ * é observável na aba Network durante a reprodução, como qualquer URL que o
+ * navegador busca direto. Escondê-la de novo exigiria a nossa infra no caminho —
+ * exatamente o que o provider bloqueia.
+ *
+ * ## Re-resolução em erro, não renovação por relógio
+ *
+ * A URL do provider não vence num relógio nosso: vale até rotacionar/cair. Por
+ * isso não há mais renovação periódica. Quando a reprodução falha, o cliente
+ * volta aqui com `{ reresolucao: true }` e recebe uma URL nova — uma
+ * reautorização de verdade (autentica, relê entitlement, reaplica rate limit),
+ * sem cobrar anúncio de novo, porque é continuação da mesma exibição. O teto de
+ * quantas re-resoluções o cliente dispara vive no cliente (ver `handoff.ts`).
  *
  * ## Ordem das checagens, e por que ela é essa
  *
@@ -87,20 +98,10 @@ export interface DependenciasDePlay {
   recordAbuseAttempt: (ip: string) => Promise<void>;
   getUserFromRequest: (req: NextRequest) => Promise<{ userId: string } | null>;
   checkRateLimit: (key: string, limit: number, janelaS: number) => Promise<{ allowed: boolean }>;
-  lerCorpo: (req: NextRequest) => Promise<{ sessionId?: unknown; concessao?: unknown }>;
+  lerCorpo: (req: NextRequest) => Promise<{ reresolucao?: unknown; concessao?: unknown }>;
   buscarCanal: (id: string) => Promise<CanalDoBanco | null>;
   nivelDaConta: (userId: string) => Promise<string>;
   resolver: (provider: ProviderDeCanal, providerChannelId: string) => Promise<FonteDeCanalResolvida>;
-  criarSessao: (e: {
-    userId: string;
-    canalId: string;
-    fonte: FonteDeCanalResolvida;
-  }) => Promise<Concessao>;
-  renovarSessao: (e: {
-    userId: string;
-    canalId: string;
-    sessionId: string;
-  }) => Promise<Concessao | null>;
   autorizarAnuncio?: (e: {
     userId: string;
     tipo: "canal";
@@ -108,13 +109,6 @@ export interface DependenciasDePlay {
     alvo: { tipo: "canal"; conteudoId: string; temporada: null; episodio: null };
   }) => Promise<ResultadoDeAnuncio>;
   audit: typeof audit;
-}
-
-/** `sessionId` do corpo, só se tiver a cara de um. Entrada é entrada. */
-function sessionIdDoCorpo(corpo: { sessionId?: unknown }): string | null {
-  const v = corpo.sessionId;
-  if (typeof v !== "string") return null;
-  return /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : null;
 }
 
 function createPlayCanalHandler(d: DependenciasDePlay) {
@@ -134,8 +128,8 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
     }
 
     // Por conta, não por IP: um prédio inteiro atrás de um NAT não pode punir
-    // uns aos outros. O limite acomoda a renovação periódica (uma a cada ~4
-    // min por canal aberto) e ainda aperta quem varre.
+    // uns aos outros. O limite acomoda a re-resolução em erro e ainda aperta
+    // quem varre.
     const limite = await d.checkRateLimit(`canal:play:${usuario.userId}`, 20, 60);
     if (!limite.allowed) return negar(429, "muitas_tentativas");
 
@@ -157,9 +151,9 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
       return negar(503, indefinido ? "indeterminado" : "falha");
     }
 
-    // A checagem completa acontece tanto na primeira concessão quanto em cada
-    // renovação. É isso que faz "reautorização periódica" querer dizer alguma
-    // coisa: um plano que caiu no meio da tarde derruba a próxima renovação.
+    // A checagem completa acontece tanto na abertura quanto em cada re-resolução.
+    // É isso que faz "reautorização" querer dizer alguma coisa: um plano que caiu
+    // no meio da tarde derruba a próxima re-resolução.
     const decisao = autorizarCanal(canal, nivel);
     if (decisao.situacao === "indeterminado") return negar(503, "indeterminado");
     if (decisao.situacao === "negado") {
@@ -179,13 +173,12 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
         : negar(404, "canal_indisponivel");
     }
 
-    const corpo: { sessionId?: unknown; concessao?: unknown } = await d.lerCorpo(req).catch(() => ({}));
-    const sessionIdPedido = sessionIdDoCorpo(corpo);
+    const corpo: { reresolucao?: unknown; concessao?: unknown } = await d.lerCorpo(req).catch(() => ({}));
+    // Continuação após erro de reprodução: não cobra anúncio de novo. A abertura
+    // nova (sem a flag) passa pelo mesmo enforcement de filmes/episódios.
+    const ehReresolucao = corpo.reresolucao === true;
 
-    // Renovação da sessão já aberta não cobra de novo. Toda abertura nova passa
-    // pelo mesmo enforcement de filmes/episódios e a concessão usa o id canônico
-    // do canal retornado pelo banco, nunca o slug fornecido pelo cliente.
-    if (!sessionIdPedido) {
+    if (!ehReresolucao) {
       const anuncio = await (d.autorizarAnuncio ?? (async () => ({ liberado: true as const, via: "flag_desligada" as const })))({
         userId: usuario.userId,
         tipo: "canal",
@@ -195,67 +188,62 @@ function createPlayCanalHandler(d: DependenciasDePlay) {
       if (!anuncio.liberado) return negar(anuncio.motivo === "indeterminado" ? 503 : 403, "anuncio_necessario");
     }
 
-    const baseDoEdge = d.env.CANAIS_MEDIA_BASE;
-    if (!baseDoEdge) {
-      // Sem edge configurado, a alternativa seria devolver o upstream ao
-      // cliente. É exatamente o que não se faz: a URL deste provider é
-      // permanente, e entregá-la uma vez é entregá-la para sempre.
+    if (!canal.fonte || !ehProviderConhecido(canal.fonte.provider)) {
+      return negar(503, "canal_sem_fonte");
+    }
+
+    let fonte: FonteDeCanalResolvida;
+    try {
+      // A resolução usa sempre o id canônico do canal do banco, nunca o slug do
+      // cliente, e é o único ponto que fala com o provider.
+      fonte = await d.resolver(canal.fonte.provider, canal.fonte.providerChannelId);
+    } catch (e) {
+      const motivo = e instanceof FalhaNaResolucao ? e.motivo : "erro";
+      // O motivo vai para o log, não para o corpo: "midia_nao_encontrada"
+      // diria a quem varre que o canal existe e que o provider respondeu.
+      d.audit("canal_resolucao_falhou", {
+        userId: usuario.userId,
+        ip,
+        detail: `canal ${canal.id}: ${motivo}`,
+      });
       return negar(503, "midia_indisponivel");
     }
 
-    let concessao: Concessao | null = null;
-
-    // 1. Renovação, quando o cliente trouxe uma sessão que ainda serve.
-    if (sessionIdPedido) {
-      concessao = await d
-        .renovarSessao({ userId: usuario.userId, canalId: canal.id, sessionId: sessionIdPedido })
-        .catch(() => null);
+    // Defesa em profundidade antes de a URL sair para o aparelho: só HTTPS e só
+    // host na allowlist de mídia. `resolverCanal` já valida (assertSafeUrl +
+    // allowlist), mas agora a URL vai para o cliente — reconferir aqui é barato e
+    // fecha o caso de um resolver futuro afrouxar sem esta rota perceber.
+    let hostDaMidia: string;
+    try {
+      const u = new URL(fonte.streamUrl);
+      if (u.protocol !== "https:") throw new Error("nao https");
+      hostDaMidia = u.hostname;
+    } catch {
+      d.audit("canal_resolucao_falhou", {
+        userId: usuario.userId,
+        ip,
+        detail: `canal ${canal.id}: stream_invalida`,
+      });
+      return negar(503, "midia_indisponivel");
     }
-
-    // 2. Caminho completo: só quando não houve renovação. É o único que fala
-    //    com o provider.
-    if (!concessao) {
-      if (!canal.fonte || !ehProviderConhecido(canal.fonte.provider)) {
-        return negar(503, "canal_sem_fonte");
-      }
-      try {
-        const fonte = await d.resolver(canal.fonte.provider, canal.fonte.providerChannelId);
-        concessao = await d.criarSessao({ userId: usuario.userId, canalId: canal.id, fonte });
-      } catch (e) {
-        const motivo = e instanceof FalhaNaResolucao ? e.motivo : "erro";
-        // O motivo vai para o log, não para o corpo: "midia_nao_encontrada"
-        // diria a quem varre que o canal existe e que o provider respondeu.
-        d.audit("canal_resolucao_falhou", {
-          userId: usuario.userId,
-          ip,
-          detail: `canal ${canal.id}: ${motivo}`,
-        });
-        return negar(503, "midia_indisponivel");
-      }
+    if (!hostDeMidiaPermitido(hostDaMidia, d.env)) {
+      d.audit("canal_resolucao_falhou", {
+        userId: usuario.userId,
+        ip,
+        detail: `canal ${canal.id}: stream_fora_allowlist`,
+      });
+      return negar(503, "midia_indisponivel");
     }
 
     return NextResponse.json(
       {
         canal: { id: canal.id, slug: canal.slug, nome: canal.nome },
         /**
-         * O cliente devolve isto no corpo da próxima chamada para renovar.
-         * Não é credencial: sozinho não abre nada, porque a URL de mídia exige
-         * assinatura, e renovar exige a sessão autenticada do dono.
+         * A URL de mídia que o aparelho busca direto. Validada (https +
+         * allowlist), transitória e nunca persistida. Em erro de reprodução o
+         * cliente volta com `{ reresolucao: true }` e recebe outra.
          */
-        sessionId: concessao.sessionId,
-        /**
-         * Geração monotônica. O cliente só adota uma concessão com geração
-         * maior do que a que está usando — sem isso, duas renovações
-         * concorrentes que voltassem fora de ordem fariam o player regredir
-         * para uma geração já aposentada.
-         */
-        geracao: concessao.geracao,
-        manifestUrl:
-          `${baseDoEdge.replace(/\/+$/, "")}/canal/${concessao.sessionId}/master.m3u8` +
-          `?e=${concessao.exp}&k=${concessao.sig}`,
-        expiraEm: concessao.exp * 1000,
-        /** Segundos até a URL acima deixar de valer. O cliente renova antes. */
-        validoPorSegundos: concessao.validoPorSegundos,
+        streamUrl: fonte.streamUrl,
       },
       { headers: NO_STORE },
     );
@@ -269,9 +257,9 @@ export const POST = Object.assign(createPlayCanalHandler({
   recordAbuseAttempt,
   getUserFromRequest,
   checkRateLimit,
-  // Corpo minúsculo e opcional: só `{ sessionId }`. 1 KB é folga de sobra, e
-  // um corpo ausente é o caso normal da primeira chamada.
-  lerCorpo: (req) => readJsonBody<{ sessionId?: unknown; concessao?: unknown }>(req, 1024),
+  // Corpo minúsculo e opcional: `{ reresolucao?, concessao? }`. 1 KB é folga de
+  // sobra, e um corpo ausente é o caso normal da primeira chamada.
+  lerCorpo: (req) => readJsonBody<{ reresolucao?: unknown; concessao?: unknown }>(req, 1024),
   buscarCanal: (id) =>
     prisma.canal.findFirst({
       // Aceita id ou slug: o cliente React navega por slug, o Kotlin guarda id.
@@ -288,8 +276,6 @@ export const POST = Object.assign(createPlayCanalHandler({
     }),
   nivelDaConta: async (userId) => (await entitlementsDoUsuario(userId)).direitos.canaisNivel,
   resolver: resolverCanal,
-  criarSessao: criarSessaoDeCanal,
-  renovarSessao: renovarSessaoDeCanal,
   autorizarAnuncio: (entrada) => autorizarPorAnuncio(entrada),
   audit,
 }), { createForTest: createPlayCanalHandler });

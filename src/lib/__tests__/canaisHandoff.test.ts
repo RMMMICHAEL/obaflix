@@ -1,21 +1,18 @@
 /**
- * O protocolo de handoff do cliente web, testado como protocolo.
+ * O controle de reprodução de canal do cliente web, testado como protocolo.
  *
- * Espelha `HandoffDeCanalTest.kt`: as duas plataformas têm de se comportar
- * igual, e é aqui que isso fica travado do lado do React/Electron.
- *
- * O relógio e o agendador são injetados — nada dorme de verdade, e ainda assim
- * os testes verificam *quando* cada coisa aconteceria.
+ * O foco é a garantia que sustenta a arquitetura direta (`/play → streamUrl →
+ * device`): **re-resolução controlada em erro, sem laço infinito**. O relógio e o
+ * agendador são injetados — nada dorme de verdade, e ainda assim os testes
+ * verificam o teto por janela deslizante e o single-flight.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  atrasoDeRenovacaoMs,
-  criarHandoff,
+  criarControleDeCanal,
   type Agenda,
-  type ConcessaoDeCanal,
   type ResultadoDePedido,
 } from "../canais/handoff";
 
@@ -33,12 +30,10 @@ function agendaManual() {
   };
   return {
     agenda,
-    /** Dispara a tarefa pendente mais recente e devolve o atraso dela. */
     async disparar(): Promise<number> {
       const [id, tarefa] = [...tarefas].at(-1)!;
       tarefas.delete(id);
       tarefa.fn();
-      // Deixa as microtasks do `renovar` rodarem.
       await new Promise((r) => setImmediate(r));
       return tarefa.ms;
     },
@@ -46,261 +41,264 @@ function agendaManual() {
   };
 }
 
-function concessao(geracao: number, validoPorSegundos = 300): ConcessaoDeCanal {
-  return {
-    sessionId: "sessao-1",
-    manifestUrl: `https://media.example.test/canal/sid/master.m3u8?e=${geracao}&k=sig${geracao}`,
-    geracao,
-    validoPorSegundos,
-    expiraEm: 0,
-  };
-}
+const tick = () => new Promise((r) => setImmediate(r));
+const ok = (url: string): ResultadoDePedido => ({ ok: true, streamUrl: url });
 
-const ok = (g: number, v?: number): ResultadoDePedido => ({ ok: true, concessao: concessao(g, v) });
+// ── Abertura e re-resolução ───────────────────────────────────────────────────
 
-// ── Migração ─────────────────────────────────────────────────────────────────
-
-test("migra o player a cada renovação, mandando o sessionId", async () => {
+test("abertura toca a streamUrl e não pede re-resolução", async () => {
   const fontes: string[] = [];
-  const sessoes: (string | undefined)[] = [];
+  const reres: boolean[] = [];
   const m = agendaManual();
   let n = 0;
 
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async (_id, sessionId) => {
-      sessoes.push(sessionId);
-      return ok(++n);
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async (_id, r) => {
+      reres.push(r);
+      return ok(`u${++n}`);
     },
-    trocarFonte: (url) => void fontes.push(url),
+    trocarFonte: (u) => void fontes.push(u),
     aoPerder: () => assert.fail("não devia perder"),
     agenda: m.agenda,
   });
 
-  await h.iniciar();
-  await m.disparar();
-  await m.disparar();
+  await c.iniciar();
 
-  assert.equal(h.trocas(), 3);
-  assert.equal(fontes.length, 3);
-  assert.notEqual(fontes[0], fontes[1], "a fonte precisa mudar na renovação");
-  assert.notEqual(fontes[1], fontes[2]);
-  assert.equal(h.atual()!.manifestUrl, fontes.at(-1));
-  // Primeira resolve do zero; as seguintes renovam — é o que evita voltar ao
-  // provider.
-  assert.deepEqual(sessoes, [undefined, "sessao-1", "sessao-1"]);
+  assert.deepEqual(reres, [false], "a abertura não é re-resolução");
+  assert.deepEqual(fontes, ["u1"]);
+  assert.equal(c.fonteAtual(), "u1");
+  assert.equal(c.reresolucoes(), 0);
 });
 
-test("renova bem antes do vencimento", async () => {
+test("erro de reprodução re-resolve com reresolucao=true e troca a fonte", async () => {
+  const fontes: string[] = [];
+  const reres: boolean[] = [];
   const m = agendaManual();
   let n = 0;
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async () => ok(++n, 300),
-    trocarFonte: () => {},
-    aoPerder: () => {},
-    agenda: m.agenda,
-  });
 
-  await h.iniciar();
-  const atraso = await m.disparar();
-
-  assert.equal(atraso, 180_000);
-  assert.ok(atraso < 300_000, "a renovação tem de caber com folga");
-});
-
-test("o atraso tem piso", () => {
-  assert.equal(atrasoDeRenovacaoMs(300), 180_000);
-  assert.equal(atrasoDeRenovacaoMs(10), 30_000);
-  assert.equal(atrasoDeRenovacaoMs(0), 30_000);
-});
-
-// ── Concorrência e ordem de chegada ──────────────────────────────────────────
-
-test("resposta atrasada não faz a geração regredir", async () => {
-  // O caso pedido na revisão: a geração mais nova chega primeiro, e depois
-  // chega uma antiga. Sem a guarda monotônica, o cliente adotaria a última a
-  // chegar e voltaria para uma geração que o servidor já aposentou — cuja URL
-  // morre na grace seguinte, com o 403 aparecendo minutos depois.
-  const fontes: string[] = [];
-  const m = agendaManual();
-  const fila = [ok(1), ok(3), ok(2)];
-
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async () => fila.shift()!,
-    trocarFonte: (url) => void fontes.push(url),
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async (_id, r) => {
+      reres.push(r);
+      return ok(`u${++n}`);
+    },
+    trocarFonte: (u) => void fontes.push(u),
     aoPerder: () => assert.fail("não devia perder"),
     agenda: m.agenda,
   });
 
-  await h.iniciar();
-  assert.equal(h.atual()!.geracao, 1);
+  await c.iniciar();
+  c.aoErroDeReproducao();
+  await tick();
 
-  await h.renovarAgora();
-  assert.equal(h.atual()!.geracao, 3, "a geração 3 tem de ser adotada");
-
-  await h.renovarAgora(); // chega a 2, atrasada
-  assert.equal(h.atual()!.geracao, 3, "não pode voltar para a 2");
-  assert.equal(h.recusasPorRegressao(), 1);
-
-  // A fonte do player não pode ter sido trocada pela atrasada.
-  assert.equal(fontes.length, 2);
-  assert.equal(h.trocas(), 2);
-  assert.ok(fontes.at(-1)!.includes("e=3"));
+  assert.deepEqual(reres, [false, true]);
+  assert.equal(c.fonteAtual(), "u2");
+  assert.deepEqual(fontes, ["u1", "u2"]);
+  assert.equal(c.reresolucoes(), 1);
 });
 
-test("geração repetida não conta como troca", async () => {
-  const fontes: string[] = [];
-  const m = agendaManual();
-  const fila = [ok(1), ok(2), ok(2)];
+// ── Teto: sem laço infinito ───────────────────────────────────────────────────
 
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async () => fila.shift()!,
-    trocarFonte: (url) => void fontes.push(url),
-    aoPerder: () => {},
-    agenda: m.agenda,
-  });
-
-  await h.iniciar();
-  await h.renovarAgora();
-  await h.renovarAgora();
-
-  assert.equal(h.atual()!.geracao, 2);
-  assert.equal(fontes.length, 2);
-  assert.equal(h.recusasPorRegressao(), 1);
-});
-
-test("renovações simultâneas gastam um pedido só", async () => {
-  // Sem single-flight, o ciclo somado a uma retomada de rede giraria o nonce
-  // três vezes à toa — e cada giro encurta a vida da geração anterior.
-  let pedidos = 0;
-  let abrirPortao: () => void = () => {};
-  const portao = new Promise<void>((r) => {
-    abrirPortao = r;
-  });
-  const fontes: string[] = [];
+test("teto: no máximo N re-resoluções na janela, depois perde", async () => {
+  let perdeu: string | null = null;
   const m = agendaManual();
 
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async (_id, sessionId) => {
-      pedidos++;
-      if (sessionId) await portao;
-      return ok(pedidos);
-    },
-    trocarFonte: (url) => void fontes.push(url),
-    aoPerder: () => {},
-    agenda: m.agenda,
-  });
-
-  await h.iniciar();
-  assert.equal(pedidos, 1);
-
-  // As três disparam antes de qualquer uma resolver: é a concorrência real.
-  const tres = [h.renovarAgora(), h.renovarAgora(), h.renovarAgora()];
-  abrirPortao();
-  await Promise.all(tres);
-
-  assert.equal(pedidos, 2, "três chamadas, um pedido");
-  assert.equal(h.trocas(), 2);
-  assert.equal(fontes.length, 2);
-});
-
-test("três renovações em sequência sobem a geração de 1 até 4", async () => {
-  const m = agendaManual();
-  let n = 0;
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async () => ok(++n),
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async (_id, r) => (r ? ok("nova") : ok("inicial")),
     trocarFonte: () => {},
-    aoPerder: () => {},
+    aoPerder: (msg) => {
+      perdeu = msg;
+    },
+    agenda: m.agenda,
+    maxReresolucoes: 3,
+    janelaS: 60,
+    agora: () => 1000, // relógio parado: tudo cai na mesma janela
+  });
+
+  await c.iniciar();
+  for (let i = 0; i < 5; i++) {
+    c.aoErroDeReproducao();
+    await tick();
+  }
+
+  assert.equal(c.reresolucoes(), 3, "não passa do teto — é o fim do laço");
+  assert.ok(perdeu, "estourado o teto, tem de perder");
+
+  // Depois de perder, novos erros não fazem mais nada.
+  c.aoErroDeReproducao();
+  await tick();
+  assert.equal(c.reresolucoes(), 3);
+});
+
+test("a janela desliza: passado o intervalo, re-resolve de novo", async () => {
+  let relogio = 0;
+  const m = agendaManual();
+  let perdeu = false;
+
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async (_id, r) => (r ? ok("nova") : ok("inicial")),
+    trocarFonte: () => {},
+    aoPerder: () => {
+      perdeu = true;
+    },
+    agenda: m.agenda,
+    maxReresolucoes: 2,
+    janelaS: 60,
+    agora: () => relogio,
+  });
+
+  await c.iniciar();
+  c.aoErroDeReproducao();
+  await tick();
+  c.aoErroDeReproducao();
+  await tick();
+  assert.equal(c.reresolucoes(), 2);
+
+  // Avança além da janela: os carimbos antigos saem da conta.
+  relogio = 61_000;
+  c.aoErroDeReproducao();
+  await tick();
+
+  assert.equal(c.reresolucoes(), 3, "fora da janela, re-resolve sem estourar");
+  assert.equal(perdeu, false);
+});
+
+// ── Falhas ────────────────────────────────────────────────────────────────────
+
+test("recusa definitiva na re-resolução encerra e avisa", async () => {
+  const m = agendaManual();
+  let perdeu: string | null = null;
+  const fila: ResultadoDePedido[] = [
+    ok("inicial"),
+    { ok: false, definitivo: true, mensagem: "Seu plano não inclui este canal." },
+  ];
+
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async () => fila.shift()!,
+    trocarFonte: () => {},
+    aoPerder: (msg) => {
+      perdeu = msg;
+    },
     agenda: m.agenda,
   });
 
-  await h.iniciar();
-  for (let i = 0; i < 3; i++) await m.disparar();
+  await c.iniciar();
+  c.aoErroDeReproducao();
+  await tick();
 
-  assert.equal(h.atual()!.geracao, 4);
-  assert.equal(h.trocas(), 4);
-  assert.equal(h.recusasPorRegressao(), 0);
+  assert.equal(perdeu, "Seu plano não inclui este canal.");
+  assert.equal(m.pendentes(), 0, "não pode ficar nada agendado");
+  // Encerrado: mais erros não disparam pedido.
+  c.aoErroDeReproducao();
+  await tick();
+  assert.equal(c.reresolucoes(), 1);
 });
 
-// ── Falhas ───────────────────────────────────────────────────────────────────
-
-test("falha temporária mantém a concessão atual e reagenda", async () => {
+test("falha temporária reagenda e recupera, ainda sob o teto", async () => {
   const fontes: string[] = [];
   const m = agendaManual();
-  const fila: ResultadoDePedido[] = [ok(1), { ok: false, definitivo: false }, ok(2)];
+  const fila: ResultadoDePedido[] = [ok("inicial"), { ok: false, definitivo: false }, ok("nova")];
 
-  const h = criarHandoff({
-    canalId: "canal-1",
+  const c = criarControleDeCanal({
+    canalId: "c1",
     pedir: async () => fila.shift()!,
-    trocarFonte: (url) => void fontes.push(url),
+    trocarFonte: (u) => void fontes.push(u),
     aoPerder: () => assert.fail("temporária não pode perder"),
     agenda: m.agenda,
+    esperaAposFalhaS: 3,
   });
 
-  await h.iniciar();
+  await c.iniciar();
+  c.aoErroDeReproducao();
+  await tick();
 
-  const atrasoDaFalha = await m.disparar(); // dispara a renovação, que falha
-  assert.equal(atrasoDaFalha, 180_000, "a renovação estava agendada no ritmo normal");
-  assert.equal(h.atual()!.geracao, 1, "a concessão atual continua");
-  assert.equal(fontes.length, 1, "falha temporária não troca fonte");
+  assert.deepEqual(fontes, ["inicial"], "falha temporária não troca a fonte");
+  assert.equal(m.pendentes(), 1, "reagendou a nova tentativa");
 
-  // A nova tentativa fica agendada para a espera curta de falha, e não para o
-  // ritmo normal: 30 s cabe de sobra antes de a concessão atual vencer.
-  const atrasoDaRetentativa = await m.disparar();
-  assert.equal(atrasoDaRetentativa, 30_000);
-  assert.equal(h.atual()!.geracao, 2);
-  assert.equal(fontes.length, 2);
-  // E, dando certo, o ciclo volta ao ritmo normal.
-  assert.equal(m.pendentes(), 1);
+  const espera = await m.disparar();
+  assert.equal(espera, 3000);
+  assert.deepEqual(fontes, ["inicial", "nova"]);
 });
 
-test("recusa definitiva encerra o ciclo e avisa", async () => {
-  for (const mensagem of ["Seu plano não inclui este canal.", "Canal indisponível no momento."]) {
-    const m = agendaManual();
-    const fila: ResultadoDePedido[] = [ok(1), { ok: false, definitivo: true, mensagem }];
-    let perdida: string | null = null;
-
-    const h = criarHandoff({
-      canalId: "canal-1",
-      pedir: async () => fila.shift()!,
-      trocarFonte: () => {},
-      aoPerder: (msg) => {
-        perdida = msg;
-      },
-      agenda: m.agenda,
-    });
-
-    await h.iniciar();
-    await m.disparar();
-
-    assert.equal(perdida, mensagem);
-    assert.equal(h.trocas(), 1, "a recusa não troca fonte");
-    assert.equal(m.pendentes(), 0, "o ciclo não pode continuar agendado");
-  }
-});
-
-test("parar cancela o agendamento e nada mais roda", async () => {
-  const m = agendaManual();
+test("single-flight: vários erros com um pedido em voo gastam um só", async () => {
   let pedidos = 0;
-  const h = criarHandoff({
-    canalId: "canal-1",
-    pedir: async () => {
+  let abrir: () => void = () => {};
+  const portao = new Promise<void>((r) => {
+    abrir = r;
+  });
+  const m = agendaManual();
+
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async (_id, r) => {
       pedidos++;
-      return ok(pedidos);
+      if (r) await portao;
+      return ok(`u${pedidos}`);
     },
     trocarFonte: () => {},
     aoPerder: () => {},
     agenda: m.agenda,
   });
 
-  await h.iniciar();
-  assert.equal(m.pendentes(), 1);
-  h.parar();
-  assert.equal(m.pendentes(), 0);
+  await c.iniciar();
   assert.equal(pedidos, 1);
+
+  c.aoErroDeReproducao();
+  c.aoErroDeReproducao();
+  c.aoErroDeReproducao();
+  abrir();
+  await tick();
+
+  assert.equal(pedidos, 2, "três erros, um pedido de re-resolução");
+  assert.equal(c.reresolucoes(), 1);
+});
+
+// ── Início e parada ───────────────────────────────────────────────────────────
+
+test("abertura recusada perde e não toca nada", async () => {
+  const fontes: string[] = [];
+  let perdeu: string | null = null;
+  const m = agendaManual();
+
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async () => ({ ok: false, definitivo: true, mensagem: "Faça login para assistir." }),
+    trocarFonte: (u) => void fontes.push(u),
+    aoPerder: (msg) => {
+      perdeu = msg;
+    },
+    agenda: m.agenda,
+  });
+
+  await c.iniciar();
+
+  assert.equal(perdeu, "Faça login para assistir.");
+  assert.equal(fontes.length, 0);
+  assert.equal(c.fonteAtual(), null);
+});
+
+test("parar impede re-resolução", async () => {
+  let pedidos = 0;
+  const m = agendaManual();
+  const c = criarControleDeCanal({
+    canalId: "c1",
+    pedir: async () => {
+      pedidos++;
+      return ok(`u${pedidos}`);
+    },
+    trocarFonte: () => {},
+    aoPerder: () => {},
+    agenda: m.agenda,
+  });
+
+  await c.iniciar();
+  assert.equal(pedidos, 1);
+  c.parar();
+  c.aoErroDeReproducao();
+  await tick();
+  assert.equal(pedidos, 1, "parado, nada mais pede");
 });

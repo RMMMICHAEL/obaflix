@@ -135,9 +135,9 @@ const CANAL_PLUS: CanalDoBanco = {
 };
 
 function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, canal = CANAL_PLUS) {
-  const chamadas = { resolveu: 0, sessoes: 0, renovacoes: 0 };
+  const chamadas = { resolveu: 0 };
   const handler = createPlayCanalHandler({
-    env: { CANAIS_MEDIA_BASE: "https://media.example.test" },
+    env: { CANAIS_CDN_ALLOWLIST: "cdn.example.test" },
     clientIp: () => "1.2.3.4",
     isIpBlocked: async () => false,
     recordAbuseAttempt: async () => {},
@@ -149,20 +149,6 @@ function play(over: Partial<Parameters<typeof createPlayCanalHandler>[0]> = {}, 
     resolver: async () => {
       chamadas.resolveu++;
       return FONTE;
-    },
-    criarSessao: async () => {
-      chamadas.sessoes++;
-      return {
-        sessionId: "s".repeat(32),
-        geracao: 0,
-        exp: 2_000_000_000,
-        sig: "a".repeat(22),
-        validoPorSegundos: TTL_GRANT_S,
-      };
-    },
-    renovarSessao: async () => {
-      chamadas.renovacoes++;
-      return null;
     },
     audit: () => {},
     ...over,
@@ -201,7 +187,6 @@ test('conta "nenhum" é negada mesmo num canal com nivelMinimo "nenhum"', async 
   assert.equal(r.status, 503);
   assert.equal((await r.json()).erro, "indeterminado");
   assert.equal(chamadas.resolveu, 0);
-  assert.equal(chamadas.sessoes, 0);
 });
 
 test("plus tentando premium é negado; premium no canal premium é permitido", async () => {
@@ -214,7 +199,7 @@ test("plus tentando premium é negado; premium no canal premium é permitido", a
   const permitido = play({ nivelDaConta: async () => "premium" }, canalPremium);
   const r = await permitido.run();
   assert.equal(r.status, 200);
-  assert.equal(permitido.chamadas.sessoes, 1);
+  assert.equal(permitido.chamadas.resolveu, 1);
 });
 
 test("abertura nova de canal exige a concessão de anúncio no backend", async () => {
@@ -246,21 +231,18 @@ test("abertura nova de canal exige a concessão de anúncio no backend", async (
   assert.equal((await comConcessao.run()).status, 200);
 });
 
-test("renovação de canal não exige outro anúncio", async () => {
+test("re-resolução em erro não exige outro anúncio", async () => {
   let cobrou = 0;
-  const { run } = play({
-    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
+  const { run, chamadas } = play({
+    lerCorpo: async () => ({ reresolucao: true }),
     autorizarAnuncio: async () => {
       cobrou++;
       return { liberado: false, motivo: "sem_concessao" };
     },
-    renovarSessao: async () => ({
-      sessionId: "S".repeat(32), geracao: 1, exp: 2_000_000_000,
-      sig: "b".repeat(22), validoPorSegundos: TTL_GRANT_S,
-    }),
   });
   assert.equal((await run()).status, 200);
-  assert.equal(cobrou, 0);
+  assert.equal(cobrou, 0, "continuação não cobra anúncio de novo");
+  assert.equal(chamadas.resolveu, 1, "re-resolução resolve de novo no provider");
 });
 
 test("channelId inexistente e channelId adulterado não elevam acesso", async () => {
@@ -297,93 +279,78 @@ test("IP bloqueado e rate limit negam antes de qualquer trabalho", async () => {
   assert.equal(limitado.chamadas.resolveu, 0);
 });
 
-test("a concessão devolve só URL do edge — nunca upstream, provider ou player", async () => {
+test("a concessão devolve só a streamUrl validada — nunca provider, player nem id", async () => {
   const { run } = play();
   const r = await run();
   const corpo = await r.json();
   const texto = JSON.stringify(corpo);
 
-  assert.match(corpo.manifestUrl, /^https:\/\/media\.example\.test\/canal\/s+\/master\.m3u8\?e=\d+&k=/);
-  for (const proibido of ["cdn.example.test", "player.example.test", "megafrix", "Referer", "cookie"]) {
+  // A streamUrl é entregue de propósito (o aparelho a busca direto); o host do
+  // CDN aparece por ser ela mesma. O que NUNCA sai é a identidade estável da
+  // fonte: página do player, provider e providerChannelId.
+  assert.equal(corpo.streamUrl, FONTE.streamUrl);
+  assert.equal(corpo.manifestUrl, undefined, "não há mais URL de edge assinada");
+  assert.equal(corpo.sessionId, undefined, "não há mais sessão de edge");
+  for (const proibido of ["player.example.test", "megafrix", "Referer", "cookie"]) {
     assert.equal(texto.includes(proibido), false, `vazou "${proibido}" na concessão`);
   }
   assert.equal(texto.includes("abc"), false, "vazou o providerChannelId");
   assert.equal(r.headers.get("Cache-Control")?.includes("no-store"), true);
 });
 
-test("renovação reautoriza e não volta ao provider", async () => {
-  const { run, chamadas } = play({
-    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
-    renovarSessao: async () => {
-      chamadas.renovacoes++;
-      return {
-        sessionId: "S".repeat(32),
-        geracao: 1,
-        exp: 2_000_000_000,
-        sig: "b".repeat(22),
-        validoPorSegundos: TTL_GRANT_S,
-      };
-    },
-  });
-
+test("re-resolução reautoriza e resolve de novo (a URL do provider é transitória)", async () => {
+  const { run, chamadas } = play({ lerCorpo: async () => ({ reresolucao: true }) });
   const r = await run();
   assert.equal(r.status, 200);
-  assert.equal(chamadas.renovacoes, 1);
-  // O ponto da renovação: entitlement foi reconferido, provider não foi tocado.
-  assert.equal(chamadas.resolveu, 0);
-  assert.equal(chamadas.sessoes, 0);
-});
-
-test("renovação recusada cai para o caminho completo, sem erro para o cliente", async () => {
-  const { run, chamadas } = play({
-    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
-    // `null` é o que `renovarSessaoDeCanal` devolve para sessão de outra conta,
-    // de outro canal, sumida ou passada do teto absoluto.
-    renovarSessao: async () => null,
-  });
-  const r = await run();
-  assert.equal(r.status, 200);
+  // Diferente do modelo antigo com sessão: a continuação volta ao provider para
+  // descobrir a URL atual, porque não guardamos nada.
   assert.equal(chamadas.resolveu, 1);
-  assert.equal(chamadas.sessoes, 1);
+  assert.equal((await r.json()).streamUrl, FONTE.streamUrl);
 });
 
-test("renovação não escapa da checagem de entitlement", async () => {
-  let renovou = 0;
-  const { run } = play({
+test("re-resolução não escapa da checagem de entitlement", async () => {
+  const { run, chamadas } = play({
     nivelDaConta: async () => "gratuito",
-    lerCorpo: async () => ({ sessionId: "S".repeat(32) }),
-    renovarSessao: async () => {
-      renovou++;
-      return { sessionId: "x", geracao: 1, exp: 1, sig: "y", validoPorSegundos: 1 };
-    },
+    lerCorpo: async () => ({ reresolucao: true }),
   });
   const r = await run();
   assert.equal(r.status, 403);
-  // A renovação nem chega a ser tentada: o plano já não alcança o canal.
-  assert.equal(renovou, 0);
+  // O plano já não alcança o canal: nem chega a resolver.
+  assert.equal(chamadas.resolveu, 0);
 });
 
-test("sessionId malformado no corpo é ignorado, não confiado", async () => {
-  for (const ruim of ["../outro", "a b", "x".repeat(200), "", 42, null, { a: 1 }]) {
-    let renovou = 0;
+test("reresolucao só pula o anúncio quando é estritamente `true`", async () => {
+  // Um valor truthy forjado (string, número, objeto) não pode virar um jeito
+  // barato de pular o anúncio: só o booleano `true` é continuação.
+  for (const forjado of ["true", 1, {}, "reresolucao"]) {
+    let cobrou = 0;
     const { run } = play({
-      lerCorpo: async () => ({ sessionId: ruim }),
-      renovarSessao: async () => {
-        renovou++;
-        return null;
+      lerCorpo: async () => ({ reresolucao: forjado }),
+      autorizarAnuncio: async () => {
+        cobrou++;
+        return { liberado: false, motivo: "sem_concessao" };
       },
     });
     const r = await run();
-    assert.equal(r.status, 200);
-    assert.equal(renovou, 0, `tentou renovar com sessionId ${JSON.stringify(ruim)}`);
+    assert.equal(r.status, 403, `reresolucao=${JSON.stringify(forjado)} devia cobrar anúncio`);
+    assert.equal(cobrou, 1);
   }
 });
 
-test("sem CANAIS_MEDIA_BASE a rota falha em vez de entregar o upstream", async () => {
-  const { run } = play({ env: {} });
+test("streamUrl com host fora da allowlist é recusada, não entregue", async () => {
+  const foraDaAllowlist = { ...FONTE, streamUrl: "https://evil.example.net/pirata.m3u8" };
+  const { run } = play({ resolver: async () => foraDaAllowlist });
   const r = await run();
   assert.equal(r.status, 503);
-  assert.equal((await r.json()).erro, "midia_indisponivel");
+  const corpo = await r.json();
+  assert.equal(corpo.erro, "midia_indisponivel");
+  assert.equal(JSON.stringify(corpo).includes("evil.example.net"), false, "não vaza o host recusado");
+});
+
+test("streamUrl não-HTTPS é recusada", async () => {
+  const inseguro = { ...FONTE, streamUrl: "http://cdn.example.test/live/master.m3u8" };
+  const { run } = play({ resolver: async () => inseguro });
+  assert.equal((await run()).status, 503);
 });
 
 test("falha de resolução não conta ao cliente o que o provider respondeu", async () => {
