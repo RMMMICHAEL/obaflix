@@ -828,6 +828,113 @@ for (const statusObsoleto of [401, 403, 404, 410]) {
   });
 }
 
+// ── Refresh também em 5xx do MASTER ──────────────────────────────────────────
+//
+// A Fase A media mídia não-armada como 403; o provider passou a responder 5xx
+// nesse caso (medido no egress Cloudflare em produção). `buscarComArm` só arma
+// em 401/403, então sem cobrir o 5xx o gatilho de arm nunca dispararia e o canal
+// ficaria em 502 eterno. O refresh do MASTER passa a tratar 5xx — armando via
+// re-resolução da página do player —, mas **uma única vez** e sem virar 410.
+
+for (const status5xx of [500, 503, 520]) {
+  test(`MASTER ${status5xx} não-armado → arma via re-resolução → 200 (mesma mídia)`, async () => {
+    __limparCachesDeBase();
+    let armado = false;
+    const amb = montarAmbienteScriptavel({
+      // A página continua anunciando A; buscá-la é o que arma o grant.
+      playerHtml: () => {
+        armado = true;
+        return `<html>src="${A_UPSTREAM}"</html>`;
+      },
+      respostaDeMidia: (url) => {
+        if (url === A_UPSTREAM) return armado ? manifest200() : erroHttp(status5xx);
+        if (url.startsWith("https://segmentos.example.test")) return new Response("TS", { status: 200 });
+        return erroHttp(404);
+      },
+    });
+    try {
+      const A = await criarSessaoDeCanal({ userId: "dono", canalId: `c5m${status5xx}`, fonte: FONTE_A });
+      await publicarSessaoNoEdge(amb.redis, A.sessionId);
+
+      const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+      assert.equal(r.status, 200, "5xx não-armado tem de armar e servir 200");
+      const corpo = await r.text();
+      assert.equal(corpo.includes("cdn.example.test"), false, "vazou o host do CDN");
+      assert.equal(corpo.includes("segmentos.example.test"), false);
+      // Uma única re-resolução (um GET no player); buscarComArm não arma em 5xx.
+      assert.equal(amb.buscas.filter((u) => u.startsWith(PLAYER)).length, 1);
+      // Não houve rotação: a mídia segue a mesma.
+      assert.equal(await upstreamNaSessao(amb.redis, A.sessionId), A_UPSTREAM);
+    } finally {
+      amb.restaurar();
+    }
+  });
+}
+
+for (const status5xx of [500, 503]) {
+  test(`MASTER ${status5xx} persistente → uma re-resolução → ainda ${status5xx} → 502, sem laço`, async () => {
+    __limparCachesDeBase();
+    const amb = montarAmbienteScriptavel({
+      playerHtml: () => `<html>${B_UPSTREAM}</html>`, // rotaciona para B
+      respostaDeMidia: (url) => {
+        if (url === A_UPSTREAM) return erroHttp(status5xx);
+        if (url === B_UPSTREAM) return erroHttp(status5xx); // rotação não ajudou
+        return erroHttp(404);
+      },
+    });
+    try {
+      const A = await criarSessaoDeCanal({ userId: "dono", canalId: `c5p${status5xx}`, fonte: FONTE_A });
+      await publicarSessaoNoEdge(amb.redis, A.sessionId);
+
+      const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+      assert.equal(r.status, 502, "5xx que persiste depois do refresh vira 502, nunca 410");
+      // Exatamente uma re-resolução, e B tentado uma única vez: sem laço.
+      assert.equal(amb.buscas.filter((u) => u.startsWith(PLAYER)).length, 1, "no máximo uma re-resolução");
+      assert.equal(amb.buscas.filter((u) => u === B_UPSTREAM).length, 1, "B tentado uma única vez");
+    } finally {
+      amb.restaurar();
+    }
+  });
+}
+
+for (const status5xx of [500, 503]) {
+  test(`segmento ${status5xx} NÃO re-resolve nem arma: devolve 502`, async () => {
+    __limparCachesDeBase();
+    let segmentoVivo = true;
+    const amb = montarAmbienteScriptavel({
+      playerHtml: () => "<html>não deveria ser buscado num segmento</html>",
+      respostaDeMidia: (url) => {
+        if (url === A_UPSTREAM) return manifest200();
+        if (url.startsWith("https://segmentos.example.test")) {
+          return segmentoVivo ? new Response("TS", { status: 200 }) : erroHttp(status5xx);
+        }
+        return erroHttp(404);
+      },
+    });
+    try {
+      const A = await criarSessaoDeCanal({ userId: "dono", canalId: `cseg5${status5xx}`, fonte: FONTE_A });
+      await publicarSessaoNoEdge(amb.redis, A.sessionId);
+      const corpo = await (
+        await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV)
+      ).text();
+      const seg = segmentosDe(corpo)[0];
+      assert.ok(seg);
+
+      segmentoVivo = false;
+      amb.buscas.length = 0;
+      const r = await tratarCanal(new Request(seg), ENV);
+      assert.equal(r.status, 502, "segmento 5xx é 502 (não 410) e não entra no fluxo de re-resolução");
+      assert.equal(
+        amb.buscas.filter((u) => u.startsWith(PLAYER)).length,
+        0,
+        "segmento nunca arma nem re-resolve",
+      );
+    } finally {
+      amb.restaurar();
+    }
+  });
+}
+
 test("renovações concorrentes fazem uma só rotação e devolvem a concessão vigente", async () => {
   __limparCachesDeBase();
   const amb = montarAmbiente();
