@@ -9,18 +9,23 @@
  *
  * ## O problema que este arquivo resolve
  *
- * A Fase A mediu o provider de canais e achou duas coisas:
+ * A Fase A mediu o provider de canais e achou duas coisas — uma delas revista:
  *
  * 1. O manifesto responde **403 até que a página do player tenha sido buscada
  *    pelo mesmo IP**. Depois disso responde 200 para qualquer requisição — sem
  *    Referer, sem User-Agent, sem cookie. O estado é do provider, por par
  *    (IP, canal). Chamamos de *arm*.
- * 2. A URL de mídia é **permanente**. Não expira, não é assinada, e a mesma
- *    string vale no dia seguinte.
+ * 2. A URL de mídia é **transitória**: pode mudar/rotacionar, ou depender de o
+ *    player ter sido aberto antes. A identidade estável do canal é a **página do
+ *    player** (`providerChannelId`); o `.m3u8` é descoberta, não fonte de
+ *    verdade — e por isso nunca é persistido nem entregue ao cliente.
  *
  * O primeiro achado diz que **quem arma tem de ser quem busca**; o segundo, que
- * entregar a URL ao aparelho é entregar o canal para sempre. Daí o desenho: o
- * Worker arma e busca na **mesma invocação**, e o aparelho nunca vê o upstream.
+ * a fonte do aparelho tem de ser sempre uma URL da Obaflix, com o upstream
+ * substituível por trás dela. Daí o desenho: o Worker arma, busca — e, quando o
+ * MASTER upstream fica obsoleto, **re-resolve a página do player, descobre a
+ * mídia nova e a troca na sessão**, tudo na mesma camada, sem o aparelho ver
+ * nem o upstream antigo nem o novo. Ver `refrescarUpstreamDoMaster` adiante.
  *
  * > **O egress ser o mesmo é premissa, não garantia.** "Mesma invocação" não é
  * > promessa contratual de IP de saída estável na Cloudflare — egress dedicado
@@ -58,6 +63,7 @@
  */
 
 import { reescreverManifesto, vazaUpstream } from "../../../src/lib/canais/hls";
+import { extrairCandidatosDeMidia } from "../../../src/lib/canais/extracao";
 import {
   chaveDaBase,
   chaveDaSessao,
@@ -204,7 +210,48 @@ function hostPermitido(host: string, allowlist: string): boolean {
   return lista.some((p) => alvo === p || alvo.endsWith(`.${p}`));
 }
 
-/** Três portas antes de qualquer fetch: https, sem credenciais, allowlist. */
+/**
+ * Bloqueia endereços literais que nunca podem ser alvo do Worker, mesmo se uma
+ * variável de ambiente for configurada errado e os incluir na allowlist.
+ *
+ * Hostnames continuam presos à allowlist: no runtime de Workers não há uma API
+ * de resolução DNS que permita repetir a checagem de todos os A/AAAA feita por
+ * `src/lib/ssrf.ts` no backend. Por isso a allowlist deve conter somente os
+ * domínios públicos conhecidos do provider — nunca curingas nem hosts internos.
+ */
+function ehEnderecoInternoLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+
+  const ipv4 = host.split(".");
+  if (ipv4.length === 4 && ipv4.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)) {
+    const [a, b] = ipv4.map(Number);
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && [0, 2, 88, 168].includes(b)) ||
+      (a === 198 && [18, 19, 51].includes(b)) ||
+      (a === 203 && b === 0) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      a >= 224
+    );
+  }
+
+  // Literais IPv6. URL.hostname conserva os colchetes em alguns runtimes; eles
+  // já foram removidos acima. Cobre loopback, unspecified, ULA, link-local,
+  // multicast, documentação e IPv4 mapeado.
+  if (host.includes(":")) {
+    if (host === "::" || host === "::1") return true;
+    if (/^(?:fc|fd|fe[89ab]|ff)/.test(host) || host.startsWith("2001:db8")) return true;
+    if (host.startsWith("::ffff:")) return ehEnderecoInternoLiteral(host.slice(7));
+  }
+  return false;
+}
+
+/** Quatro portas antes de qualquer fetch: https, sem credenciais, SSRF, allowlist. */
 function alvoAceitavel(bruta: string, allowlist: string): URL | null {
   let u: URL;
   try {
@@ -213,6 +260,7 @@ function alvoAceitavel(bruta: string, allowlist: string): URL | null {
     return null;
   }
   if (u.protocol !== "https:" || u.username || u.password) return null;
+  if (ehEnderecoInternoLiteral(u.hostname)) return null;
   if (!hostPermitido(u.hostname, allowlist)) return null;
   return u;
 }
@@ -446,28 +494,136 @@ async function armar(env: EnvCanais, s: SessaoDeCanal): Promise<void> {
  * laço transformaria a segunda numa tempestade de requisições contra o provider
  * a cada player que ficasse tentando.
  */
+function buscarUpstreamUmaVez(s: SessaoDeCanal, url: string, req: Request): Promise<Response> {
+  return fetch(url, {
+    method: req.method === "HEAD" ? "HEAD" : "GET",
+    headers: cabecalhosParaUpstream(s, req),
+    // `manual`: seguir redirect sairia da allowlist sem revalidar.
+    redirect: "manual",
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+}
+
 async function buscarComArm(
   env: EnvCanais,
   s: SessaoDeCanal,
   url: string,
   req: Request,
 ): Promise<Response> {
-  const buscar = () =>
-    fetch(url, {
-      method: req.method === "HEAD" ? "HEAD" : "GET",
-      headers: cabecalhosParaUpstream(s, req),
-      // `manual`: seguir redirect sairia da allowlist sem revalidar.
-      redirect: "manual",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-
-  let r = await buscar();
+  let r = await buscarUpstreamUmaVez(s, url, req);
   if (r.status === 403 || r.status === 401) {
     await r.body?.cancel().catch(() => {});
     await armar(env, s);
-    r = await buscar();
+    r = await buscarUpstreamUmaVez(s, url, req);
   }
   return r;
+}
+
+// ── Re-resolução do upstream quando o MASTER fica obsoleto ────────────────────
+
+/** Teto de leitura da página do player no edge — mesma folga do backend. */
+const MAX_BYTES_DA_PAGINA = 512 * 1024;
+
+/**
+ * Lê no máximo `MAX_BYTES_DA_PAGINA` do corpo e **cancela** ao estourar. `text()`
+ * não tem teto: um `Content-Length` mentiroso transformaria a re-resolução em
+ * consumo de memória do isolate.
+ */
+async function lerHtmlComTeto(res: Response): Promise<string> {
+  const corpo = res.body;
+  if (!corpo) return "";
+  const leitor = corpo.getReader();
+  const partes: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await leitor.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_BYTES_DA_PAGINA) {
+        await leitor.cancel().catch(() => {});
+        break;
+      }
+      partes.push(value);
+    }
+  } finally {
+    leitor.releaseLock();
+  }
+  const juntas = new Uint8Array(partes.reduce((n, p) => n + p.byteLength, 0));
+  let off = 0;
+  for (const p of partes) {
+    juntas.set(p, off);
+    off += p.byteLength;
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(juntas);
+}
+
+/**
+ * Uma falha do MASTER que significa "o upstream ficou velho": grant perdido
+ * (401/403 persistente, mesmo depois do arm de `buscarComArm`) ou mídia sumida
+ * (404/410). **5xx não entra** — é erro do provider, não obsolescência, e
+ * re-resolver não ajudaria; só multiplicaria requisições contra ele.
+ */
+function upstreamDoMasterFicouObsoleto(status: number): boolean {
+  return status === 401 || status === 403 || status === 404 || status === 410;
+}
+
+/**
+ * Re-resolve a página do player e descobre a mídia **atual** do canal.
+ *
+ * Buscar a página também **arma** o grant para o IP deste Worker — o mesmo que
+ * vai buscar a mídia nova a seguir. Extrai os candidatos e devolve o primeiro
+ * que passa pelas mesmas três portas do resto do Worker: https, sem credenciais,
+ * `CDN_ALLOWLIST`. `null` quando a página não responde 200, não tem mídia, ou só
+ * tem mídia fora da allowlist. A página passa pela **sua** allowlist, nunca a
+ * de CDN.
+ */
+async function refrescarUpstreamDoMaster(env: EnvCanais, s: SessaoDeCanal): Promise<URL | null> {
+  const pagina = alvoAceitavel(s.paginaDoPlayer, env.CANAIS_PLAYER_ALLOWLIST);
+  if (!pagina) return null;
+
+  let res: Response;
+  try {
+    res = await fetch(pagina.toString(), {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { "User-Agent": s.userAgent ?? "Mozilla/5.0", Accept: "text/html,*/*" },
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+
+  const html = await lerHtmlComTeto(res);
+  for (const candidato of extrairCandidatosDeMidia(html)) {
+    const aceito = alvoAceitavel(candidato, env.CDN_ALLOWLIST);
+    if (aceito) return aceito;
+  }
+  return null;
+}
+
+/**
+ * Grava o upstream novo na sessão, preservando o TTL restante. **Best-effort:**
+ * se o Redis recusar, seguimos com o upstream novo em memória nesta requisição,
+ * e a próxima re-resolve de novo. Não há loop: a re-resolução é disparada só por
+ * falha do MASTER, no máximo uma vez por falha.
+ */
+async function persistirUpstreamDaSessao(
+  env: EnvCanais,
+  sessionId: string,
+  s: SessaoDeCanal,
+): Promise<void> {
+  const ttlRestante = Math.max(1, Math.ceil((s.expiraEm - Date.now()) / 1000));
+  try {
+    await comandoRedis(env, ["SET", chaveDaSessao(sessionId), JSON.stringify(s), "EX", ttlRestante]);
+  } catch {
+    /* ver acima: falhar aqui não trava a reprodução desta requisição */
+  }
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -515,10 +671,14 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     return negar();
   }
 
+  // A sessão pode ter o upstream trocado no meio deste handler (rotação); tudo
+  // daqui para baixo usa `sessaoAtual` e `alvoEfetivo`, não os originais.
+  let sessaoAtual = sessao;
+
   // Qual URL upstream este pedido representa.
   let alvoBruto: string;
   if (ehMaster) {
-    alvoBruto = sessao.upstream;
+    alvoBruto = sessaoAtual.upstream;
   } else {
     const partes = desempacotarRecurso(recurso);
     if (!partes) return negar();
@@ -530,12 +690,29 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     alvoBruto = base + partes.caminhoComQuery;
   }
 
-  const alvo = alvoAceitavel(alvoBruto, env.CDN_ALLOWLIST);
-  if (!alvo) return negar();
+  let alvoEfetivo = alvoAceitavel(alvoBruto, env.CDN_ALLOWLIST);
+  if (!alvoEfetivo) return negar();
 
   let upstream: Response;
   try {
-    upstream = await buscarComArm(env, sessao, alvo.toString(), req);
+    upstream = await buscarComArm(env, sessaoAtual, alvoEfetivo.toString(), req);
+
+    // Refresh de upstream **só no MASTER** e **só em falha relevante**. Um
+    // segmento velho falha porque o master ficou velho — o certo lá é devolver
+    // 410 e deixar o player recarregar o master, que é quem re-resolve. Aqui,
+    // no master: re-resolve a página do player, descobre a mídia nova, troca na
+    // sessão e tenta o master **uma única vez** com ela. Sem laço.
+    if (ehMaster && upstreamDoMasterFicouObsoleto(upstream.status)) {
+      await upstream.body?.cancel().catch(() => {});
+      const novo = await refrescarUpstreamDoMaster(env, sessaoAtual);
+      if (novo) {
+        sessaoAtual = { ...sessaoAtual, upstream: novo.toString() };
+        alvoEfetivo = novo;
+        await persistirUpstreamDaSessao(env, sessionId, sessaoAtual);
+        // A re-resolução já armou o grant; um único GET, sem novo arm.
+        upstream = await buscarUpstreamUmaVez(sessaoAtual, novo.toString(), req);
+      }
+    }
   } catch {
     return new Response("Falha ao buscar mídia", {
       status: 502,
@@ -552,7 +729,10 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     // Repassa a classe do erro, não o corpo: o cliente precisa distinguir
     // "acabou" de "quebrou" para decidir entre pedir outra concessão e desistir.
     return new Response(null, {
-      status: upstream.status === 404 || upstream.status === 410 ? 410 : 502,
+      // Depois do único arm, 401/403 também significam recurso velho. Em
+      // segmento não re-resolvemos aqui: 410 manda o player recarregar o
+      // master, único caminho autorizado a descobrir/trocar o upstream.
+      status: upstreamDoMasterFicouObsoleto(upstream.status) ? 410 : 502,
       headers: { "Cache-Control": "no-store" },
     });
   }
@@ -589,7 +769,9 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   // respondendo, e devolve segmentos já da geração nova.
   const reescrito = await reescreverManifesto({
     manifesto: texto,
-    urlDoManifesto: alvo.toString(),
+    // A URL efetiva — a nova, quando houve rotação — é a base para resolver
+    // segmentos relativos deste manifesto.
+    urlDoManifesto: alvoEfetivo.toString(),
     sessionId,
     baseDoEdge,
     expSegmento,
@@ -597,7 +779,7 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     assinar: (esc, rec, e) =>
       hmac(
         env,
-        { escopo: esc, sessionId, nonce: sessao.nonce, recurso: rec, exp: e },
+        { escopo: esc, sessionId, nonce: sessaoAtual.nonce, recurso: rec, exp: e },
         semanaDaChave(agora),
       ),
     idDaBase: (base) => idDaBase(env, base, agora),
@@ -616,8 +798,9 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
     return indisponivel();
   }
 
-  // Só agora, e best-effort: nada já servido depende disto.
-  await renovarTtlDaSessao(env, sessionId, sessao, TTL_SESSAO_S);
+  // Só agora, e best-effort: nada já servido depende disto. Usa `sessaoAtual`
+  // para não sobrescrever, com o TTL, um upstream recém-rotacionado.
+  await renovarTtlDaSessao(env, sessionId, sessaoAtual, TTL_SESSAO_S);
 
   saida.set("Content-Type", "application/vnd.apple.mpegurl");
   // Manifesto de live muda a cada segmento. Cache nenhum.

@@ -7,11 +7,11 @@
  * ## As quatro regras que este script não quebra
  *
  * 1. **Não grava `.m3u8`.** O arquivo de entrada traz `media_url`, e ele é
- *    lido só para conferir que o canal respondeu. A URL não entra no banco: a
- *    Fase A mediu que ela é permanente e sem assinatura, e gravá-la criaria no
- *    nosso banco o mesmo link eterno que o resto do sistema existe para não
- *    entregar. O que se guarda é `providerChannelId`, e resolve-se a cada
- *    sessão.
+ *    lido só para conferir que o canal respondeu. A URL não entra no banco: ela
+ *    é descoberta **transitória** — pode mudar/rotacionar de um momento para o
+ *    outro —, e gravá-la trataria como permanente algo que não é. A identidade
+ *    estável é `provider` + `providerChannelId`; a mídia atual resolve-se a cada
+ *    sessão (e o edge re-resolve quando ela falha). Ver `src/lib/canais/resolver.ts`.
  *
  * 2. **Todo canal entra `premium` e desativado.** Não há inferência de nível
  *    por categoria, por nome, nem por ser "24h". Um canal importado é o mais

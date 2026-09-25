@@ -575,6 +575,259 @@ test("quatro gerações: só a corrente e a anterior são aceitas", async (t) =>
   }
 });
 
+// ── Refresh de upstream: arm (Caso A) e rotação (Caso B) ─────────────────────
+
+const A_UPSTREAM = `${CDN}/live/master.m3u8`;
+const B_UPSTREAM = "https://outro.example.test/liveB/master.m3u8"; // outro host, na allowlist de CDN
+const FONTE_A = { ...FONTE, streamUrl: A_UPSTREAM };
+
+/**
+ * `fetch` scriptável: o teste decide o HTML do player (que também **arma**) e a
+ * resposta de cada URL de mídia, e pode variar por número de chamadas.
+ */
+function montarAmbienteScriptavel(opts: {
+  playerHtml: () => string;
+  respostaDeMidia: (url: string) => Response;
+}) {
+  const redis = new RedisFalso();
+  const buscas: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (entrada: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof entrada === "string" ? entrada : entrada.toString();
+    if (url === REDIS_URL) {
+      const cmd = JSON.parse(String(init?.body)) as (string | number)[];
+      const r = redis.executar(cmd);
+      return new Response(JSON.stringify({ result: r.result }), { status: r.ok ? 200 : 500 });
+    }
+    buscas.push(url);
+    if (url.startsWith(PLAYER)) {
+      return new Response(opts.playerHtml(), { status: 200, headers: { "Content-Type": "text/html" } });
+    }
+    return opts.respostaDeMidia(url);
+  }) as typeof fetch;
+  return { redis, buscas, restaurar: () => { globalThis.fetch = original; } };
+}
+
+const manifest200 = () =>
+  new Response(MANIFESTO_UPSTREAM, { status: 200, headers: { "Content-Type": "application/vnd.apple.mpegurl" } });
+const erroHttp = (s: number) => new Response(null, { status: s });
+
+async function upstreamNaSessao(redis: RedisFalso, sid: string): Promise<string> {
+  return JSON.parse(redis.dados.get(chaveDaSessao(sid))!).upstream;
+}
+
+test("Caso A: MASTER 403 → arm → 200, sem rotação e sem re-resolver", async () => {
+  __limparCachesDeBase();
+  let armado = false;
+  const amb = montarAmbienteScriptavel({
+    // A página do player continua anunciando A (não rotacionou).
+    playerHtml: () => { armado = true; return `<html>src="${A_UPSTREAM}"</html>`; },
+    respostaDeMidia: (url) => {
+      if (url === A_UPSTREAM) return armado ? manifest200() : erroHttp(403);
+      if (url.startsWith("https://segmentos.example.test")) return new Response("TS", { status: 200 });
+      return erroHttp(404);
+    },
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "ca", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+
+    const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+    assert.equal(r.status, 200);
+    const corpo = await r.text();
+    // Continua com A, e o upstream não vazou.
+    assert.equal(await upstreamNaSessao(amb.redis, A.sessionId), A_UPSTREAM);
+    assert.equal(corpo.includes("cdn.example.test"), false);
+    assert.equal(corpo.includes("segmentos.example.test"), false);
+    // O arm buscou o player exatamente uma vez (buscarComArm), sem re-resolução.
+    assert.equal(amb.buscas.filter((u) => u.startsWith(PLAYER)).length, 1);
+  } finally {
+    amb.restaurar();
+  }
+});
+
+test("Caso B: MASTER 403 persistente → player passa a anunciar B → B 200, sessão atualizada", async () => {
+  __limparCachesDeBase();
+  const amb = montarAmbienteScriptavel({
+    playerHtml: () => `<html>file: "${B_UPSTREAM}"</html>`, // agora anuncia B
+    respostaDeMidia: (url) => {
+      if (url === A_UPSTREAM) return erroHttp(403); // A nunca volta, mesmo armado
+      if (url === B_UPSTREAM) return manifest200();
+      if (url.startsWith("https://segmentos.example.test")) return new Response("TS", { status: 200 });
+      return erroHttp(404);
+    },
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "cb", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+
+    const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+    assert.equal(r.status, 200, "após rotacionar para B, o master serve 200");
+    const corpo = await r.text();
+    // A sessão passou a apontar para B, e nem A nem B vazaram ao cliente.
+    assert.equal(await upstreamNaSessao(amb.redis, A.sessionId), B_UPSTREAM);
+    assert.equal(corpo.includes("outro.example.test"), false);
+    assert.equal(corpo.includes("cdn.example.test"), false);
+    assert.ok(amb.buscas.includes(B_UPSTREAM), "B precisa ter sido buscado");
+  } finally {
+    amb.restaurar();
+  }
+});
+
+for (const statusObsoleto of [404, 410]) {
+  test(`Caso B via ${statusObsoleto}: MASTER ${statusObsoleto} → re-resolve B → B 200`, async () => {
+    __limparCachesDeBase();
+    const amb = montarAmbienteScriptavel({
+      playerHtml: () => `<html>${B_UPSTREAM}</html>`,
+      respostaDeMidia: (url) => {
+        if (url === A_UPSTREAM) return erroHttp(statusObsoleto);
+        if (url === B_UPSTREAM) return manifest200();
+        if (url.startsWith("https://segmentos.example.test")) return new Response("TS", { status: 200 });
+        return erroHttp(404);
+      },
+    });
+    try {
+      const A = await criarSessaoDeCanal({ userId: "dono", canalId: `cb${statusObsoleto}`, fonte: FONTE_A });
+      await publicarSessaoNoEdge(amb.redis, A.sessionId);
+      const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+      assert.equal(r.status, 200);
+      assert.equal(await upstreamNaSessao(amb.redis, A.sessionId), B_UPSTREAM);
+    } finally {
+      amb.restaurar();
+    }
+  });
+}
+
+test("re-resolução recusa mídia nova fora da CDN_ALLOWLIST e não a busca", async () => {
+  __limparCachesDeBase();
+  const FORA = "https://evil.example.net/pirata.m3u8";
+  const amb = montarAmbienteScriptavel({
+    playerHtml: () => `<html>${FORA}</html>`,
+    respostaDeMidia: (url) => {
+      if (url === A_UPSTREAM) return erroHttp(404);
+      return erroHttp(404);
+    },
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "cf", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+    const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+    assert.equal(r.status, 410, "mídia fora da allowlist não vira upstream");
+    assert.equal(amb.buscas.includes(FORA), false, "o host fora da allowlist nunca é buscado");
+    assert.equal(await upstreamNaSessao(amb.redis, A.sessionId), A_UPSTREAM, "sessão não adota URL recusada");
+  } finally {
+    amb.restaurar();
+  }
+});
+
+test("re-resolução recusa SSRF (IP privado), mesmo allowlisted, e http; não os busca", async () => {
+  __limparCachesDeBase();
+  const PRIVADO = "https://10.0.0.1/interno.m3u8";
+  const HTTP = "http://cdn.example.test/claro.m3u8";
+  const amb = montarAmbienteScriptavel({
+    playerHtml: () => `<html>${PRIVADO} ${HTTP}</html>`, // http nem é extraído; IP privado fora da allowlist
+    respostaDeMidia: (url) => {
+      if (url === A_UPSTREAM) return erroHttp(404);
+      return erroHttp(404);
+    },
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "cs", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+    const envComIpConfiguradoErrado = { ...ENV, CDN_ALLOWLIST: `${ENV.CDN_ALLOWLIST},10.0.0.1` };
+    const r = await tratarCanal(
+      new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)),
+      envComIpConfiguradoErrado,
+    );
+    assert.equal(r.status, 410);
+    assert.equal(amb.buscas.includes(PRIVADO), false);
+    assert.equal(amb.buscas.includes(HTTP), false);
+  } finally {
+    amb.restaurar();
+  }
+});
+
+test("player sem mídia na re-resolução: falha controlada (410), sem crash", async () => {
+  __limparCachesDeBase();
+  const amb = montarAmbienteScriptavel({
+    playerHtml: () => "<html>fora do ar, nenhuma midia</html>",
+    respostaDeMidia: (url) => (url === A_UPSTREAM ? erroHttp(410) : erroHttp(404)),
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "cm", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+    const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+    assert.equal(r.status, 410);
+  } finally {
+    amb.restaurar();
+  }
+});
+
+test("sem loop: uma re-resolução por falha, mesmo com B também falhando", async () => {
+  __limparCachesDeBase();
+  const amb = montarAmbienteScriptavel({
+    playerHtml: () => `<html>${B_UPSTREAM}</html>`,
+    respostaDeMidia: (url) => {
+      if (url === A_UPSTREAM) return erroHttp(404);
+      if (url === B_UPSTREAM) return erroHttp(404); // rotação não ajudou
+      return erroHttp(404);
+    },
+  });
+  try {
+    const A = await criarSessaoDeCanal({ userId: "dono", canalId: "cl", fonte: FONTE_A });
+    await publicarSessaoNoEdge(amb.redis, A.sessionId);
+    const r = await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV);
+    assert.equal(r.status, 410, "esgotada a única tentativa, devolve condição de recarga");
+    // Exatamente uma re-resolução: um GET no player, um GET em A, um GET em B.
+    assert.equal(amb.buscas.filter((u) => u.startsWith(PLAYER)).length, 1, "no máximo uma re-resolução");
+    assert.equal(amb.buscas.filter((u) => u === B_UPSTREAM).length, 1, "B tentado uma única vez");
+  } finally {
+    amb.restaurar();
+  }
+});
+
+for (const statusObsoleto of [401, 403, 404, 410]) {
+  test(`segmento ${statusObsoleto} NÃO re-resolve: devolve 410 para recarregar o master`, async () => {
+    __limparCachesDeBase();
+    // Primeiro serve o master (para cunhar segmentos), depois o segmento some.
+    let segmentoVivo = true;
+    const amb = montarAmbienteScriptavel({
+      playerHtml: () => "<html>arm sem re-resolução</html>",
+      respostaDeMidia: (url) => {
+        if (url === A_UPSTREAM) return manifest200();
+        if (url.startsWith("https://segmentos.example.test")) {
+          return segmentoVivo ? new Response("TS", { status: 200 }) : erroHttp(statusObsoleto);
+        }
+        return erroHttp(404);
+      },
+    });
+    try {
+      const A = await criarSessaoDeCanal({
+        userId: "dono",
+        canalId: `cseg${statusObsoleto}`,
+        fonte: FONTE_A,
+      });
+      await publicarSessaoNoEdge(amb.redis, A.sessionId);
+      const corpo = await (
+        await tratarCanal(new Request(urlDoManifesto(A.sessionId, A.exp, A.sig)), ENV)
+      ).text();
+      const seg = segmentosDe(corpo)[0];
+      assert.ok(seg);
+
+      segmentoVivo = false;
+      amb.buscas.length = 0;
+      const r = await tratarCanal(new Request(seg), ENV);
+      assert.equal(r.status, 410);
+      // 401/403 podem fazer o único arm normal, mas nunca a segunda consulta
+      // que extrai/troca upstream. 404/410 nem armam.
+      const chamadasAoPlayer = amb.buscas.filter((u) => u.startsWith(PLAYER)).length;
+      assert.equal(chamadasAoPlayer, statusObsoleto === 401 || statusObsoleto === 403 ? 1 : 0);
+    } finally {
+      amb.restaurar();
+    }
+  });
+}
+
 test("renovações concorrentes fazem uma só rotação e devolvem a concessão vigente", async () => {
   __limparCachesDeBase();
   const amb = montarAmbiente();
