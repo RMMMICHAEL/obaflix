@@ -7,22 +7,23 @@ compatibility_date = "2026-08-30"
 
 [vars]
 # Origem única autorizada no CORS. Não use "*": seria proxy aberto para
-# qualquer site que descobrisse uma URL assinada.
-APP_ORIGIN = "https://obaflix.vercel.app"
+# qualquer site que descobrisse uma URL assinada. É o domínio de produção do
+# app (onde o player roda), e não o domínio *.vercel.app: um valor que não bata
+# com a origem da página faz o navegador descartar o manifesto por CORS — o
+# canal aparece e não toca.
+APP_ORIGIN = "https://obaflix.online"
 
-# Sufixos de host que o Worker aceita como alvo. Manter curto e revisar quando
-# um provedor trocar de CDN — host que não está aqui é recusado mesmo com
-# assinatura válida.
-CDN_ALLOWLIST = ""
-
-# Sufixos permitidos para a PÁGINA que arma o grant de canal. Lista própria, e
-# não a de CDN: são papéis diferentes, com hosts diferentes. Juntá-las daria a um
-# host de CDN comprometido o direito de ser buscado como página de arm.
-# Vazia recusa o arm — nunca o libera.
-CANAIS_PLAYER_ALLOWLIST = ""
-
-# Base pública deste Worker. O mesmo valor de CANAIS_MEDIA_BASE no backend.
-CANAIS_MEDIA_BASE = ""
+# CDN_ALLOWLIST, CANAIS_PLAYER_ALLOWLIST e CANAIS_MEDIA_BASE NÃO vivem aqui: são
+# configuração remota do Worker (dashboard/`wrangler secret`/`--var`). Versioná-las
+# vazias fazia um `wrangler deploy` comum zerar a config de produção — allowlist
+# vazia recusa tudo, base vazia quebra a reescrita do manifesto.
+#   - CDN_ALLOWLIST: sufixos de host aceitos como alvo de mídia.
+#   - CANAIS_PLAYER_ALLOWLIST: sufixos da PÁGINA que arma o grant (lista própria,
+#     nunca a de CDN — juntá-las daria a um host de CDN o direito de ser buscado
+#     como página de arm). Vazia recusa o arm, nunca o libera.
+#   - CANAIS_MEDIA_BASE: base pública deste Worker; o mesmo valor no backend.
+# Publique SEMPRE com `wrangler deploy --keep-vars` para preservar o que já está
+# no remoto.
 
 # ASSINATURA_SECRET NÃO vai aqui. É o CANAIS_MEDIA_SIGNING_SECRET do backend —
 # um segredo próprio, criado só para isto, e NÃO o NEXTAUTH_SECRET: este Worker
