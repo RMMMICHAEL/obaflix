@@ -10,6 +10,7 @@ import {
 } from "@/lib/canais/handoff";
 import { PlayerControls } from "@/components/player/PlayerControls";
 import { opcoesDeQualidade } from "@/lib/canais/playerControles";
+import { criarWatchdogDeStall } from "@/lib/canais/watchdogDeStall";
 
 /**
  * Player de canal ao vivo.
@@ -344,6 +345,42 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
       remote.removeEventListener?.("connecting", onConn);
       remote.removeEventListener?.("disconnect", onConn);
       if (watchId !== null) remote.cancelWatchAvailability?.(watchId).catch(() => {});
+    };
+  }, [estado.fase]);
+
+  // ── Watchdog de stall: recupera stalls silenciosos (sem erro fatal) ─────────
+  // O HAR da homologação provou stalls de 15–29s em que o hls policiava o
+  // manifesto sem receber segmento e NÃO emitia erro fatal — então o gatilho do
+  // #46 (fatal) demorava, gerando telas pretas longas. Aqui: se a reprodução não
+  // avança por ~7s e o vídeo não está pausado, dispara a MESMA re-resolução. O
+  // single-flight e o teto de 3/60s vivem no controle (não duplicamos nada).
+  useEffect(() => {
+    if (estado.fase !== "tocando") return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const wd = criarWatchdogDeStall();
+    const agora = () => Date.now();
+    wd.definirPausado(video.paused, agora());
+    wd.progrediu(video.currentTime, agora());
+
+    const onPause = () => wd.definirPausado(true, agora());
+    const onPlay = () => wd.definirPausado(false, agora());
+    video.addEventListener("pause", onPause);
+    video.addEventListener("play", onPlay);
+
+    // Poll do currentTime: robusto (não depende de `timeupdate`/`waiting`/
+    // `stalled` dispararem durante o congelamento — a ausência de avanço basta).
+    const id = window.setInterval(() => {
+      const t = agora();
+      wd.progrediu(video.currentTime, t);
+      if (wd.deveReresolver(t)) controleRef.current?.aoErroDeReproducao();
+    }, 1000);
+
+    return () => {
+      window.clearInterval(id);
+      video.removeEventListener("pause", onPause);
+      video.removeEventListener("play", onPlay);
     };
   }, [estado.fase]);
 
