@@ -509,6 +509,14 @@ test("candidatos de mídia: só https, e o resolver recusa interno e não-HTTPS"
   assert.equal(achados.includes("https://cdn.example.test/live/master.m3u8"), true);
 });
 
+test("cada consulta ao HTML descobre a mídia atual: primeiro A, depois B", () => {
+  const A = "https://cdn.example.test/live-a/master.m3u8";
+  const B = "https://cdn.example.test/live-b/master.m3u8";
+
+  assert.deepEqual(extrairCandidatosDeMidia(`<script>file: "${A}"</script>`), [A]);
+  assert.deepEqual(extrairCandidatosDeMidia(`<script>file: "${B}"</script>`), [B]);
+});
+
 test("providerChannelId fora do formato não monta URL de player", () => {
   assert.equal(ehIdDeProviderValido("cnnbrasil"), true);
   assert.equal(ehIdDeProviderValido("24h_chaves"), true);

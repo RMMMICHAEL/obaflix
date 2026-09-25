@@ -17,8 +17,8 @@ Cookie precisa persistir:            NÃO   (não existe cookie)
 IP parece vinculado:                 SIM   (evidência forte — ver abaixo)
 Manifest exige contexto:             SIM   — mas de ORDEM, não de cabeçalho
 Segmentos exigem contexto:           herdam o grant do IP
-URL expira:                          NÃO   — permanente e estável por canal
-Re-resolução recupera:               SIM   (armar devolve 200 imediatamente)
+URL de mídia é identidade estável:   NÃO   — pode mudar/rotacionar
+Re-resolução recupera:               SIM   (armar ou descobrir a mídia nova)
 Validade do grant observada:         > 26 min sem expirar
 ```
 
@@ -44,25 +44,30 @@ estariam quentes. E armar um canal não liberou outro.
 arquitetura escolhida funciona sob as duas hipóteses (grant por IP ou por
 sessão de rede), então essa incerteza não bloqueia nada — mas está registrada.
 
-## O achado mais grave não é o 403
+## Premissa corrigida: a mídia não é a identidade do canal
 
 ```text
 URL .m3u8 capturada em 10/09, buscada em 11/09 com `curl -A curl-test`:  200
 URL re-resolvida hoje == URL capturada ontem:                            18/18
 ```
 
-A URL de mídia é **permanente, estável por canal e sem assinatura**. Uma vez
-armada, qualquer pessoa com a string toca o canal indefinidamente.
+Essa medição histórica mostrou que uma URL podia sobreviver por pelo menos um
+dia; ela **não prova permanência**. O comportamento confirmado depois é que o
+`.m3u8` pode mudar/rotacionar ou depender de a página do player ter sido aberta
+antes. A identidade estável é a página do player (`providerChannelId`), e a URL
+de mídia é uma descoberta transitória.
 
-Consequência: **entregar o `.m3u8` a um cliente, em qualquer plataforma, é
-entregar o canal de graça e para sempre.** Não existe expiração para nos salvar
-depois. É por isso que:
+Consequência: **entregar o `.m3u8` a um cliente, em qualquer plataforma, quebra
+a camada de autorização enquanto aquela URL funcionar.** Rotação eventual não
+é controle de acesso. É por isso que:
 
-- `CanalFonte` não guarda `.m3u8` — guardar criaria o mesmo link eterno no nosso
-  banco;
+- `CanalFonte` não guarda `.m3u8` — no banco ficam somente `provider` e
+  `providerChannelId`;
 - `importar-canais.ts` lê `media_url` só como evidência e não grava;
 - `POST /api/canais/[id]/play` **falha** quando `CANAIS_MEDIA_BASE` não está
   configurado, em vez de cair para "devolve o upstream".
+- o edge re-resolve a página do player somente quando o **master** falha com
+  401/403 persistente, 404 ou 410, troca `sessao.upstream` e tenta uma vez.
 
 ## Detalhe operacional: os segmentos
 
@@ -93,6 +98,7 @@ Android / Android TV / Electron
         │  confere assinatura + expiração
         │  lê a sessão pelo id opaco (Redis REST)
         │  ARMA (GET na página do player) e BUSCA — mesma invocação
+        │  master obsoleto: re-resolve → troca upstream → tenta uma vez
         │    (o egress ser o mesmo é PREMISSA, provada por verificar-edge)
         │  reescreve o manifesto: nenhuma URL absoluta de upstream sobrevive
         ▼
@@ -100,8 +106,9 @@ Android / Android TV / Electron
 ```
 
 **Por que o edge é obrigatório, e não uma economia:** o grant é por IP, então o
-backend resolver e o aparelho tocar dá 403 por construção. E como a URL nunca
-expira, esconder é a única proteção que resta.
+backend resolver e o aparelho tocar dá 403 por construção. E uma URL de mídia
+não é uma concessão Obaflix: seja curta ou longeva, ela precisa continuar
+escondida atrás da sessão e da assinatura do edge.
 
 **Por que o edge arma:** quem arma tem de ser quem busca. Por isso `armar()` e
 `buscarComArm()` vivem no Worker, e o arm que o resolver do backend provoca é

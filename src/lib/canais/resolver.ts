@@ -9,13 +9,18 @@
  * cabeçalho nenhum, de outro processo. O estado fica no servidor do provider,
  * por par (IP, canal). Chamamos isso de *arm*.
  *
- * E a URL de mídia é **permanente**: a mesma string capturada num dia continua
- * valendo no dia seguinte, sem assinatura e sem expiração.
+ * **A URL de mídia é descoberta transitória, não fonte de verdade.** A
+ * identidade estável do canal é `player_url`/`providerChannelId` — o `.m3u8`
+ * pode mudar/rotacionar de um momento para o outro, ou depender de o player ter
+ * sido aberto antes. A string capturada num instante **não** é garantia de valer
+ * no próximo. Por isso a resolução busca **sempre** a página do player e extrai
+ * a mídia atual; e por isso o edge, quando a mídia falha, re-resolve para
+ * descobrir a URL nova (ver `workers/media-proxy/src/canais.ts`).
  *
- * As duas coisas juntas decidem o desenho:
+ * O que isso decide no desenho:
  *
- *   - a URL nunca expira, então **esconder é a única proteção que resta** —
- *     entregá-la a um cliente é entregar o canal para sempre;
+ *   - a URL nunca vai para o cliente: **esconder é a proteção** — entregá-la
+ *     seria entregar (enquanto valesse) o acesso ao canal;
  *   - o grant é por IP, então **quem arma tem de ser quem busca** — este módulo
  *     resolve, mas quem arma de verdade é o edge, no egress dele.
  *
@@ -24,8 +29,9 @@
  * da Vercel, que não vai reproduzir nada.
  *
  * O resultado nunca vira cadastro. `CanalFonte` não guarda `.m3u8` de
- * propósito: gravar a URL permanente seria criar no nosso banco o mesmo link
- * eterno que este módulo existe para não entregar.
+ * propósito: persistir uma mídia transitória seria tratar como permanente algo
+ * que rotaciona — e é justamente o que este módulo (e o edge) existem para não
+ * fazer. No banco fica só `provider` + `providerChannelId`.
  */
 
 import { assertSafeUrl } from "../ssrf";
@@ -53,9 +59,11 @@ export interface FonteDeCanalResolvida {
   referer: string | null;
   userAgent: string | null;
   /**
-   * `null` quando o upstream não expira — o caso deste provider. Não inventar
-   * um valor: um `expiresAt` falso viraria re-resolução desnecessária, e cada
-   * re-resolução é uma requisição a mais ao provider.
+   * `null` porque o provider não devolve um instante de expiração — não porque a
+   * URL seja permanente. A rotação é tratada de forma **reativa** no edge (quando
+   * a mídia falha, re-resolve), e não por um relógio: inventar um `expiresAt`
+   * aqui só criaria re-resoluções no horário errado — cedo demais, desperdício;
+   * tarde demais, não ajuda. Quem sabe que a URL morreu é o upstream, com um erro.
    */
   expiresAt: number | null;
 }
@@ -131,30 +139,11 @@ async function lerComTeto(res: Response): Promise<string> {
   return new TextDecoder("utf-8", { fatal: false }).decode(juntas);
 }
 
-/**
- * Extrai candidatos a URL de mídia do HTML do player.
- *
- * Casa `.m3u8` e `.mp4` em atribuição de configuração (`source:`, `file:`,
- * `src:`) **e** solta no HTML, porque o player deste provider escreve a URL
- * direto num literal. A ordem do documento é preservada: o primeiro candidato
- * válido vence, que é o que o player faria.
- *
- * Não executa JavaScript. Um provider que só monta a URL em runtime não é
- * resolvido aqui — e não deve passar a ser por meio de um `eval` no backend.
- */
-export function extrairCandidatosDeMidia(html: string): string[] {
-  const achados: string[] = [];
-  const vistos = new Set<string>();
-  const padrao = /https:\/\/[A-Za-z0-9._~%-]+\/[A-Za-z0-9._~%/+-]*\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?/gi;
-  for (const m of html.matchAll(padrao)) {
-    const url = m[0];
-    if (!vistos.has(url)) {
-      vistos.add(url);
-      achados.push(url);
-    }
-  }
-  return achados;
-}
+// A extração vive em `./extracao.ts` — puro e sem Node — para o edge poder
+// reusá-la na re-resolução por rotação. Reexportado aqui para não quebrar quem
+// já importa de `resolver`.
+export { extrairCandidatosDeMidia } from "./extracao";
+import { extrairCandidatosDeMidia } from "./extracao";
 
 /**
  * Aceita um candidato só se ele passar por **três** portas independentes:
