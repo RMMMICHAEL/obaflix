@@ -21,6 +21,21 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+  /* Scrollbar estreita e discreta (lista de canais). */
+  .scrollbar-live {
+    scrollbar-width: thin;
+    scrollbar-color: #272a32 transparent;
+  }
+  .scrollbar-live::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-live::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-live::-webkit-scrollbar-thumb {
+    background: #272a32;
+    border-radius: 9999px;
+  }
 }
 
 /* Legenda do player: amarelo quente, contorno forte e escala responsiva para TV/mobile. */

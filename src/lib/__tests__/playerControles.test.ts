@@ -10,6 +10,9 @@ import {
   rotuloDeQualidade,
   deveMostrarMenuDeQualidade,
   opcoesDeQualidade,
+  seloDeResolucao,
+  ehTeclaDeSairDaTelaCheia,
+  janelaOcupaATela,
 } from "../canais/playerControles";
 
 test("rotuloDeQualidade: altura vira '<n>p'; sem altura vira 'Auto'", () => {
@@ -40,4 +43,28 @@ test("opcoesDeQualidade: Auto (-1) na frente e níveis na ordem, por índice do 
     { indice: 1, rotulo: "720p" },
     { indice: 2, rotulo: "Auto" },
   ]);
+});
+
+test("seloDeResolucao: só com altura real; nunca inventa 'Auto'", () => {
+  assert.equal(seloDeResolucao(1080), "1080p");
+  assert.equal(seloDeResolucao(719.6), "720p");
+  assert.equal(seloDeResolucao(0), null);
+  assert.equal(seloDeResolucao(null), null);
+  assert.equal(seloDeResolucao(undefined), null);
+  assert.equal(seloDeResolucao(Number.NaN), null);
+});
+
+test("ehTeclaDeSairDaTelaCheia: só Esc", () => {
+  assert.equal(ehTeclaDeSairDaTelaCheia("Escape"), true);
+  assert.equal(ehTeclaDeSairDaTelaCheia("Esc"), true);
+  assert.equal(ehTeclaDeSairDaTelaCheia("Enter"), false);
+  assert.equal(ehTeclaDeSairDaTelaCheia("Backspace"), false);
+});
+
+test("janelaOcupaATela: detecta a janela saindo da tela cheia", () => {
+  const tela = { largura: 1920, altura: 1080 };
+  assert.equal(janelaOcupaATela({ largura: 1920, altura: 1080 }, tela), true);
+  assert.equal(janelaOcupaATela({ largura: 1919, altura: 1079 }, tela), true, "folga de arredondamento");
+  assert.equal(janelaOcupaATela({ largura: 1600, altura: 900 }, tela), false);
+  assert.equal(janelaOcupaATela({ largura: 1920, altura: 1040 }, tela), false, "barra de tarefas visível");
 });

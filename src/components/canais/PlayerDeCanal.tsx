@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { X } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
 import {
@@ -9,7 +9,12 @@ import {
   type ResultadoDePedido,
 } from "@/lib/canais/handoff";
 import { PlayerControls } from "@/components/player/PlayerControls";
-import { opcoesDeQualidade } from "@/lib/canais/playerControles";
+import {
+  ehTeclaDeSairDaTelaCheia,
+  janelaOcupaATela,
+  opcoesDeQualidade,
+  seloDeResolucao,
+} from "@/lib/canais/playerControles";
 import { criarWatchdogDeStall } from "@/lib/canais/watchdogDeStall";
 
 /**
@@ -30,7 +35,18 @@ import { criarWatchdogDeStall } from "@/lib/canais/watchdogDeStall";
  *   regredir chamadas existentes.
  *
  * Nada de `streamUrl` é persistido. O componente nunca vê provider/host/Referer.
+ *
+ * ## Sobreposição superior
+ *
+ * Logo real do canal (quando há `logoUrl` que carrega), `● AO VIVO` e o selo de
+ * resolução — este só com altura **reportada pelo player** (nível do hls.js em
+ * uso, ou `videoHeight` no HLS nativo). Nunca uma resolução presumida.
  */
+
+/** Ações que o pai pode disparar (ex.: Enter na lista abre em tela cheia). */
+export interface AcoesDoPlayerDeCanal {
+  alternarTelaCheia: () => void;
+}
 
 type Estado =
   | { fase: "pedindo" }
@@ -46,6 +62,12 @@ interface RemotePlaybackLike {
   addEventListener?: (tipo: string, cb: () => void) => void;
   removeEventListener?: (tipo: string, cb: () => void) => void;
 }
+/**
+ * Espera antes de pedir o `/play` ao montar. Quem passa rápido por vários canais
+ * desmonta o player antes disso e nenhum `/play` sai para os canais de passagem.
+ */
+const ATRASO_DE_ABERTURA_MS = 250;
+
 function remoteDe(video: HTMLVideoElement | null): RemotePlaybackLike | null {
   if (!video) return null;
   const r = (video as unknown as { remote?: RemotePlaybackLike }).remote;
@@ -63,11 +85,13 @@ async function pedirConcessao(
   canalId: string,
   reresolucao: boolean,
   concessaoAnuncio?: string | null,
+  sinal?: AbortSignal,
 ): Promise<ResultadoDePedido> {
   let r: Response;
   try {
     r = await fetch(`/api/canais/${encodeURIComponent(canalId)}/play`, {
       method: "POST",
+      signal: sinal,
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify(
         reresolucao ? { reresolucao: true } : concessaoAnuncio ? { concessao: concessaoAnuncio } : {},
@@ -113,11 +137,13 @@ export function PlayerDeCanal({
   onFechar,
   concessaoAnuncio,
   inline = false,
+  acoesRef,
 }: {
   canal: ItemDeCanal;
   onFechar?: () => void;
   concessaoAnuncio?: string | null;
   inline?: boolean;
+  acoesRef?: MutableRefObject<AcoesDoPlayerDeCanal | null>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -135,6 +161,9 @@ export function PlayerDeCanal({
   const [transmitindo, setTransmitindo] = useState(false);
   const [controlesVisiveis, setControlesVisiveis] = useState(true);
   const [atualizando, setAtualizando] = useState(false);
+  /** Altura do vídeo em uso, só quando o player a reporta (selo `1080p`). */
+  const [alturaEmUso, setAlturaEmUso] = useState<number | null>(null);
+  const [logoFalhou, setLogoFalhou] = useState(false);
 
   /**
    * Como trocar a fonte, publicado pelo efeito do HLS. Vive numa referência
@@ -164,10 +193,13 @@ export function PlayerDeCanal({
     trocarRef.current = null;
     pendenteRef.current = null;
 
+    // Cancela de fato o `/play` em voo quando o canal troca (o controle já
+    // descartaria a resposta; abortar libera a conexão na hora).
+    const abortador = new AbortController();
     const controle = criarControleDeCanal({
       canalId: canal.id,
       pedir: (canalId, reresolucao) =>
-        pedirConcessao(canalId, reresolucao, reresolucao ? null : concessaoAnuncio),
+        pedirConcessao(canalId, reresolucao, reresolucao ? null : concessaoAnuncio, abortador.signal),
       trocarFonte: (url) => {
         aplicar(url);
         setEstado((anterior) =>
@@ -184,9 +216,11 @@ export function PlayerDeCanal({
     });
     controleRef.current = controle;
 
-    void controle.iniciar();
+    const abertura = window.setTimeout(() => void controle.iniciar(), ATRASO_DE_ABERTURA_MS);
     return () => {
+      window.clearTimeout(abertura);
       controle.parar();
+      abortador.abort();
       controleRef.current = null;
     };
     // `tentativa` recria o controle inteiro — é o botão "tentar de novo".
@@ -209,14 +243,21 @@ export function PlayerDeCanal({
       hlsRef.current = null;
       setAlturasDosNiveis([]);
       const aoErroNativo = () => controleRef.current?.aoErroDeReproducao();
+      const aoMudarDimensao = () => setAlturaEmUso(video.videoHeight || null);
       video.addEventListener("error", aoErroNativo);
+      video.addEventListener("loadedmetadata", aoMudarDimensao);
+      video.addEventListener("resize", aoMudarDimensao);
       trocarRef.current = (url) => {
         video.src = url;
         void video.play().catch(() => {});
       };
       trocarRef.current(pendenteRef.current ?? estado.primeiraUrl);
       pendenteRef.current = null;
-      destruir = () => video.removeEventListener("error", aoErroNativo);
+      destruir = () => {
+        video.removeEventListener("error", aoErroNativo);
+        video.removeEventListener("loadedmetadata", aoMudarDimensao);
+        video.removeEventListener("resize", aoMudarDimensao);
+      };
     } else {
       void import("hls.js").then(({ default: Hls }) => {
         if (cancelado || !Hls.isSupported()) return;
@@ -239,7 +280,11 @@ export function PlayerDeCanal({
           publicarNiveis();
           void video.play().catch(() => {});
         });
-        hls.on(Hls.Events.LEVEL_SWITCHED, () => setNivelAtual(nivelSelecionado()));
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_e, dados) => {
+          setNivelAtual(nivelSelecionado());
+          const altura = hls.levels[dados.level]?.height;
+          setAlturaEmUso(typeof altura === "number" && altura > 0 ? altura : null);
+        });
         hls.on(Hls.Events.ERROR, (_e, dados) => {
           if (!dados.fatal) return;
           // Erro fatal num canal ao vivo costuma ser a fonte caindo/rotacionando.
@@ -317,6 +362,47 @@ export function PlayerDeCanal({
     const onFs = () => setFullscreen(document.fullscreenElement === rootRef.current);
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  // ── Sair da tela cheia sem fechar o canal ───────────────────────────────────
+  // Dois caminhos, porque no Electron o Esc real é consumido pelo processo
+  // principal (`before-input-event`), que só desfaz a tela cheia da JANELA:
+  //  1. Esc que chega à página → `exitFullscreen()`;
+  //  2. a janela deixou de ocupar a tela enquanto o player ainda é o
+  //     `fullscreenElement` → `exitFullscreen()` também.
+  // O segundo só age depois de a tela cheia ter sido de fato atingida, para não
+  // disparar durante a transição de entrada.
+  useEffect(() => {
+    const noElemento = () => !!rootRef.current && document.fullscreenElement === rootRef.current;
+    const janelaCheia = () =>
+      janelaOcupaATela(
+        { largura: window.innerWidth, altura: window.innerHeight },
+        { largura: window.screen.width, altura: window.screen.height },
+      );
+    const sair = () => { void document.exitFullscreen().catch(() => {}); };
+    let atingiuTelaCheia = false;
+
+    const aoTeclar = (e: KeyboardEvent) => {
+      if (!ehTeclaDeSairDaTelaCheia(e.key) || !noElemento()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      sair();
+    };
+    const aoMudarTelaCheia = () => { atingiuTelaCheia = noElemento() && janelaCheia(); };
+    const aoRedimensionar = () => {
+      if (!noElemento()) return;
+      if (janelaCheia()) atingiuTelaCheia = true;
+      else if (atingiuTelaCheia) { atingiuTelaCheia = false; sair(); }
+    };
+
+    window.addEventListener("keydown", aoTeclar, true);
+    document.addEventListener("fullscreenchange", aoMudarTelaCheia);
+    window.addEventListener("resize", aoRedimensionar);
+    return () => {
+      window.removeEventListener("keydown", aoTeclar, true);
+      document.removeEventListener("fullscreenchange", aoMudarTelaCheia);
+      window.removeEventListener("resize", aoRedimensionar);
+    };
   }, []);
 
   // ── Cast (Remote Playback): só habilita se o aparelho suportar ──────────────
@@ -426,6 +512,14 @@ export function PlayerDeCanal({
     void rootRef.current?.requestFullscreen().catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!acoesRef) return;
+    acoesRef.current = { alternarTelaCheia: alternarFullscreen };
+    return () => {
+      acoesRef.current = null;
+    };
+  }, [acoesRef, alternarFullscreen]);
+
   const selecionarQualidade = useCallback((indice: number) => {
     if (hlsRef.current) hlsRef.current.currentLevel = indice;
     setNivelAtual(indice);
@@ -458,18 +552,45 @@ export function PlayerDeCanal({
     >
       <video
         ref={videoRef}
-        className="h-full w-full bg-black"
+        className="h-full w-full bg-black object-contain"
         playsInline
         autoPlay
         // Controles próprios (PlayerControls); nada de `controls` nativo.
         // Canal ao vivo não tem pôster próprio e não retoma de lugar nenhum.
         preload="none"
         onClick={alternarPlay}
+        onDoubleClick={alternarFullscreen}
       />
+
+      {/* Topo: logo real do canal à esquerda; AO VIVO + resolução à direita. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 bg-gradient-to-b from-black/60 to-transparent px-4 pt-4 pb-10 md:px-6 md:pt-5">
+        <span className="flex h-9 min-w-0 items-center md:h-11">
+          {canal.logoUrl && !logoFalhou && (
+            // Logo de terceiro, tamanho imprevisível: `<img>` com `object-contain`.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={canal.logoUrl}
+              alt={canal.nome}
+              onError={() => setLogoFalhou(true)}
+              className="max-h-full max-w-[7.5rem] object-contain opacity-85 drop-shadow-[0_2px_6px_rgba(0,0,0,0.7)] md:max-w-[9rem]"
+            />
+          )}
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="flex items-center gap-1.5 rounded-md bg-live-accent px-2.5 py-1 text-[11px] font-bold leading-none tracking-wide text-white shadow-[0_0_14px_rgba(242,13,36,0.45)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" aria-hidden />
+            AO VIVO
+          </span>
+          {estado.fase === "tocando" && seloDeResolucao(alturaEmUso) && (
+            <span className="rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] font-semibold leading-none text-white backdrop-blur-md">
+              {seloDeResolucao(alturaEmUso)}
+            </span>
+          )}
+        </span>
+      </div>
 
       {estado.fase === "tocando" && (
         <PlayerControls
-          isLive
           playing={playing}
           muted={muted}
           volume={volume}
@@ -493,8 +614,8 @@ export function PlayerDeCanal({
       {estado.fase === "pedindo" && (
         <div className="absolute inset-0 grid place-items-center bg-black/80">
           <div className="flex flex-col items-center gap-3">
-            <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-red-600" />
-            <span className="text-sm text-zinc-400">Conectando…</span>
+            <span className="h-9 w-9 animate-spin rounded-full border-2 border-live-line border-t-live-accent" />
+            <span className="text-sm text-live-muted">Conectando…</span>
           </div>
         </div>
       )}
@@ -508,7 +629,7 @@ export function PlayerDeCanal({
                 <button
                   type="button"
                   onClick={() => setTentativa((n) => n + 1)}
-                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+                  className="rounded-lg bg-live-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-live-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
                 >
                   Tentar de novo
                 </button>
@@ -549,9 +670,6 @@ export function PlayerDeCanal({
           <X className="h-5 w-5" aria-hidden />
         </button>
         <span className="truncate text-sm font-semibold text-white">{canal.nome}</span>
-        <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-          AO VIVO
-        </span>
       </div>
       {area}
     </div>

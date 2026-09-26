@@ -11,6 +11,17 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        // Camada semântica da tela de Canais ao Vivo (web/Electron). O Android TV
+        // espelha os mesmos valores em `Tema.kt`; mudar aqui é mudar lá também.
+        live: {
+          bg: "#050609",
+          surface: "#0D0F14",
+          raised: "#12141A",
+          line: "#272A32",
+          muted: "#8B909C",
+          accent: "#E50914",
+          glow: "#F20D24",
+        },
       },
       keyframes: {
         fadeIn: {

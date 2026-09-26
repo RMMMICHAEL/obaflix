@@ -8,9 +8,9 @@ import type { OpcaoDeQualidade } from "@/lib/canais/playerControles";
  * Camada **presentacional** dos controles de player.
  *
  * Sem `<video>`, sem `hls.js`, sem Remote Playback: recebe estado e callbacks e
- * desenha a barra com a identidade visual do `CustomPlayer` (mesmo `btnCls`,
- * mesmo acento `#E50914`, mesmo popup de qualidade). Existe para o player de
- * canal ganhar a mesma experiência de controles sem tocar no `CustomPlayer`.
+ * desenha a barra. Linguagem da tela de Canais ao Vivo: círculos grafite
+ * translúcidos, ícones brancos, hover/foco claros e sutis, play/pause
+ * ligeiramente maior, acento `live-accent` só em destaque (volume, seleção).
  *
  * O que **não** existe aqui, de propósito, no modo live: seek/linha do tempo,
  * -10s/+10s, resume, próximo episódio, dub/leg. Ao vivo não tem conteúdo gravado
@@ -18,8 +18,10 @@ import type { OpcaoDeQualidade } from "@/lib/canais/playerControles";
  * existente no motor (passada por `onRefresh`), sem segunda máquina de retry.
  */
 
-const btnCls =
-  "flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center transition-all duration-200 bg-white/10 text-white hover:bg-white hover:text-black active:bg-white active:text-black";
+const btnBase =
+  "flex-shrink-0 rounded-full flex items-center justify-center border border-white/10 bg-black/45 text-white backdrop-blur-md transition duration-200 hover:bg-white/15 hover:border-white/25 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80";
+const btnCls = `${btnBase} w-10 h-10 md:w-11 md:h-11`;
+const btnPrincipalCls = `${btnBase} w-12 h-12 md:w-[52px] md:h-[52px]`;
 
 export interface PlayerControlsProps {
   playing: boolean;
@@ -27,7 +29,7 @@ export interface PlayerControlsProps {
   /** 0–1. */
   volume: number;
   fullscreen: boolean;
-  /** Mostra o indicador AO VIVO na barra. */
+  /** Mostra o indicador AO VIVO na barra (quando o pai não mostra o próprio). */
   isLive?: boolean;
   /**
    * Opções de qualidade já prontas (ver `opcoesDeQualidade`). **Vazio esconde o
@@ -76,80 +78,81 @@ export function PlayerControls({
 }: PlayerControlsProps) {
   const [mostrarQualidade, setMostrarQualidade] = useState(false);
   const temMenuDeQualidade = qualidades.length > 0;
+  const semSom = muted || volume === 0;
 
   return (
     <div
-      className={`pointer-events-none absolute inset-x-0 bottom-0 px-3 pt-10 pb-2 bg-gradient-to-t from-black/80 via-black/30 to-transparent transition-opacity duration-300 md:px-8 md:pb-4 ${
+      className={`pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-3 pt-16 pb-3 transition-opacity duration-300 md:px-6 md:pb-5 ${
         visivel ? "opacity-100" : "opacity-0"
       }`}
     >
-      <div className="pointer-events-auto flex items-center justify-between">
-        {/* Esquerda: AO VIVO + volume */}
-        <div className="flex items-center gap-2 md:gap-3">
+      <div className="pointer-events-auto flex items-center justify-between gap-3">
+        {/* Esquerda: play/pause + volume */}
+        <div className="flex min-w-0 items-center gap-2 md:gap-3">
+          <button
+            type="button"
+            title={playing ? "Pausar" : "Reproduzir"}
+            aria-label={playing ? "Pausar" : "Reproduzir"}
+            className={btnPrincipalCls}
+            onClick={onPlayPause}
+          >
+            {playing ? (
+              <Pause className="h-5 w-5 md:h-6 md:w-6" fill="currentColor" strokeWidth={0} />
+            ) : (
+              <Play className="ml-0.5 h-5 w-5 md:h-6 md:w-6" fill="currentColor" strokeWidth={0} />
+            )}
+          </button>
+
+          <button
+            type="button"
+            title={semSom ? "Ativar som" : "Silenciar"}
+            aria-label={semSom ? "Ativar som" : "Silenciar"}
+            className={btnCls}
+            onClick={onToggleMute}
+          >
+            {semSom ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+          </button>
+          {/* Slider só no desktop; no toque o volume é o do aparelho. */}
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={muted ? 0 : volume}
+            aria-label="Volume"
+            className="hidden w-24 cursor-pointer accent-live-accent md:block"
+            onChange={(e) => onVolume(parseFloat(e.target.value))}
+          />
+
           {isLive && (
-            <span className="flex items-center gap-1.5 rounded bg-[#E50914] px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+            <span className="ml-1 flex items-center gap-1.5 rounded-md bg-live-accent px-2 py-1 text-[10px] font-bold leading-none text-white">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" aria-hidden />
               AO VIVO
             </span>
           )}
-          <div className="flex items-center gap-1 group/vol">
-            <button
-              type="button"
-              title={muted || volume === 0 ? "Ativar som" : "Silenciar"}
-              aria-label={muted || volume === 0 ? "Ativar som" : "Silenciar"}
-              className={btnCls}
-              onClick={onToggleMute}
-            >
-              {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={muted ? 0 : volume}
-              aria-label="Volume"
-              className="w-16 cursor-pointer accent-[#E50914] md:w-0 md:overflow-hidden md:transition-all md:duration-300 md:group-hover/vol:w-20"
-              onChange={(e) => onVolume(parseFloat(e.target.value))}
-            />
-          </div>
         </div>
 
-        {/* Centro: play/pause */}
-        <button
-          type="button"
-          title={playing ? "Pausar" : "Reproduzir"}
-          aria-label={playing ? "Pausar" : "Reproduzir"}
-          className="flex-shrink-0 w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center transition-all duration-200 bg-white/15 text-white hover:bg-white hover:text-black hover:scale-105 active:scale-95"
-          onClick={onPlayPause}
-        >
-          {playing ? (
-            <Pause className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" strokeWidth={0} />
-          ) : (
-            <Play className="w-5 h-5 md:w-6 md:h-6 ml-0.5" fill="currentColor" strokeWidth={0} />
-          )}
-        </button>
-
         {/* Direita: qualidade + atualizar + cast + tela cheia */}
-        <div className="flex items-center gap-1 md:gap-1.5">
+        <div className="flex items-center gap-1.5 md:gap-2.5">
           {temMenuDeQualidade && (
             <div className="relative">
               <button
                 type="button"
                 title="Qualidade"
                 aria-label="Qualidade"
-                className={`${btnCls}${mostrarQualidade ? " !bg-white !text-black" : ""}`}
+                aria-expanded={mostrarQualidade}
+                className={`${btnCls}${mostrarQualidade ? " !bg-white/20 !border-white/30" : ""}`}
                 onClick={(event) => {
                   event.stopPropagation();
                   setMostrarQualidade((v) => !v);
                 }}
               >
-                <Settings2 className="w-5 h-5" />
+                <Settings2 className="h-5 w-5" />
               </button>
 
               {mostrarQualidade && (
                 <div
-                  className="absolute right-0 bottom-full mb-2 w-[min(16rem,calc(100vw-1rem))] max-h-[60dvh] overflow-y-auto overscroll-contain rounded-2xl border border-white/10 bg-zinc-950 p-2 text-white shadow-2xl"
+                  className="absolute right-0 bottom-full mb-2 w-[min(16rem,calc(100vw-1rem))] max-h-[60dvh] overflow-y-auto overscroll-contain rounded-2xl border border-live-line bg-live-surface/95 p-2 text-white shadow-2xl backdrop-blur-md"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/45">
@@ -170,9 +173,7 @@ export function PlayerControls({
                       }}
                     >
                       <span>{opcao.rotulo}</span>
-                      {qualidadeSelecionada === opcao.indice && (
-                        <Check className="h-4 w-4 text-[#E50914]" />
-                      )}
+                      {qualidadeSelecionada === opcao.indice && <Check className="h-4 w-4 text-live-accent" />}
                     </button>
                   ))}
                 </div>
@@ -189,7 +190,7 @@ export function PlayerControls({
               className={`${btnCls} disabled:opacity-60`}
               onClick={onRefresh}
             >
-              <RotateCw className={`w-5 h-5${atualizando ? " animate-spin" : ""}`} />
+              <RotateCw className={`h-5 w-5${atualizando ? " animate-spin" : ""}`} />
             </button>
           )}
 
@@ -198,10 +199,10 @@ export function PlayerControls({
               type="button"
               title={transmitindo ? "Parar transmissão" : "Transmitir"}
               aria-label={transmitindo ? "Parar transmissão" : "Transmitir"}
-              className={`${btnCls}${transmitindo ? " !bg-[#E50914] !text-white hover:!bg-red-600" : ""}`}
+              className={`${btnCls}${transmitindo ? " !border-live-accent !bg-live-accent/80" : ""}`}
               onClick={onCast}
             >
-              <Cast className="w-5 h-5" />
+              <Cast className="h-5 w-5" />
             </button>
           )}
 
@@ -212,7 +213,7 @@ export function PlayerControls({
             className={btnCls}
             onClick={onToggleFullscreen}
           >
-            {fullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+            {fullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
           </button>
         </div>
       </div>

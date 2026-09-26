@@ -42,3 +42,31 @@ export function opcoesDeQualidade(alturasDosNiveis: (number | null | undefined)[
     ...alturasDosNiveis.map((altura, i) => ({ indice: i, rotulo: rotuloDeQualidade(altura) })),
   ];
 }
+
+/**
+ * Selo de resolução do canto do player (`1080p`). Diferente do menu, nunca cai
+ * para "Auto": sem altura **realmente reportada** pelo player (nível do hls.js
+ * em uso ou `videoHeight` no HLS nativo) não há selo — resolução não se fabrica.
+ */
+export function seloDeResolucao(altura: number | null | undefined): string | null {
+  return typeof altura === "number" && Number.isFinite(altura) && altura > 0 ? `${Math.round(altura)}p` : null;
+}
+
+/** Tecla que sai da tela cheia do player (Esc), sem fechar o canal. */
+export function ehTeclaDeSairDaTelaCheia(tecla: string): boolean {
+  return tecla === "Escape" || tecla === "Esc";
+}
+
+/**
+ * A janela ocupa a tela inteira? Usado para perceber que a **janela** saiu da
+ * tela cheia (no Electron, o Esc é consumido pelo processo principal, que só
+ * desfaz a tela cheia da janela) enquanto o **elemento** continua em
+ * `document.fullscreenElement` — aí o player sai também.
+ */
+export function janelaOcupaATela(
+  janela: { largura: number; altura: number },
+  tela: { largura: number; altura: number },
+  folga = 2,
+): boolean {
+  return janela.largura >= tela.largura - folga && janela.altura >= tela.altura - folga;
+}

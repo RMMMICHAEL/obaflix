@@ -86,11 +86,18 @@ export function Navbar() {
               <Link
                 key={href}
                 href={href}
-                className={`px-3 py-1.5 rounded text-sm transition ${
+                aria-current={active ? "page" : undefined}
+                className={`relative px-3 py-1.5 rounded text-sm transition ${
                   active ? "text-white font-semibold" : "text-zinc-400 hover:text-white"
                 }`}
               >
                 {label}
+                {active && (
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-3 -bottom-1 h-0.5 rounded-full bg-live-accent shadow-[0_0_8px_rgba(242,13,36,0.6)]"
+                  />
+                )}
               </Link>
             );
           })}
@@ -99,16 +106,17 @@ export function Navbar() {
         {/* Right actions */}
         <div className="flex items-center gap-2">
           {/* Search — desktop */}
-          <form onSubmit={handleSearch} className="hidden md:flex items-center bg-black/60 border border-zinc-700 rounded-lg px-2 focus-within:border-zinc-500 transition-colors">
+          <form onSubmit={handleSearch} className="hidden md:flex items-center gap-2 bg-black/60 border border-zinc-800 rounded-xl px-3 focus-within:border-zinc-500 transition-colors">
+            <button type="submit" aria-label="Buscar" className="text-zinc-400 hover:text-white transition">
+              <Search size={16} />
+            </button>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Buscar..."
-              className="bg-transparent text-white text-sm px-2 py-1.5 outline-none w-36 focus:w-52 transition-all"
+              aria-label="Buscar"
+              className="bg-transparent text-white text-sm py-2 outline-none w-36 focus:w-52 transition-all"
             />
-            <button type="submit" className="text-zinc-400 hover:text-white transition">
-              <Search size={15} />
-            </button>
           </form>
 
           {/* User menu */}
