@@ -23,7 +23,7 @@ export const metadata: Metadata = {
 
 export default function CanaisPage() {
   return (
-    <main className="min-h-screen bg-black">
+    <main className="min-h-screen bg-live-bg">
       <GradeDeCanais />
     </main>
   );

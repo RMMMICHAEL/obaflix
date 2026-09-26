@@ -1,27 +1,29 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, Tv } from "lucide-react";
+import { Radio, Search, Tv } from "lucide-react";
 import type { ItemDeCanal } from "@/lib/canais/catalogo";
-import { PlayerDeCanal } from "./PlayerDeCanal";
+import { PlayerDeCanal, type AcoesDoPlayerDeCanal } from "./PlayerDeCanal";
 import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
+import { criarSelecaoMaisRecente } from "@/lib/canais/selecaoMaisRecente";
 
 /**
  * Tela de Canais ao Vivo (app em WebView e Electron).
  *
- * ## Layout lista + preview (Etapa 3)
+ * ## Layout lista + player
  *
  * O workspace começa **abaixo do header global** (`Navbar` é `fixed h-16`; as
- * páginas de conteúdo compensam com `pt-20`, e aqui é igual) e é centralizado
- * (`max-w-7xl mx-auto`). Telas grandes: sidebar à esquerda (~32%) com busca +
- * categorias + lista (só a lista rola), e preview grande à direita, 16:9,
- * centralizada verticalmente na área abaixo do header. Telefone: preview em cima
- * (largura total), depois busca/categorias/lista.
+ * páginas de conteúdo compensam com `pt-20`, e aqui é igual), com o título
+ * "Canais ao vivo" dentro do conteúdo. Telas grandes (`lg`): a tela ocupa a
+ * altura da janela; painel à esquerda (~30%: busca + categorias + lista, só a
+ * lista rola) e o player à direita ocupando a coluna inteira — sem bloco de
+ * programação/EPG abaixo. Telas estreitas: player 16:9 em cima, painel embaixo.
  *
  * Só existe UM `PlayerDeCanal` por vez — ao trocar de canal, `key={id}` desmonta
- * o anterior (o cleanup destrói hls, timers e listeners) antes de montar o novo.
- * Não pré-resolve canal nenhum: `/play` só acontece para o canal que realmente
- * entra em reprodução.
+ * o anterior (o cleanup destrói hls, timers e listeners; o controle descarta a
+ * resposta de um `/play` que ainda estava em voo) antes de montar o novo. Não
+ * pré-resolve canal nenhum: `/play` só acontece para o canal selecionado. As
+ * setas só movem o foco na lista; quem troca de canal é clique/Enter.
  */
 
 interface Categoria {
@@ -47,6 +49,14 @@ function normalizar(s: string): string {
     .replace(/[̀-ͯ]/g, "");
 }
 
+/** Grid principal: painel ~30% + player. Mesmo esqueleto no carregamento. */
+const GRID =
+  "flex min-h-0 flex-col gap-5 lg:grid lg:flex-1 lg:grid-cols-[minmax(300px,30%)_minmax(0,1fr)] lg:gap-6";
+const PAINEL =
+  "order-2 flex min-h-0 flex-col rounded-2xl border border-live-line/70 bg-live-surface p-3 md:p-4 lg:order-1";
+const AREA_PLAYER =
+  "relative order-1 aspect-video w-full overflow-hidden rounded-2xl border border-live-line/70 bg-black lg:order-2 lg:aspect-auto lg:h-full";
+
 export function GradeDeCanais() {
   const anuncio = useAnuncio();
   const [estado, setEstado] = useState<Estado>({ fase: "carregando" });
@@ -57,6 +67,9 @@ export function GradeDeCanais() {
   const [concessaoAnuncio, setConcessaoAnuncio] = useState<string | null>(null);
   const [tentativa, setTentativa] = useState(0);
   const linhasRef = useRef<(HTMLButtonElement | null)[]>([]);
+  const acoesDoPlayerRef = useRef<AcoesDoPlayerDeCanal | null>(null);
+  /** Só a seleção mais recente efetiva estado e `/play` (ver `abrir`). */
+  const [pedidos] = useState(criarSelecaoMaisRecente);
 
   useEffect(() => {
     let vivo = true;
@@ -92,12 +105,28 @@ export function GradeDeCanais() {
     );
   }, [estado, categoria, busca]);
 
+  /** Número estável do canal (posição no catálogo), independente do filtro. */
+  const numeroDe = useMemo(() => {
+    const m = new Map<string, number>();
+    if (estado.fase === "pronto") estado.dados.canais.forEach((c, i) => m.set(c.id, i + 1));
+    return m;
+  }, [estado]);
+
+  const rotuloDaCategoria = useMemo(() => {
+    const m = new Map<string, string>();
+    if (estado.fase === "pronto") estado.dados.categorias.forEach((c) => m.set(c.id, c.rotulo));
+    return m;
+  }, [estado]);
+
   // Mantém o cursor de teclado dentro do intervalo quando a lista visível muda.
   useEffect(() => {
     setFocado((f) => Math.min(Math.max(0, f), Math.max(0, visiveis.length - 1)));
   }, [visiveis.length]);
 
   async function abrir(canal: ItemDeCanal) {
+    // Token desta abertura. Um clique mais novo invalida os anteriores: a
+    // resposta atrasada de um canal já abandonado não reseleciona nem abre /play.
+    const pedido = pedidos.iniciar();
     const desktop = typeof window !== "undefined" && !!window.obaflixDesktop;
     const android = typeof window !== "undefined" && !!window.obaflixAds;
     if (!desktop && !android) {
@@ -113,6 +142,7 @@ export function GradeDeCanais() {
       },
       anuncio.portas,
     );
+    if (!pedidos.vale(pedido)) return;
     if (fluxo.situacao === "liberado") {
       setConcessaoAnuncio(fluxo.concessao);
       setSelecionado(canal);
@@ -134,15 +164,21 @@ export function GradeDeCanais() {
   if (estado.fase === "carregando") {
     return (
       <Moldura>
-        <div className="flex flex-col gap-4 lg:h-[calc(100vh-7rem)] lg:flex-row lg:gap-6">
-          <div className="order-2 flex flex-col gap-2 lg:order-1 lg:w-[32%] lg:max-w-sm lg:shrink-0">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded-lg bg-zinc-900" />
-            ))}
+        <div className={GRID} aria-busy="true">
+          <div className={PAINEL}>
+            <div className="mb-3 h-11 animate-pulse rounded-xl bg-live-raised" />
+            <div className="mb-4 flex flex-wrap gap-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-8 w-20 animate-pulse rounded-full bg-live-raised" />
+              ))}
+            </div>
+            <div className="flex flex-col gap-2">
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div key={i} className="h-16 animate-pulse rounded-xl bg-live-raised" />
+              ))}
+            </div>
           </div>
-          <div className="order-1 lg:order-2 lg:flex lg:h-full lg:flex-1 lg:items-center lg:justify-center">
-            <div className="mx-auto aspect-video w-full animate-pulse rounded-xl bg-zinc-900 lg:max-w-[calc((100vh-7rem)*16/9)]" />
-          </div>
+          <div className={`${AREA_PLAYER} animate-pulse`} />
         </div>
       </Moldura>
     );
@@ -181,48 +217,46 @@ export function GradeDeCanais() {
   return (
     <>
       <Moldura>
-        <div className="flex flex-col gap-4 lg:h-[calc(100vh-7rem)] lg:flex-row lg:gap-6">
-          {/* SIDEBAR: busca + categorias + lista (só a lista rola) */}
-          <aside className="order-2 flex min-h-0 flex-col lg:order-1 lg:h-full lg:w-[32%] lg:max-w-sm lg:shrink-0">
-            <div className="mb-3 flex shrink-0 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3">
-              <Search className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden />
+        <div className={GRID}>
+          {/* PAINEL: busca + categorias + lista (só a lista rola) */}
+          <aside className={PAINEL} aria-label="Canais">
+            <label className="mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-live-line bg-live-raised px-4 transition focus-within:border-white/25">
+              <Search className="h-4 w-4 shrink-0 text-live-muted" aria-hidden />
               <input
                 type="search"
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
-                placeholder="Buscar canal"
+                placeholder="Buscar canal..."
                 aria-label="Buscar canal"
-                className="w-full bg-transparent py-2.5 text-sm text-white placeholder-zinc-500 outline-none"
+                className="w-full bg-transparent py-3 text-sm text-white placeholder-live-muted outline-none"
               />
-            </div>
+            </label>
 
-            {/* Categorias dentro da própria sidebar (chips com wrap), nunca
-                atravessando o topo da página. */}
-            <div
-              className="mb-3 flex shrink-0 flex-wrap gap-2"
-              role="tablist"
-              aria-label="Categorias"
-            >
-              {categorias.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={categoria === c.id}
-                  onClick={() => setCategoria(c.id)}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 ${
-                    categoria === c.id
-                      ? "bg-red-600 text-white"
-                      : "border border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800"
-                  }`}
-                >
-                  {c.rotulo}
-                </button>
-              ))}
+            <div className="mb-4 flex shrink-0 flex-wrap gap-2" role="tablist" aria-label="Categorias">
+              {categorias.map((c) => {
+                const ativo = categoria === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={ativo}
+                    onClick={() => setCategoria(c.id)}
+                    className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80 ${
+                      ativo
+                        ? "border-live-glow bg-live-accent text-white shadow-[0_0_16px_rgba(229,9,20,0.35)]"
+                        : "border-live-line bg-live-raised text-zinc-200 hover:border-white/20 hover:text-white"
+                    }`}
+                  >
+                    {c.rotulo}
+                  </button>
+                );
+              })}
             </div>
 
             {visiveis.length === 0 ? (
               <Vazio
+                compacto
                 titulo={busca.trim() ? "Nenhum canal encontrado" : "Categoria vazia"}
                 detalhe={
                   busca.trim()
@@ -240,19 +274,26 @@ export function GradeDeCanais() {
                 role="listbox"
                 aria-label="Lista de canais"
                 onKeyDown={aoTeclarLista}
-                className="flex min-h-0 max-h-[45vh] flex-1 flex-col gap-1 overflow-y-auto pr-1 lg:max-h-none"
+                className="scrollbar-live -mr-1 flex max-h-[55vh] min-h-0 flex-1 flex-col gap-2 overflow-y-auto py-0.5 pr-2 pl-0.5 lg:max-h-none"
               >
                 {visiveis.map((canal, i) => (
                   <LinhaDeCanal
                     key={canal.id}
                     canal={canal}
+                    numero={numeroDe.get(canal.id) ?? i + 1}
+                    subtitulo={rotuloDaCategoria.get(canal.categoria) ?? ""}
                     selecionado={selecionado?.id === canal.id}
                     refBotao={(el) => {
                       linhasRef.current[i] = el;
                     }}
                     aoFocar={() => setFocado(i)}
-                    aoAbrir={() => {
+                    aoAbrir={(peloTeclado) => {
                       setFocado(i);
+                      // Enter no canal que já está tocando expande em tela cheia.
+                      if (peloTeclado && selecionado?.id === canal.id) {
+                        acoesDoPlayerRef.current?.alternarTelaCheia();
+                        return;
+                      }
                       void abrir(canal);
                     }}
                   />
@@ -261,30 +302,31 @@ export function GradeDeCanais() {
             )}
           </aside>
 
-          {/* PREVIEW: centralizada vertical/horizontalmente na área útil */}
-          <main className="order-1 lg:order-2 lg:flex lg:h-full lg:flex-1 lg:items-center lg:justify-center">
-            <div className="relative mx-auto aspect-video w-full overflow-hidden rounded-xl border border-zinc-800 bg-black lg:max-w-[calc((100vh-7rem)*16/9)]">
-              {selecionado ? (
-                <PlayerDeCanal
-                  key={selecionado.id}
-                  canal={selecionado}
-                  inline
-                  concessaoAnuncio={concessaoAnuncio}
-                  onFechar={() => setSelecionado(null)}
-                />
-              ) : (
-                <div className="absolute inset-0 grid place-items-center px-6 text-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <Tv className="h-10 w-10 text-zinc-700" aria-hidden />
-                    <p className="text-sm font-semibold text-zinc-300">Selecione um canal</p>
-                    <p className="max-w-xs text-xs text-zinc-500">
-                      Escolha um canal na lista para assistir ao vivo, com áudio.
-                    </p>
-                  </div>
+          {/* PLAYER: ocupa a coluna inteira; o vídeo mantém a proporção. */}
+          <section className={AREA_PLAYER} aria-label="Player">
+            {selecionado ? (
+              <PlayerDeCanal
+                key={selecionado.id}
+                canal={selecionado}
+                inline
+                concessaoAnuncio={concessaoAnuncio}
+                acoesRef={acoesDoPlayerRef}
+                onFechar={() => setSelecionado(null)}
+              />
+            ) : (
+              <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(ellipse_at_center,rgba(229,9,20,0.08),transparent_60%)] px-6 text-center">
+                <div className="flex flex-col items-center gap-3">
+                  <span className="grid h-16 w-16 place-items-center rounded-full border border-live-line bg-live-surface">
+                    <Radio className="h-7 w-7 text-live-accent" aria-hidden />
+                  </span>
+                  <p className="text-base font-semibold text-white">Selecione um canal</p>
+                  <p className="max-w-xs text-sm text-live-muted">
+                    Escolha um canal na lista para assistir ao vivo.
+                  </p>
                 </div>
-              )}
-            </div>
-          </main>
+              </div>
+            )}
+          </section>
         </div>
       </Moldura>
 
@@ -300,14 +342,19 @@ export function GradeDeCanais() {
 
 function LinhaDeCanal({
   canal,
+  numero,
+  subtitulo,
   selecionado,
   aoAbrir,
   aoFocar,
   refBotao,
 }: {
   canal: ItemDeCanal;
+  numero: number;
+  subtitulo: string;
   selecionado: boolean;
-  aoAbrir: () => void;
+  /** `peloTeclado` = ativado por Enter/Espaço (e.detail === 0), não por clique. */
+  aoAbrir: (peloTeclado: boolean) => void;
   aoFocar: () => void;
   refBotao: (el: HTMLButtonElement | null) => void;
 }) {
@@ -320,15 +367,18 @@ function LinhaDeCanal({
       type="button"
       role="option"
       aria-selected={selecionado}
-      onClick={aoAbrir}
+      onClick={(e) => aoAbrir(e.detail === 0)}
       onFocus={aoFocar}
-      className={`flex w-full shrink-0 items-center gap-3 rounded-lg border px-3 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 ${
+      className={`group flex min-h-[64px] w-full shrink-0 items-center gap-3 rounded-xl border px-3 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80 ${
         selecionado
-          ? "border-red-600 bg-red-600/15 text-white"
-          : "border-zinc-800 bg-zinc-900/60 text-zinc-200 hover:bg-zinc-800"
+          ? "border-live-glow/90 bg-[linear-gradient(90deg,rgba(229,9,20,0.20),rgba(229,9,20,0.06))] shadow-[0_0_0_1px_rgba(242,13,36,0.35),0_0_22px_rgba(242,13,36,0.28)]"
+          : "border-live-line/70 bg-live-raised hover:border-white/20 hover:bg-[#171a21]"
       }`}
     >
-      <span className="flex h-8 w-12 shrink-0 items-center justify-center">
+      <span className="w-8 shrink-0 text-center text-xs tabular-nums text-live-muted">
+        {String(numero).padStart(3, "0")}
+      </span>
+      <span className="flex h-11 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-black/40 px-1">
         {mostrarLogo ? (
           // Logo de terceiro, tamanho imprevisível: `<img>` com `object-contain`.
           // eslint-disable-next-line @next/next/no-img-element
@@ -337,15 +387,18 @@ function LinhaDeCanal({
             alt=""
             loading="lazy"
             onError={() => setLogoFalhou(true)}
-            className="max-h-8 max-w-full object-contain"
+            className="max-h-9 max-w-full object-contain"
           />
         ) : (
           <Tv className="h-5 w-5 text-zinc-600" aria-hidden />
         )}
       </span>
-      <span className="line-clamp-1 flex-1 text-sm font-medium">{canal.nome}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-semibold text-white">{canal.nome}</span>
+        {subtitulo && <span className="truncate text-xs text-live-muted">{subtitulo}</span>}
+      </span>
       {selecionado && (
-        <span className="flex shrink-0 items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-bold leading-none text-white">
+        <span className="flex shrink-0 items-center gap-1 rounded-md bg-live-accent px-2 py-1 text-[10px] font-bold leading-none text-white shadow-[0_0_12px_rgba(242,13,36,0.45)]">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" aria-hidden />
           AO VIVO
         </span>
@@ -357,9 +410,20 @@ function LinhaDeCanal({
 function Moldura({ children }: { children: React.ReactNode }) {
   return (
     // `pt-20` = mesmo offset das demais páginas (Navbar é `fixed h-16`): o
-    // conteúdo começa ABAIXO do header global, nunca atrás dele. Centralizado.
-    <div className="mx-auto w-full max-w-7xl px-4 pt-20 pb-8">
-      <h1 className="sr-only">Canais ao vivo</h1>
+    // conteúdo começa ABAIXO do header global, nunca atrás dele. Em `lg` a tela
+    // ocupa exatamente a janela, para o player preencher a coluna sem rolagem.
+    <div className="mx-auto flex w-full max-w-[1800px] flex-col px-4 pt-20 pb-6 md:px-10 lg:h-[100dvh]">
+      <header className="mb-5 flex shrink-0 items-center gap-3 md:mb-6 md:gap-4">
+        <Radio className="h-7 w-7 shrink-0 text-live-accent drop-shadow-[0_0_10px_rgba(242,13,36,0.55)] md:h-9 md:w-9" aria-hidden />
+        <div className="min-w-0">
+          <h1 className="text-2xl font-extrabold leading-tight tracking-tight text-white md:text-4xl">
+            Canais ao vivo
+          </h1>
+          <p className="mt-0.5 text-sm text-live-muted md:text-base">
+            Assista seus canais favoritos em tempo real.
+          </p>
+        </div>
+      </header>
       {children}
     </div>
   );
@@ -369,30 +433,31 @@ function Vazio({
   titulo,
   detalhe,
   acao,
+  compacto = false,
 }: {
   titulo: string;
   detalhe: string;
   acao?: { rotulo: string; href?: string; aoClicar?: () => void };
+  compacto?: boolean;
 }) {
+  const botao =
+    "mt-1 rounded-lg bg-live-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-live-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80";
   return (
-    <div className="flex flex-col items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-14 text-center">
+    <div
+      className={`flex flex-col items-center gap-3 rounded-2xl border border-live-line/70 bg-live-surface px-6 text-center ${
+        compacto ? "py-10" : "py-14"
+      }`}
+    >
       <Tv className="h-10 w-10 text-zinc-700" aria-hidden />
       <p className="text-sm font-semibold text-zinc-200">{titulo}</p>
-      <p className="max-w-xs text-xs text-zinc-500">{detalhe}</p>
+      <p className="max-w-xs text-xs text-live-muted">{detalhe}</p>
       {acao?.href && (
-        <a
-          href={acao.href}
-          className="mt-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
-        >
+        <a href={acao.href} className={botao}>
           {acao.rotulo}
         </a>
       )}
       {acao?.aoClicar && (
-        <button
-          type="button"
-          onClick={acao.aoClicar}
-          className="mt-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
-        >
+        <button type="button" onClick={acao.aoClicar} className={botao}>
           {acao.rotulo}
         </button>
       )}
