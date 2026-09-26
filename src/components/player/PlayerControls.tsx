@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize2, Settings2, Check, Cast } from "lucide-react";
+import { Play, Pause, Volume2, VolumeX, Maximize, Minimize2, Settings2, Check, Cast, RotateCw } from "lucide-react";
 import type { OpcaoDeQualidade } from "@/lib/canais/playerControles";
 
 /**
@@ -10,12 +10,12 @@ import type { OpcaoDeQualidade } from "@/lib/canais/playerControles";
  * Sem `<video>`, sem `hls.js`, sem Remote Playback: recebe estado e callbacks e
  * desenha a barra com a identidade visual do `CustomPlayer` (mesmo `btnCls`,
  * mesmo acento `#E50914`, mesmo popup de qualidade). Existe para o player de
- * canal ganhar a mesma experiência de controles sem tocar no `CustomPlayer`
- * (Fase 1); numa fase seguinte o próprio `CustomPlayer` pode passar a usá-la.
+ * canal ganhar a mesma experiência de controles sem tocar no `CustomPlayer`.
  *
  * O que **não** existe aqui, de propósito, no modo live: seek/linha do tempo,
- * -10s/+10s, resume, próximo episódio, dub/leg. Ao vivo não tem conteúdo
- * gravado para navegar — só o presente.
+ * -10s/+10s, resume, próximo episódio, dub/leg. Ao vivo não tem conteúdo gravado
+ * para navegar — só o presente. `Atualizar canal` reusa a re-resolução já
+ * existente no motor (passada por `onRefresh`), sem segunda máquina de retry.
  */
 
 const btnCls =
@@ -41,6 +41,8 @@ export interface PlayerControlsProps {
   transmitindo?: boolean;
   /** Controla o fade da barra (auto-hide gerido pelo pai). */
   visivel?: boolean;
+  /** Em andamento uma atualização/re-resolução manual (spinner + desabilita). */
+  atualizando?: boolean;
 
   onPlayPause: () => void;
   onToggleMute: () => void;
@@ -48,6 +50,8 @@ export interface PlayerControlsProps {
   onToggleFullscreen: () => void;
   onSelectQualidade?: (indice: number) => void;
   onCast?: () => void;
+  /** Atualizar canal: re-resolve o canal atual pelo mesmo mecanismo do motor. */
+  onRefresh?: () => void;
 }
 
 export function PlayerControls({
@@ -61,12 +65,14 @@ export function PlayerControls({
   castDisponivel = false,
   transmitindo = false,
   visivel = true,
+  atualizando = false,
   onPlayPause,
   onToggleMute,
   onVolume,
   onToggleFullscreen,
   onSelectQualidade,
   onCast,
+  onRefresh,
 }: PlayerControlsProps) {
   const [mostrarQualidade, setMostrarQualidade] = useState(false);
   const temMenuDeQualidade = qualidades.length > 0;
@@ -124,7 +130,7 @@ export function PlayerControls({
           )}
         </button>
 
-        {/* Direita: qualidade + cast + tela cheia */}
+        {/* Direita: qualidade + atualizar + cast + tela cheia */}
         <div className="flex items-center gap-1 md:gap-1.5">
           {temMenuDeQualidade && (
             <div className="relative">
@@ -172,6 +178,19 @@ export function PlayerControls({
                 </div>
               )}
             </div>
+          )}
+
+          {onRefresh && (
+            <button
+              type="button"
+              title="Atualizar canal"
+              aria-label="Atualizar canal"
+              disabled={atualizando}
+              className={`${btnCls} disabled:opacity-60`}
+              onClick={onRefresh}
+            >
+              <RotateCw className={`w-5 h-5${atualizando ? " animate-spin" : ""}`} />
+            </button>
           )}
 
           {castDisponivel && (

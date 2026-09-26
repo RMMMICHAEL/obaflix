@@ -15,42 +15,27 @@ import { criarWatchdogDeStall } from "@/lib/canais/watchdogDeStall";
 /**
  * Player de canal ao vivo.
  *
- * Próprio, e não o `CustomPlayer` de filmes/séries, de propósito. Aquele carrega
- * failover de fontes, extração, legendas, retomada e anúncios — e canal ao vivo
- * não precisa de nada disso: precisa de uma URL de manifesto, sem linha do tempo
- * e sem retomada.
+ * Motor de live (não VOD): `/play → streamUrl`, `criarControleDeCanal`,
+ * re-resolução controlada, single-flight, teto 3/60s e watchdog de stall. Os
+ * controles vêm do `PlayerControls` (mesma identidade do `CustomPlayer`).
  *
- * ## Identidade visual dos controles
+ * ## Dois modos de render
  *
- * A **experiência** de controles vem do `PlayerControls` (camada presentacional
- * compartilhável, mesma identidade do `CustomPlayer`), mas o **motor** continua
- * aqui e é o de live: só play/pause, volume/mute, tela cheia, qualidade quando
- * o `hls.js` oferece variantes reais e cast quando o aparelho suporta. Sem seek,
- * sem resume, sem próximo episódio, sem dub/leg — nada que não faça sentido ao
- * vivo.
+ * - `inline` (Etapa 3): preenche a área de preview da tela de canais (lista +
+ *   preview). Sem barra superior de "fechar"; tela cheia via Fullscreen API no
+ *   próprio elemento. Um player por vez: o pai usa `key={canal.id}`, então trocar
+ *   de canal desmonta este componente (o cleanup destrói hls, timers e listeners)
+ *   e monta o novo.
+ * - modal (legado): overlay `fixed inset-0` com barra de fechar. Mantido para não
+ *   regredir chamadas existentes.
  *
- * ## O que este componente nunca vê
- *
- * O provider, o host do CDN, o Referer. Recebe do `/play` só a `streamUrl` e é
- * só o que existe no estado. Nada é guardado em `localStorage`.
- *
- * ## A migração entre concessões é real
- *
- * O protocolo de re-resolução em erro vive em `@/lib/canais/handoff`, testado à
- * parte. Aqui `trocarFonte` chama `hls.loadSource(url)` — ou troca `video.src` no
- * HLS nativo — para o player **passar a buscar** pela concessão nova.
+ * Nada de `streamUrl` é persistido. O componente nunca vê provider/host/Referer.
  */
 
 type Estado =
   | { fase: "pedindo" }
   | { fase: "tocando"; primeiraUrl: string }
   | { fase: "erro"; mensagem: string; podeTentarDeNovo: boolean };
-
-class ErroDeCanal extends Error {
-  constructor(mensagem: string, readonly definitivo: boolean) {
-    super(mensagem);
-  }
-}
 
 /** Acesso opcional ao Remote Playback (cast nativo do navegador/WebView). */
 interface RemotePlaybackLike {
@@ -94,8 +79,8 @@ async function pedirConcessao(
 
   if (!r.ok) {
     const corpo = (await r.json().catch(() => ({}))) as { erro?: string; nivelExigido?: string };
-    // Mensagens genéricas, por decisão de exposição: o usuário comum não
-    // recebe motivo técnico, host, provider nem status do provedor.
+    // Mensagens genéricas, por decisão de exposição: o usuário comum não recebe
+    // motivo técnico, host, provider nem status do provedor.
     if (r.status === 401) {
       return { ok: false, definitivo: true, mensagem: "Faça login para assistir." };
     }
@@ -123,7 +108,17 @@ async function pedirConcessao(
   return { ok: true, streamUrl: corpo.streamUrl };
 }
 
-export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: ItemDeCanal; onFechar: () => void; concessaoAnuncio?: string | null }) {
+export function PlayerDeCanal({
+  canal,
+  onFechar,
+  concessaoAnuncio,
+  inline = false,
+}: {
+  canal: ItemDeCanal;
+  onFechar?: () => void;
+  concessaoAnuncio?: string | null;
+  inline?: boolean;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [estado, setEstado] = useState<Estado>({ fase: "pedindo" });
@@ -139,6 +134,7 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
   const [castDisponivel, setCastDisponivel] = useState(false);
   const [transmitindo, setTransmitindo] = useState(false);
   const [controlesVisiveis, setControlesVisiveis] = useState(true);
+  const [atualizando, setAtualizando] = useState(false);
 
   /**
    * Como trocar a fonte, publicado pelo efeito do HLS. Vive numa referência
@@ -154,6 +150,8 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
   const hlsRef = useRef<{ currentLevel: number } | null>(null);
   const playingRef = useRef(false);
   const hideTimerRef = useRef<number | null>(null);
+  const atualizandoRef = useRef(false);
+  const refreshTimerRef = useRef<number | null>(null);
 
   function aplicar(url: string) {
     if (trocarRef.current) trocarRef.current(url);
@@ -206,8 +204,8 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
     // Safari e a WebView do Android tocam HLS nativamente; aí o hls.js só
     // acrescentaria uma camada de buffer sobre algo que já funciona.
     if (video.canPlayType("application/vnd.apple.mpegurl") !== "") {
-      // HLS nativo (Safari, WebView do Android): sem hls.js, sem menu de
-      // qualidade; o erro do elemento dispara a mesma re-resolução controlada.
+      // HLS nativo: sem hls.js, sem menu de qualidade; o erro do elemento dispara
+      // a mesma re-resolução controlada.
       hlsRef.current = null;
       setAlturasDosNiveis([]);
       const aoErroNativo = () => controleRef.current?.aoErroDeReproducao();
@@ -234,7 +232,6 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
         // é o que diz "o usuário deixou no automático" — é isso que o menu marca.
         const nivelSelecionado = () => (hls.autoLevelEnabled ? -1 : hls.currentLevel);
         const publicarNiveis = () => {
-          // Só as alturas — o menu decide sozinho se aparece (variantes > 1).
           setAlturasDosNiveis(hls.levels.map((l) => (typeof l.height === "number" ? l.height : null)));
           setNivelAtual(nivelSelecionado());
         };
@@ -245,10 +242,8 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
         hls.on(Hls.Events.LEVEL_SWITCHED, () => setNivelAtual(nivelSelecionado()));
         hls.on(Hls.Events.ERROR, (_e, dados) => {
           if (!dados.fatal) return;
-          // Erro fatal num canal ao vivo costuma ser a fonte do provider caindo
-          // ou rotacionando. Re-resolve de forma controlada: o controle pede uma
-          // `streamUrl` nova ao `/play` e a troca; o teto por janela vive nele e,
-          // esgotado, chama `aoPerder`. Sem repetição infinita.
+          // Erro fatal num canal ao vivo costuma ser a fonte caindo/rotacionando.
+          // Re-resolve de forma controlada (teto/single-flight no controle).
           controleRef.current?.aoErroDeReproducao();
         });
 
@@ -349,11 +344,8 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
   }, [estado.fase]);
 
   // ── Watchdog de stall: recupera stalls silenciosos (sem erro fatal) ─────────
-  // O HAR da homologação provou stalls de 15–29s em que o hls policiava o
-  // manifesto sem receber segmento e NÃO emitia erro fatal — então o gatilho do
-  // #46 (fatal) demorava, gerando telas pretas longas. Aqui: se a reprodução não
-  // avança por ~7s e o vídeo não está pausado, dispara a MESMA re-resolução. O
-  // single-flight e o teto de 3/60s vivem no controle (não duplicamos nada).
+  // Se a reprodução não avança por ~7s e o vídeo não está pausado, dispara a
+  // MESMA re-resolução. O single-flight e o teto de 3/60s vivem no controle.
   useEffect(() => {
     if (estado.fase !== "tocando") return;
     const video = videoRef.current;
@@ -369,8 +361,6 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
     video.addEventListener("pause", onPause);
     video.addEventListener("play", onPlay);
 
-    // Poll do currentTime: robusto (não depende de `timeupdate`/`waiting`/
-    // `stalled` dispararem durante o congelamento — a ausência de avanço basta).
     const id = window.setInterval(() => {
       const t = agora();
       wd.progrediu(video.currentTime, t);
@@ -384,18 +374,22 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
     };
   }, [estado.fase]);
 
-  // ── BACK / ESC fecham ──────────────────────────────────────────────────────
+  // ── BACK / ESC fecham (só no modo modal) ────────────────────────────────────
   useEffect(() => {
+    if (inline) return;
     const aoTeclar = (e: KeyboardEvent) => {
       // Em tela cheia, ESC sai da tela cheia (comportamento nativo); só fecha o
       // player quando não está em fullscreen.
-      if ((e.key === "Escape" && !document.fullscreenElement) || e.key === "Backspace") onFechar();
+      if ((e.key === "Escape" && !document.fullscreenElement) || e.key === "Backspace") onFechar?.();
     };
     window.addEventListener("keydown", aoTeclar);
     return () => window.removeEventListener("keydown", aoTeclar);
-  }, [onFechar]);
+  }, [onFechar, inline]);
 
-  useEffect(() => () => { if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+    if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+  }, []);
 
   const mostrarControles = useCallback(() => {
     setControlesVisiveis(true);
@@ -441,12 +435,114 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
     remoteDe(videoRef.current)?.prompt?.().catch(() => {});
   }, []);
 
+  // Atualizar canal: reusa a MESMA re-resolução controlada (single-flight + teto
+  // vivem no controle). Não recarrega página/catálogo/sessão. Impede dois
+  // refreshes simultâneos e mostra carregamento por uma janela curta.
+  const atualizarCanal = useCallback(() => {
+    if (atualizandoRef.current) return;
+    atualizandoRef.current = true;
+    setAtualizando(true);
+    controleRef.current?.aoErroDeReproducao();
+    if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => {
+      atualizandoRef.current = false;
+      setAtualizando(false);
+    }, 5000);
+  }, []);
+
+  const area = (
+    <div
+      className={inline ? "relative h-full w-full" : "relative flex-1"}
+      onPointerMove={mostrarControles}
+      onPointerDown={mostrarControles}
+    >
+      <video
+        ref={videoRef}
+        className="h-full w-full bg-black"
+        playsInline
+        autoPlay
+        // Controles próprios (PlayerControls); nada de `controls` nativo.
+        // Canal ao vivo não tem pôster próprio e não retoma de lugar nenhum.
+        preload="none"
+        onClick={alternarPlay}
+      />
+
+      {estado.fase === "tocando" && (
+        <PlayerControls
+          isLive
+          playing={playing}
+          muted={muted}
+          volume={volume}
+          fullscreen={fullscreen}
+          qualidades={opcoesDeQualidade(alturasDosNiveis)}
+          qualidadeSelecionada={nivelAtual}
+          castDisponivel={castDisponivel}
+          transmitindo={transmitindo}
+          visivel={controlesVisiveis || !playing}
+          atualizando={atualizando}
+          onPlayPause={alternarPlay}
+          onToggleMute={alternarMute}
+          onVolume={ajustarVolume}
+          onToggleFullscreen={alternarFullscreen}
+          onSelectQualidade={selecionarQualidade}
+          onCast={transmitir}
+          onRefresh={atualizarCanal}
+        />
+      )}
+
+      {estado.fase === "pedindo" && (
+        <div className="absolute inset-0 grid place-items-center bg-black/80">
+          <div className="flex flex-col items-center gap-3">
+            <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-red-600" />
+            <span className="text-sm text-zinc-400">Conectando…</span>
+          </div>
+        </div>
+      )}
+
+      {estado.fase === "erro" && (
+        <div className="absolute inset-0 grid place-items-center bg-black/90 px-6">
+          <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+            <p className="text-sm text-zinc-300">{estado.mensagem}</p>
+            <div className="flex gap-2">
+              {estado.podeTentarDeNovo && (
+                <button
+                  type="button"
+                  onClick={() => setTentativa((n) => n + 1)}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+                >
+                  Tentar de novo
+                </button>
+              )}
+              {!inline && (
+                <button
+                  type="button"
+                  onClick={() => onFechar?.()}
+                  className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800"
+                >
+                  Voltar
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  if (inline) {
+    return (
+      <div ref={rootRef} className="relative h-full w-full overflow-hidden bg-black">
+        {area}
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="fixed inset-0 z-50 flex flex-col bg-black">
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
-          onClick={onFechar}
+          onClick={() => onFechar?.()}
           className="rounded-lg p-2 text-zinc-300 transition hover:bg-zinc-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
           aria-label="Fechar"
         >
@@ -457,79 +553,7 @@ export function PlayerDeCanal({ canal, onFechar, concessaoAnuncio }: { canal: It
           AO VIVO
         </span>
       </div>
-
-      <div
-        className="relative flex-1"
-        onPointerMove={mostrarControles}
-        onPointerDown={mostrarControles}
-      >
-        <video
-          ref={videoRef}
-          className="h-full w-full bg-black"
-          playsInline
-          autoPlay
-          // Controles próprios (PlayerControls); nada de `controls` nativo.
-          // Canal ao vivo não tem pôster próprio e não retoma de lugar nenhum.
-          preload="none"
-          onClick={alternarPlay}
-        />
-
-        {estado.fase === "tocando" && (
-          <PlayerControls
-            isLive
-            playing={playing}
-            muted={muted}
-            volume={volume}
-            fullscreen={fullscreen}
-            qualidades={opcoesDeQualidade(alturasDosNiveis)}
-            qualidadeSelecionada={nivelAtual}
-            castDisponivel={castDisponivel}
-            transmitindo={transmitindo}
-            visivel={controlesVisiveis || !playing}
-            onPlayPause={alternarPlay}
-            onToggleMute={alternarMute}
-            onVolume={ajustarVolume}
-            onToggleFullscreen={alternarFullscreen}
-            onSelectQualidade={selecionarQualidade}
-            onCast={transmitir}
-          />
-        )}
-
-        {estado.fase === "pedindo" && (
-          <div className="absolute inset-0 grid place-items-center bg-black/80">
-            <div className="flex flex-col items-center gap-3">
-              <span className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-red-600" />
-              <span className="text-sm text-zinc-400">Conectando…</span>
-            </div>
-          </div>
-        )}
-
-        {estado.fase === "erro" && (
-          <div className="absolute inset-0 grid place-items-center bg-black/90 px-6">
-            <div className="flex max-w-sm flex-col items-center gap-4 text-center">
-              <p className="text-sm text-zinc-300">{estado.mensagem}</p>
-              <div className="flex gap-2">
-                {estado.podeTentarDeNovo && (
-                  <button
-                    type="button"
-                    onClick={() => setTentativa((n) => n + 1)}
-                    className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
-                  >
-                    Tentar de novo
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onFechar}
-                  className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:bg-zinc-800"
-                >
-                  Voltar
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      {area}
     </div>
   );
 }
