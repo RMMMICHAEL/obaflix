@@ -792,9 +792,13 @@ object ApiObaflix {
     }
 
     /**
-     * Pede a concessao de reproducao de um canal.
+     * Pede a URL de reproducao de um canal: `POST /api/canais/[id]/play`.
      *
-     * So e chamada no OK e na renovacao periodica. Passar o foco por um card
+     * Contrato atual: a resposta traz `streamUrl`, que o aparelho busca direto.
+     * `reresolucao = true` e a continuacao apos um erro de reproducao — o
+     * servidor resolve de novo e devolve outra URL, sem cobrar anuncio outra vez.
+     *
+     * So e chamada na abertura do canal e na re-resolucao. Passar o foco por um card
      * **nao** chega aqui: a primeira chamada resolve o canal no provedor, e
      * percorrer uma grade de cem canais abriria cem sessoes em alguns segundos.
      *
@@ -802,11 +806,10 @@ object ApiObaflix {
      * diferentes — por isso repete a logica de renovacao em vez de usar
      * `executar`, que descarta o status.
      */
-    suspend fun concessaoDeCanal(canalId: String, sessionId: String? = null): Concessao = withContext(Dispatchers.IO) {
+    suspend fun concessaoDeCanal(canalId: String, reresolucao: Boolean = false): Concessao = withContext(Dispatchers.IO) {
         val caminho = "/api/canais/" + java.net.URLEncoder.encode(canalId, "UTF-8") + "/play"
-        // Com `sessionId`, o servidor renova sem voltar ao provedor; sem ele,
-        // resolve do zero. A checagem de entitlement acontece nos dois casos.
-        val corpo = JSONObject().apply { if (sessionId != null) put("sessionId", sessionId) }
+        // A checagem de entitlement acontece nas duas formas.
+        val corpo = JSONObject().apply { if (reresolucao) put("reresolucao", true) }
 
         val ctx = contexto
         val desfecho = com.obaflix.tv.sessao.executarComRenovacao(
@@ -825,15 +828,13 @@ object ApiObaflix {
         when (r.status) {
             200 -> {
                 val raiz = r.corpo?.let { runCatching { JSONObject(it) }.getOrNull() }
-                val url = raiz?.let { texto(it, "manifestUrl") }
+                // Defesa em profundidade: o servidor ja so entrega https de CDN
+                // permitido; o aparelho recusa qualquer outra coisa em vez de
+                // tocar. A URL nao vai para log nem para disco.
+                val url = raiz?.let { texto(it, "streamUrl") }
+                    ?.takeIf { it.startsWith("https://", ignoreCase = true) }
                     ?: return@withContext Concessao.FalhaTemporaria
-                Concessao.Liberado(
-                    manifestUrl = url,
-                    sessionId = texto(raiz, "sessionId") ?: "",
-                    geracao = raiz.optInt("geracao", 0),
-                    expiraEm = raiz.optLong("expiraEm"),
-                    validoPorSegundos = raiz.optInt("validoPorSegundos", 300),
-                )
+                Concessao.Liberado(streamUrl = url)
             }
             401 -> Concessao.SemSessao
             403 -> {
