@@ -137,30 +137,16 @@ data class CatalogoDeCanais(
  */
 sealed interface Concessao {
     /**
-     * `sessionId` volta no corpo da proxima chamada, para renovar sem o servidor
-     * precisar buscar o provedor de novo. Nao e credencial: sozinho nao abre
-     * nada, porque a URL de midia exige assinatura e renovar exige a sessao
-     * autenticada do dono.
+     * A URL de midia que o aparelho busca direto (`POST /api/canais/[id]/play`
+     * → `streamUrl`). O servidor ja validou https + allowlist de CDN; o aparelho
+     * so a entrega ao player. Transitoria e nunca persistida: numa falha de
+     * reproducao o cliente pede outra com `reresolucao`, e ela substitui esta.
      *
-     * `validoPorSegundos` e curto de proposito. O aparelho volta ao backend
-     * antes de vencer, e nessa volta o servidor reconfere entitlement e gira o
-     * nonce — o que derruba na hora as URLs emitidas antes.
+     * Nao ha mais `sessionId`, geracao nem validade: o contrato de sessao/
+     * manifesto do Worker foi aposentado. A URL vale ate o provedor girar ou
+     * cair — quem avisa e o erro de reproducao, nao um relogio.
      */
-    data class Liberado(
-        val manifestUrl: String,
-        val sessionId: String,
-        /**
-         * Numero da geracao, monotonico, vindo do servidor.
-         *
-         * E o que permite recusar uma resposta antiga que chegou atrasada: duas
-         * renovacoes concorrentes nao tem ordem de chegada garantida, e adotar
-         * a que chegar por ultimo faria o aparelho REGREDIR para uma geracao
-         * que o servidor ja aposentou.
-         */
-        val geracao: Int,
-        val expiraEm: Long,
-        val validoPorSegundos: Int,
-    ) : Concessao
+    data class Liberado(val streamUrl: String) : Concessao
     /** Plano nao alcanca. `nivelExigido` e o que a tela mostra. */
     data class PrecisaDeUpgrade(val nivelExigido: String?) : Concessao
     /** Sessao caiu. A raiz volta ao pareamento. */

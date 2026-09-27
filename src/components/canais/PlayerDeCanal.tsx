@@ -235,9 +235,13 @@ export function PlayerDeCanal({
     let cancelado = false;
     let destruir = () => {};
 
-    // Safari e a WebView do Android tocam HLS nativamente; aí o hls.js só
-    // acrescentaria uma camada de buffer sobre algo que já funciona.
-    if (video.canPlayType("application/vnd.apple.mpegurl") !== "") {
+    // hls.js (MSE) primeiro; HLS nativo só onde não há MSE (iOS sem Managed
+    // Media Source). A ordem importa: a WebView do Android anuncia HLS nativo,
+    // mas ele roda no MediaPlayer do sistema, que escolhe o parser pela extensão
+    // do segmento — e os segmentos das CDNs de canais chegam como MPEG-TS com
+    // extensão que não é `.ts`. O MediaPlayer recusa; o hls.js olha o conteúdo e
+    // toca. O CDN responde CORS, então o hls.js pode buscá-lo direto.
+    const usarNativo = () => {
       // HLS nativo: sem hls.js, sem menu de qualidade; o erro do elemento dispara
       // a mesma re-resolução controlada.
       hlsRef.current = null;
@@ -258,67 +262,71 @@ export function PlayerDeCanal({
         video.removeEventListener("loadedmetadata", aoMudarDimensao);
         video.removeEventListener("resize", aoMudarDimensao);
       };
-    } else {
-      void import("hls.js").then(({ default: Hls }) => {
-        if (cancelado || !Hls.isSupported()) return;
-        const hls = new Hls({
-          // Live: começar perto da borda, e não no início do buffer disponível.
-          liveSyncDurationCount: 3,
-          enableWorker: true,
-        });
-        hlsRef.current = hls as unknown as { currentLevel: number };
-        hls.attachMedia(video);
+    };
 
-        // Em Auto, `currentLevel` devolve o nível real em uso; `autoLevelEnabled`
-        // é o que diz "o usuário deixou no automático" — é isso que o menu marca.
-        const nivelSelecionado = () => (hls.autoLevelEnabled ? -1 : hls.currentLevel);
-        const publicarNiveis = () => {
-          setAlturasDosNiveis(hls.levels.map((l) => (typeof l.height === "number" ? l.height : null)));
-          setNivelAtual(nivelSelecionado());
-        };
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          publicarNiveis();
-          void video.play().catch(() => {});
-        });
-        hls.on(Hls.Events.LEVEL_SWITCHED, (_e, dados) => {
-          setNivelAtual(nivelSelecionado());
-          const altura = hls.levels[dados.level]?.height;
-          setAlturaEmUso(typeof altura === "number" && altura > 0 ? altura : null);
-        });
-        hls.on(Hls.Events.ERROR, (_e, dados) => {
-          if (!dados.fatal) return;
-          // Erro fatal num canal ao vivo costuma ser a fonte caindo/rotacionando.
-          // Re-resolve de forma controlada (teto/single-flight no controle).
-          controleRef.current?.aoErroDeReproducao();
-        });
-
-        // **Aqui** o player migra de verdade. `loadSource` **não preserva a
-        // posição**; por isso ela é restaurada à mão, pelo buffer: se o ponto
-        // anterior ainda está bufferizado, volta-se a ele; senão, fica na borda.
-        trocarRef.current = (url) => {
-          const antes = video.currentTime;
-          const tocava = !video.paused;
-
-          const restaurar = () => {
-            for (let i = 0; i < video.buffered.length; i++) {
-              if (antes >= video.buffered.start(i) && antes <= video.buffered.end(i)) {
-                if (Math.abs(video.currentTime - antes) > 0.1) video.currentTime = antes;
-                break;
-              }
-            }
-            if (tocava) void video.play().catch(() => {});
-          };
-
-          hls.loadSource(url);
-          hls.once(Hls.Events.FRAG_BUFFERED, restaurar);
-          hls.once(Hls.Events.MANIFEST_PARSED, () => setTimeout(restaurar, 0));
-        };
-        trocarRef.current(pendenteRef.current ?? estado.primeiraUrl);
-        pendenteRef.current = null;
-
-        destruir = () => hls.destroy();
+    void import("hls.js").then(({ default: Hls }) => {
+      if (cancelado) return;
+      if (!Hls.isSupported()) {
+        usarNativo();
+        return;
+      }
+      const hls = new Hls({
+        // Live: começar perto da borda, e não no início do buffer disponível.
+        liveSyncDurationCount: 3,
+        enableWorker: true,
       });
-    }
+      hlsRef.current = hls as unknown as { currentLevel: number };
+      hls.attachMedia(video);
+
+      // Em Auto, `currentLevel` devolve o nível real em uso; `autoLevelEnabled`
+      // é o que diz "o usuário deixou no automático" — é isso que o menu marca.
+      const nivelSelecionado = () => (hls.autoLevelEnabled ? -1 : hls.currentLevel);
+      const publicarNiveis = () => {
+        setAlturasDosNiveis(hls.levels.map((l) => (typeof l.height === "number" ? l.height : null)));
+        setNivelAtual(nivelSelecionado());
+      };
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        publicarNiveis();
+        void video.play().catch(() => {});
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_e, dados) => {
+        setNivelAtual(nivelSelecionado());
+        const altura = hls.levels[dados.level]?.height;
+        setAlturaEmUso(typeof altura === "number" && altura > 0 ? altura : null);
+      });
+      hls.on(Hls.Events.ERROR, (_e, dados) => {
+        if (!dados.fatal) return;
+        // Erro fatal num canal ao vivo costuma ser a fonte caindo/rotacionando.
+        // Re-resolve de forma controlada (teto/single-flight no controle).
+        controleRef.current?.aoErroDeReproducao();
+      });
+
+      // **Aqui** o player migra de verdade. `loadSource` **não preserva a
+      // posição**; por isso ela é restaurada à mão, pelo buffer: se o ponto
+      // anterior ainda está bufferizado, volta-se a ele; senão, fica na borda.
+      trocarRef.current = (url) => {
+        const antes = video.currentTime;
+        const tocava = !video.paused;
+
+        const restaurar = () => {
+          for (let i = 0; i < video.buffered.length; i++) {
+            if (antes >= video.buffered.start(i) && antes <= video.buffered.end(i)) {
+              if (Math.abs(video.currentTime - antes) > 0.1) video.currentTime = antes;
+              break;
+            }
+          }
+          if (tocava) void video.play().catch(() => {});
+        };
+
+        hls.loadSource(url);
+        hls.once(Hls.Events.FRAG_BUFFERED, restaurar);
+        hls.once(Hls.Events.MANIFEST_PARSED, () => setTimeout(restaurar, 0));
+      };
+      trocarRef.current(pendenteRef.current ?? estado.primeiraUrl);
+      pendenteRef.current = null;
+
+      destruir = () => hls.destroy();
+    });
 
     return () => {
       cancelado = true;
@@ -558,6 +566,9 @@ export function PlayerDeCanal({
         // Controles próprios (PlayerControls); nada de `controls` nativo.
         // Canal ao vivo não tem pôster próprio e não retoma de lugar nenhum.
         preload="none"
+        // A WebView do Android desenha um ícone cinza de "play" em <video> sem
+        // pôster até o primeiro quadro; um pixel transparente o esconde.
+        poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
         onClick={alternarPlay}
         onDoubleClick={alternarFullscreen}
       />

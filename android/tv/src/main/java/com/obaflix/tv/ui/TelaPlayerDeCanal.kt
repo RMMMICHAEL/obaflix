@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,9 +48,11 @@ import com.obaflix.tv.navegacao.Navegacao
 import com.obaflix.tv.player.HandoffDeCanal
 import com.obaflix.tv.player.PlayerDeMidia
 import com.obaflix.tv.player.TrocaDeFonte
+import com.obaflix.tv.player.WatchdogDeStall
 import com.obaflix.tv.sessao.SessaoTv
 import com.obaflix.tv.ui.componentes.focavel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Reproducao de canal ao vivo.
@@ -65,22 +68,17 @@ import kotlinx.coroutines.delay
  *
  * ## O que este composable conhece
  *
- * Uma URL de manifesto no dominio de midia do Obaflix, e so. Nao ve upstream,
- * provedor, host de CDN nem Referer — o edge e quem fala com o provedor. A URL
+ * A `streamUrl` que `POST /api/canais/[id]/play` devolveu, e so — ja validada
+ * pelo servidor (https + allowlist de CDN). Nao ve provedor nem Referer. A URL
  * vive no estado da composicao e morre com ela: nada e gravado em disco.
  *
  * O unico cabecalho que sai daqui e o nosso `User-Agent`, o mesmo da sessao.
  *
- * ## A migracao entre concessoes e real
+ * ## Re-resolucao controlada
  *
- * O protocolo vive em `HandoffDeCanal`, testado a parte. Aqui esta a unica
- * coisa que ele nao pode fazer sozinho: `trocarFonte` chama `setMediaItem` +
- * `prepare` no ExoPlayer, para ele **passar a buscar** pela concessao nova.
- *
- * Guardar a URL numa variavel nao e migrar. Era o que a versao anterior fazia,
- * e o resultado e 403 no meio da reproducao assim que a grace do servidor
- * fecha. O corte da troca dura fracoes de segundo numa live, e acontece a cada
- * ~3 min: e o preco de a concessao ser curta.
+ * O protocolo vive em `HandoffDeCanal`, testado a parte. Erro fatal do
+ * ExoPlayer e stall silencioso (watchdog) disparam a mesma re-resolucao, com
+ * single-flight e teto; so estourado o teto a tela oferece "Tentar de novo".
  */
 @Composable
 fun TelaPlayerDeCanal(canal: CanalTv) {
@@ -103,14 +101,15 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
             .apply { playWhenReady = true }
     }
 
+    val escopo = rememberCoroutineScope()
+    var handoff by remember { mutableStateOf<HandoffDeCanal?>(null) }
+
     DisposableEffect(player) {
         val ouvinte = object : Player.Listener {
             override fun onPlayerError(erro: PlaybackException) {
-                // Falha fatal num canal ao vivo costuma ser a fonte caindo.
-                // Vira estado de erro com acao manual, e nao repeticao
-                // automatica: insistir sozinho contra um canal que saiu do ar
-                // vira tempestade no edge.
-                recusa = Concessao.FalhaTemporaria
+                // Falha fatal num canal ao vivo costuma ser a fonte caindo ou
+                // girando: re-resolve, sob o teto e o single-flight do controle.
+                handoff?.let { h -> escopo.launch { h.aoErroDeReproducao() } }
             }
         }
         player.addListener(ouvinte)
@@ -156,17 +155,40 @@ fun TelaPlayerDeCanal(canal: CanalTv) {
     LaunchedEffect(canal.id, tentativa) {
         recusa = null
         tocando = false
-        HandoffDeCanal(
+        val h = HandoffDeCanal(
             canalId = canal.id,
-            pedir = { id, sessionId -> ApiObaflix.concessaoDeCanal(id, sessionId) },
-            // AQUI o player migra de verdade, preservando a posicao.
+            pedir = { id, reresolucao -> ApiObaflix.concessaoDeCanal(id, reresolucao) },
+            // AQUI o player migra de verdade.
             trocarFonte = { url ->
                 troca.aplicar(url)
                 tocando = true
             },
             aoPerder = { motivo -> recusa = motivo },
             esperar = { millis -> delay(millis) },
-        ).executar()
+        )
+        handoff = h
+        try {
+            h.iniciar()
+            // Watchdog de stall: posicao parada com o player querendo tocar.
+            val watchdog = WatchdogDeStall()
+            var pausado: Boolean? = null
+            while (true) {
+                delay(1_000)
+                val t = System.currentTimeMillis()
+                // So a mudanca conta: retomar da carencia, e reportar "nao
+                // pausado" a cada segundo zeraria o relogio do stall.
+                val agoraPausado = !player.playWhenReady
+                if (agoraPausado != pausado) {
+                    pausado = agoraPausado
+                    watchdog.definirPausado(agoraPausado, t)
+                }
+                watchdog.progrediu(player.currentPosition, t)
+                if (tocando && recusa == null && watchdog.deveReresolver(t)) h.aoErroDeReproducao()
+            }
+        } finally {
+            h.parar()
+            if (handoff === h) handoff = null
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {

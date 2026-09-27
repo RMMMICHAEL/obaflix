@@ -41,6 +41,23 @@ object Cores {
 }
 
 /**
+ * Camada semantica da tela de Canais ao Vivo.
+ *
+ * Espelha `live.*` do `tailwind.config.ts` (web/Electron): mudar aqui e mudar
+ * la. O vermelho so aparece como foco, borda, brilho e selo — nunca como bloco
+ * chapado.
+ */
+object CoresLive {
+    val Fundo = Color(0xFF050609)
+    val Superficie = Color(0xFF0D0F14)
+    val SuperficieAlta = Color(0xFF12141A)
+    val Borda = Color(0xFF272A32)
+    val TextoApagado = Color(0xFF8B909C)
+    val Vermelho = Color(0xFFE50914)
+    val Brilho = Color(0xFFF20D24)
+}
+
+/**
  * Tamanhos de texto.
  *
  * Vindos da referencia (design 1920x1080), convertidos de px para sp na razao
