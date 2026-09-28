@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from "next/server";
+import { withCronTelemetry } from "@/lib/sync-telemetry";
 import { prisma } from "@/lib/prisma";
 import { executarSyncWebcine } from "@/lib/cron/webcine";
 
@@ -13,7 +14,7 @@ import { executarSyncWebcine } from "@/lib/cron/webcine";
  * extra. A rota fica para poder rodar sob demanda (mesmo CRON_SECRET) sem
  * esperar a janela das 3h.
  */
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
@@ -32,3 +33,6 @@ export async function GET(req: NextRequest) {
     await prisma.$disconnect();
   }
 }
+
+// Registra SyncRun "webcine-vercel"; o runner local grava "webcine-local" por conta própria.
+export const GET = withCronTelemetry("webcine", handleGET);

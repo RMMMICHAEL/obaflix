@@ -23,13 +23,13 @@ test("fonte sem telemetria aparece como tal, sem execução inventada nem atraso
 });
 
 test("job de 5h alerta só após 10h sem sucesso; falhas recentes não escondem o atraso", () => {
-  const ok = summarizeSyncSources([run("megafrix-local", "ciclo", "SUCCESS", 9.9)], now).fontes.find((f) => f.id === "megafrix-local")!;
+  const ok = summarizeSyncSources([run("megaflix-local", "ciclo", "SUCCESS", 9.9)], now).fontes.find((f) => f.id === "megaflix-local")!;
   assert.equal(ok.atrasada, false);
   const late = summarizeSyncSources([
-    run("megafrix-local", "ciclo", "FAILED", 1),
-    run("megafrix-local", "ciclo", "FAILED", 6),
-    run("megafrix-local", "ciclo", "SUCCESS", 11),
-  ], now).fontes.find((f) => f.id === "megafrix-local")!;
+    run("megaflix-local", "ciclo", "FAILED", 1),
+    run("megaflix-local", "ciclo", "FAILED", 6),
+    run("megaflix-local", "ciclo", "SUCCESS", 11),
+  ], now).fontes.find((f) => f.id === "megaflix-local")!;
   assert.equal(late.ultima?.status, "FAILED");
   assert.equal(late.atrasada, true);
   assert.equal(late.horasSemSucesso, 11);
@@ -37,12 +37,15 @@ test("job de 5h alerta só após 10h sem sucesso; falhas recentes não escondem 
   assert.equal(never.atrasada, true);
 });
 
-test("métrica legada do popular-sync mapeia para tmdb-popular; fonte desconhecida vai para 'outras'", () => {
+test("métrica legada do popular-sync fica em linha própria; fonte desconhecida vai para 'outras'", () => {
   const { fontes, outras } = summarizeSyncSources([
     run("tmdb", "popular-sync", "FAILED", 2, { legacy: true }),
     run("nova-fonte", "x", "SUCCESS", 1),
   ], now);
-  assert.equal(fontes.find((f) => f.id === "tmdb-popular")?.ultima?.status, "FAILED");
+  // Métrica legada não é atribuída a local nem a Vercel.
+  assert.equal(fontes.find((f) => f.id === "tmdb-popular-legado")?.ultima?.status, "FAILED");
+  assert.equal(fontes.find((f) => f.id === "tmdb-popular-local")?.telemetria, false);
+  assert.equal(fontes.find((f) => f.id === "tmdb-popular-vercel")?.telemetria, false);
   assert.deepEqual(outras.map((o) => o.source), ["nova-fonte"]);
   assert.equal(fontes.find((f) => f.id === "importacao-manual")!.frequenciaHoras, null);
 });
@@ -53,4 +56,13 @@ test("resumo de erro remove URLs e segredos de query", () => {
   assert.doesNotMatch(s!, /themoviedb|abc123|zzz|rtmp:\/\//);
   assert.equal(sanitizeErrorSummary(42), null);
   assert.equal(sanitizeErrorSummary("x".repeat(900))!.length, 500);
+});
+
+test("execuções local e Vercel do mesmo job aparecem separadas", () => {
+  const { fontes } = summarizeSyncSources([
+    run("tmdb-popular-local", "popular-sync", "FAILED", 1),
+    run("tmdb-popular-vercel", "popular-sync", "SUCCESS", 3),
+  ], now);
+  assert.equal(fontes.find((f) => f.id === "tmdb-popular-local")?.ultima?.status, "FAILED");
+  assert.equal(fontes.find((f) => f.id === "tmdb-popular-vercel")?.ultima?.status, "SUCCESS");
 });

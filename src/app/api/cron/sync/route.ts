@@ -15,6 +15,7 @@ export const maxDuration = 60;
 const ORCAMENTO_MS = Number(process.env.CRON_SYNC_ORCAMENTO_MS ?? 50_000);
 
 import { NextRequest, NextResponse } from "next/server";
+import { withCronTelemetry } from "@/lib/sync-telemetry";
 import { prisma } from "@/lib/prisma";
 import { executarSyncWebcine } from "@/lib/cron/webcine";
 
@@ -272,7 +273,7 @@ async function probeGap(
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   // Vercel chama com Authorization: Bearer CRON_SECRET
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
@@ -433,3 +434,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({ ok: true, totalFilmes, totalSeries, totalEps, elapsed, log });
 }
+
+// Registra SyncRun "megaflix-vercel"; o runner local grava "megaflix-local" por conta própria.
+export const GET = withCronTelemetry("megaflix", handleGET);

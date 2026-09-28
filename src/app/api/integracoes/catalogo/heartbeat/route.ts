@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { sanitizeErrorSummary } from "@/lib/sync-sources";
 
 export const dynamic = "force-dynamic";
-const statuses = new Set(["RUNNING", "SUCCESS", "FAILED"]);
+const statuses = new Set(["RUNNING", "SUCCESS", "FAILED", "SKIPPED"]);
 const text = (value: unknown, max: number) => typeof value === "string" ? value.trim().slice(0, max) : "";
 const count = (value: unknown) => Math.max(0, Math.floor(Number(value) || 0));
 
@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
       source, job, status, heartbeatAt: new Date(),
       finishedAt: status === "RUNNING" ? null : new Date(),
       expectedNextAt: body.expectedNextAt ? new Date(body.expectedNextAt) : null,
+      found: body.found === undefined || body.found === null ? null : count(body.found),
       moviesAdded: count(body.moviesAdded), moviesUpdated: count(body.moviesUpdated),
       seriesAdded: count(body.seriesAdded), seriesUpdated: count(body.seriesUpdated),
       episodesAdded: count(body.episodesAdded), episodesUpdated: count(body.episodesUpdated),

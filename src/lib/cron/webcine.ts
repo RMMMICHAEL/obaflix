@@ -97,10 +97,10 @@ function buildEpisodeUrl(tmdbId: number, title: string, season: number, ep: numb
 
 // ── Sync filmes ────────────────────────────────────────────────────────────────
 
-async function syncFilmes(log: string[]): Promise<number> {
+async function syncFilmes(log: string[]): Promise<{ novos: number; completados: number }> {
   const items = await fetchCatalogPage("movies");
   const validos = items.filter((item) => normalizeTmdbId(item.tmdb_id));
-  if (validos.length === 0) return 0;
+  if (validos.length === 0) return { novos: 0, completados: 0 };
 
   const tmdbIds = validos.map((item) => normalizeTmdbId(item.tmdb_id)!);
   const wcIds = validos.map((item) => `wc_${item.id}`);
@@ -188,7 +188,7 @@ async function syncFilmes(log: string[]): Promise<number> {
   if (fgRows.length > 0) await prisma.filmeGenero.createMany({ data: fgRows, skipDuplicates: true });
 
   log.push(`🎬 Filmes: ${novos.length} novos | ${completados} identidades existentes receberam WebCine`);
-  return novos.length;
+  return { novos: novos.length, completados };
 }
 
 // ── Sync séries/animes ─────────────────────────────────────────────────────────
@@ -197,11 +197,11 @@ async function syncSeriesTipo(
   endpoint: "series" | "animes",
   tipo: "serie" | "anime",
   log: string[],
-): Promise<{ series: number; eps: number }> {
+): Promise<{ series: number; eps: number; espelhos: number }> {
   const label = tipo === "anime" ? "Animes" : "Séries";
   const items = await fetchCatalogPage(endpoint);
   const validos = items.filter((item) => normalizeTmdbId(item.tmdb_id));
-  if (validos.length === 0) return { series: 0, eps: 0 };
+  if (validos.length === 0) return { series: 0, eps: 0, espelhos: 0 };
 
   const tmdbIds = validos.map((item) => normalizeTmdbId(item.tmdb_id)!);
   const wcIds = validos.map((item) => `wc_${item.id}`);
@@ -358,7 +358,7 @@ async function syncSeriesTipo(
 
   const emoji = tipo === "anime" ? "🎌" : "📺";
   log.push(`${emoji} ${label}: ${novas.length} novas | ${totalEps} eps novos | ${totalEspelhos} eps receberam WebCine`);
-  return { series: novas.length, eps: totalEps };
+  return { series: novas.length, eps: totalEps, espelhos: totalEspelhos };
 }
 
 // ── Execucao ───────────────────────────────────────────────────────────────────
@@ -367,6 +367,10 @@ export interface ResultadoWebcine {
   totalFilmes: number;
   totalSeries: number;
   totalEps: number;
+  /** Filmes existentes que ganharam o espelho WebCine nesta execução. */
+  filmesAtualizados: number;
+  /** Episódios existentes que ganharam o espelho WebCine nesta execução. */
+  episodiosAtualizados: number;
   elapsed: string;
   log: string[];
 }
@@ -387,9 +391,11 @@ export async function executarSyncWebcine(log: string[] = []): Promise<Resultado
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
   return {
-    totalFilmes: fResult,
+    totalFilmes: fResult.novos,
     totalSeries: sResult.series + aResult.series,
     totalEps: sResult.eps + aResult.eps,
+    filmesAtualizados: fResult.completados,
+    episodiosAtualizados: sResult.espelhos + aResult.espelhos,
     elapsed,
     log,
   };

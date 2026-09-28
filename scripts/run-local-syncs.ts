@@ -2,9 +2,25 @@
  * Executa localmente os mesmos quatro handlers usados pelos antigos cron jobs
  * da Vercel. Nenhuma chamada é feita ao domínio publicado do Obaflix.
  *
+ * Origem: copiado de D:\streaming-app\scripts\run-local-syncs.ts (não
+ * versionado lá), que é o que a tarefa Windows "Obaflix - Sincronizar
+ * catalogos a cada 5 horas" executa. Esta versão mantém ordem dos jobs, lock,
+ * pasta de logs e `--check`, e acrescenta:
+ *   - SyncRun por job (`megaflix-local`, `tmdb-popular-local`, `webcine-local`,
+ *     `superflix-local`), sem segredo nem URL sensível;
+ *   - log sem valores de variáveis sensíveis;
+ *   - código de saída 0 (ok), 2 (falha parcial), 1 (falha total/fatal).
+ *
  * Uso:
  *   npm run sync:local
  *   npm run sync:local:check
+ *
+ * Telemetria (SYNC_TELEMETRY):
+ *   db   (padrão) grava SyncRun direto com DATABASE_URL;
+ *   http envia para OBAFLIX_INTEGRACAO_URL/api/integracoes/catalogo/heartbeat
+ *        com CATALOG_SYNC_TOKEN;
+ *   off  não grava.
+ * Falha de telemetria nunca muda o resultado dos jobs.
  */
 
 import { loadEnvConfig } from "@next/env";
@@ -14,6 +30,8 @@ import { appendFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { NextRequest } from "next/server";
+import { EXIT_TOTAL, runSyncCycle, type CycleHandler, type CycleJob } from "../src/lib/sync-runner";
+import { createDbRecorder, createHttpRecorder, redactSecrets, type SyncRunRecorder } from "../src/lib/sync-telemetry";
 
 loadEnvConfig(process.cwd());
 process.env.LOCAL_SYNC_RUNNER = "1";
@@ -25,6 +43,7 @@ type RouteNamespace = {
   default?: { GET?: Handler };
 };
 
+const INTERVAL_HOURS = 5;
 const checkOnly = process.argv.includes("--check");
 const dataRoot = join(process.env.LOCALAPPDATA || tmpdir(), "Obaflix", "sync");
 const logRoot = join(dataRoot, "logs");
@@ -39,7 +58,7 @@ function stamp(message: string): string {
 }
 
 async function log(message: string): Promise<void> {
-  const line = stamp(message);
+  const line = stamp(redactSecrets(message));
   console.log(line);
   await appendFile(logPath, `${line}\n`, "utf8");
 }
@@ -72,78 +91,33 @@ function requiredEnvironmentProblems(): string[] {
   return missing;
 }
 
-async function handlerFrom(loader: () => Promise<RouteNamespace>): Promise<Handler> {
+async function handlerFrom(loader: () => Promise<RouteNamespace>): Promise<CycleHandler> {
   const routeNamespace = await loader();
   const handler = routeNamespace.GET ?? routeNamespace.default?.GET;
   if (!handler) throw new Error("Handler GET não encontrado");
-  return handler;
+  return (request) => handler(new NextRequest(request));
 }
 
-const jobs: Array<{
-  name: string;
-  path: string;
-  load: () => Promise<RouteNamespace>;
-}> = [
-  {
-    name: "megafrix",
-    path: "/api/cron/sync",
-    load: () => import("../src/app/api/cron/sync/route"),
-  },
-  {
-    name: "popular-tmdb",
-    path: "/api/cron/popular-sync",
-    load: () => import("../src/app/api/cron/popular-sync/route"),
-  },
-  {
-    name: "webcine",
-    path: "/api/cron/sync-webcine",
-    load: () => import("../src/app/api/cron/sync-webcine/route"),
-  },
-  {
-    name: "superflix",
-    path: "/api/cron/sync-superflix",
-    load: () => import("../src/app/api/cron/sync-superflix/route"),
-  },
+// Mesma ordem da versão anterior: megafrix/megaflix, popular, webcine, superflix.
+const jobs: CycleJob[] = [
+  { id: "megaflix", loadHandler: () => handlerFrom(() => import("../src/app/api/cron/sync/route")) },
+  { id: "tmdb-popular", loadHandler: () => handlerFrom(() => import("../src/app/api/cron/popular-sync/route")) },
+  { id: "webcine", loadHandler: () => handlerFrom(() => import("../src/app/api/cron/sync-webcine/route")) },
+  { id: "superflix", loadHandler: () => handlerFrom(() => import("../src/app/api/cron/sync-superflix/route")) },
 ];
 
-async function executeJob(job: (typeof jobs)[number]): Promise<boolean> {
-  const startedAt = Date.now();
-  await log(`${job.name}: iniciando`);
-
-  try {
-    const handler = await handlerFrom(job.load);
-    const request = new NextRequest(`http://127.0.0.1${job.path}`, {
-      headers: { authorization: `Bearer ${process.env.CRON_SECRET}` },
-    });
-    const response = await handler(request);
-    const body = await response.text();
-    const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
-
-    await appendFile(
-      logPath,
-      `${stamp(`${job.name}: resposta HTTP ${response.status}`)}\n${body}\n`,
-      "utf8",
-    );
-
-    if (!response.ok) {
-      await log(`${job.name}: falhou com HTTP ${response.status} após ${durationSeconds}s`);
-      return false;
-    }
-
-    let parsed: { ok?: boolean } | null = null;
-    try { parsed = JSON.parse(body); } catch { /* resposta não JSON */ }
-    if (parsed?.ok === false) {
-      await log(`${job.name}: retornou ok=false após ${durationSeconds}s`);
-      return false;
-    }
-
-    await log(`${job.name}: concluído em ${durationSeconds}s`);
-    return true;
-  } catch (error) {
-    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-    await log(`${job.name}: erro — ${detail}`);
-    return false;
+async function createRecorder(): Promise<SyncRunRecorder> {
+  const mode = (process.env.SYNC_TELEMETRY ?? "db").toLowerCase();
+  const warn = (message: string) => { void log(message); };
+  if (mode === "off") return { start: async () => null, finish: async () => {} };
+  if (mode === "http") {
+    const baseUrl = process.env.OBAFLIX_INTEGRACAO_URL;
+    const token = process.env.CATALOG_SYNC_TOKEN;
+    if (!baseUrl || !token) throw new Error("SYNC_TELEMETRY=http exige OBAFLIX_INTEGRACAO_URL e CATALOG_SYNC_TOKEN");
+    return createHttpRecorder({ baseUrl, token, onError: warn });
   }
+  const { prisma } = await import("../src/lib/prisma");
+  return createDbRecorder(prisma as any, warn);
 }
 
 async function main(): Promise<void> {
@@ -156,8 +130,8 @@ async function main(): Promise<void> {
   // ou erros de compilação sem alterar o banco.
   if (checkOnly) {
     for (const job of jobs) {
-      await handlerFrom(job.load);
-      await log(`${job.name}: handler carregado`);
+      await job.loadHandler();
+      await log(`${job.id}: handler carregado`);
     }
     await log("Verificação local concluída; nenhuma sincronização foi executada.");
     return;
@@ -165,24 +139,30 @@ async function main(): Promise<void> {
 
   const lock = acquireLock();
   writeFileSync(lockPath, `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
-  let failures = 0;
 
   try {
     await log(`Ciclo iniciado; log: ${logPath}`);
-    for (const job of jobs) {
-      if (!(await executeJob(job))) failures++;
-    }
-    await log(`Ciclo finalizado: ${jobs.length - failures} sucesso(s), ${failures} falha(s).`);
+    const { exitCode } = await runSyncCycle({
+      jobs,
+      cronSecret: process.env.CRON_SECRET!,
+      recorder: await createRecorder(),
+      log,
+      logBody: (job, status, body) => appendFile(logPath, `${stamp(`${job}: resposta HTTP ${status}`)}\n${body}\n`, "utf8"),
+      intervalHours: INTERVAL_HOURS,
+    });
+    process.exitCode = exitCode;
   } finally {
     closeSync(lock);
     try { unlinkSync(lockPath); } catch { /* já removido */ }
   }
-
-  if (failures) process.exitCode = 1;
 }
 
-main().catch(async (error) => {
-  const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  await log(`Falha fatal: ${detail}`);
-  process.exitCode = 1;
-});
+main()
+  .catch(async (error) => {
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    await log(`Falha fatal: ${detail}`);
+    process.exitCode = EXIT_TOTAL;
+  })
+  .finally(async () => {
+    try { (await import("../src/lib/prisma")).prisma.$disconnect(); } catch { /* sem conexão aberta */ }
+  });

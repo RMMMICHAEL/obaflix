@@ -7,19 +7,17 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from "next/server";
+import { withCronTelemetry } from "@/lib/sync-telemetry";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
-import { tmdbPopularSource, type PopularItem } from "@/lib/popular-source";
+import { tmdbPopularSource, validatePopularBatch, type PopularItem } from "@/lib/popular-source";
 
 const LOCK_KEY    = "cron:popular-sync:lock";
 const LOCK_TTL_S  = 600;
 const FETCH_LIMIT = 500; // coleta Top 500 para detectar tendências antes do Top 250
-const MIN_RATIO_OK   = 0.8;
-const MAX_DUP_RATIO  = 0.05;
-
-// A lista do TMDB é viva — itens podem aparecer em duas páginas por drift de paginação.
-// Mantém a primeira ocorrência (rank melhor) e só considera corrupção se a taxa for alta.
+// O adaptador já entrega únicos (ver collectPopular); esta passada é só uma
+// segunda barreira barata antes de escrever no banco.
 function dedupeByTmdbId(items: PopularItem[]): { items: PopularItem[]; duplicates: number } {
   const seen = new Set<string>();
   const out: PopularItem[] = [];
@@ -205,7 +203,7 @@ async function createStubs(
   return { created: toCreate.length, skipped: withMeta.length - toCreate.length };
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
@@ -226,6 +224,7 @@ export async function GET(req: NextRequest) {
   let errorMessage: string | null = null;
   let found = 0, added = 0, removed = 0, repositioned = 0, bytesTransferred = 0;
   let stubsCreated = 0;
+  let duplicatesIgnored = 0;
   let stubsDeleted = { filmes: 0, series: 0 };
 
   try {
@@ -237,30 +236,11 @@ export async function GET(req: NextRequest) {
     bytesTransferred = movies.bytesTransferred + series.bytesTransferred;
     found = movies.items.length + series.items.length;
 
-    // ── 2. Guardas de sanidade ────────────────────────────────────────────────
-    if (movies.items.length < FETCH_LIMIT * MIN_RATIO_OK) {
-      throw new Error(`Poucos filmes retornados: ${movies.items.length}/${FETCH_LIMIT}`);
-    }
-    if (series.items.length < FETCH_LIMIT * MIN_RATIO_OK) {
-      throw new Error(`Poucas séries retornadas: ${series.items.length}/${FETCH_LIMIT}`);
-    }
-
+    // ── 2. Guardas de sanidade (ver validatePopularBatch) ─────────────────────
+    validatePopularBatch(FETCH_LIMIT, movies, series);
     const moviesDedup = dedupeByTmdbId(movies.items);
     const seriesDedup = dedupeByTmdbId(series.items);
-
-    if (moviesDedup.duplicates / movies.items.length > MAX_DUP_RATIO) {
-      throw new Error(`Duplicidade alta em filmes: ${moviesDedup.duplicates}/${movies.items.length}`);
-    }
-    if (seriesDedup.duplicates / series.items.length > MAX_DUP_RATIO) {
-      throw new Error(`Duplicidade alta em séries: ${seriesDedup.duplicates}/${series.items.length}`);
-    }
-
-    // Filmes e séries não devem se misturar (sanidade de tipo da API)
-    const movieTmdbSet = new Set(moviesDedup.items.map((i) => i.tmdbId));
-    const overlapCount = seriesDedup.items.filter((i) => movieTmdbSet.has(i.tmdbId)).length;
-    if (overlapCount > 5) {
-      throw new Error(`Sobreposição suspeita entre filmes e séries: ${overlapCount} IDs em comum`);
-    }
+    duplicatesIgnored = movies.stats.duplicates + series.stats.duplicates;
 
     const movieRankMap = new Map(moviesDedup.items.map((i) => [i.tmdbId, i.rank]));
     const serieRankMap = new Map(seriesDedup.items.map((i) => [i.tmdbId, i.rank]));
@@ -332,7 +312,7 @@ export async function GET(req: NextRequest) {
           job: "popular-sync", source: "tmdb", durationMs,
           found, added, removed, repositioned, bytesTransferred,
           errors: 0, ok: true,
-          detail: JSON.stringify({ stubsCreated, stubsDeleted }),
+          detail: JSON.stringify({ stubsCreated, stubsDeleted, duplicatesIgnored }),
         },
       }).catch(() => {});
       await redis.del(LOCK_KEY);
@@ -340,7 +320,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true, dryRun, found, added, removed, repositioned,
-      stubsCreated, stubsDeleted, durationMs, bytesTransferred,
+      stubsCreated, stubsDeleted, duplicatesIgnored, durationMs, bytesTransferred,
       diff: {
         filmes: { added: filmeDiff.added, removed: filmeDiff.removed, repositioned: filmeDiff.repositioned },
         series: { added: serieDiff.added, removed: serieDiff.removed, repositioned: serieDiff.repositioned },
@@ -368,3 +348,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, dryRun, error: errorMessage }, { status: 500 });
   }
 }
+
+// Registra SyncRun "tmdb-popular-vercel"; o runner local grava "tmdb-popular-local" por conta própria.
+export const GET = withCronTelemetry("tmdb-popular", handleGET);
