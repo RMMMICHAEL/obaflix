@@ -3,13 +3,26 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { episodiosGravados, pruneCatalogPayload, resolveCatalogDestino } from "../catalog-destino";
 import { upsertCatalogEpisodesBulk, upsertCatalogMovie, upsertCatalogSeries } from "../catalog-write";
+import { memoryEpisodeTable } from "./memoryEpisodes";
 
 const ADMIN = "a".repeat(48);
 const CATALOG = "c".repeat(48);
 
-test("padrão continua legado: /api/admin com x-admin-token, corpo intacto", () => {
+test("automático: com CATALOG_SYNC_TOKEN vai para a integração, mesmo com o token legado presente", () => {
+  const d = resolveCatalogDestino({ CATALOG_SYNC_TOKEN: CATALOG, ADMIN_SECRET_TOKEN: ADMIN });
+  assert.equal(d.modo, "integracao");
+  assert.equal(d.paths.filme, "/api/integracoes/catalogo/filme");
+  assert.equal(d.headers["x-admin-token"], undefined, "integração nunca manda o token legado");
+  assert.deepEqual(d.avisos, []);
+  assert.equal(resolveCatalogDestino({ OBAFLIX_SYNC_DESTINO: "legado", CATALOG_SYNC_TOKEN: CATALOG, ADMIN_SECRET_TOKEN: ADMIN }).modo, "legado", "forçar legado continua possível na transição");
+  assert.throws(() => resolveCatalogDestino({}), /CATALOG_SYNC_TOKEN/);
+});
+
+test("sem CATALOG_SYNC_TOKEN cai no legado de transição, com aviso: /api/admin com x-admin-token, corpo intacto", () => {
   const d = resolveCatalogDestino({ ADMIN_SECRET_TOKEN: ADMIN });
   assert.equal(d.modo, "legado");
+  assert.match(d.avisos.join(" "), /descontinuação/);
+  assert.doesNotMatch(d.avisos.join(" "), new RegExp(ADMIN));
   assert.equal(d.baseUrl, "https://obaflix.vercel.app");
   assert.equal(d.paths.filme, "/api/admin/filme");
   assert.equal(d.headers["x-admin-token"], ADMIN);
@@ -36,7 +49,7 @@ test("integração exige token forte; modo desconhecido é erro (sem fallback si
   assert.throws(() => resolveCatalogDestino({ OBAFLIX_SYNC_DESTINO: "integracao" }), /CATALOG_SYNC_TOKEN/);
   assert.throws(() => resolveCatalogDestino({ OBAFLIX_SYNC_DESTINO: "integracao", CATALOG_SYNC_TOKEN: "curto" }), /mínimo 32/);
   assert.throws(() => resolveCatalogDestino({ OBAFLIX_SYNC_DESTINO: "novo" }), /inválido/);
-  assert.throws(() => resolveCatalogDestino({}), /ADMIN_SECRET_TOKEN é obrigatório/);
+  assert.throws(() => resolveCatalogDestino({}), /Sem credencial de catálogo/);
 });
 
 test("poda do corpo: null/vazio/NaN saem, tipo 'serie' padrão sai, outros tipos ficam", () => {
@@ -63,7 +76,7 @@ function memoryDb() {
   const db: any = {
     filme: table(rows.filme, (w) => w.id),
     serie: table(rows.serie, (w) => w.id),
-    episodio: table(rows.ep, (w) => `${w.serieId_temporada_numeroEp.serieId}|${w.serieId_temporada_numeroEp.temporada}|${w.serieId_temporada_numeroEp.numeroEp}`),
+    episodio: memoryEpisodeTable(rows.ep),
     $transaction: async (fn: any) => fn(db), genero: { upsert: async () => ({}) }, filmeGenero: { deleteMany: async () => ({}), create: async () => ({}) }, serieGenero: { deleteMany: async () => ({}), create: async () => ({}) },
   };
   return { db, rows };
@@ -97,9 +110,11 @@ test("sem a poda, o null do produtor apagaria o campo — por isso o modo integr
   assert.equal(rows.filme.get("10").sinopse, null);
 });
 
-test("Tampermonkey tem os dois modos, legado padrão e mesma regra de poda", () => {
+test("Tampermonkey: integração quando há token de catálogo, legado só como transição, mesma regra de poda", () => {
   const src = readFileSync("scripts/tampermonkey-sync.js", "utf8");
-  assert.match(src, /setting\('obaflixModo', 'legado'\) === 'integracao' \? 'integracao' : 'legado'/);
+  assert.match(src, /: CATALOG_TOKEN \? 'integracao' : 'legado';/);
+  assert.match(src, /MODO_FORCADO === 'legado' \? 'legado'/);
+  assert.match(src, /modo legado \(x-admin-token\) em descontinuacao/);
   assert.match(src, /'\/api\/integracoes\/catalogo\/episodios\/bulk'/);
   assert.match(src, /Authorization: 'Bearer ' \+ TOKEN/);
   assert.match(src, /kind === 'serie' && key === 'tipo' && value === 'serie'/);

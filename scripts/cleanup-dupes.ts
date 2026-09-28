@@ -1,57 +1,25 @@
 /**
- * Detecta e remove séries/filmes duplicados no obaflix.
+ * Detecta e remove séries duplicadas por título (manutenção controlada).
  * Critério: mesmo título (case-insensitive) → mantém o que tem mais episódios
  * ou, em empate, o ID numérico maior (mais recente no Megaflix).
  *
  * Uso:
- *   npx tsx scripts/cleanup-dupes.ts --dry-run   (só lista, não apaga)
- *   npx tsx scripts/cleanup-dupes.ts              (apaga duplicatas)
+ *   npx tsx scripts/cleanup-dupes.ts             (DRY RUN — padrão, só lista)
+ *   npx tsx scripts/cleanup-dupes.ts --apply     (apaga as duplicatas)
  *
- * NÃO migra para /api/integracoes/catalogo: é manutenção destrutiva (lista o
- * catálogo inteiro e apaga via DELETE), fora do escopo do CATALOG_SYNC_TOKEN,
- * que só faz upsert. Continua no legado (/api/admin + x-admin-token) enquanto
- * ele existir no projeto público; depois do cutover precisa virar ação humana
- * no painel admin (sessão) ou script com acesso direto ao banco.
+ * Acesso direto ao banco (DATABASE_URL), como os demais scripts de
+ * manutenção. NÃO usa HTTP nem token nenhum: remover série é destrutivo e
+ * leva junto episódios, histórico e lista dos usuários, então não pode ficar
+ * atrás do ADMIN_SECRET_TOKEN legado nem do CATALOG_SYNC_TOKEN (que só faz
+ * upsert de catálogo). Até a versão anterior o padrão era apagar; agora é
+ * listar, e apagar exige --apply explícito.
+ *
+ * Cada série removida sai numa transação, na mesma ordem do DELETE do painel
+ * (/api/admin/serie): histórico, lista, gêneros, episódios, série.
  */
+import { PrismaClient } from "@prisma/client";
 
-const OBA   = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
-export {};
-
-const TOKEN: string = (() => {
-  const token = process.env.ADMIN_SECRET_TOKEN;
-  if (!token) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
-  return token;
-})();
-const DRY   = process.argv.includes("--dry-run");
-
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-async function fetchAllSeries() {
-  const all: any[] = [];
-  let page = 1;
-  process.stdout.write("🔍 Carregando séries");
-  while (true) {
-    const r = await fetch(`${OBA}/api/admin/serie?page=${page}`, { headers: { "x-admin-token": TOKEN } });
-    const d = await r.json();
-    if (!d.items?.length) break;
-    all.push(...d.items);
-    process.stdout.write(".");
-    if (page >= d.pages) break;
-    page++;
-    await sleep(80);
-  }
-  console.log(` ${all.length} carregadas`);
-  return all;
-}
-
-async function deleteSerie(id: string) {
-  const r = await fetch(`${OBA}/api/admin/serie`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json", "x-admin-token": TOKEN },
-    body: JSON.stringify({ id }),
-  });
-  return r.json().catch(() => ({}));
-}
+const APPLY = process.argv.includes("--apply");
 
 function scoreId(id: string): number {
   // IDs puramente numéricos e maiores = mais recentes no Megaflix
@@ -60,64 +28,73 @@ function scoreId(id: string): number {
 }
 
 async function main() {
-  console.log(`\n🧹 Cleanup de duplicatas — modo: ${DRY ? "DRY RUN (só lista)" : "REAL (vai apagar)"}\n`);
+  const prisma = new PrismaClient();
+  try {
+    console.log(`\n🧹 Cleanup de séries duplicadas — modo: ${APPLY ? "APPLY (vai apagar)" : "DRY RUN (só lista)"}\n`);
 
-  const series = await fetchAllSeries();
-
-  // Agrupa por título normalizado
-  const byTitle = new Map<string, any[]>();
-  for (const s of series) {
-    const key = s.titulo.toLowerCase().trim();
-    if (!byTitle.has(key)) byTitle.set(key, []);
-    byTitle.get(key)!.push(s);
-  }
-
-  const dupes = [...byTitle.entries()]
-    .filter(([, v]) => v.length > 1)
-    .sort((a, b) => b[1].length - a[1].length); // mais duplicatas primeiro
-
-  console.log(`\n📊 Títulos duplicados: ${dupes.length}\n`);
-
-  let deletados = 0;
-  let epsApagados = 0;
-
-  for (const [titulo, items] of dupes) {
-    // Escolhe o "vencedor": mais eps; em empate, ID maior (mais recente)
-    const vencedor = items.reduce((best, cur) => {
-      const bestEps = best._count?.episodios ?? 0;
-      const curEps  = cur._count?.episodios ?? 0;
-      if (curEps > bestEps) return cur;
-      if (curEps === bestEps && scoreId(cur.id) > scoreId(best.id)) return cur;
-      return best;
+    const series = await prisma.serie.findMany({
+      select: { id: true, titulo: true, _count: { select: { episodios: true } } },
+      orderBy: { id: "asc" },
     });
+    console.log(`🔍 ${series.length} séries carregadas`);
 
-    const perdedores = items.filter(x => x.id !== vencedor.id);
+    const byTitle = new Map<string, typeof series>();
+    for (const s of series) {
+      const key = s.titulo.toLowerCase().trim();
+      byTitle.set(key, [...(byTitle.get(key) ?? []), s]);
+    }
+    const dupes = [...byTitle.entries()]
+      .filter(([, v]) => v.length > 1)
+      .sort((a, b) => b[1].length - a[1].length);
+    console.log(`\n📊 Títulos duplicados: ${dupes.length}\n`);
 
-    console.log(`📺 "${titulo}"`);
-    console.log(`   ✔ Manter: ${vencedor.id} (${vencedor._count?.episodios} eps)`);
-    perdedores.forEach(p => console.log(`   ✖ Apagar: ${p.id} (${p._count?.episodios} eps)`));
+    let deletados = 0;
+    let epsApagados = 0;
+    let erros = 0;
+    for (const [titulo, items] of dupes) {
+      const vencedor = items.reduce((best, cur) => {
+        if (cur._count.episodios > best._count.episodios) return cur;
+        if (cur._count.episodios === best._count.episodios && scoreId(cur.id) > scoreId(best.id)) return cur;
+        return best;
+      });
+      const perdedores = items.filter((x) => x.id !== vencedor.id);
+      console.log(`📺 "${titulo}"`);
+      console.log(`   ✔ Manter: ${vencedor.id} (${vencedor._count.episodios} eps)`);
+      perdedores.forEach((p) => console.log(`   ✖ Apagar: ${p.id} (${p._count.episodios} eps)`));
+      if (!APPLY) continue;
 
-    if (!DRY) {
       for (const p of perdedores) {
-        await sleep(200);
-        const r = await deleteSerie(p.id);
-        if (r.ok) {
+        try {
+          await prisma.$transaction([
+            prisma.watchHistory.deleteMany({ where: { conteudoId: p.id } }),
+            prisma.watchlist.deleteMany({ where: { conteudoId: p.id } }),
+            prisma.serieGenero.deleteMany({ where: { serieId: p.id } }),
+            prisma.episodio.deleteMany({ where: { serieId: p.id } }),
+            prisma.serie.delete({ where: { id: p.id } }),
+          ]);
           deletados++;
-          epsApagados += p._count?.episodios ?? 0;
-        } else {
-          console.log(`   ⚠️  Erro ao apagar ${p.id}:`, r);
+          epsApagados += p._count.episodios;
+        } catch (error) {
+          erros++;
+          console.log(`   ⚠️  Erro ao apagar ${p.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
-  }
 
-  console.log(`\n🎉 Concluído!`);
-  if (DRY) {
-    console.log(`   ${dupes.length} títulos duplicados detectados.`);
-    console.log(`   Rode sem --dry-run para apagar as duplicatas.`);
-  } else {
-    console.log(`   ${deletados} séries apagadas | ${epsApagados} episódios removidos`);
+    console.log(`\n🎉 Concluído!`);
+    if (!APPLY) {
+      console.log(`   ${dupes.length} títulos duplicados detectados. Nada foi alterado.`);
+      console.log(`   Para apagar: npx tsx scripts/cleanup-dupes.ts --apply (faça backup antes).`);
+    } else {
+      console.log(`   ${deletados} séries apagadas | ${epsApagados} episódios removidos | ${erros} erros`);
+      if (erros > 0) process.exitCode = 1;
+    }
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

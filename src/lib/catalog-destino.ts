@@ -3,12 +3,17 @@
  * próprio, scripts/tampermonkey-sync.js).
  *
  * OBAFLIX_SYNC_DESTINO:
- *   legado     (padrão, produção atual) → /api/admin/* com x-admin-token
- *              (ADMIN_SECRET_TOKEN). Comportamento inalterado.
+ *   (ausente)  → automático: `integracao` se CATALOG_SYNC_TOKEN estiver
+ *              configurado; senão `legado` com aviso de descontinuação.
  *   integracao → /api/integracoes/catalogo/* com Authorization: Bearer
- *              CATALOG_SYNC_TOKEN. Só catálogo; o token não abre nada humano.
+ *              CATALOG_SYNC_TOKEN. Caminho final. Só catálogo; o token não
+ *              abre nada humano.
+ *   legado     → /api/admin/{filme,serie,episodio/bulk} com x-admin-token
+ *              (ADMIN_SECRET_TOKEN). Transição: só funciona no projeto
+ *              público com o cutover desligado; ligado, responde 404.
  *
- * O legado só deixa de ser o padrão no cutover. Em modo integração o corpo é
+ * O automático não troca de modo por conta própria depois de escolher: sem
+ * CATALOG_SYNC_TOKEN local nada muda em relação a hoje. Em modo integração o corpo é
  * "podado": campo null/""/ausente não é enviado, porque na camada de escrita
  * `null` significa "limpar" e a origem manda null quando simplesmente não tem
  * o dado. Também não envia `tipo: "serie"` (o padrão), para não rebaixar um
@@ -18,6 +23,8 @@ export type CatalogDestinoModo = "legado" | "integracao";
 
 export type CatalogDestino = {
   modo: CatalogDestinoModo;
+  /** Avisos para o operador (ex.: legado em uso). Nunca contém o token. */
+  avisos: string[];
   baseUrl: string;
   headers: Record<string, string>;
   paths: { filme: string; serie: string; episodiosBulk: string; consulta: string | null };
@@ -44,14 +51,16 @@ export function pruneCatalogPayload(kind: "filme" | "serie" | "episodios", paylo
 }
 
 export function resolveCatalogDestino(env: Record<string, string | undefined> = process.env): CatalogDestino {
-  const raw = (env.OBAFLIX_SYNC_DESTINO ?? "legado").trim().toLowerCase();
-  if (raw !== "legado" && raw !== "integracao") throw new Error(`OBAFLIX_SYNC_DESTINO inválido: use "legado" ou "integracao"`);
+  const explicit = env.OBAFLIX_SYNC_DESTINO?.trim().toLowerCase();
+  if (explicit && explicit !== "legado" && explicit !== "integracao") throw new Error(`OBAFLIX_SYNC_DESTINO inválido: use "legado" ou "integracao"`);
+  const raw = explicit || ((env.CATALOG_SYNC_TOKEN?.length ?? 0) >= 32 ? "integracao" : "legado");
   const baseUrl = (env.OBAFLIX_URL ?? DEFAULT_OBAFLIX_URL).replace(/\/+$/, "");
   if (raw === "integracao") {
     const token = env.CATALOG_SYNC_TOKEN;
     if (!token || token.length < 32) throw new Error("OBAFLIX_SYNC_DESTINO=integracao exige CATALOG_SYNC_TOKEN (mínimo 32 caracteres)");
     return {
       modo: "integracao",
+      avisos: [],
       baseUrl,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       paths: {
@@ -64,9 +73,10 @@ export function resolveCatalogDestino(env: Record<string, string | undefined> = 
     };
   }
   const token = env.ADMIN_SECRET_TOKEN;
-  if (!token) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
+  if (!token) throw new Error("Sem credencial de catálogo: configure CATALOG_SYNC_TOKEN (integração) ou, na transição, ADMIN_SECRET_TOKEN com OBAFLIX_SYNC_DESTINO=legado");
   return {
     modo: "legado",
+    avisos: ["modo legado (/api/admin + x-admin-token) está em descontinuação: configure CATALOG_SYNC_TOKEN; após o cutover o legado responde 404"],
     baseUrl,
     headers: { "Content-Type": "application/json", "x-admin-token": token },
     paths: { filme: "/api/admin/filme", serie: "/api/admin/serie", episodiosBulk: "/api/admin/episodio/bulk", consulta: null },
