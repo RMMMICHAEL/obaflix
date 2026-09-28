@@ -16,8 +16,12 @@ import {
   diagnosticarSessao, diagFonte,
   projetarPublica, projetarAdmin, detectarProvider, ehTokenizada,
   suportaExtracaoNativa, ehSuperflix, hostDe,
+  anexarCoordenadas,
   type Ambiente, type FonteReal,
 } from "@/lib/fontes";
+import { estruturaDoCatalogo, rotuloCoordenada } from "@/lib/episodeCoordinates";
+import { REGRAS_COORDENADA } from "@/lib/episodeCoordinateRules";
+import { lerAprendidas } from "@/lib/episodeCoordinateCache";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 
@@ -313,11 +317,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ sessao, fontes: projetar(atuais) }, { headers: NO_STORE });
     }
 
+    // As alternativas herdam a primeira coordenada da fonte Playerflix: com
+    // regra comprovada, a canônica levaria a embeds do episódio errado. A
+    // coordenada vem da sessão (montada por nós), não do corpo.
+    const coordenada = primeira.coordenadas?.tentativas[0];
     const alternativas = await buscarAlternativasPlayerflix(
       tmdbId,
       conteudoTipo === "serie" ? "tv" : "movie",
-      String(temporada ?? ""),
-      String(numeroEp ?? ""),
+      String(coordenada?.season ?? temporada ?? ""),
+      String(coordenada?.episode ?? numeroEp ?? ""),
     );
 
     const novas = alternativas
@@ -433,6 +441,7 @@ export async function POST(req: NextRequest) {
   let titulo: string | null = null;
   let urlDub: string | null = null;
   let urlLeg: string | null = null;
+  let estruturaCatalogo: ReturnType<typeof estruturaDoCatalogo> = null;
 
   if (conteudoTipo === "filme") {
     const filme = await prisma.filme.findUnique({
@@ -450,7 +459,7 @@ export async function POST(req: NextRequest) {
     if (temporada === null || numeroEp === null) {
       return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
     }
-    const [serie, episodio] = await Promise.all([
+    const [serie, episodio, linhasCatalogo] = await Promise.all([
       prisma.serie.findUnique({
         where: { id: conteudoId },
         select: { id: true, titulo: true, tmdbId: true },
@@ -459,6 +468,15 @@ export async function POST(req: NextRequest) {
         where: { serieId: conteudoId, temporada, numeroEp },
         select: { urlDub: true, urlLeg: true },
       }),
+      // Divisão do catálogo até a temporada pedida, para o episódio absoluto.
+      // Na temporada 1 o absoluto é o próprio episódio: nenhuma consulta.
+      // Só inteiros; roda em paralelo, sem latência extra.
+      temporada >= 2
+        ? prisma.episodio.findMany({
+          where: { serieId: conteudoId, temporada: { gte: 1, lte: temporada } },
+          select: { temporada: true, numeroEp: true },
+        }).catch(() => null)
+        : Promise.resolve(null),
     ]);
     if (!serie || !episodio) {
       return NextResponse.json({ error: "Conteúdo não encontrado" }, { status: 404, headers: NO_STORE });
@@ -478,6 +496,7 @@ export async function POST(req: NextRequest) {
     titulo = serie.titulo;
     urlDub = mesclar(redeCanais ? [...warez.br, redeCanais] : warez.br, episodio.urlDub);
     urlLeg = mesclar(warez.eng, episodio.urlLeg);
+    estruturaCatalogo = linhasCatalogo ? estruturaDoCatalogo(linhasCatalogo, temporada) : null;
   }
 
   const fontes = numerar(montarFontes({
@@ -485,7 +504,29 @@ export async function POST(req: NextRequest) {
     desafioInterativo: corpo.desafioInterativo === true,
   }));
 
-  const sessao = await criarSessaoFontes(userId, ambiente, fontes);
+  // Coordenadas alternativas por provedor (ver lib/episodeCoordinates.ts). O
+  // episódio canônico — o que a sessão, o histórico e o progresso conhecem —
+  // não muda; só a coordenada que cada provedor vai receber. Ids e ordem das
+  // fontes ficam os mesmos. O GET no Redis só acontece quando existe
+  // alternativa a ordenar.
+  let fontesDaSessao = fontes;
+  if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null && tmdbId) {
+    const tmdb = String(tmdbId).trim();
+    const ctx = { tmdbId: tmdb, temporada, numeroEp, estrutura: estruturaCatalogo, regras: REGRAS_COORDENADA };
+    const semAprendizado = anexarCoordenadas(fontes, { ...ctx, aprendidas: {} });
+    fontesDaSessao = semAprendizado.some((f) => f.coordenadas)
+      ? anexarCoordenadas(fontes, { ...ctx, aprendidas: await lerAprendidas(tmdb) })
+      : semAprendizado;
+    for (const f of fontesDaSessao) {
+      if (!f.coordenadas) continue;
+      diagFonte("coordenadas", {
+        tmdbId: tmdb, provider: f.provider, canonical: rotuloCoordenada({ season: temporada, episode: numeroEp }),
+        tentativas: f.coordenadas.tentativas.map((c) => `${rotuloCoordenada(c)}:${c.strategy}`).join(","),
+      }, ehAdmin);
+    }
+  }
+
+  const sessao = await criarSessaoFontes(userId, ambiente, fontesDaSessao);
 
   // ── Direitos que o cliente precisa conhecer ───────────────────────────────
   //
@@ -509,5 +550,7 @@ export async function POST(req: NextRequest) {
   // carregam este mesmo app web.
   const direitos = await direitosDoCliente(userId);
 
+  // `fontes` e `fontesDaSessao` diferem só em `coordenadas`, que nenhuma
+  // projeção copia: a resposta é a mesma, e as coordenadas ficam no servidor.
   return NextResponse.json({ sessao, fontes: projetar(fontes), direitos }, { headers: NO_STORE });
 }

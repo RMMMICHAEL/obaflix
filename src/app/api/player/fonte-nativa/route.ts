@@ -5,7 +5,8 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { headerMatchesHost, readJsonBody, checkRateLimit } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { resolverFonte, ambienteDaSessao, resolvidoNoServidor } from "@/lib/fontes";
+import { resolverFonte, ambienteDaSessao, resolvidoNoServidor, totalTentativas, urlDaTentativa } from "@/lib/fontes";
+import { executarTentativas } from "@/lib/tentativasCoordenada";
 import { extractCineVs } from "@/lib/cinevs";
 import { servidorVipDaConta } from "@/lib/servidorVip";
 
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Muitas solicitações" }, { status: 429, headers: NO_STORE });
   }
 
-  let corpo: { sessao?: unknown; fonteId?: unknown };
+  let corpo: { sessao?: unknown; fonteId?: unknown; tentativa?: unknown };
   try {
     corpo = await readJsonBody(req, 2048);
   } catch {
@@ -82,6 +83,13 @@ export async function POST(req: NextRequest) {
   const sessao = typeof corpo.sessao === "string" ? corpo.sessao : "";
   const fonteId = typeof corpo.fonteId === "string" ? corpo.fonteId : "";
   if (!sessao || !fonteId) {
+    return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
+  }
+  // Índice da coordenada de episódio a entregar (ver lib/episodeCoordinates.ts).
+  // Ausente: 0, que é o que todo cliente anterior — TV, APK e exe antigos — já
+  // recebe. Só inteiro pequeno; o conteúdo de cada tentativa vem da sessão.
+  const tentativa = corpo.tentativa === undefined || corpo.tentativa === null ? 0 : corpo.tentativa;
+  if (typeof tentativa !== "number" || !Number.isInteger(tentativa) || tentativa < 0 || tentativa > 16) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
@@ -131,16 +139,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const cv = await extractCineVs({
-      tmdbId,
-      type: alvo.searchParams.get("type") === "movie" ? "movie" : "tv",
-      season: Number(alvo.searchParams.get("season") ?? 1),
-      episode: Number(alvo.searchParams.get("episode") ?? 1),
-      titleHint: alvo.searchParams.get("q") ?? "",
-      // Vídeo premium só para quem tem o direito. Decidido aqui, no servidor,
-      // nunca por campo do cliente.
-      servidorVip: await servidorVipDaConta(userId),
-    }).catch(() => null);
+    // Vídeo premium só para quem tem o direito. Decidido aqui, no servidor,
+    // nunca por campo do cliente.
+    const direitoVip = { servidorVip: await servidorVipDaConta(userId) };
+    // A resolução inteira é nossa, então as coordenadas alternativas são
+    // tentadas aqui mesmo, com a regra de sucesso de sempre (`streamUrl`
+    // presente). O cliente faz uma chamada só, como antes. Sem coordenadas, é
+    // exatamente uma chamada a extractCineVs.
+    const { resultado: cv } = await executarTentativas({
+      fonte,
+      canonica: fonte.coordenadas?.tentativas.find((c) => c.strategy === "canonical") ?? null,
+      tentar: (url) => {
+        const coord = new URL(url);
+        return extractCineVs({
+          tmdbId,
+          type: coord.searchParams.get("type") === "movie" ? "movie" : "tv",
+          season: Number(coord.searchParams.get("season") ?? 1),
+          episode: Number(coord.searchParams.get("episode") ?? 1),
+          titleHint: coord.searchParams.get("q") ?? "",
+          servidorVip: direitoVip.servidorVip,
+        }).catch(() => null);
+      },
+      sucesso: (r) => !!r?.streamUrl,
+      log: (linha) => console.log(linha.replace("[coord]", "[fonte-nativa/coord]")),
+    });
 
     if (!cv?.streamUrl) {
       // Falha aqui não derruba a reprodução: o cliente cai para a próxima
@@ -180,5 +202,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Fonte não disponível neste modo" }, { status: 403, headers: NO_STORE });
   }
 
-  return NextResponse.json({ embedUrl: fonte.embedUrl }, { headers: NO_STORE });
+  // Coordenada de episódio: a extração roda no aparelho, então quem itera é o
+  // cliente — pede a tentativa seguinte quando a atual não reproduz. Aqui só
+  // se entrega a URL daquela tentativa, montada a partir da sessão.
+  // `tentativas` é um inteiro (≤ 4) e não identifica provedor.
+  const total = totalTentativas(fonte);
+  const embedUrl = urlDaTentativa(fonte, tentativa);
+  if (!embedUrl) {
+    return NextResponse.json(
+      { error: "Fonte indisponível", codigo: "sem_tentativa" },
+      { status: 404, headers: NO_STORE },
+    );
+  }
+  const coord = fonte.coordenadas?.tentativas[tentativa];
+  if (fonte.coordenadas && coord) {
+    const canonica = fonte.coordenadas.tentativas.find((c) => c.strategy === "canonical");
+    console.log(
+      `[fonte-nativa/coord] tmdbId=${fonte.coordenadas.tmdbId} provider=${fonte.provider}`
+      + (canonica ? ` canonical=T${canonica.season}E${canonica.episode}` : "")
+      + ` attempt=T${coord.season}E${coord.episode} strategy=${coord.strategy}`
+      + ` ordem=${tentativa + 1}/${total} result=entregue`,
+    );
+  }
+
+  return NextResponse.json({ embedUrl, tentativas: total }, { headers: NO_STORE });
 }

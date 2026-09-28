@@ -20,6 +20,7 @@ import { limiteDeTelas } from "@/lib/playbackAuthorization";
 import {
   resolverFonte, acrescentarFontes, projetarPublica, type FontePublica,
 } from "@/lib/fontes";
+import { executarTentativas } from "@/lib/tentativasCoordenada";
 import crypto from "crypto";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
@@ -1350,11 +1351,33 @@ export async function GET(req: NextRequest) {
     audit("play_token_rejected", { userId, ip, ua, detail: "IP mismatch (rede móvel — permitido)" });
   }
 
+  // URL que de fato resolveu. Difere da `embedUrl` só quando uma coordenada
+  // alternativa de episódio funcionou (ver lib/episodeCoordinates.ts).
+  let urlUsada = url;
   try {
+    const opcoesExtracao = { servidorVip: await servidorVipDaConta(userId) };
+    let prazoEsgotado = false;
+    const canonica = fonte.coordenadas?.tentativas.find((c) => c.strategy === "canonical") ?? null;
     const result = await Promise.race([
-      doExtract(url, { servidorVip: await servidorVipDaConta(userId) }),
+      // Uma tentativa por coordenada, com a mesma regra de sucesso de sempre:
+      // extração que desiste para iframe é falha. Sem coordenadas, é
+      // exatamente uma chamada a doExtract, como antes.
+      executarTentativas<ResultadoExtracao>({
+        fonte,
+        canonica,
+        tentar: (alvo) => doExtract(alvo, opcoesExtracao),
+        sucesso: (r) => r.tipo !== "iframe",
+        cancelado: () => prazoEsgotado,
+        log: (linha) => console.log(linha.replace("[coord]", "[extract/coord]")),
+      }).then((r) => {
+        urlUsada = r.url;
+        return r.resultado ?? ({ stream: url, tipo: "iframe", motivo: "sem_fonte_extraivel" } as ResultadoExtracao);
+      }),
       new Promise<ResultadoExtracao>((resolve) =>
-        setTimeout(() => resolve({ stream: url, tipo: "iframe", motivo: "timeout" }), EXTRACT_TIMEOUT_MS)
+        setTimeout(() => {
+          prazoEsgotado = true;
+          resolve({ stream: url, tipo: "iframe", motivo: "timeout" });
+        }, EXTRACT_TIMEOUT_MS)
       ),
     ]);
 
@@ -1381,7 +1404,8 @@ export async function GET(req: NextRequest) {
     let fontesPublicas: FontePublica[] | undefined;
     if (Array.isArray(result.fontes) && result.fontes.length) {
       const novas = result.fontes.map((f: CineVsFonte) => ({
-        embedUrl: `${url}&video=${f.videoId}`,
+        // Da coordenada que resolveu: o videoId pertence àquele episódio.
+        embedUrl: `${urlUsada}&video=${f.videoId}`,
         provider: fonte.provider,
         servidor: `${fonte.servidor} · ${f.label ?? f.audioType ?? f.videoId}`,
         idioma: fonte.idioma,
