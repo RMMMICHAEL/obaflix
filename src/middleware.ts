@@ -2,6 +2,7 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse, type NextRequest } from "next/server";
 import type { NextFetchEvent } from "next/server";
 import { decidirRota, detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
+import { decideSurfaceGate, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
 
 const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
@@ -26,7 +27,7 @@ const adminMiddleware = withAuth(
     }
 
     // Requests com x-admin-token: não exige JWT — rota cuida da auth
-    if (isAdminApi && req.headers.get("x-admin-token")) {
+    if (isAdminApi && getObaflixSurface() === "public" && req.headers.get("x-admin-token")) {
       const res = NextResponse.next();
       if (origin === ADMIN_CORS_ORIGIN) {
         Object.entries(corsHeaders(origin)).forEach(([k, v]) => res.headers.set(k, v));
@@ -40,7 +41,9 @@ const adminMiddleware = withAuth(
       if (isAdminApi) {
         return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
       }
-      return NextResponse.redirect(new URL("/", req.url));
+      // Na superfície admin, `/` volta para `/admin`: mandar para lá seria laço.
+      const destino = getObaflixSurface() === "admin" ? "/login" : "/";
+      return NextResponse.redirect(new URL(destino, req.url));
     }
 
     const res = NextResponse.next();
@@ -54,11 +57,14 @@ const adminMiddleware = withAuth(
       authorized: ({ token, req }) => {
         // Preflight CORS: deixa passar, middleware retorna 204
         if (req.method === "OPTIONS") return true;
-        // x-admin-token: rota valida internamente
-        if (req.headers.get("x-admin-token")) return true;
+        // x-admin-token: rota valida internamente. Só existe na superfície
+        // pública (legado); no painel separado vale apenas a sessão.
+        if (getObaflixSurface() === "public" && req.headers.get("x-admin-token")) return true;
         return !!token;
       },
     },
+    // Painel separado usa a própria tela de login; o público mantém o padrão.
+    ...(getObaflixSurface() === "admin" ? { pages: { signIn: "/login" } } : {}),
   }
 );
 
@@ -77,6 +83,18 @@ const adminMiddleware = withAuth(
  */
 export default function middleware(req: NextRequest, event: NextFetchEvent) {
   const { pathname } = req.nextUrl;
+
+  const gate = decideSurfaceGate(pathname, getObaflixSurface(), publicCutoverEnabled());
+  if (gate === "nao_encontrado") {
+    return pathname.startsWith("/api/")
+      ? NextResponse.json({ error: "Não encontrado" }, { status: 404 })
+      : new NextResponse("Não encontrado", { status: 404 });
+  }
+  if (gate === "painel") return NextResponse.redirect(new URL("/admin", req.url), 307);
+
+  // `/api/admin/*` só entra no matcher por causa do gate acima (cutover). A
+  // autorização continua nos route handlers, como sempre foi.
+  if (pathname.startsWith("/api/")) return NextResponse.next();
 
   if (pathname.startsWith("/admin")) {
     return (adminMiddleware as unknown as (
@@ -108,9 +126,12 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
 }
 
 export const config = {
-  // /api/admin/* tem proteção própria via x-admin-token nos route handlers.
-  // Tudo que é asset ou API fica de fora — o middleware só olha páginas.
+  // Páginas, como antes. De `/api/*` só entra `/api/admin/*`, e apenas para o
+  // gate de superfície/cutover: incluir todo `/api` cobraria uma invocação de
+  // middleware por requisição do player e dos apps. As demais APIs na
+  // superfície admin são bloqueadas no build (rewrites em next.config.mjs).
   matcher: [
     "/((?!api|_next/static|_next/image|fonts|.*\.(?:png|jpe?g|gif|svg|webp|ico|avif|txt|xml|json|webmanifest|mp4|woff2?)$).*)",
+    "/api/admin/:path*",
   ],
 };
