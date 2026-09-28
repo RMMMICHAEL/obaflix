@@ -10,6 +10,7 @@
  */
 
 import { PrismaClient } from "@prisma/client";
+import { writeEpisodesByCoordinate } from "../src/lib/episode-coordinate";
 
 const prisma = new PrismaClient();
 
@@ -423,9 +424,8 @@ async function syncSeries(series: MegaSerie[]) {
     console.log(`\n   Importando ${episNovos.length} episódios novos...`);
     for (let i = 0; i < episNovos.length; i += BATCH) {
       const batch = episNovos.slice(i, i + BATCH);
-      await prisma.episodio.createMany({
-        skipDuplicates: true,
-        data: batch.map((e) => ({
+      // Pela coordenada: episódio já existente com outro ID não duplica.
+      await writeEpisodesByCoordinate(prisma, batch.map((e) => ({
           id: String(e.id),
           serieId: e.serieId,
           numeroEp: Number(e.ep),
@@ -434,8 +434,7 @@ async function syncSeries(series: MegaSerie[]) {
           thumbnail: e.bg ?? null,
           urlDub: e.urlBR ?? null,
           urlLeg: e.urlENG ?? null,
-        })),
-      });
+        })));
       process.stdout.write(`\r   ${Math.min(i + BATCH, episNovos.length)}/${episNovos.length} episódios...`);
     }
   }

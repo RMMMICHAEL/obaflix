@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { writeEpisodesByCoordinate } from "../src/lib/episode-coordinate";
 import fs from "fs";
 import path from "path";
 
@@ -144,10 +145,11 @@ async function importSeries(filePath: string) {
   }
 
   let epOk = 0;
+  // Pela coordenada (serieId, temporada, numeroEp), nunca só pelo ID do JSON.
   for (const batch of chunks(episodios, BATCH)) {
-    await prisma.episodio.createMany({ data: batch, skipDuplicates: true });
-    epOk += batch.length;
-    console.log(`  ${epOk}/${episodios.length} episodios`);
+    const r = await writeEpisodesByCoordinate(prisma, batch);
+    epOk += r.created;
+    console.log(`  ${epOk} novos de ${episodios.length} episodios`);
   }
   console.log(`  CONCLUIDO: ${epOk} episodios`);
 }

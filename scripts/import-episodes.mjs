@@ -112,12 +112,24 @@ async function importSerie(serie, idx, total) {
     return { ok: allEpisodes.length, skipped: 0, failed: 0 };
   }
 
-  // createMany com skipDuplicates — seguro para re-execuções
+  // Identidade = (serieId, temporada, numeroEp). skipDuplicates sozinho só
+  // pula conflito de ID enquanto o índice único da coordenada não existir, e
+  // aí o mesmo episódio com outro ID viraria segunda linha.
   try {
-    const result = await prisma.episodio.createMany({
-      data: allEpisodes,
-      skipDuplicates: true,
+    const existentes = await prisma.episodio.findMany({
+      where: { serieId: serie.id },
+      select: { temporada: true, numeroEp: true },
     });
+    const ocupadas = new Set(existentes.map((e) => `${e.temporada}:${e.numeroEp}`));
+    const novos = allEpisodes.filter((e) => {
+      const k = `${e.temporada}:${e.numeroEp}`;
+      if (ocupadas.has(k)) return false;
+      ocupadas.add(k);
+      return true;
+    });
+    const result = novos.length
+      ? await prisma.episodio.createMany({ data: novos, skipDuplicates: true })
+      : { count: 0 };
     process.stdout.write(`\r  ${prefix} — ${result.count} eps novos (${allEpisodes.length} total, ${numSeasons} temp)\n`);
     return { ok: result.count, skipped: 0, failed: 0 };
   } catch (e) {
