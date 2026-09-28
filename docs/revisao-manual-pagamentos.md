@@ -82,15 +82,25 @@ no painel do provedor; a ação só o **confirma** depois de o provedor informar
 
 ## 5. Roteiro operacional
 
-Autenticação: sessão de usuário com papel `admin` no navegador, ou o cabeçalho
-`x-admin-token` (valor só em variável de ambiente local, nunca em comando salvo).
+Autenticação: **somente** sessão de usuário com papel `admin` (revalidado no
+banco a cada requisição). O cabeçalho `x-admin-token` deixou de ser aceito
+nestas rotas (403): ação financeira sempre tem um operador identificado como
+ator. Casos antigos com `ator = "token_admin"` permanecem como estão no
+histórico.
 
-```bash
-curl -s -H "x-admin-token: $OBAFLIX_ADMIN_TOKEN" "https://<ambiente>/api/admin/pagamentos/revisoes?status=PENDENTE"
+Com a sessão aberta no painel (`/admin`), use o console do navegador na mesma
+origem — o cookie de sessão vai junto e a origem confere com o host:
+
+```js
+await (await fetch("/api/admin/pagamentos/revisoes?status=PENDENTE")).json()
 ```
 
-```bash
-curl -s -X POST -H "x-admin-token: $OBAFLIX_ADMIN_TOKEN" -H "content-type: application/json" -d "{\"acao\":\"reconsultar\",\"chaveIdempotencia\":\"$(uuidgen | tr -d -)\"}" "https://<ambiente>/api/admin/pagamentos/revisoes/<revisaoId>"
+```js
+await (await fetch("/api/admin/pagamentos/revisoes/<revisaoId>", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ acao: "reconsultar", chaveIdempotencia: crypto.randomUUID().replaceAll("-", "") }),
+})).json()
 ```
 
 Sequência sugerida por caso:

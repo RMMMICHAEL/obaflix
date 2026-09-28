@@ -729,9 +729,17 @@ describe("rotas administrativas", () => {
     assert.equal(recebido.ator, "admin-1", "ator vem da sessão, nunca do corpo");
     assert.equal(recebido.revisaoId, "rev-1");
 
-    const porToken = acaoRevisaoPost.createForTest({ requireAdmin: async () => null, executarAcaoDeRevisao: executar });
-    await porToken(post({ "x-admin-token": "x".repeat(40) }), { params: { id: "rev-1" } });
-    assert.equal(recebido.ator, "token_admin");
+    // Token legado não autoriza mais: a guarda real recusa antes de executar.
+    recebido = undefined;
+    const porToken = acaoRevisaoPost.createForTest({ executarAcaoDeRevisao: executar });
+    assert.equal((await porToken(post({ "x-admin-token": "x".repeat(40) }), { params: { id: "rev-1" } })).status, 403);
+    assert.equal(recebido, undefined, "token legado nunca chega a executar ação financeira");
+    assert.equal((await listarRevisoesGet.createForTest({})(new NextRequest("http://local/api/admin/pagamentos/revisoes", { headers: { "x-admin-token": "x".repeat(40) } }))).status, 403);
+
+    // Sem sessão identificável não há ator: 401, nada executado.
+    const semSessao = acaoRevisaoPost.createForTest({ requireAdmin: async () => null, executarAcaoDeRevisao: executar, getServerSession: async () => null });
+    assert.equal((await semSessao(post({}), { params: { id: "rev-1" } })).status, 401);
+    assert.equal(recebido, undefined);
 
     const recusada = acaoRevisaoPost.createForTest({ requireAdmin: async () => null, executarAcaoDeRevisao: async () => ({ ok: false, status: 422, codigo: "pagamento_nao_confirmado" }), getServerSession: async () => ({ user: { id: "admin-1" } }) });
     const r = await recusada(post({}), { params: { id: "rev-1" } });

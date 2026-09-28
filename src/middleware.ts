@@ -4,65 +4,24 @@ import type { NextFetchEvent } from "next/server";
 import { decidirRota, detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
 import { decideSurfaceGate, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
 
-const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
-
-function corsHeaders(origin: string) {
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, x-admin-token, Authorization",
-    "Access-Control-Max-Age": "86400",
-  };
-}
-
+/**
+ * Só páginas `/admin*` chegam aqui (as APIs saem antes, e a autorização delas
+ * fica nos route handlers). Página administrativa exige JWT com `role=admin`;
+ * nenhum cabeçalho (`x-admin-token` incluído) substitui a sessão. O papel é
+ * reconfirmado no banco por cada API que a página chama.
+ */
 const adminMiddleware = withAuth(
   function middleware(req) {
-    const { pathname } = req.nextUrl;
-    const origin = req.headers.get("origin") ?? "";
-    const isAdminApi = pathname.startsWith("/api/admin/");
-
-    // Preflight CORS para rotas admin vindas do painel Megaflix
-    if (req.method === "OPTIONS" && isAdminApi && origin === ADMIN_CORS_ORIGIN) {
-      return new NextResponse(null, { status: 204, headers: corsHeaders(origin) });
-    }
-
-    // Requests com x-admin-token: não exige JWT — rota cuida da auth
-    if (isAdminApi && getObaflixSurface() === "public" && req.headers.get("x-admin-token")) {
-      const res = NextResponse.next();
-      if (origin === ADMIN_CORS_ORIGIN) {
-        Object.entries(corsHeaders(origin)).forEach(([k, v]) => res.headers.set(k, v));
-      }
-      return res;
-    }
-
-    // Proteção JWT normal para /admin e /api/admin
     const role = (req.nextauth.token as { role?: string } | null)?.role;
     if (role !== "admin") {
-      if (isAdminApi) {
-        return NextResponse.json({ error: "Não autorizado" }, { status: 403 });
-      }
       // Na superfície admin, `/` volta para `/admin`: mandar para lá seria laço.
       const destino = getObaflixSurface() === "admin" ? "/login" : "/";
       return NextResponse.redirect(new URL(destino, req.url));
     }
-
-    const res = NextResponse.next();
-    if (isAdminApi && origin === ADMIN_CORS_ORIGIN) {
-      Object.entries(corsHeaders(origin)).forEach(([k, v]) => res.headers.set(k, v));
-    }
-    return res;
+    return NextResponse.next();
   },
   {
-    callbacks: {
-      authorized: ({ token, req }) => {
-        // Preflight CORS: deixa passar, middleware retorna 204
-        if (req.method === "OPTIONS") return true;
-        // x-admin-token: rota valida internamente. Só existe na superfície
-        // pública (legado); no painel separado vale apenas a sessão.
-        if (getObaflixSurface() === "public" && req.headers.get("x-admin-token")) return true;
-        return !!token;
-      },
-    },
+    callbacks: { authorized: ({ token }) => !!token },
     // Painel separado usa a própria tela de login; o público mantém o padrão.
     ...(getObaflixSurface() === "admin" ? { pages: { signIn: "/login" } } : {}),
   }

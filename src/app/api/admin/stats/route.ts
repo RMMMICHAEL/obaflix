@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { isLegacyAdminTokenRequest, requireAdmin } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import { dashboardWindows, usersPerDay } from "@/lib/admin-dashboard";
 
 export async function GET(req: NextRequest) {
@@ -15,12 +15,6 @@ export async function GET(req: NextRequest) {
     prisma.episodio.count(),
     prisma.user.count(),
   ]);
-
-  // Token legado (produtores de catálogo): mesma resposta de antes, sem
-  // assinaturas, cadastros por dia nem telemetria — isso é só da sessão admin.
-  if (isLegacyAdminTokenRequest(req)) {
-    return NextResponse.json({ filmes, series, animes, desenhos, episodios, usuarios });
-  }
 
   const now = new Date();
   const { startToday, sevenDaysAgo, thirtyDaysAgo, inSevenDays } = dashboardWindows(now);
