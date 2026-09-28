@@ -47,4 +47,3 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
   LastRunTime = $info.LastRunTime
   LastTaskResult = $info.LastTaskResult
 }
-
