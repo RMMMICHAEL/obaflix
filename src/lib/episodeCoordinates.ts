@@ -230,11 +230,16 @@ export interface EntradaCoordenadas {
 /**
  * Lista ordenada e sem repetição do que tentar num provedor.
  *
- *   1. aprendida (se houver) — evita repetir a tentativa sabidamente inútil
- *   2. regras marcadas `antesDoCanonico` — canônica comprovadamente errada
+ *   1. regras marcadas `antesDoCanonico` — canônica comprovadamente errada
+ *   2. aprendida (se houver) — evita repetir a tentativa sabidamente inútil
  *   3. canônica — comportamento de sempre
  *   4. contínua — T1E{absoluto}, só com estrutura segura
  *   5. demais regras
+ *
+ * Regra medida vem antes do aprendido: o aprendizado é por título e provedor,
+ * não por temporada, e "funcionou" só quer dizer stream extraído — pode ser
+ * de outro episódio. Uma dica aprendida numa temporada nunca passa na frente
+ * da regra comprovada de outra.
  *
  * A canônica está sempre na lista: se a aprendida parar de funcionar, ela
  * continua sendo tentada. Duplicatas saem (T1E27 contínua == T1E27 regra), e a
@@ -264,7 +269,7 @@ export function resolveEpisodeCoordinates(e: EntradaCoordenadas): EpisodeCoordin
 
   const vistos = new Set<string>();
   const saida: EpisodeCoordinate[] = [];
-  for (const c of [aprendida, ...antes, canonica, continua, ...depois]) {
+  for (const c of [...antes, aprendida, canonica, continua, ...depois]) {
     if (!valida(c)) continue;
     const chave = `${c.season}:${c.episode}`;
     if (vistos.has(chave)) continue;
@@ -273,10 +278,12 @@ export function resolveEpisodeCoordinates(e: EntradaCoordenadas): EpisodeCoordin
   }
   if (saida.length <= MAX_TENTATIVAS_COORDENADA) return saida;
   // O corte nunca leva a canônica: ela é a rede de segurança de qualquer regra.
+  // Compara pela coordenada, não pelo rótulo: quando uma regra coincide com a
+  // canônica, a deduplicação guarda a entrada da regra e nenhuma fica marcada
+  // "canonical" — e a coordenada já está garantida.
   const cortada = saida.slice(0, MAX_TENTATIVAS_COORDENADA);
-  if (!cortada.some((c) => c.strategy === "canonical")) {
-    cortada[MAX_TENTATIVAS_COORDENADA - 1] = saida.find((c) => c.strategy === "canonical")!;
-  }
+  const mesma = (c: EpisodeCoordinate) => c.season === canonica.season && c.episode === canonica.episode;
+  if (!cortada.some(mesma)) cortada[MAX_TENTATIVAS_COORDENADA - 1] = canonica;
   return cortada;
 }
 

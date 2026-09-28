@@ -242,10 +242,11 @@ describe("6. estrutura insuficiente", () => {
     ["lacuna na temporada anterior", linhas({ 1: [...faixa(1, 10), ...faixa(12, 26)], 2: faixa(1, 12) })],
     ["bloco extra que não é o absoluto", linhas({ 1: faixa(1, 26), 2: [...faixa(1, 12), ...faixa(40, 51)] })],
     ["bloco absoluto de tamanho diferente", linhas({ 1: faixa(1, 26), 2: [...faixa(1, 12), ...faixa(27, 36)] })],
+    ["temporada do meio vazia", linhas({ 1: faixa(1, 26), 3: faixa(1, 12) })],
   ];
   for (const [nome, cat] of casos) {
     test(`${nome}: não inventa coordenada e não lança`, () => {
-      const est = c.estruturaDoCatalogo(cat, 2);
+      const est = c.estruturaDoCatalogo(cat, Math.max(...cat.map((l) => l.temporada)));
       assert.equal(est, null);
       const lista = c.resolveEpisodeCoordinates({
         tmdbId: "999", provider: "superflix", season: 2, episode: 1, estrutura: est, regras: [],
@@ -253,6 +254,18 @@ describe("6. estrutura insuficiente", () => {
       assert.deepEqual(lista.map((x) => x.strategy), ["canonical"]);
     });
   }
+
+  test("formas aceitas: só absoluta dá o absoluto; número fora de qualquer bloco não", () => {
+    const soAbsoluta = c.estruturaDoCatalogo(linhas({ 1: faixa(1, 26), 2: faixa(27, 38) }), 2);
+    assert.equal(c.episodioAbsoluto(soAbsoluta, 2, 27), 27);
+    assert.equal(c.episodioAbsoluto(soAbsoluta, 2, 1), null, "relativa não existe nessa temporada");
+    const relativa = c.estruturaDoCatalogo(CATALOGO_26, 2);
+    assert.equal(c.episodioAbsoluto(relativa, 2, 13), null);
+    const lista = c.resolveEpisodeCoordinates({
+      tmdbId: "999", provider: "superflix", season: 2, episode: 13, estrutura: relativa, regras: [],
+    });
+    assert.deepEqual(lista.map((x) => x.strategy), ["canonical"]);
+  });
 
   test("sem estrutura, regra de divisão não produz nada", () => {
     const lista = c.resolveEpisodeCoordinates({
@@ -299,6 +312,42 @@ describe("7. sem duplicata, com teto", () => {
     assert.equal(lista.length, c.MAX_TENTATIVAS_COORDENADA);
     assert.ok(lista.some((x) => x.strategy === "canonical"));
     assert.equal(new Set(lista.map(c.rotuloCoordenada)).size, lista.length);
+  });
+
+  test("aprendida + prioritária + canônica + contínua + alias extra: teto 4, canônica fica", () => {
+    const prioritaria = { ...REGRA_T1E64, paraTemporada: 3, paraEpisodio: 1, antesDoCanonico: true };
+    const extra = { ...REGRA_T1E64, paraTemporada: 4, paraEpisodio: 1 };
+    const aprendidaAlias = c.resolveEpisodeCoordinates({
+      tmdbId: "999", provider: "superflix", season: 2, episode: 1,
+      estrutura: c.estruturaDoCatalogo(CATALOGO_26, 2), regras: [prioritaria, REGRA_T1E64, extra], aprendida: "continuous",
+    });
+    // 5 candidatos distintos: T3E1 (regra), T1E27 (aprendida), T2E1, T1E64, T4E1.
+    assert.deepEqual(aprendidaAlias.map(c.rotuloCoordenada), ["T3E1", "T1E27", "T2E1", "T1E64"]);
+
+    // Com três prioritárias a canônica cairia fora do corte — e é reposta.
+    const tres = [3, 4, 5].map((t) => ({ ...prioritaria, paraTemporada: t }));
+    const cortada = c.resolveEpisodeCoordinates({
+      tmdbId: "999", provider: "superflix", season: 2, episode: 1,
+      estrutura: c.estruturaDoCatalogo(CATALOGO_26, 2), regras: [...tres, extra], aprendida: "continuous",
+    });
+    assert.equal(cortada.length, c.MAX_TENTATIVAS_COORDENADA);
+    assert.equal(cortada[cortada.length - 1].strategy, "canonical");
+    assert.equal(new Set(cortada.map(c.rotuloCoordenada)).size, cortada.length);
+  });
+
+  test("regra igual à canônica + excesso de candidatos: corte não perde a coordenada nem quebra", () => {
+    const igualCanonica = { ...REGRA_T1E64, paraTemporada: 2, paraEpisodio: 1, antesDoCanonico: true };
+    const extras = [3, 4, 5].map((t) => ({ ...REGRA_T1E64, paraTemporada: t }));
+    const lista = c.resolveEpisodeCoordinates({
+      tmdbId: "999", provider: "superflix", season: 2, episode: 1,
+      estrutura: c.estruturaDoCatalogo(CATALOGO_26, 2), regras: [igualCanonica, ...extras], aprendida: "continuous",
+    });
+    assert.equal(lista.length, c.MAX_TENTATIVAS_COORDENADA);
+    assert.ok(lista.every(Boolean), "nenhuma posição vazia");
+    assert.equal(c.rotuloCoordenada(lista[0]), "T2E1");
+    assert.equal(new Set(lista.map(c.rotuloCoordenada)).size, lista.length);
+    const fonte = fonteSuperflix(c.estruturaDoCatalogo(CATALOGO_26, 2), [igualCanonica, ...extras], 2, 1, { superflix: "continuous" });
+    assert.equal(f.totalTentativas(fonte), c.MAX_TENTATIVAS_COORDENADA);
   });
 
   test("URLs iguais não são repetidas mesmo se a lista vier suja", async () => {
@@ -379,6 +428,35 @@ describe("8. aprendizado no Redis", () => {
     assert.equal(kv.has("epcoord:v1:999"), false);
   });
 
+  test("A: alias aprendido numa temporada sem regra aplicável não inventa coordenada", () => {
+    const soT2 = { ...REGRA_T1E64, ate: 12 };
+    const lista = c.resolveEpisodeCoordinates({
+      tmdbId: "999", provider: "superflix", season: 3, episode: 1,
+      estrutura: c.estruturaDoCatalogo(linhas({ 1: faixa(1, 26), 2: faixa(1, 12), 3: faixa(1, 10) }), 3),
+      regras: [soT2], aprendida: "alias",
+    });
+    assert.deepEqual(lista.map((x) => `${c.rotuloCoordenada(x)}:${x.strategy}`), ["T3E1:canonical", "T1E39:continuous"]);
+  });
+
+  test("B: contínua aprendida não passa na frente de regra prioritária de outra temporada", () => {
+    for (const [s, e, regra] of [[5, 1, "T2E76"], [2, 1, "T1E27"]] as const) {
+      const lista = c.resolveEpisodeCoordinates({
+        tmdbId: "46298", provider: "playerflix", season: s, episode: e,
+        estrutura: c.estruturaDoCatalogo(CATALOGO_HXH, s), regras: regrasReais.REGRAS_COORDENADA, aprendida: "continuous",
+      });
+      assert.equal(c.rotuloCoordenada(lista[0]), regra);
+      assert.ok(lista.some((x) => x.strategy === "canonical"));
+    }
+  });
+
+  test("D: aprendida (depois da regra) falha e as demais seguem sendo tentadas", async () => {
+    const fonte = fonteSuperflix(c.estruturaDoCatalogo(CATALOGO_26, 2), [REGRA_T1E64], 2, 1, { superflix: "continuous" });
+    const p = provedor(["T1E64"]);
+    const r = await t.executarTentativas({ fonte, tentar: p.tentar, sucesso: p.sucesso, aprender: aprenderNulo });
+    assert.deepEqual(p.chamadas, ["T1E27", "T2E1", "T1E64"]);
+    assert.equal(r.estrategia, "alias");
+  });
+
   test("tmdbId inválido não toca o Redis", async () => {
     await cache.aprenderEstrategia("../x", "superflix", "alias");
     assert.deepEqual(await cache.lerAprendidas("abc"), {});
@@ -438,23 +516,41 @@ describe("HxH: catálogo por arco com numeração dupla", () => {
     assert.equal(c.episodioAbsoluto(e, 2, 13), null, "número que não pertence a bloco nenhum");
   });
 
-  const casos: Array<[string, number, number, string]> = [
-    ["watchplayer", 2, 1, "T1E27"],
-    ["watchplayer", 4, 5, "T2E1"],
-    ["watchplayer", 5, 1, "T2E14"],
-    ["watchplayer", 6, 1, "T3E1"],
-    ["playerflix", 5, 1, "T2E76"],
-    ["playerflix", 6, 12, "T3E148"],
-    ["playerflix", 2, 27, "T1E27"],
+  // Limites de faixa medidos em 29/09/2026. Catálogo: ids consecutivos do
+  // bloco absoluto (296390 + abs − 1) e do relativo (398192 + abs − 27).
+  // Playerflix: título/sinopse de cada coordenada (E27 chegada à Arena Celeste,
+  // E39 Trupe Fantasma, E59 leilão de Greed Island, E63 treino da Bisky, E76
+  // Nigg, E137 eleição, E148 final) e ids 383177 + abs − 1. WatchPlay: ids
+  // contíguos S1 11068..11129 (62), S2 20888..20961 (74), S3 20962..20973 (12);
+  // s1e63+ com CDN 404. [canônica, absoluto, watchplayer, playerflix]
+  const limites: Array<[number, number, number, string, string]> = [
+    [1, 26, 26, "T1E26", "T1E26"],
+    [2, 1, 27, "T1E27", "T1E27"],
+    [2, 12, 38, "T1E38", "T1E38"],
+    [3, 1, 39, "T1E39", "T1E39"],
+    [3, 20, 58, "T1E58", "T1E58"],
+    [4, 1, 59, "T1E59", "T1E59"],
+    [4, 4, 62, "T1E62", "T1E62"],
+    [4, 5, 63, "T2E1", "T2E63"],
+    [4, 17, 75, "T2E13", "T2E75"],
+    [5, 1, 76, "T2E14", "T2E76"],
+    [5, 61, 136, "T2E74", "T2E136"],
+    [6, 1, 137, "T3E1", "T3E137"],
+    [6, 12, 148, "T3E12", "T3E148"],
+    [2, 27, 27, "T1E27", "T1E27"],
   ];
-  for (const [provider, s, e, esperado] of casos) {
-    test(`${provider}: T${s}E${e} tenta ${esperado} antes da canônica`, () => {
-      const lista = c.resolveEpisodeCoordinates({
-        tmdbId: "46298", provider, season: s, episode: e, estrutura: est(), regras: regrasReais.REGRAS_COORDENADA,
-      });
-      assert.equal(c.rotuloCoordenada(lista[0]), esperado);
-      assert.ok(lista.some((x) => x.strategy === "canonical"));
-      assert.ok(lista.length <= c.MAX_TENTATIVAS_COORDENADA);
+  for (const [s, e, abs, wp, pf] of limites) {
+    test(`T${s}E${e} (absoluto ${abs}) → watchplayer ${wp}, playerflix ${pf}, antes da canônica`, () => {
+      assert.equal(c.episodioAbsoluto(c.estruturaDoCatalogo(CATALOGO_HXH, s), s, e), abs);
+      for (const [provider, esperado] of [["watchplayer", wp], ["playerflix", pf]] as const) {
+        const lista = c.resolveEpisodeCoordinates({
+          tmdbId: "46298", provider, season: s, episode: e,
+          estrutura: c.estruturaDoCatalogo(CATALOGO_HXH, s), regras: regrasReais.REGRAS_COORDENADA,
+        });
+        assert.equal(c.rotuloCoordenada(lista[0]), esperado, provider);
+        assert.ok(lista.some((x) => x.season === s && x.episode === e), "coordenada canônica presente");
+        assert.ok(lista.length <= c.MAX_TENTATIVAS_COORDENADA);
+      }
     });
   }
 
