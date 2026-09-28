@@ -26,6 +26,7 @@
     "sync-superflix:backfill": "tsx scripts/sync-superflix.ts --backfill",
     "sync:local": "tsx scripts/run-local-syncs.ts",
     "sync:local:check": "tsx scripts/run-local-syncs.ts --check",
+    "episodios:dedupe": "tsx scripts/dedupe-episodios.ts",
     "test:cinevs": "tsx scripts/test-cinevs.ts",
     "test:web": "node --test --import tsx \"src/lib/__tests__/*.test.ts\"",
     "test": "npm run test:extractors && npm run test:web",
