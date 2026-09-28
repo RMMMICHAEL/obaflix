@@ -1,5 +1,7 @@
 # Painel administrativo separado, fase 1
 
+> **Superado em parte por `docs/admin-cutover-final.md`**: o token legado não abre mais APIs humanas (incluindo `pagamentos/revisoes`), o cutover usa `PUBLIC_CUTOVER_ATIVO`, os produtores já apontam para a integração e há dedupe + índice único de episódios.
+
 Estado: implementado na branch `feat/admin-obaflix-separado`, **sem** deploy,
 sem migration em produção e sem cutover.
 
