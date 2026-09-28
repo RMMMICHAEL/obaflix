@@ -436,3 +436,84 @@ export function linhaDiagDownload(evento: EventoDeProcura): string {
     .map(([chave, valor]) => `${chave}=${valor}`);
   return `[diag/etapa] ${partes.join(" ")}`;
 }
+
+// ── Coordenadas de episódio fora do player ────────────────────────────────────
+
+/**
+ * Orçamento para tentar coordenadas alternativas de UMA fonte fora do player
+ * (download e transmissão). A primeira tentativa sempre roda, com os prazos de
+ * sempre; as seguintes só começam enquanto a fonte não passou deste tempo.
+ * Sem teto, 4 coordenadas × (fonte-nativa + extração) somariam minutos com o
+ * anúncio já consumido.
+ */
+export const ORCAMENTO_COORDENADAS_MS = 45_000;
+/** Mesmo teto do servidor (`MAX_TENTATIVAS_COORDENADA`). */
+export const MAX_COORDENADAS_POR_FONTE = 4;
+
+export type RespostaFonteNativa = {
+  embedUrl?: string;
+  streamUrl?: string;
+  referer?: string | null;
+  tipo?: string | null;
+  /** Quantas coordenadas o servidor tem para esta fonte. Ausente: 1. */
+  tentativas?: unknown;
+};
+
+export type ResolucaoComCoordenadas<D> =
+  | { via: "servidor"; nativa: RespostaFonteNativa }
+  | { via: "aparelho"; dados: D };
+
+/**
+ * Resolve uma fonte percorrendo as coordenadas de episódio que o servidor
+ * declara (ver `src/lib/episodeCoordinates.ts`) — o mesmo que o player faz,
+ * com o servidor como autoridade: aqui só circula o índice.
+ *
+ * - `pedirFonte(t)` chama `/api/player/fonte-nativa` para a coordenada `t` e
+ *   lança se a rota recusar;
+ * - `extrair` roda o extrator do aparelho e lança se não houver mídia.
+ *
+ * Mídia resolvida no servidor (`streamUrl`) volta direto: lá as coordenadas já
+ * foram percorridas. Prazo estourado na extração encerra a fonte — outra
+ * coordenada do mesmo provedor pendurado só gastaria mais tempo. Tudo falhando,
+ * relança o último erro, como a tentativa única sempre fez.
+ */
+export async function resolverComCoordenadas<D>(deps: {
+  pedirFonte: (tentativa: number) => Promise<RespostaFonteNativa>;
+  extrair: (embedUrl: string) => Promise<D>;
+  ehPrazoEstourado?: (erro: unknown) => boolean;
+  agora?: () => number;
+  orcamentoMs?: number;
+}): Promise<ResolucaoComCoordenadas<D>> {
+  const agora = deps.agora ?? (() => Date.now());
+  const orcamento = deps.orcamentoMs ?? ORCAMENTO_COORDENADAS_MS;
+  const estourou = deps.ehPrazoEstourado ?? ((e: unknown) => (e as { name?: unknown } | null)?.name === "EtapaExpirada");
+  const inicio = agora();
+  let total = 1;
+  let ultimoErro: unknown = new Error("fonte_falhou");
+
+  for (let t = 0; t < total && t < MAX_COORDENADAS_POR_FONTE; t++) {
+    if (t > 0 && agora() - inicio >= orcamento) break;
+    let nativa: RespostaFonteNativa;
+    try {
+      nativa = await deps.pedirFonte(t);
+    } catch (erro) {
+      if (t === 0) throw erro;
+      ultimoErro = erro;
+      break;
+    }
+    const declarado = Number(nativa?.tentativas);
+    if (Number.isInteger(declarado) && declarado >= 1) total = Math.min(declarado, MAX_COORDENADAS_POR_FONTE);
+    if (nativa?.streamUrl) return { via: "servidor", nativa };
+    if (!nativa?.embedUrl) {
+      if (t === 0) throw new Error("fonte_falhou");
+      break;
+    }
+    try {
+      return { via: "aparelho", dados: await deps.extrair(nativa.embedUrl) };
+    } catch (erro) {
+      ultimoErro = erro;
+      if (estourou(erro)) break;
+    }
+  }
+  throw ultimoErro;
+}

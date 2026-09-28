@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef } from "react";
-import { fontesCandidatas } from "@/lib/androidMedia";
+import { fontesCandidatas, resolverComCoordenadas } from "@/lib/androidMedia";
 import { AcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
 import {
   corridaComPrazo,
@@ -178,30 +178,50 @@ export function useFonteParaMidia({
       const alvo = atual.candidatas[tentativa];
       if (!alvo) return null;
 
-      // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
-      // servidor (EtapaExpirada sobe como falha de servidor) e a procura segue
-      // para o próximo, sem novo anúncio.
-      const res = await fetchComPrazo(
-        "/api/player/fonte-nativa",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessao: atual.sessao, fonteId: alvo.id }),
-        },
-        PRAZO_FONTE_NATIVA_MS,
-        "fonte-nativa",
-      );
-      if (!res.ok) throw new Error("fonte_falhou");
-      const nativa = await res.json();
-
       // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
       // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
       const servidor = alvo.rotulo || `Servidor ${tentativa + 1}`;
+      const extrair = (embedUrl: string) => ponte.extractStream!(embedUrl);
+
+      // Coordenadas de episódio (ver src/lib/episodeCoordinates.ts): quando o
+      // provedor numera as temporadas de outro jeito, o servidor declara mais de
+      // uma, e a mesma fonte é tentada em cada uma — o que o player já fazia.
+      // Só circula o índice; a coordenada real sai do servidor.
+      const resolvida = await resolverComCoordenadas<Resolvido>({
+        // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
+        // servidor (EtapaExpirada sobe como falha de servidor) e a procura segue
+        // para o próximo, sem novo anúncio.
+        pedirFonte: async (coordenada) => {
+          const res = await fetchComPrazo(
+            "/api/player/fonte-nativa",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(coordenada === 0
+                ? { sessao: atual.sessao, fonteId: alvo.id }
+                : { sessao: atual.sessao, fonteId: alvo.id, tentativa: coordenada }),
+            },
+            PRAZO_FONTE_NATIVA_MS,
+            "fonte-nativa",
+          );
+          if (!res.ok) throw new Error("fonte_falhou");
+          return res.json();
+        },
+        // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
+        // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
+        // próximo, ainda sem novo anúncio.
+        extrair: async (embedUrl) => {
+          const dados = await corridaComPrazo(extrair(embedUrl), PRAZO_EXTRACAO_MS, "extracao");
+          if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
+          return dados;
+        },
+      });
 
       // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
       // devolvem o embed para o aparelho extrair (`embedUrl`). São os dois
       // formatos que o próprio player já trata.
-      if (nativa?.streamUrl) {
+      if (resolvida.via === "servidor") {
+        const nativa = resolvida.nativa;
         return {
           origem: "nativo",
           stream: nativa.streamUrl,
@@ -217,21 +237,10 @@ export function useFonteParaMidia({
           via: "servidor",
         };
       }
-      if (!nativa?.embedUrl) throw new Error("fonte_falhou");
-
-      // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
-      // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
-      // próximo, ainda sem novo anúncio.
-      const dados = await corridaComPrazo(
-        ponte.extractStream(nativa.embedUrl),
-        PRAZO_EXTRACAO_MS,
-        "extracao",
-      );
-      if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
 
       // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
       // nativo comum — os caminhos de sessão foram filtrados acima.
-      return { ...dados, origem: "nativo", servidor, via: "aparelho" };
+      return { ...resolvida.dados, origem: "nativo", servidor, via: "aparelho" };
     },
     [abrirSessao],
   );

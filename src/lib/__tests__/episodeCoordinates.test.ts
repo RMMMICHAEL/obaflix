@@ -603,3 +603,123 @@ describe("URL da coordenada", () => {
     assert.equal(filme.coordenadas, undefined);
   });
 });
+
+// ── Retomada da coordenada que reproduziu (renovação no site) ────────────────
+describe("retomada da coordenada que já reproduziu", () => {
+  test("a preferida vai primeiro; retomar não reescreve o aprendizado", async () => {
+    const fonte = fonteSuperflix(c.estruturaDoCatalogo(CATALOGO_26, 2), [REGRA_T1E64]);
+    // Sessão: T2E1 falhou uma vez, T1E27 tocou (índice 1). Na renovação a
+    // canônica voltou a "funcionar" — e seria outro episódio.
+    const p = provedor(["T2E1", "T1E27"]);
+    let escreveu = 0;
+    const r = await t.executarTentativas({
+      fonte, tentar: p.tentar, sucesso: p.sucesso, preferida: 1, aprender: async () => { escreveu++; },
+    });
+    assert.deepEqual(p.chamadas, ["T1E27"]);
+    assert.equal(r.indice, 1);
+    assert.equal(r.estrategia, "continuous");
+    assert.equal(escreveu, 0);
+  });
+
+  test("preferida que parou de funcionar cai nas demais, em ordem, uma vez cada", async () => {
+    const fonte = fonteSuperflix(c.estruturaDoCatalogo(CATALOGO_26, 2), [REGRA_T1E64]);
+    const p = provedor(["T1E64"]);
+    const r = await t.executarTentativas({ fonte, tentar: p.tentar, sucesso: p.sucesso, preferida: 1, aprender: aprenderNulo });
+    assert.deepEqual(p.chamadas, ["T1E27", "T2E1", "T1E64"]);
+    assert.equal(r.indice, 2);
+  });
+
+  test("preferida fora da lista é ignorada", async () => {
+    const fonte = fonteSuperflix(c.estruturaDoCatalogo(CATALOGO_26, 2), []);
+    for (const preferida of [7, -1, 1.5, null]) {
+      const p = provedor(["T2E1"]);
+      await t.executarTentativas({ fonte, tentar: p.tentar, sucesso: p.sucesso, preferida, aprender: aprenderNulo });
+      assert.deepEqual(p.chamadas, ["T2E1"], String(preferida));
+    }
+  });
+
+  test("/extract recebe e devolve o índice; o player o reenvia na extração e na renovação", async () => {
+    const rota = await readFile("src/app/api/player/extract/route.ts", "utf8");
+    assert.match(rota, /searchParams\.get\("tentativa"\)/);
+    assert.match(rota, /preferida: tentativaPreferida/);
+    assert.equal((rota.match(/\.\.\.comTentativa/g) ?? []).length, 4, "as quatro respostas de sucesso");
+    const player = await readFile("src/components/player/CustomPlayer.tsx", "utf8");
+    assert.equal((player.match(/parametroTentativaRef\.current\(fonteId\)/g) ?? []).length, 2);
+    assert.equal((player.match(/lembrarTentativaRef\.current\(fonteId, data\)/g) ?? []).length, 2);
+  });
+});
+
+// ── Download e transmissão fora do player ────────────────────────────────────
+describe("download/cast fora do player percorrem as coordenadas", () => {
+  let m: typeof import("../androidMedia");
+  before(async () => { m = await import("../androidMedia"); });
+
+  const expirada = () => Object.assign(new Error("etapa expirou: extracao"), { name: "EtapaExpirada" });
+
+  test("canônica falha, contínua extrai: mesma fonte, índice 1 pedido ao servidor", async () => {
+    const pedidos: number[] = [];
+    const r = await m.resolverComCoordenadas({
+      pedirFonte: async (t) => { pedidos.push(t); return { embedUrl: `embed-${t}`, tentativas: 2 }; },
+      extrair: async (u) => { if (u === "embed-0") throw new Error("fonte_falhou"); return { stream: "ok" }; },
+    });
+    assert.deepEqual(pedidos, [0, 1]);
+    assert.deepEqual(r, { via: "aparelho", dados: { stream: "ok" } });
+  });
+
+  test("servidor antigo (sem `tentativas`) = uma tentativa, erro de sempre", async () => {
+    const pedidos: number[] = [];
+    await assert.rejects(m.resolverComCoordenadas({
+      pedirFonte: async (t) => { pedidos.push(t); return { embedUrl: "e" }; },
+      extrair: async () => { throw new Error("fonte_falhou"); },
+    }), /fonte_falhou/);
+    assert.deepEqual(pedidos, [0]);
+  });
+
+  test("mídia resolvida no servidor volta direto, sem nova coordenada", async () => {
+    const pedidos: number[] = [];
+    const r = await m.resolverComCoordenadas({
+      pedirFonte: async (t) => { pedidos.push(t); return { streamUrl: "https://cdn/x.m3u8", tentativas: 3 }; },
+      extrair: async () => { throw new Error("não deveria extrair"); },
+    });
+    assert.equal(r.via, "servidor");
+    assert.deepEqual(pedidos, [0]);
+  });
+
+  test("prazo estourado encerra a fonte; orçamento esgotado não começa outra coordenada", async () => {
+    const pedidos: number[] = [];
+    await assert.rejects(m.resolverComCoordenadas({
+      pedirFonte: async (t) => { pedidos.push(t); return { embedUrl: `e${t}`, tentativas: 4 }; },
+      extrair: async () => { throw expirada(); },
+    }), (e: any) => e.name === "EtapaExpirada");
+    assert.deepEqual(pedidos, [0]);
+
+    let relogio = 0;
+    const pedidos2: number[] = [];
+    await assert.rejects(m.resolverComCoordenadas({
+      agora: () => relogio,
+      pedirFonte: async (t) => { pedidos2.push(t); return { embedUrl: `e${t}`, tentativas: 4 }; },
+      extrair: async () => { relogio += 30_000; throw new Error("fonte_falhou"); },
+    }));
+    assert.deepEqual(pedidos2, [0, 1], "a terceira começaria depois de 60 s > orçamento de 45 s");
+  });
+
+  test("teto de 4 mesmo que o servidor declare mais; recusa na primeira sobe como antes", async () => {
+    const pedidos: number[] = [];
+    await assert.rejects(m.resolverComCoordenadas({
+      pedirFonte: async (t) => { pedidos.push(t); return { embedUrl: `e${t}`, tentativas: 99 }; },
+      extrair: async () => { throw new Error("fonte_falhou"); },
+    }));
+    assert.deepEqual(pedidos, [0, 1, 2, 3]);
+    await assert.rejects(m.resolverComCoordenadas({
+      pedirFonte: async () => { throw new Error("fonte_falhou"); },
+      extrair: async () => ({}),
+    }), /fonte_falhou/);
+  });
+
+  test("o hook usa o resolvedor e manda `tentativa` só depois da primeira", async () => {
+    const hook = await readFile("src/components/android/useFonteParaMidia.ts", "utf8");
+    assert.match(hook, /resolverComCoordenadas<Resolvido>\(/);
+    assert.match(hook, /coordenada === 0\s*\n?\s*\? \{ sessao: atual\.sessao, fonteId: alvo\.id \}/);
+    assert.match(hook, /ponte\.extractStream!\(embedUrl\)/, "chamada como método da ponte");
+  });
+});

@@ -24,6 +24,8 @@ export interface ResultadoTentativas<R> {
   /** URL que produziu `resultado` — a que funcionou, ou a última tentada. */
   url: string;
   estrategia: EstrategiaCoordenada;
+  /** Índice (na lista da fonte) de `url`. É o que o cliente devolve para retomar. */
+  indice: number;
   tentadas: number;
 }
 
@@ -37,6 +39,13 @@ export async function executarTentativas<R>(opts: {
   cancelado?: () => boolean;
   log?: (linha: string) => void;
   aprender?: typeof aprenderEstrategia;
+  /**
+   * Índice que já reproduziu nesta sessão (vindo do cliente). Vai primeiro, e
+   * os demais seguem na ordem de sempre. Fora da lista: ignorado. Sem isto a
+   * renovação de token recomeçava da tentativa 0 e podia trocar o episódio no
+   * meio da reprodução.
+   */
+  preferida?: number | null;
 }): Promise<ResultadoTentativas<R>> {
   const { fonte } = opts;
   const total = totalTentativas(fonte);
@@ -49,9 +58,17 @@ export async function executarTentativas<R>(opts: {
   let ultimaFoiErro = false;
   let ultimaUrl = fonte.embedUrl;
   let ultimaEstrategia: EstrategiaCoordenada = "canonical";
+  let ultimoIndice = 0;
 
-  for (let i = 0; i < total; i++) {
-    if (i > 0 && opts.cancelado?.()) break;
+  const indices = Array.from({ length: total }, (_, i) => i);
+  const p = opts.preferida;
+  const ordem = typeof p === "number" && Number.isInteger(p) && p > 0 && p < total
+    ? [p, ...indices.filter((i) => i !== p)]
+    : indices;
+
+  for (let pos = 0; pos < ordem.length; pos++) {
+    const i = ordem[pos];
+    if (pos > 0 && opts.cancelado?.()) break;
     const url = urlDaTentativa(fonte, i);
     if (!url || tentadasUrls.has(url)) continue;
     tentadasUrls.add(url);
@@ -60,6 +77,7 @@ export async function executarTentativas<R>(opts: {
     const estrategia: EstrategiaCoordenada = coord?.strategy ?? "canonical";
     ultimaUrl = url;
     ultimaEstrategia = estrategia;
+    ultimoIndice = i;
 
     let ok = false;
     try {
@@ -83,12 +101,14 @@ export async function executarTentativas<R>(opts: {
 
     if (ok) {
       // Só aprende quando a primeira tentativa não bastou: reprodução normal
-      // não escreve no Redis.
-      if (i > 0 && fonte.coordenadas) await aprender(fonte.coordenadas.tmdbId, fonte.provider, estrategia);
-      return { resultado: ultimo, url, estrategia, tentadas: tentadasUrls.size };
+      // (e retomada da que já funcionou) não escreve no Redis.
+      if (pos > 0 && fonte.coordenadas) await aprender(fonte.coordenadas.tmdbId, fonte.provider, estrategia);
+      return { resultado: ultimo, url, estrategia, indice: i, tentadas: tentadasUrls.size };
     }
   }
 
   if (ultimaFoiErro) throw ultimoErro;
-  return { resultado: ultimo, url: ultimaUrl, estrategia: ultimaEstrategia, tentadas: tentadasUrls.size };
+  return {
+    resultado: ultimo, url: ultimaUrl, estrategia: ultimaEstrategia, indice: ultimoIndice, tentadas: tentadasUrls.size,
+  };
 }

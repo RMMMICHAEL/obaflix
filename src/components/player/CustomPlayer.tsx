@@ -507,6 +507,20 @@ export function CustomPlayer({
   const tentativaNativaRef = useRef<Map<string, number>>(new Map());
   const totalTentativasRef = useRef<Map<string, number>>(new Map());
   /**
+   * Mesma memória no site, onde quem itera é o servidor (/extract): a resposta
+   * diz qual índice reproduziu e a renovação de token pede esse primeiro. Sem
+   * isto a renovação recomeçava da tentativa 0 e podia trocar de episódio no
+   * meio da reprodução.
+   */
+  const parametroTentativaRef = useRef((fonteId: string) => {
+    const t = tentativaNativaRef.current.get(fonteId);
+    return t ? `&tentativa=${t}` : "";
+  });
+  const lembrarTentativaRef = useRef((fonteId: string, data: { tentativa?: unknown } | null) => {
+    const t = data?.tentativa;
+    if (typeof t === "number" && Number.isInteger(t) && t >= 0 && t < 4) tentativaNativaRef.current.set(fonteId, t);
+  });
+  /**
    * Última reabertura de sessão. Existe para não repetir o incidente que esta
    * regressão produziu: com a sessão morta, cada fonte tentada gerava um
    * token/extract próprio e o player percorria a lista inteira gerando
@@ -1476,10 +1490,11 @@ export function CustomPlayer({
 
         const extractRes = await fetch(
           `/api/player/extract?sessao=${encodeURIComponent(sessao)}&fonteId=${encodeURIComponent(fonteId)}`
-          + `&playToken=${encodeURIComponent(playToken)}`,
+          + `&playToken=${encodeURIComponent(playToken)}${parametroTentativaRef.current(fonteId)}`,
           { signal: ctrl.signal },
         );
         const data = await extractRes.json();
+        lembrarTentativaRef.current(fonteId, data);
 
         // A rota responde 404 quando a extração falha numa fonte cujo iframe
         // nunca reproduz. Antes ela devolvia 200 com a URL do provedor, e era o
@@ -2846,10 +2861,12 @@ export function CustomPlayer({
 
               const extractRes = await fetch(
                 `/api/player/extract?sessao=${encodeURIComponent(sessaoFontesRef.current ?? "")}`
-                + `&fonteId=${encodeURIComponent(fonteId)}&playToken=${encodeURIComponent(playToken)}`,
+                + `&fonteId=${encodeURIComponent(fonteId)}&playToken=${encodeURIComponent(playToken)}`
+                + parametroTentativaRef.current(fonteId),
                 { signal: abortCtrl.signal },
               );
               const data = await extractRes.json();
+              lembrarTentativaRef.current(fonteId, data);
               if (data?.codigo === "sessao_invalida") {
                 throw new Error("Sessão de reprodução expirada; recarregue a página");
               }

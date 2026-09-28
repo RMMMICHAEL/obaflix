@@ -1354,6 +1354,14 @@ export async function GET(req: NextRequest) {
   // URL que de fato resolveu. Difere da `embedUrl` só quando uma coordenada
   // alternativa de episódio funcionou (ver lib/episodeCoordinates.ts).
   let urlUsada = url;
+  // Coordenada que já reproduziu nesta sessão, devolvida pelo cliente na
+  // renovação. Só um índice na lista da sessão — a coordenada real continua
+  // vindo do servidor. Ausente ou inválido: ordem normal, como antes.
+  const tentativaBruta = req.nextUrl.searchParams.get("tentativa");
+  const tentativaPreferida = tentativaBruta !== null && /^\d{1,2}$/.test(tentativaBruta)
+    ? Number(tentativaBruta)
+    : null;
+  let indiceUsado = 0;
   try {
     const opcoesExtracao = { servidorVip: await servidorVipDaConta(userId) };
     let prazoEsgotado = false;
@@ -1368,9 +1376,11 @@ export async function GET(req: NextRequest) {
         tentar: (alvo) => doExtract(alvo, opcoesExtracao),
         sucesso: (r) => r.tipo !== "iframe",
         cancelado: () => prazoEsgotado,
+        preferida: tentativaPreferida,
         log: (linha) => console.log(linha.replace("[coord]", "[extract/coord]")),
       }).then((r) => {
         urlUsada = r.url;
+        indiceUsado = r.indice;
         return r.resultado ?? ({ stream: url, tipo: "iframe", motivo: "sem_fonte_extraivel" } as ResultadoExtracao);
       }),
       new Promise<ResultadoExtracao>((resolve) =>
@@ -1401,6 +1411,10 @@ export async function GET(req: NextRequest) {
     // Os servidores do webcine chegam junto da extração (/videos já é buscado
     // lá). Viram fontes da sessão com id opaco, em vez de uma lista de videoId
     // que o cliente concatenava na URL do provedor.
+    // Índice da coordenada que reproduziu: o cliente o devolve na renovação.
+    // Só para fonte com coordenadas; é um inteiro ≤ 3 e não identifica nada.
+    const comTentativa = fonte.coordenadas ? { tentativa: indiceUsado } : {};
+
     let fontesPublicas: FontePublica[] | undefined;
     if (Array.isArray(result.fontes) && result.fontes.length) {
       const novas = result.fontes.map((f: CineVsFonte) => ({
@@ -1433,6 +1447,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json(
           {
             tipo: "mp4_direct",
+            ...comTentativa,
             stream: httpsParaNavegador(result.stream, ua),
             subtitles: result.subtitles,
             fontes: fontesPublicas,
@@ -1443,7 +1458,7 @@ export async function GET(req: NextRequest) {
       const sig = signSegmentUrl(result.stream, userId);
       const ref = result.referer ? `&ref=${encodeURIComponent(result.referer)}` : "";
       const proxyUrl = `/api/player/proxy?url=${encodeURIComponent(result.stream)}&sig=${sig}${ref}`;
-      return NextResponse.json({ tipo: "mp4", streamToken: proxyUrl }, { headers: NO_STORE });
+      return NextResponse.json({ tipo: "mp4", streamToken: proxyUrl, ...comTentativa }, { headers: NO_STORE });
     }
 
     // HLS direto: só para o webcine, e só com CORS comprovado na extração.
@@ -1451,7 +1466,7 @@ export async function GET(req: NextRequest) {
     // direto custa zero. Qualquer dúvida sobre o CORS cai no proxy (fechado).
     if (result.tipo === "hls" && result.corsLiberado && url.includes("webcinevs2.com")) {
       return NextResponse.json(
-        { tipo: "hls_direct", stream: result.stream, subtitles: result.subtitles, fontes: fontesPublicas },
+        { tipo: "hls_direct", stream: result.stream, subtitles: result.subtitles, fontes: fontesPublicas, ...comTentativa },
         { headers: NO_STORE },
       );
     }
@@ -1493,7 +1508,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { tipo: result.tipo, streamToken, subtitles: result.subtitles, fontes: fontesPublicas },
+      { tipo: result.tipo, streamToken, subtitles: result.subtitles, fontes: fontesPublicas, ...comTentativa },
       { headers: NO_STORE },
     );
 
