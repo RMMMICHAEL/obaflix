@@ -1,2 +1,8 @@
--- Additive only: items read from the source in each SyncRun (null = not reported).
-ALTER TABLE "SyncRun" ADD COLUMN "found" INTEGER;
+-- Aditiva: itens lidos na origem em cada SyncRun (null = produtor não informa).
+-- Depende de 20260928150000_admin_surface_observability. Reexecutar é inofensivo.
+
+BEGIN;
+
+ALTER TABLE "SyncRun" ADD COLUMN IF NOT EXISTS "found" INTEGER;
+
+COMMIT;
