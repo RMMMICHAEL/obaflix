@@ -73,12 +73,12 @@ Os resumos de erro são gravados e exibidos sem URL e sem `api_key=`/`token=`.
 
 | FONTE | EXECUTA_ONDE | FREQUENCIA | SCRIPT | DESTINO_ATUAL | AUTENTICACAO | ESCREVE_O_QUE | TELEMETRIA_ATUAL |
 |---|---|---|---|---|---|---|---|
-| MegaFrix (`megafrix`) | Agendador do Windows, `D:\streaming-app` | 5h | `run-local-syncs.ps1` → `run-local-syncs.ts` → handler `/api/cron/sync` | PostgreSQL direto; lê `app.megafrixapi.com` e `megafrixapi.com/iptv` | `CRON_SECRET` interno; banco por `DATABASE_URL` | filmes, séries, animes, episódios; o handler também roda WebCine | só log local; sem `SyncRun` |
-| TMDB Popular (`popular-tmdb`) | mesmo ciclo 5h | 5h | handler `/api/cron/popular-sync` | PostgreSQL direto + Redis | `CRON_SECRET` interno; `TMDB_API_KEY`/`TMDB_JWT` | ranking popular, stubs, `popularRank` | `SyncMetric` (`tmdb:popular-sync`) + log local |
-| WebCine (`webcine`) | mesmo ciclo 5h | 5h | handler `/api/cron/sync-webcine` | PostgreSQL direto; lê `webcinevs2.com` | `CRON_SECRET` interno; `WEBCINE_REFRESH_TOKEN`/`DEVICE_ID`/`PROFILE_ID` | filmes, séries, animes, episódios; URLs WebCine | só log local |
-| SuperFlix calendário (`superflix`) | mesmo ciclo 5h | 5h | handler local não versionado `/api/cron/sync-superflix` | PostgreSQL direto; lê calendário SuperFlix | `CRON_SECRET` interno | séries e episódios disponíveis | só log local |
-| MegaFrix/Vercel | Vercel Cron do projeto público (`vercel.json` de `origin/main`) | diário 03:00 UTC | `/api/cron/sync` | PostgreSQL direto | `Authorization: Bearer CRON_SECRET` | igual ao MegaFrix local | nenhuma; execução em produção não verificada nesta fase |
-| TMDB Popular/Vercel | Vercel Cron do projeto público | diário 03:30 UTC | `/api/cron/popular-sync` | PostgreSQL direto + Redis | `Bearer CRON_SECRET`; TMDB | ranking popular | `SyncMetric` (indistinguível do local) |
+| MegaFlix/App (`megaflix`) | Agendador do Windows, `D:\streaming-app` | 5h | `run-local-syncs.ps1` → `run-local-syncs.ts` → handler `/api/cron/sync` | PostgreSQL direto; lê `app.megafrixapi.com` e `megafrixapi.com/iptv` | `CRON_SECRET` interno; banco por `DATABASE_URL` | filmes, séries, animes, episódios; o handler também roda WebCine | hoje só log local; `SyncRun megaflix-local` quando a tarefa rodar o código da branch |
+| TMDB Popular (`popular-tmdb`) | mesmo ciclo 5h | 5h | handler `/api/cron/popular-sync` | PostgreSQL direto + Redis | `CRON_SECRET` interno; `TMDB_API_KEY`/`TMDB_JWT` | ranking popular, stubs, `popularRank` | `SyncMetric` (`tmdb:popular-sync`) + log; `SyncRun tmdb-popular-local` com a branch |
+| WebCine (`webcine`) | mesmo ciclo 5h | 5h | handler `/api/cron/sync-webcine` | PostgreSQL direto; lê `webcinevs2.com` | `CRON_SECRET` interno; `WEBCINE_REFRESH_TOKEN`/`DEVICE_ID`/`PROFILE_ID` | filmes, séries, animes, episódios; URLs WebCine | hoje só log; `SyncRun webcine-local` com a branch |
+| SuperFlix calendário (`superflix`) | mesmo ciclo 5h | 5h | `/api/cron/sync-superflix` (versionado na Fase 2A) | PostgreSQL direto; lê calendário SuperFlix | `CRON_SECRET` interno | séries e episódios disponíveis | hoje só log; `SyncRun superflix-local` com a branch |
+| MegaFrix/Vercel | Vercel Cron do projeto público (`vercel.json` de `origin/main`) | diário 03:00 UTC | `/api/cron/sync` | PostgreSQL direto | `Authorization: Bearer CRON_SECRET` | igual ao MegaFlix local | `SyncRun megaflix-vercel` (withCronTelemetry) após deploy; execução em produção não verificada |
+| TMDB Popular/Vercel | Vercel Cron do projeto público | diário 03:30 UTC | `/api/cron/popular-sync` | PostgreSQL direto + Redis | `Bearer CRON_SECRET`; TMDB | ranking popular | `SyncMetric` (indistinguível) + `SyncRun tmdb-popular-vercel` após deploy |
 | Reconciliação de cobrança | Vercel Cron (só em `origin/main`) | diário 04:15 UTC | `/api/cron/billing-reconcile` | pedidos/revisões financeiras | `Bearer CRON_SECRET` | estados de pagamento; **não é catálogo** | nenhuma no painel |
 | WebCine/Vercel avulso | rota existe, sem agendamento em `vercel.json` | sob demanda | `/api/cron/sync-webcine` | PostgreSQL direto | `Bearer CRON_SECRET` + credenciais WebCine | catálogo WebCine | nenhuma |
 | Tampermonkey MegaFlix | Chrome do operador, `@match` no painel MegaFlix (`admin.megafrixapi.com`, que é **origem**) | manual, por ação interceptada | `scripts/tampermonkey-sync.js` | `https://obaflix.vercel.app/api/admin/{filme,serie,episodio/bulk}` | `x-admin-token` legado (CORS liberado só para `admin.megafrixapi.com`) | filme, série e episódios editados no MegaFlix | nenhuma |
@@ -93,6 +93,61 @@ Os resumos de erro são gravados e exibidos sem URL e sem `api_key=`/`token=`.
 | Importação manual do painel | painel humano | manual | `/api/admin/import` | PostgreSQL direto | sessão admin (ou token legado) | upserts de catálogo | nenhuma |
 | Canais | terminal local | manual | `scripts/importar-canais.ts`, `scripts/canais-curadoria.ts` | PostgreSQL direto | `DATABASE_URL` | `Canal`, `CanalFonte` | nenhuma |
 | Limpeza de duplicados | terminal local | manual | `scripts/cleanup-dupes.ts` | `OBAFLIX_URL` `/api/admin/serie` | `ADMIN_SECRET_TOKEN` | remove séries duplicadas | nenhuma |
+
+## Fase 2A — sincronizações versionadas e observáveis
+
+### Código que veio do checkout local
+
+Commit `b08150b` é a cópia **literal** de `D:\streaming-app` (arquivos não versionados ou modificados lá), para a história mostrar exatamente o que a tarefa de 5h executava:
+`scripts/run-local-syncs.{ps1,ts}`, `scripts/install-local-sync-task.ps1`, `src/app/api/cron/sync-superflix/route.ts`, `scripts/sync-superflix.ts`, `src/lib/catalog-ingest.ts` (+ teste) e a versão local de `src/lib/cron/webcine.ts` (identidade por TMDB e merge de espelhos, sem criar card `wc_*` duplicado). Nenhum `.env`, token ou `DATABASE_URL` foi copiado; os arquivos só leem variáveis de ambiente.
+
+O checkout local está 223 commits atrás de `origin/main`, mas os handlers do job (`sync`, `popular-sync`, `sync-webcine`, `popular-source`, `superflix-calendar`) eram idênticos aos da branch. A única diferença funcional era o `webcine.ts`, agora versionado.
+
+### Runner local (`scripts/run-local-syncs.ts` + `src/lib/sync-runner.ts`)
+
+- Mesma ordem (MegaFlix → TMDB Popular → WebCine → SuperFlix), o mesmo lock `%LOCALAPPDATA%\Obaflix\sync\sync.lock`, a mesma pasta de logs e o mesmo `--check`.
+- Cada job é isolado: exceção ou HTTP 500 de um não impede os seguintes.
+- Código de saída: **0** quando todos concluíram (lock → `SKIPPED` conta como concluído); **2** em falha parcial; **1** em falha total ou erro fatal antes do ciclo. O `.ps1` repassa o código (`exit $LASTEXITCODE`), então `LastTaskResult=2` passa a significar "algum job falhou, outros concluíram".
+- Telemetria (`SYNC_TELEMETRY`): `db` (padrão) grava `SyncRun` direto; `http` usa `/api/integracoes/catalogo/heartbeat` com `CATALOG_SYNC_TOKEN`; `off` desliga. Cada job grava `RUNNING` no início e o resultado no fim, em `source` estável `megaflix-local`, `tmdb-popular-local`, `webcine-local` ou `superflix-local`, com `found`, adicionados/atualizados de filmes, séries e episódios, erros e resumo sanitizado. Uma falha de telemetria (por exemplo, a migration ainda não aplicada) só gera aviso no log.
+- Log e corpo gravado passam por `redactSecrets`: valores de variáveis sensíveis do ambiente, `api_key=`, `token=`, `Bearer` e credencial em URL são removidos. O painel ainda remove toda URL.
+- Contagens vêm só do que o handler devolve. O MegaFlix não informa "encontrados" (`found = null`); o WebCine passou a devolver `filmesAtualizados` e `episodiosAtualizados` (antes só no texto do log).
+
+### Vercel
+
+Os 4 handlers de cron exportam `GET = withCronTelemetry(...)` e gravam `<job>-vercel`, exceto em 401 e quando chamados pelo runner local (`LOCAL_SYNC_RUNNER=1`). O painel mostra local e Vercel em linhas separadas; a `SyncMetric` antiga do popular aparece à parte, por não ter origem.
+
+### TMDB Popular
+
+Diagnóstico (logs de 18 a 28/09/2026, 39 ciclos): 33 falhas, sendo 16 "duplicidade alta em filmes", 7 "em séries", 8 "sobreposição filme × série" e 2 de rede (`0/500`).
+
+Medição direta na API (28/09/2026, somente leitura):
+- `/movie/popular` e `/tv/popular` devolveram 74 e 73 repetidos em 500.
+- O resultado foi idêntico em leitura sequencial, paralela e repetida: 0 páginas mudaram entre leituras.
+- Cada página vem do CloudFront com idade própria (`age` de 3 s a ~72 min).
+
+Causa: **API/paginação**, não o algoritmo nem o adaptador. Cada página é uma foto do ranking em um momento diferente, então títulos na borda repetem, cerca de 15%. A regra antiga (5%) reprovava o comportamento normal da API. A guarda de sobreposição comparava IDs de filme com IDs de série, que no TMDB são numerações distintas (ID 121 é "As Duas Torres" como filme e "Doctor Who" como série).
+
+Correção, com testes:
+- O adaptador lê até 50% de páginas a mais e entrega 500 **únicos**, com rank contínuo. Medido ao vivo: 500/500 em 30 páginas, ~15% descartados.
+- Guardas mantidas contra catálogo corrompido:
+  - volume: ≥ 80% de únicos;
+  - repetição anômala: > 35% do bruto, o que pega paginação quebrada (mesma página repetida ≈ 95%), acima do máximo histórico de 19,4%;
+  - tipo: > 5% dos itens sem `title` (filme) ou `name` (série).
+- A sobreposição por ID saiu; a checagem de tipo pelo formato a substitui.
+
+### Produtores HTTP preparados (sem trocar produção)
+
+`src/lib/catalog-destino.ts`, com `OBAFLIX_SYNC_DESTINO=legado` como padrão:
+- `scripts/sync-app.ts`: modo `integracao` usa `/api/integracoes/catalogo/{filme,serie,episodios/bulk}` com `CATALOG_SYNC_TOKEN`, e a nova `POST /api/integracoes/catalogo/consulta` (só existência e contagem de episódios) no lugar das leituras em `/api/admin`. `--init` segue exigindo o legado.
+- `scripts/tampermonkey-sync.js` (v1.1): `GM_setValue('obaflixModo','integracao')` + `obaflixCatalogToken`; padrão legado.
+- Em modo integração o corpo é podado (null, vazio e `tipo:"serie"` não são enviados), porque na camada de escrita `null` apaga e a origem manda null quando não tem o dado.
+- `scripts/cleanup-dupes.ts` **não** migra: é manutenção destrutiva (lista e DELETE), fora do escopo do token de catálogo. Depois do cutover precisa virar ação humana no painel ou script com banco.
+
+### Para ligar (fases seguintes, nada disso foi feito)
+
+1. Aplicar as migrations `20260928150000_admin_surface_observability` e `20260929120000_sync_run_found`.
+2. Repontar a tarefa Windows para um checkout desta branch (hoje ela roda `D:\streaming-app`) e observar um ciclo, com `LastTaskResult` 0 ou 2 e 4 `SyncRun *-local`.
+3. Trocar `OBAFLIX_SYNC_DESTINO` e o modo do Tampermonkey para `integracao`.
 
 ## Cutover posterior
 
