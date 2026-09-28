@@ -24,9 +24,32 @@ const frameSrc = (process.env.PLAYER_FRAME_HOSTS
   .flatMap((h) => [`https://${h}`, `https://*.${h}`])
   .join(" ") || "'none'";
 
+/**
+ * Superfície administrativa (OBAFLIX_SURFACE=admin): APIs públicas e sitemap
+ * não existem ali. Páginas são barradas pelo middleware; APIs ficam fora do
+ * matcher dele de propósito (custo por requisição), então o bloqueio é aqui,
+ * no build, sem custo de runtime. Destino inexistente → 404 do Next.
+ * A lista de prefixos permitidos espelha `isAllowedOnAdminSurface`.
+ */
+const ADMIN_SURFACE = process.env.OBAFLIX_SURFACE === "admin";
+const BLOQUEADO_NA_SUPERFICIE_ADMIN = "/_superficie-admin/nao-encontrado";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  async rewrites() {
+    if (!ADMIN_SURFACE) return [];
+    return {
+      beforeFiles: [
+        { source: "/api/:rota((?!admin/|admin$|auth/|auth$|integracoes/|integracoes$).*)", destination: BLOQUEADO_NA_SUPERFICIE_ADMIN },
+        { source: "/api/auth/cadastro", destination: BLOQUEADO_NA_SUPERFICIE_ADMIN },
+        { source: "/sitemap.xml", destination: BLOQUEADO_NA_SUPERFICIE_ADMIN },
+        { source: "/sitemap/:shard*", destination: BLOQUEADO_NA_SUPERFICIE_ADMIN },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
   images: {
     unoptimized: true,
     remotePatterns: [

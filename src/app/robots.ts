@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
+import { getObaflixSurface } from "@/config/obaflix-surface";
 
 /**
  * Enquanto CONTENT_INDEXING_ENABLED estiver desligado, as fichas ja respondem
@@ -14,6 +15,8 @@ import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
 const CATALOGO_FECHADO = ["/filme/", "/serie/"];
 
 export default function robots(): MetadataRoute.Robots {
+  // Superfície administrativa: nada ali é conteúdo público.
+  if (getObaflixSurface() === "admin") return { rules: { userAgent: "*", disallow: "/" } };
   return {
     rules: {
       userAgent: "*",

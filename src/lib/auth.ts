@@ -7,6 +7,7 @@ import { prisma } from "./prisma";
 import { checkRateLimit } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
+import { canRoleSignInToSurface, getObaflixSurface } from "@/config/obaflix-surface";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -24,6 +25,7 @@ export const decodeObaflixSession = (params: Parameters<typeof decodeNextAuthJwt
 export const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
 export function withCors<T extends import("next/server").NextResponse>(res: T, req: import("next/server").NextRequest): T {
+  if (getObaflixSurface() === "admin") return res;
   const origin = req.headers.get("origin");
   if (origin === ADMIN_CORS_ORIGIN) addCors(res, origin);
   return res;
@@ -48,7 +50,7 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
   }
 
   // Token direto (console script do painel Megaflix)
-  const suppliedAdminToken = req?.headers.get("x-admin-token");
+  const suppliedAdminToken = getObaflixSurface() === "public" ? req?.headers.get("x-admin-token") : null;
   if (suppliedAdminToken) {
     const expectedAdminToken = process.env.ADMIN_SECRET_TOKEN ?? "";
     const forwarded = req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
@@ -66,16 +68,46 @@ export async function requireAdmin(req?: import("next/server").NextRequest) {
     );
   }
 
-  // JWT session (painel /admin)
-  const session = await getServerSession(authOptions);
+  return requireAdminSessionOnly(origin);
+}
+
+/** A requisição foi autorizada pelo token legado (e não por sessão)? */
+export function isLegacyAdminTokenRequest(req: import("next/server").NextRequest): boolean {
+  return getObaflixSurface() === "public" && !!req.headers.get("x-admin-token");
+}
+
+/**
+ * Guarda das APIs humanas (usuários, assinaturas, pagamentos, auditoria...):
+ * exige sessão com `role=admin` reconfirmado no banco e ignora `x-admin-token`.
+ * O token legado existe para produtores de catálogo (MegaFlix/scripts) e não
+ * pode abrir dados de pessoas nem ações de suporte.
+ */
+export type AdminSessionDeps = {
+  loadSession?: () => Promise<{ user?: unknown } | null>;
+  roleOf?: (userId: string) => Promise<string | null>;
+};
+
+export async function requireAdminSession(req: import("next/server").NextRequest, deps: AdminSessionDeps = {}) {
+  const { NextResponse } = await import("next/server");
+  if (isLegacyAdminTokenRequest(req)) {
+    return NextResponse.json({ error: "Sessão administrativa obrigatória" }, { status: 403 });
+  }
+  return requireAdminSessionOnly(null, deps);
+}
+
+async function requireAdminSessionOnly(origin: string | null, deps: AdminSessionDeps = {}) {
+  const { NextResponse } = await import("next/server");
+  const loadSession = deps.loadSession ?? (() => getServerSession(authOptions));
+  const roleOf = deps.roleOf ?? (async (id: string) =>
+    (await prisma.user.findUnique({ where: { id }, select: { role: true } }))?.role ?? null);
+  // O papel vem sempre do banco: o `role` do JWT pode estar desatualizado.
+  const session = await loadSession();
   if (!session?.user) {
     return addCors(NextResponse.json({ error: "Não autenticado" }, { status: 401 }), origin);
   }
   const sessionUserId = (session.user as { id?: string }).id;
-  const currentUser = sessionUserId
-    ? await prisma.user.findUnique({ where: { id: sessionUserId }, select: { role: true } })
-    : null;
-  if (currentUser?.role !== "admin") {
+  const currentRole = sessionUserId ? await roleOf(sessionUserId) : null;
+  if (currentRole !== "admin") {
     return addCors(NextResponse.json({ error: "Não autorizado" }, { status: 403 }), origin);
   }
   return null;
@@ -148,6 +180,7 @@ export const authOptions: NextAuthOptions = {
         }
         const ok = await bcrypt.compare(credentials.senha, user.senhaHash);
         if (!ok) return null;
+        if (!canRoleSignInToSurface(user.role, getObaflixSurface())) return null;
         return { id: user.id, email: user.email, name: user.nome, role: user.role };
       },
     }),
@@ -168,6 +201,7 @@ export const authOptions: NextAuthOptions = {
         select: { id: true, email: true, nome: true, avatar: true, role: true },
       });
       if (!local) return false;
+      if (!canRoleSignInToSurface(local.role, getObaflixSurface())) return false;
 
       user.id = local.id;
       user.email = local.email;

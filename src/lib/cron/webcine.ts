@@ -7,6 +7,7 @@
  * invocacao extra. O route handler continua existindo, so para disparo manual.
  */
 import { prisma } from "@/lib/prisma";
+import { mergeProviderUrl, normalizeTmdbId } from "@/lib/catalog-ingest";
 
 const WEBCINE_API  = "https://webcinevs2.com/api";
 const CATALOG_BASE = "https://webcinevs2.com/api/catalog";
@@ -96,20 +97,37 @@ function buildEpisodeUrl(tmdbId: number, title: string, season: number, ep: numb
 
 // ── Sync filmes ────────────────────────────────────────────────────────────────
 
-async function syncFilmes(log: string[]): Promise<number> {
+async function syncFilmes(log: string[]): Promise<{ novos: number; completados: number }> {
   const items = await fetchCatalogPage("movies");
-  const wbIds = items.filter((f) => f.tmdb_id).map((f) => `wc_${f.id}`);
-  if (wbIds.length === 0) return 0;
+  const validos = items.filter((item) => normalizeTmdbId(item.tmdb_id));
+  if (validos.length === 0) return { novos: 0, completados: 0 };
 
-  const existing = new Set(
-    (await prisma.filme.findMany({ where: { id: { in: wbIds } }, select: { id: true } })).map((f) => f.id),
-  );
-  const novos = items.filter((f) => f.tmdb_id && !existing.has(`wc_${f.id}`));
-  if (novos.length === 0) { log.push("🎬 Filmes: nenhum novo"); return 0; }
+  const tmdbIds = validos.map((item) => normalizeTmdbId(item.tmdb_id)!);
+  const wcIds = validos.map((item) => `wc_${item.id}`);
+  const existentes = await prisma.filme.findMany({
+    where: { OR: [{ tmdbId: { in: tmdbIds } }, { id: { in: wcIds } }] },
+    select: { id: true, tmdbId: true, urlDub: true },
+    orderBy: { id: "asc" },
+  });
 
-  // Gêneros
+  // A identidade do catálogo é o TMDB, não o ID interno de cada provedor. Um
+  // stub tmdb_* ou um item Megafrix existente é completado com o espelho WebCine
+  // em vez de nascer um segundo card wc_* para o mesmo filme.
+  const porTmdb = new Map<string, (typeof existentes)[number]>();
+  for (const existente of existentes) {
+    const tmdbId = normalizeTmdbId(existente.tmdbId);
+    if (tmdbId && !porTmdb.has(tmdbId)) porTmdb.set(tmdbId, existente);
+  }
+  const porId = new Map(existentes.map((item) => [item.id, item]));
+  const novos = validos.filter((item) => {
+    const tmdbId = normalizeTmdbId(item.tmdb_id)!;
+    return !porTmdb.has(tmdbId) && !porId.has(`wc_${item.id}`);
+  });
+
+  // Gêneros de todos os itens, pois um stub convertido em título reproduzível
+  // também precisa ganhar as relações que não tinha.
   const genMap = new Map<number, string>();
-  for (const f of novos) f.genres?.forEach((g) => genMap.set(g.id, g.name));
+  for (const f of validos) f.genres?.forEach((g) => genMap.set(g.id, g.name));
   if (genMap.size > 0) {
     await prisma.genero.createMany({
       data: [...genMap.entries()].map(([id, nome]) => ({ id, nome })),
@@ -117,28 +135,60 @@ async function syncFilmes(log: string[]): Promise<number> {
     });
   }
 
-  await prisma.filme.createMany({
-    skipDuplicates: true,
-    data: novos.map((f) => ({
-      id: `wc_${f.id}`,
-      tmdbId: String(f.tmdb_id),
-      titulo: f.title,
-      tituloOriginal: f.original_title ?? null,
-      poster: f.poster ?? null,
-      background: f.backdrop ?? null,
-      sinopse: f.description ?? null,
-      ano: f.year ?? null,
-      nota: f.rating_avg ?? null,
-      duracao: f.duration ?? null,
-      urlDub: buildMovieUrl(f.tmdb_id!, f.title),
-    })),
-  });
+  if (novos.length > 0) {
+    await prisma.filme.createMany({
+      skipDuplicates: true,
+      data: novos.map((f) => ({
+        id: `wc_${f.id}`,
+        tmdbId: String(f.tmdb_id),
+        titulo: f.title,
+        tituloOriginal: f.original_title ?? null,
+        poster: f.poster ?? null,
+        background: f.backdrop ?? null,
+        sinopse: f.description ?? null,
+        ano: f.year ?? null,
+        nota: f.rating_avg ?? null,
+        duracao: f.duration ?? null,
+        urlDub: buildMovieUrl(f.tmdb_id!, f.title),
+      })),
+    });
+  }
 
-  const fgRows = novos.flatMap((f) => (f.genres ?? []).map((g) => ({ filmeId: `wc_${f.id}`, generoId: g.id })));
+  // Refaz o mapa depois da criação para que toda atualização use o ID canônico
+  // efetivamente persistido.
+  const canonicos = await prisma.filme.findMany({
+    where: { tmdbId: { in: tmdbIds } },
+    select: { id: true, tmdbId: true, urlDub: true },
+    orderBy: { id: "asc" },
+  });
+  const canonicoPorTmdb = new Map<string, (typeof canonicos)[number]>();
+  for (const filme of canonicos) {
+    const tmdbId = normalizeTmdbId(filme.tmdbId);
+    if (tmdbId && !canonicoPorTmdb.has(tmdbId)) canonicoPorTmdb.set(tmdbId, filme);
+  }
+
+  let completados = 0;
+  for (const item of validos) {
+    const tmdbId = normalizeTmdbId(item.tmdb_id)!;
+    const filme = canonicoPorTmdb.get(tmdbId);
+    if (!filme) continue;
+    const webcineUrl = buildMovieUrl(item.tmdb_id!, item.title);
+    const urlDub = mergeProviderUrl(filme.urlDub, webcineUrl);
+    if (urlDub !== filme.urlDub) {
+      await prisma.filme.update({ where: { id: filme.id }, data: { urlDub } });
+      filme.urlDub = urlDub;
+      completados++;
+    }
+  }
+
+  const fgRows = validos.flatMap((f) => {
+    const filmeId = canonicoPorTmdb.get(normalizeTmdbId(f.tmdb_id)!)?.id;
+    return filmeId ? (f.genres ?? []).map((g) => ({ filmeId, generoId: g.id })) : [];
+  });
   if (fgRows.length > 0) await prisma.filmeGenero.createMany({ data: fgRows, skipDuplicates: true });
 
-  log.push(`🎬 Filmes: ${novos.length} novos — ${novos.map((f) => f.title).join(", ")}`);
-  return novos.length;
+  log.push(`🎬 Filmes: ${novos.length} novos | ${completados} identidades existentes receberam WebCine`);
+  return { novos: novos.length, completados };
 }
 
 // ── Sync séries/animes ─────────────────────────────────────────────────────────
@@ -147,21 +197,33 @@ async function syncSeriesTipo(
   endpoint: "series" | "animes",
   tipo: "serie" | "anime",
   log: string[],
-): Promise<{ series: number; eps: number }> {
+): Promise<{ series: number; eps: number; espelhos: number }> {
   const label = tipo === "anime" ? "Animes" : "Séries";
   const items = await fetchCatalogPage(endpoint);
-  const wbIds = items.filter((s) => s.tmdb_id).map((s) => `wc_${s.id}`);
-  if (wbIds.length === 0) return { series: 0, eps: 0 };
+  const validos = items.filter((item) => normalizeTmdbId(item.tmdb_id));
+  if (validos.length === 0) return { series: 0, eps: 0, espelhos: 0 };
 
-  const existing = new Set(
-    (await prisma.serie.findMany({ where: { id: { in: wbIds } }, select: { id: true } })).map((s) => s.id),
-  );
-  const novas = items.filter((s) => s.tmdb_id && !existing.has(`wc_${s.id}`));
-  if (novas.length === 0) { log.push(`${tipo === "anime" ? "🎌" : "📺"} ${label}: nenhuma nova`); return { series: 0, eps: 0 }; }
+  const tmdbIds = validos.map((item) => normalizeTmdbId(item.tmdb_id)!);
+  const wcIds = validos.map((item) => `wc_${item.id}`);
+  const existentes = await prisma.serie.findMany({
+    where: { OR: [{ tmdbId: { in: tmdbIds } }, { id: { in: wcIds } }] },
+    select: { id: true, tmdbId: true },
+    orderBy: { id: "asc" },
+  });
+  const porTmdb = new Map<string, string>();
+  for (const existente of existentes) {
+    const tmdbId = normalizeTmdbId(existente.tmdbId);
+    if (tmdbId && !porTmdb.has(tmdbId)) porTmdb.set(tmdbId, existente.id);
+  }
+  const idsExistentes = new Set(existentes.map((serie) => serie.id));
+  const novas = validos.filter((item) => {
+    const tmdbId = normalizeTmdbId(item.tmdb_id)!;
+    return !porTmdb.has(tmdbId) && !idsExistentes.has(`wc_${item.id}`);
+  });
 
   // Gêneros
   const genMap = new Map<number, string>();
-  for (const s of novas) s.genres?.forEach((g) => genMap.set(g.id, g.name));
+  for (const s of validos) s.genres?.forEach((g) => genMap.set(g.id, g.name));
   if (genMap.size > 0) {
     await prisma.genero.createMany({
       data: [...genMap.entries()].map(([id, nome]) => ({ id, nome })),
@@ -169,32 +231,53 @@ async function syncSeriesTipo(
     });
   }
 
-  // Metadados da série
-  await prisma.serie.createMany({
-    skipDuplicates: true,
-    data: novas.map((s) => ({
-      id: `wc_${s.id}`,
-      tmdbId: String(s.tmdb_id),
-      titulo: s.title,
-      tituloOriginal: s.original_title ?? null,
-      poster: s.poster ?? null,
-      background: s.backdrop ?? null,
-      sinopse: s.description ?? null,
-      ano: s.year ?? null,
-      nota: s.rating_avg ?? null,
-      tipo,
-    })),
-  });
+  if (novas.length > 0) {
+    await prisma.serie.createMany({
+      skipDuplicates: true,
+      data: novas.map((s) => ({
+        id: `wc_${s.id}`,
+        tmdbId: String(s.tmdb_id),
+        titulo: s.title,
+        tituloOriginal: s.original_title ?? null,
+        poster: s.poster ?? null,
+        background: s.backdrop ?? null,
+        sinopse: s.description ?? null,
+        ano: s.year ?? null,
+        nota: s.rating_avg ?? null,
+        tipo,
+      })),
+    });
+  }
 
-  const sgRows = novas.flatMap((s) => (s.genres ?? []).map((g) => ({ serieId: `wc_${s.id}`, generoId: g.id })));
+  const canonicos = await prisma.serie.findMany({
+    where: { tmdbId: { in: tmdbIds } },
+    select: { id: true, tmdbId: true },
+    orderBy: { id: "asc" },
+  });
+  const canonicoPorTmdb = new Map<string, string>();
+  for (const serie of canonicos) {
+    const tmdbId = normalizeTmdbId(serie.tmdbId);
+    if (tmdbId && !canonicoPorTmdb.has(tmdbId)) canonicoPorTmdb.set(tmdbId, serie.id);
+  }
+
+  const sgRows = validos.flatMap((s) => {
+    const serieId = canonicoPorTmdb.get(normalizeTmdbId(s.tmdb_id)!);
+    return serieId ? (s.genres ?? []).map((g) => ({ serieId, generoId: g.id })) : [];
+  });
   if (sgRows.length > 0) await prisma.serieGenero.createMany({ data: sgRows, skipDuplicates: true });
 
-  // Episódios
+  // Episódios: também revisita séries existentes. Antes, uma falha de token ou
+  // detalhe depois do create deixava um wc_* vazio para sempre, pois o próximo
+  // cron descartava a série da lista por ela já existir.
   const token = await getToken();
   const profileId = process.env.WEBCINE_PROFILE_ID ?? "";
   let totalEps = 0;
+  let totalEspelhos = 0;
 
-  for (const s of novas) {
+  for (const s of validos) {
+    const tmdbId = normalizeTmdbId(s.tmdb_id)!;
+    const serieId = canonicoPorTmdb.get(tmdbId);
+    if (!serieId) continue;
     await sleep(DELAY);
     try {
       if (!token) break;
@@ -212,15 +295,13 @@ async function syncSeriesTipo(
 
       if (seasons.length > 0) {
         await prisma.serie.update({
-          where: { id: `wc_${s.id}` },
+          where: { id: serieId },
           data: { temporadas: Math.max(...seasons.map((ss) => ss.number)) },
         }).catch(() => {});
       }
 
-      const epRows = seasons.flatMap((season) =>
+      const sourceRows = seasons.flatMap((season) =>
         (season.episodes ?? []).map((ep) => ({
-          id: `wc_ep_${ep.id}`,
-          serieId: `wc_${s.id}`,
           temporada: season.number,
           numeroEp: ep.number,
           titulo: ep.name ?? ep.title ?? null,
@@ -228,16 +309,56 @@ async function syncSeriesTipo(
         })),
       );
 
-      if (epRows.length > 0) {
-        await prisma.episodio.createMany({ data: epRows, skipDuplicates: true });
-        totalEps += epRows.length;
+      if (sourceRows.length > 0) {
+        const existentesEp = await prisma.episodio.findMany({
+          where: { serieId },
+          select: { id: true, temporada: true, numeroEp: true, urlDub: true },
+        });
+        const porCoordenada = new Map(
+          existentesEp.map((ep) => [`${ep.temporada}:${ep.numeroEp}`, ep]),
+        );
+        const criados: Array<{
+          id: string;
+          serieId: string;
+          temporada: number;
+          numeroEp: number;
+          titulo: string | null;
+          urlDub: string;
+        }> = [];
+
+        for (const ep of sourceRows) {
+          const key = `${ep.temporada}:${ep.numeroEp}`;
+          const existente = porCoordenada.get(key);
+          if (!existente) {
+            criados.push({
+              id: `${serieId}-t${ep.temporada}e${ep.numeroEp}`,
+              serieId,
+              temporada: ep.temporada,
+              numeroEp: ep.numeroEp,
+              titulo: ep.titulo,
+              urlDub: ep.urlDub,
+            });
+            continue;
+          }
+          const urlDub = mergeProviderUrl(existente.urlDub, ep.urlDub);
+          if (urlDub !== existente.urlDub) {
+            await prisma.episodio.update({ where: { id: existente.id }, data: { urlDub } });
+            existente.urlDub = urlDub;
+            totalEspelhos++;
+          }
+        }
+
+        if (criados.length > 0) {
+          const inserted = await prisma.episodio.createMany({ data: criados, skipDuplicates: true });
+          totalEps += inserted.count;
+        }
       }
     } catch { /* série com erro — continua */ }
   }
 
   const emoji = tipo === "anime" ? "🎌" : "📺";
-  log.push(`${emoji} ${label}: ${novas.length} novas — ${novas.map((s) => s.title).join(", ")} | ${totalEps} eps`);
-  return { series: novas.length, eps: totalEps };
+  log.push(`${emoji} ${label}: ${novas.length} novas | ${totalEps} eps novos | ${totalEspelhos} eps receberam WebCine`);
+  return { series: novas.length, eps: totalEps, espelhos: totalEspelhos };
 }
 
 // ── Execucao ───────────────────────────────────────────────────────────────────
@@ -246,6 +367,10 @@ export interface ResultadoWebcine {
   totalFilmes: number;
   totalSeries: number;
   totalEps: number;
+  /** Filmes existentes que ganharam o espelho WebCine nesta execução. */
+  filmesAtualizados: number;
+  /** Episódios existentes que ganharam o espelho WebCine nesta execução. */
+  episodiosAtualizados: number;
   elapsed: string;
   log: string[];
 }
@@ -266,9 +391,11 @@ export async function executarSyncWebcine(log: string[] = []): Promise<Resultado
 
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
   return {
-    totalFilmes: fResult,
+    totalFilmes: fResult.novos,
     totalSeries: sResult.series + aResult.series,
     totalEps: sResult.eps + aResult.eps,
+    filmesAtualizados: fResult.completados,
+    episodiosAtualizados: sResult.espelhos + aResult.espelhos,
     elapsed,
     log,
   };

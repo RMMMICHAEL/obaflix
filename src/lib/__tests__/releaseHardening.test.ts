@@ -19,9 +19,14 @@ test("fontes tem limite por conta antes de montar provedores", () => {
 });
 
 test("scripts administrativos não possuem fallback de token", () => {
-  for (const arquivo of ["scripts/cleanup-dupes.ts", "scripts/sync-app.ts"]) {
+  // sync-app resolve o token pelo destino compartilhado (legado ou integração).
+  for (const arquivo of ["scripts/cleanup-dupes.ts", "src/lib/catalog-destino.ts"]) {
     const fonte = readFileSync(arquivo, "utf8");
     assert.match(fonte, /ADMIN_SECRET_TOKEN é obrigatório/);
     assert.doesNotMatch(fonte, /ADMIN_SECRET_TOKEN\s*\?\?/);
+    assert.doesNotMatch(fonte, /CATALOG_SYNC_TOKEN\s*\?\?/);
   }
+  const syncApp = readFileSync("scripts/sync-app.ts", "utf8");
+  assert.match(syncApp, /resolveCatalogDestino\(\)/);
+  assert.doesNotMatch(syncApp, /process\.env\.(ADMIN_SECRET_TOKEN|CATALOG_SYNC_TOKEN)/);
 });

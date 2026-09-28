@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, withCors } from "@/lib/auth";
 import { getTVImages, pickLogo, pickBackdrop } from "@/lib/tmdb";
+import { upsertCatalogSeries } from "@/lib/catalog-write";
 
 export async function OPTIONS(req: NextRequest) {
   const guard = await requireAdmin(req); return guard ?? new NextResponse(null, { status: 204 });
@@ -55,42 +56,17 @@ export async function POST(req: NextRequest) {
     if (bd) backgroundPT = bd;
   }
 
-  const serie = await prisma.serie.upsert({
-    where: { id: String(id) },
-    update: {
-      tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
-      ano: ano ? Number(ano) : undefined,
-      nota: nota ? Number(nota) : undefined,
-      temporadas: temporadas ? Number(temporadas) : undefined,
-      tipo: tipo || "serie",
-      ...(logo ? { logo } : {}),
-    },
-    create: {
-      id: String(id),
-      tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
-      ano: ano ? Number(ano) : undefined,
-      nota: nota ? Number(nota) : undefined,
-      temporadas: temporadas ? Number(temporadas) : undefined,
-      tipo: tipo || "serie",
-      logo,
-    },
-  });
-
-  if (Array.isArray(generos) && generos.length > 0) {
-    await prisma.serieGenero.deleteMany({ where: { serieId: serie.id } });
-    for (const g of generos) {
-      await prisma.genero.upsert({
-        where: { id: g.id },
-        update: { nome: g.nome },
-        create: { id: g.id, nome: g.nome },
-      });
-      await prisma.serieGenero.create({ data: { serieId: serie.id, generoId: g.id } });
-    }
-  }
-
-  return withCors(NextResponse.json({ ok: true, id: serie.id }), req);
+  const result = await upsertCatalogSeries({
+    ...body,
+    id: String(id),
+    tmdbId: tmdbId ? String(tmdbId) : body.tmdbId,
+    // Sem background no corpo e sem backdrop do TMDB, não apaga o atual.
+    ...(backgroundPT !== null ? { background: backgroundPT } : {}),
+    tipo: tipo || "serie",
+    ...(logo ? { logo } : {}),
+    generos,
+  }, undefined, { emptyStringClears: true });
+  return withCors(NextResponse.json({ ok: true, id: result.id }), req);
 }
 
 export async function DELETE(req: NextRequest) {

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { getMovieImages, pickLogo, pickBackdrop } from "@/lib/tmdb";
+import { upsertCatalogMovie } from "@/lib/catalog-write";
 
 // GET — lista filmes com busca
 export async function GET(req: NextRequest) {
@@ -51,45 +52,16 @@ export async function POST(req: NextRequest) {
     if (bd) backgroundPT = bd;
   }
 
-  const filme = await prisma.filme.upsert({
-    where: { id: String(id) },
-    update: {
-      tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
-      ano: ano ? Number(ano) : undefined,
-      nota: nota ? Number(nota) : undefined,
-      duracao: duracao ? Number(duracao) : undefined,
-      urlDub: urlDub || null,
-      urlLeg: urlLeg || null,
-      ...(logo ? { logo } : {}),
-    },
-    create: {
-      id: String(id),
-      tmdbId: tmdbId ? String(tmdbId) : undefined,
-      titulo, tituloOriginal, poster, background: backgroundPT, sinopse,
-      ano: ano ? Number(ano) : undefined,
-      nota: nota ? Number(nota) : undefined,
-      duracao: duracao ? Number(duracao) : undefined,
-      urlDub: urlDub || null,
-      urlLeg: urlLeg || null,
-      logo,
-    },
-  });
-
-  // Upsert gêneros
-  if (Array.isArray(generos) && generos.length > 0) {
-    await prisma.filmeGenero.deleteMany({ where: { filmeId: filme.id } });
-    for (const g of generos) {
-      await prisma.genero.upsert({
-        where: { id: g.id },
-        update: { nome: g.nome },
-        create: { id: g.id, nome: g.nome },
-      });
-      await prisma.filmeGenero.create({ data: { filmeId: filme.id, generoId: g.id } });
-    }
-  }
-
-  return NextResponse.json({ ok: true, id: filme.id });
+  const result = await upsertCatalogMovie({
+    ...body,
+    id: String(id),
+    tmdbId: tmdbId ? String(tmdbId) : body.tmdbId,
+    // Sem background no corpo e sem backdrop do TMDB, não apaga o atual.
+    ...(backgroundPT !== null ? { background: backgroundPT } : {}),
+    ...(logo ? { logo } : {}),
+    generos,
+  }, undefined, { emptyStringClears: true });
+  return NextResponse.json({ ok: true, id: result.id });
 }
 
 // DELETE — remove filme

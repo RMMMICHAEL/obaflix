@@ -9,6 +9,7 @@ import { DesktopUpdateBanner } from "@/components/ui/DesktopUpdateBanner";
 import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, DEFAULT_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
+import { getObaflixSurface } from "@/config/obaflix-surface";
 
 // O catálogo e a sessão dependem de dados de runtime; não consultar Prisma no
 // prerender torna o build reprodutível sem acesso a banco de produção.
@@ -22,7 +23,13 @@ const bebas = Bebas_Neue({
   variable: "--font-bebas",
 });
 
-export const metadata: Metadata = {
+const adminSurface = getObaflixSurface() === "admin";
+
+export const metadata: Metadata = adminSurface ? {
+  title: "Obaflix Admin",
+  description: "Painel operacional do Obaflix",
+  robots: { index: false, follow: false, noarchive: true, nocache: true },
+} : {
   metadataBase: new URL(SITE_URL),
   applicationName: SITE_NAME,
   title: {
@@ -81,7 +88,7 @@ export default function RootLayout({
       <body
         className={`${inter.className} ${bebas.variable} bg-zinc-950 text-white min-h-screen`}
       >
-        <JsonLd
+        {!adminSurface && <JsonLd
           data={[
             {
               "@context": "https://schema.org",
@@ -99,15 +106,15 @@ export default function RootLayout({
               inLanguage: "pt-BR",
             },
           ]}
-        />
+        />}
         <Providers>
-          <AppModeProvider>
+          {adminSurface ? <main>{children}</main> : <AppModeProvider>
             <PlayerWakeLock />
             <AndroidShell />
             <Navbar />
             <main>{children}</main>
             <DesktopUpdateBanner />
-          </AppModeProvider>
+          </AppModeProvider>}
         </Providers>
       </body>
     </html>

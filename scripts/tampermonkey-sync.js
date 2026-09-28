@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Obaflix Sync
 // @namespace    obaflix
-// @version      1.0
+// @version      1.1
 // @description  Duplica add_filme, add_serie e add_episodio do painel Megaflix para o Obaflix automaticamente
 // @match        https://admin.megafrixapi.com/*
 // @grant        GM_xmlhttpRequest
@@ -14,18 +14,50 @@
 
   const OBAFLIX = 'https://obaflix.vercel.app';
 
-  // O token NAO vive neste arquivo — ele ja esteve comitado aqui uma vez.
-  // Guarde o seu no armazenamento do proprio userscript, uma unica vez:
-  //   GM_setValue('obaflixAdminToken', '<seu token>')
+  // Tokens NAO vivem neste arquivo — um deles ja esteve comitado aqui uma vez.
+  // Guarde no armazenamento do proprio userscript, uma unica vez:
+  //   GM_setValue('obaflixAdminToken', '<token>')       // modo legado (padrao)
+  //   GM_setValue('obaflixCatalogToken', '<token>')     // modo integracao
+  //   GM_setValue('obaflixModo', 'integracao')          // so no cutover
   // ou, sem GM_setValue, no localStorage do painel Megaflix pela consola.
-  const TOKEN =
-    (typeof GM_getValue === 'function' ? GM_getValue('obaflixAdminToken', '') : '') ||
-    localStorage.getItem('obaflixAdminToken') ||
-    '';
+  //
+  // Modo legado (padrao ate o cutover): /api/admin/* com x-admin-token.
+  // Modo integracao: /api/integracoes/catalogo/* com Authorization: Bearer
+  // CATALOG_SYNC_TOKEN, que so escreve catalogo. Nesse modo campos vazios nao
+  // sao enviados (la, null significa "apagar").
+  const setting = (key, fallback) =>
+    (typeof GM_getValue === 'function' ? GM_getValue(key, '') : '') ||
+    localStorage.getItem(key) ||
+    fallback;
+  const MODO = setting('obaflixModo', 'legado') === 'integracao' ? 'integracao' : 'legado';
+  const TOKEN = MODO === 'integracao' ? setting('obaflixCatalogToken', '') : setting('obaflixAdminToken', '');
 
   if (!TOKEN) {
-    console.warn('[Obaflix Sync] token de admin ausente — configure obaflixAdminToken.');
+    console.warn(`[Obaflix Sync] token ausente para o modo ${MODO} — configure ${MODO === 'integracao' ? 'obaflixCatalogToken' : 'obaflixAdminToken'}.`);
     return;
+  }
+
+  const PATHS = MODO === 'integracao'
+    ? { filme: '/api/integracoes/catalogo/filme', serie: '/api/integracoes/catalogo/serie', episodios: '/api/integracoes/catalogo/episodios/bulk' }
+    : { filme: '/api/admin/filme', serie: '/api/admin/serie', episodios: '/api/admin/episodio/bulk' };
+  const AUTH = MODO === 'integracao' ? { Authorization: 'Bearer ' + TOKEN } : { 'x-admin-token': TOKEN };
+
+  // Mesma regra de src/lib/catalog-destino.ts (pruneCatalogPayload).
+  function prune(kind, body) {
+    if (MODO !== 'integracao') return body;
+    const out = {};
+    for (const [key, value] of Object.entries(body)) {
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string' && value.trim() === '') continue;
+      if (typeof value === 'number' && !Number.isFinite(value)) continue;
+      if (kind === 'serie' && key === 'tipo' && value === 'serie') continue;
+      if (kind === 'episodios' && key === 'episodios' && Array.isArray(value)) {
+        out.episodios = value.map((ep) => prune('filme', ep));
+        continue;
+      }
+      out[key] = value;
+    }
+    return out;
   }
   const TMDB_IMG = 'https://image.tmdb.org/t/p/w500';
 
@@ -35,16 +67,13 @@
     return TMDB_IMG + (path.startsWith('/') ? path : '/' + path);
   }
 
-  function obaPost(path, body) {
+  function obaPost(kind, body) {
     return new Promise((resolve) => {
       GM_xmlhttpRequest({
         method: 'POST',
-        url: OBAFLIX + path,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-token': TOKEN,
-        },
-        data: JSON.stringify(body),
+        url: OBAFLIX + PATHS[kind],
+        headers: Object.assign({ 'Content-Type': 'application/json' }, AUTH),
+        data: JSON.stringify(prune(kind, body)),
         onload: (r) => {
           try { resolve(JSON.parse(r.responseText)); }
           catch { resolve({ error: r.responseText }); }
@@ -58,7 +87,7 @@
     const id = fields.tmdb || fields.url;
     if (!id) { console.warn('[Obaflix] add_filme sem tmdb/url, ignorado'); return; }
 
-    const result = await obaPost('/api/admin/filme', {
+    const result = await obaPost('filme', {
       id: String(id),
       tmdbId: fields.tmdb ? String(fields.tmdb) : null,
       titulo: fields.titulo || fields.title,
@@ -80,7 +109,7 @@
     const id = fields.tmdb || fields.url || fields.id;
     if (!id) { console.warn('[Obaflix] add_serie sem id, ignorado'); return; }
 
-    const result = await obaPost('/api/admin/serie', {
+    const result = await obaPost('serie', {
       id: String(id),
       tmdbId: fields.tmdb ? String(fields.tmdb) : null,
       titulo: fields.titulo || fields.title,
@@ -99,7 +128,7 @@
   async function syncEpisodio(fields) {
     if (!fields.id || !fields.ep) { console.warn('[Obaflix] add_episodio sem id/ep, ignorado'); return; }
 
-    const result = await obaPost('/api/admin/episodio/bulk', {
+    const result = await obaPost('episodios', {
       serieId: String(fields.id),
       episodios: [{
         ep: Number(fields.ep),
@@ -159,5 +188,5 @@
     return origSend.apply(this, arguments);
   };
 
-  console.log('[Obaflix Sync] ✅ Ativo — qualquer conteúdo adicionado será duplicado para o Obaflix');
+  console.log(`[Obaflix Sync] ✅ Ativo (modo ${MODO}) — qualquer conteúdo adicionado será duplicado para o Obaflix`);
 })();

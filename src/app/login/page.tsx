@@ -1,15 +1,21 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { signIn, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
+const ADMIN_SURFACE = process.env.NEXT_PUBLIC_OBAFLIX_SURFACE === "admin";
+
 function LoginForm() {
   const router = useRouter();
-  const { status } = useSession();
+  const { status, data: session } = useSession();
+  // Superfície admin: sessão sem role admin não segue para /admin (voltaria
+  // para cá e entraria em laço); mostra aviso e permite sair.
+  const semAcessoAdmin = ADMIN_SURFACE && status === "authenticated"
+    && (session?.user as { role?: string } | undefined)?.role !== "admin";
   const searchParams = useSearchParams();
-  const requestedCallback = searchParams.get("callbackUrl") ?? "/";
+  const requestedCallback = searchParams.get("callbackUrl") ?? (ADMIN_SURFACE ? "/admin" : "/");
   const callbackUrl = requestedCallback.startsWith("/") && !requestedCallback.startsWith("//")
     ? requestedCallback
     : "/";
@@ -44,11 +50,11 @@ function LoginForm() {
   };
 
   useEffect(() => {
-    if (status === "authenticated") {
+    if (status === "authenticated" && !semAcessoAdmin) {
       router.replace(callbackUrl);
       router.refresh();
     }
-  }, [callbackUrl, router, status]);
+  }, [callbackUrl, router, status, semAcessoAdmin]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,6 +72,20 @@ function LoginForm() {
     setLoading(false);
   };
 
+  if (semAcessoAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="w-full max-w-sm bg-zinc-900 rounded-xl p-8 shadow-2xl text-center">
+          <h1 className="text-xl font-bold text-white mb-3">Acesso restrito</h1>
+          <p className="text-zinc-400 text-sm mb-6">Esta conta não tem permissão administrativa.</p>
+          <button onClick={() => signOut({ callbackUrl: "/login" })} className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition">
+            Sair
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (status === "loading" || status === "authenticated") {
     return <div className="min-h-screen bg-zinc-950" aria-label="Verificando sessão" />;
   }
@@ -73,7 +93,8 @@ function LoginForm() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-zinc-900 rounded-xl p-8 shadow-2xl">
-        <h1 className="text-2xl font-bold text-white mb-6 text-center">Entrar</h1>
+        <p className="text-red-500 text-xs font-bold uppercase tracking-[0.18em] text-center mb-2">Obaflix</p>
+        <h1 className="text-2xl font-bold text-white mb-6 text-center">{ADMIN_SURFACE ? "Acesso administrativo" : "Entrar"}</h1>
 
         <button
           onClick={handleGoogle}
@@ -109,7 +130,7 @@ function LoginForm() {
           </button>
         </form>
 
-        <p className="text-zinc-500 text-sm text-center mt-5">
+        {!ADMIN_SURFACE && <p className="text-zinc-500 text-sm text-center mt-5">
           Não tem conta?{" "}
           <Link
             href={callbackUrl === "/" ? "/cadastro" : `/cadastro?callbackUrl=${encodeURIComponent(callbackUrl)}`}
@@ -117,7 +138,7 @@ function LoginForm() {
           >
             Criar conta
           </Link>
-        </p>
+        </p>}
       </div>
     </div>
   );
