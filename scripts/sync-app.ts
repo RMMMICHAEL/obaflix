@@ -6,20 +6,24 @@
  * Uso:
  *   npx tsx scripts/sync-app.ts            — sync normal
  *   npx tsx scripts/sync-app.ts --init     — pré-popula memória com todos os IDs já no obaflix
+ *
+ * Destino (src/lib/catalog-destino.ts):
+ *   OBAFLIX_SYNC_DESTINO=legado (padrão)  → /api/admin/* com ADMIN_SECRET_TOKEN
+ *   OBAFLIX_SYNC_DESTINO=integracao       → /api/integracoes/catalogo/* com CATALOG_SYNC_TOKEN
+ * O legado continua o padrão até o cutover.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { episodiosGravados, resolveCatalogDestino } from "../src/lib/catalog-destino";
 
 const APP     = "https://app.megafrixapi.com/4.6.2";
-const OBAFLIX = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
 export {};
 
-const TOKEN: string = (() => {
-  const token = process.env.ADMIN_SECRET_TOKEN;
-  if (!token) throw new Error("ADMIN_SECRET_TOKEN é obrigatório");
-  return token;
-})();
+// Sem fallback de token: o destino exige ADMIN_SECRET_TOKEN (legado) ou
+// CATALOG_SYNC_TOKEN (integração) e lança se faltar.
+const DESTINO = resolveCatalogDestino();
+const OBAFLIX = DESTINO.baseUrl;
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");
@@ -137,29 +141,43 @@ function mergeUrls(warezUrls: string[], htmlUrl: string | null): string | null {
   return all.length > 0 ? all.join(",") : null;
 }
 
-async function obaPost(path: string, data: object): Promise<any> {
+async function obaPost(kind: "filme" | "serie" | "episodios", data: Record<string, unknown>): Promise<any> {
+  const path = kind === "filme" ? DESTINO.paths.filme : kind === "serie" ? DESTINO.paths.serie : DESTINO.paths.episodiosBulk;
   const r = await fetch(`${OBAFLIX}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-admin-token": TOKEN },
-    body: JSON.stringify(data),
+    headers: DESTINO.headers,
+    body: JSON.stringify(DESTINO.body(kind, data)),
   });
   return r.json().catch(() => ({}));
 }
 
+// Integração: uma consulta só de identidade/contagem (sem /api/admin).
+async function obaConsulta(filmes: string[], series: string[]): Promise<{ filmes: Record<string, true>; series: Record<string, { episodios: number }> }> {
+  const r = await fetch(`${OBAFLIX}${DESTINO.paths.consulta}`, {
+    method: "POST",
+    headers: DESTINO.headers,
+    body: JSON.stringify({ filmes, series }),
+  });
+  return r.json().catch(() => ({ filmes: {}, series: {} }));
+}
+
 async function obaExisteFilme(id: string): Promise<boolean> {
-  const r = await fetch(`${OBAFLIX}/api/admin/filme?q=${id}`, { headers: { "x-admin-token": TOKEN } });
+  if (DESTINO.modo === "integracao") return !!(await obaConsulta([id], [])).filmes?.[id];
+  const r = await fetch(`${OBAFLIX}/api/admin/filme?q=${id}`, { headers: DESTINO.headers });
   const d = await r.json().catch(() => ({ items: [] }));
   return d.items?.some((x: any) => x.id === id) ?? false;
 }
 
 async function obaExisteSerie(id: string): Promise<boolean> {
-  const r = await fetch(`${OBAFLIX}/api/admin/serie?q=${id}`, { headers: { "x-admin-token": TOKEN } });
+  if (DESTINO.modo === "integracao") return !!(await obaConsulta([], [id])).series?.[id];
+  const r = await fetch(`${OBAFLIX}/api/admin/serie?q=${id}`, { headers: DESTINO.headers });
   const d = await r.json().catch(() => ({ items: [] }));
   return d.items?.some((x: any) => x.id === id) ?? false;
 }
 
 async function obaEpCount(serieId: string): Promise<number> {
-  const r = await fetch(`${OBAFLIX}/api/admin/serie?q=${serieId}`, { headers: { "x-admin-token": TOKEN } });
+  if (DESTINO.modo === "integracao") return (await obaConsulta([], [serieId])).series?.[serieId]?.episodios ?? 0;
+  const r = await fetch(`${OBAFLIX}/api/admin/serie?q=${serieId}`, { headers: DESTINO.headers });
   const d = await r.json().catch(() => ({ items: [] }));
   return d.items?.find((x: any) => x.id === serieId)?._count?.episodios ?? 0;
 }
@@ -167,6 +185,10 @@ async function obaEpCount(serieId: string): Promise<number> {
 // ── --init: pré-popular memória com todos os IDs do obaflix ──────────────────
 
 async function initMemory() {
+  if (DESTINO.modo === "integracao") {
+    // A integração não lista o catálogo inteiro de propósito (só consulta IDs).
+    throw new Error("--init usa a listagem administrativa; rode com OBAFLIX_SYNC_DESTINO=legado");
+  }
   console.log("🔄 Buscando todos os IDs do obaflix para pré-popular memória...");
   const mem = loadMemory();
   const filmesSet = new Set(mem.filmes);
@@ -174,7 +196,7 @@ async function initMemory() {
 
   let page = 1, total = 0;
   while (true) {
-    const r = await fetch(`${OBAFLIX}/api/admin/filme?page=${page}`, { headers: { "x-admin-token": TOKEN } });
+    const r = await fetch(`${OBAFLIX}/api/admin/filme?page=${page}`, { headers: DESTINO.headers });
     const d = await r.json().catch(() => ({ items: [], pages: 0 }));
     if (!d.items?.length) break;
     d.items.forEach((x: any) => filmesSet.add(x.id));
@@ -187,7 +209,7 @@ async function initMemory() {
 
   page = 1; total = 0;
   while (true) {
-    const r = await fetch(`${OBAFLIX}/api/admin/serie?page=${page}`, { headers: { "x-admin-token": TOKEN } });
+    const r = await fetch(`${OBAFLIX}/api/admin/serie?page=${page}`, { headers: DESTINO.headers });
     const d = await r.json().catch(() => ({ items: [], pages: 0 }));
     if (!d.items?.length) break;
     d.items.forEach((x: any) => seriesSet.add(x.id));
@@ -252,7 +274,7 @@ async function main() {
     const urlDub = mergeUrls(warez.br, item.urlBR);
     const urlLeg = mergeUrls(warez.eng, item.urlENG || null);
 
-    const r = await obaPost("/api/admin/filme", {
+    const r = await obaPost("filme", {
       id: item.id, titulo: item.title, poster: item.poster, tmdbId: item.tmdb,
       ano: item.ano ? Number(item.ano) : null,
       nota: item.nota ? Number(item.nota) : null,
@@ -280,7 +302,7 @@ async function main() {
     if (!item.id || !item.title) { mem.series.push(id); continue; }
 
     // Upsert metadados da série (idempotente)
-    await obaPost("/api/admin/serie", {
+    await obaPost("serie", {
       id: item.id, titulo: item.title, poster: item.poster, tmdbId: item.tmdb,
       ano: item.ano ? Number(item.ano) : null,
       nota: item.nota ? Number(item.nota) : null,
@@ -305,8 +327,8 @@ async function main() {
     }
 
     if (todosEps.length > 0) {
-      const r: any = await obaPost("/api/admin/episodio/bulk", { serieId: item.id, episodios: todosEps });
-      totalEps += r.ok ?? 0;
+      const r: any = await obaPost("episodios", { serieId: item.id, episodios: todosEps });
+      totalEps += episodiosGravados(r);
     }
 
     mem.series.push(id);
@@ -324,7 +346,7 @@ async function main() {
       const html = await fetchApp(`?page=viewItem&id=${serieId}`);
       const item = parseItem(html);
       if (item.id && item.title) {
-        await obaPost("/api/admin/serie", {
+        await obaPost("serie", {
           id: item.id, titulo: item.title, poster: item.poster, tmdbId: item.tmdb,
           ano: item.ano ? Number(item.ano) : null,
           nota: item.nota ? Number(item.nota) : null,
@@ -338,8 +360,8 @@ async function main() {
     const alvo = parseEpisodes(epsHtml).filter(e => e.ep === ep && e.temp === temp);
     if (alvo.length === 0) continue;
 
-    const r: any = await obaPost("/api/admin/episodio/bulk", { serieId, episodios: alvo });
-    if (r.ok > 0) {
+    const r: any = await obaPost("episodios", { serieId, episodios: alvo });
+    if (episodiosGravados(r) > 0) {
       mem.eps.push(`${serieId}-${temp}x${ep}`);
       totalEps++;
       console.log(`  ✅ Ep T${temp}E${ep} — série ${serieId}`);

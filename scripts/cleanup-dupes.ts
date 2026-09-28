@@ -6,6 +6,12 @@
  * Uso:
  *   npx tsx scripts/cleanup-dupes.ts --dry-run   (só lista, não apaga)
  *   npx tsx scripts/cleanup-dupes.ts              (apaga duplicatas)
+ *
+ * NÃO migra para /api/integracoes/catalogo: é manutenção destrutiva (lista o
+ * catálogo inteiro e apaga via DELETE), fora do escopo do CATALOG_SYNC_TOKEN,
+ * que só faz upsert. Continua no legado (/api/admin + x-admin-token) enquanto
+ * ele existir no projeto público; depois do cutover precisa virar ação humana
+ * no painel admin (sessão) ou script com acesso direto ao banco.
  */
 
 const OBA   = process.env.OBAFLIX_URL ?? "https://obaflix.vercel.app";
