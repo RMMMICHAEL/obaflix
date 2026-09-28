@@ -1,13 +1,13 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth";
+import { isLegacyAdminTokenRequest, requireAdmin, requireAdminOrLegacyCatalogToken } from "@/lib/auth";
 import { getMovieImages, pickLogo, pickBackdrop } from "@/lib/tmdb";
-import { upsertCatalogMovie } from "@/lib/catalog-write";
+import { CATALOG_WRITE_MAQUINA, upsertCatalogMovie } from "@/lib/catalog-write";
 
 // GET — lista filmes com busca
 export async function GET(req: NextRequest) {
-  const guard = await requireAdmin(req); if (guard) return guard;
+  const guard = await requireAdminOrLegacyCatalogToken(req); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const page = Number(req.nextUrl.searchParams.get("page") ?? 1);
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
 
 // POST — cria ou atualiza filme
 export async function POST(req: NextRequest) {
-  const guard = await requireAdmin(req); if (guard) return guard;
+  const guard = await requireAdminOrLegacyCatalogToken(req); if (guard) return guard;
 
   const body = await req.json();
   const {
@@ -60,7 +60,8 @@ export async function POST(req: NextRequest) {
     ...(backgroundPT !== null ? { background: backgroundPT } : {}),
     ...(logo ? { logo } : {}),
     generos,
-  }, undefined, { emptyStringClears: true });
+  // Token legado = produtor máquina: null/"" não apagam o que já existe.
+  }, undefined, isLegacyAdminTokenRequest(req) ? CATALOG_WRITE_MAQUINA : { emptyStringClears: true });
   return NextResponse.json({ ok: true, id: result.id });
 }
 

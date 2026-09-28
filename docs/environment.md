@@ -37,7 +37,10 @@ Sem Redis: rate limit, bloqueio de IP e controle de streams simultâneos usam Ma
 | `GOOGLE_CLIENT_ID` | OAuth Google (login social) | — (desativado se ausente) |
 | `GOOGLE_CLIENT_SECRET` | OAuth Google | — |
 | `TMDB_API_KEY` | API TMDB para metadata/logos | — (import e backfill quebram sem isso) |
-| `ADMIN_SECRET_TOKEN` | Token estático para scripts admin | — |
+| `ADMIN_SECRET_TOKEN` | Legado em descontinuação: só GET/POST de catálogo em `/api/admin/{filme,serie,episodio/bulk}`, público, cutover desligado | — (ausente = legado desligado) |
+| `CATALOG_SYNC_TOKEN` | Integração de catálogo (`/api/integracoes/catalogo/*`), ≥ 32 caracteres | — |
+| `OBAFLIX_SURFACE` / `NEXT_PUBLIC_OBAFLIX_SURFACE` | `public` ou `admin` | `public` |
+| `PUBLIC_CUTOVER_ATIVO` | `1` = `/admin*` e `/api/admin/*` 404 no projeto público | desligado |
 | `EMBED_WORKER_URL` | URL do Cloudflare Worker (extração rola3/4 na Web) | — (retorna iframe se ausente) |
 | `EMBED_WORKER_SECRET` | Secret para autenticar com o Worker | `""` |
 | `CRON_SECRET` | Token para autenticar chamadas do Vercel Cron | — |

@@ -15,16 +15,35 @@ test("movie upsert does not erase good fields omitted by the source", async () =
   assert.equal("urlDub" in args.update, false);
 });
 
-test("episode upsert always uses the compound identity and stays idempotent", async () => {
-  const calls: any[] = [];
+test("episode write looks up by coordinate (never by external id), deterministically, without native upsert", async () => {
+  const finds: any[] = [];
+  const creates: any[] = [];
+  const updates: any[] = [];
   let exists = false;
   const db: any = { episodio: {
-    findUnique: async () => exists ? ({ id: "canonical" }) : null,
-    upsert: async (args: any) => { calls.push(args); exists = true; return { id: "canonical" }; },
+    findFirst: async (args: any) => { finds.push(args); return exists ? { id: "canonical" } : null; },
+    create: async (args: any) => { creates.push(args); exists = true; return { id: args.data.id }; },
+    update: async (args: any) => { updates.push(args); return { id: args.where.id }; },
+    upsert: async () => { throw new Error("upsert na chave composta exige o índice único no banco"); },
   } };
   const input = { serieId: "s1", temporada: 2, numeroEp: 7, titulo: "Sete" };
-  assert.equal((await upsertCatalogEpisode(input, db)).created, true);
-  assert.equal((await upsertCatalogEpisode(input, db)).created, false);
-  assert.deepEqual(calls[0].where, { serieId_temporada_numeroEp: { serieId: "s1", temporada: 2, numeroEp: 7 } });
-  assert.equal(calls[0].create.id, "s1-t2e7");
+  assert.deepEqual(await upsertCatalogEpisode(input, db), { id: "s1-t2e7", created: true });
+  // Segunda fonte, outro ID externo, mesma coordenada: UPDATE da linha existente.
+  assert.deepEqual(await upsertCatalogEpisode({ ...input, id: "wc_ep_560647", urlDub: "u" }, db), { id: "canonical", created: false });
+  assert.deepEqual(finds[0].where, { serieId: "s1", temporada: 2, numeroEp: 7 });
+  assert.deepEqual(finds[0].orderBy, [{ createdAt: "asc" }, { id: "asc" }]);
+  assert.equal(creates.length, 1);
+  assert.deepEqual(updates[0], { where: { id: "canonical" }, data: { titulo: "Sete", urlDub: "u" } });
+});
+
+test("episode create race after the unique index (P2002) becomes an update of the winner", async () => {
+  let calls = 0;
+  const updates: any[] = [];
+  const db: any = { episodio: {
+    findFirst: async () => (calls++ === 0 ? null : { id: "winner" }),
+    create: async () => { throw Object.assign(new Error("unique"), { code: "P2002" }); },
+    update: async (args: any) => { updates.push(args); return {}; },
+  } };
+  assert.deepEqual(await upsertCatalogEpisode({ serieId: "s1", temporada: 1, numeroEp: 1, urlDub: "x" }, db), { id: "winner", created: false });
+  assert.deepEqual(updates, [{ where: { id: "winner" }, data: { urlDub: "x" } }]);
 });

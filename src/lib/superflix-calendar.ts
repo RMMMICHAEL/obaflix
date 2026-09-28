@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { writeEpisodesByCoordinate } from "@/lib/episode-coordinate";
 import { getSerie, getTVImages, getTVSeasonDetails, pickBackdrop, pickLogo, type TmdbTV } from "@/lib/tmdb";
 
 const CALENDAR_URL = "https://superflixapi.beer/calendario.php";
@@ -172,10 +173,10 @@ export async function syncSuperflixCalendar(
   onProgress(`Atualizando séries existentes em ${existingBatches.length} lotes...`);
   for (let index = 0; index < existingBatches.length; index++) {
     const batch = existingBatches[index];
-    const inserted = await prisma.episodio.createMany({ data: batch, skipDuplicates: true });
-    result.episodiosAdicionados += inserted.count;
-    result.ignorados += batch.length - inserted.count;
-    onProgress(`Lote existente ${index + 1}/${existingBatches.length}: ${inserted.count} episódios novos.`);
+    const inserted = await writeEpisodesByCoordinate(prisma, batch);
+    result.episodiosAdicionados += inserted.created;
+    result.ignorados += inserted.skipped;
+    onProgress(`Lote existente ${index + 1}/${existingBatches.length}: ${inserted.created} episódios novos.`);
   }
 
   // Reparo opcional das séries criadas por versões antigas do importador. No uso
@@ -188,13 +189,11 @@ export async function syncSuperflixCalendar(
       try {
         const details = await getSerie(serie.tmdbId!);
         const rows = await fullSeriesEpisodeRows(serie.tmdbId!, serie.id, details);
-        const inserted = rows.length
-          ? await prisma.episodio.createMany({ data: rows, skipDuplicates: true })
-          : { count: 0 };
-        result.episodiosAdicionados += inserted.count;
-        result.ignorados += rows.length - inserted.count;
+        const inserted = await writeEpisodesByCoordinate(prisma, rows);
+        result.episodiosAdicionados += inserted.created;
+        result.ignorados += inserted.skipped;
         result.seriesCompletadas++;
-        onProgress(`Reparo ${index + 1}/${repairTargets.length}: ${serie.tmdbId} (+${inserted.count} episódios)`);
+        onProgress(`Reparo ${index + 1}/${repairTargets.length}: ${serie.tmdbId} (+${inserted.created} episódios)`);
       } catch (error) {
         result.erros.push(`reparo ${serie.tmdbId}: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -254,10 +253,10 @@ export async function syncSuperflixCalendar(
         // sozinho contém apenas lançamentos recentes e deixaria temporadas antigas faltando.
         const fullRows = await fullSeriesEpisodeRows(tmdbId, serieId, details, true);
         const rows = fullRows.length ? fullRows : episodeRowsFor(tmdbId, serieId, items);
-        const inserted = await prisma.episodio.createMany({ data: rows, skipDuplicates: true });
-        result.episodiosAdicionados += inserted.count;
-        result.ignorados += rows.length - inserted.count;
-        onProgress(`  ${inserted.count} episódios adicionados a ${created.titulo}.`);
+        const inserted = await writeEpisodesByCoordinate(prisma, rows);
+        result.episodiosAdicionados += inserted.created;
+        result.ignorados += inserted.skipped;
+        onProgress(`  ${inserted.created} episódios adicionados a ${created.titulo}.`);
 
     } catch (error) {
       result.erros.push(`${tmdbId}: ${error instanceof Error ? error.message : String(error)}`);

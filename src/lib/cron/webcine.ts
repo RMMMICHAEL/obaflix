@@ -326,10 +326,14 @@ async function syncSeriesTipo(
           urlDub: string;
         }> = [];
 
+        const pendentes = new Set<string>();
         for (const ep of sourceRows) {
           const key = `${ep.temporada}:${ep.numeroEp}`;
           const existente = porCoordenada.get(key);
           if (!existente) {
+            // Mesma coordenada duas vezes na resposta: uma linha só.
+            if (pendentes.has(key)) continue;
+            pendentes.add(key);
             criados.push({
               id: `${serieId}-t${ep.temporada}e${ep.numeroEp}`,
               serieId,

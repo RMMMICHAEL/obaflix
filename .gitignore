@@ -58,3 +58,7 @@ android/local.properties
 *.p12
 
 .env*
+
+# backups locais de manutenção (dumps de produção) — nunca commitar
+/backups/
+episodios-dedupe-*.json

@@ -12,8 +12,8 @@ const LIMITE_MAXIMO = 100;
 /**
  * `GET /api/admin/pagamentos/revisoes` — casos de revisão de pagamento.
  *
- * Mesma autenticação das demais rotas admin (`requireAdmin`: sessão com papel
- * admin ou `x-admin-token`). Devolve pedido, motivo, valores, tempo em revisão
+ * Só sessão com `role=admin` revalidado no banco (`requireAdmin`); o
+ * token legado é recusado. Devolve pedido, motivo, valores, tempo em revisão
  * e histórico. A transação aparece mascarada; nenhum dado do pagador sai daqui.
  *
  * `?status=PENDENTE` (padrão) ou `RESOLVIDA`; `?limite=` até 100.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { upsertCatalogEpisodesBulk, upsertCatalogMovie, upsertCatalogSeries } from "../catalog-write";
+import { memoryEpisodeTable } from "./memoryEpisodes";
 
 // Banco em memória: prova idempotência e preservação de campos com a mesma
 // semântica de upsert do Prisma (update mescla, create só na primeira vez).
@@ -9,7 +10,6 @@ function memoryDb() {
   const series = new Map<string, any>();
   const eps = new Map<string, any>();
   const filmeGeneros: Array<{ filmeId: string; generoId: number }> = [];
-  const key = (k: any) => `${k.serieId}|${k.temporada}|${k.numeroEp}`;
   const table = (rows: Map<string, any>, keyOf: (where: any) => string) => ({
     findUnique: async ({ where }: any) => rows.get(keyOf(where)) ?? null,
     upsert: async ({ where, update, create }: any) => {
@@ -22,7 +22,7 @@ function memoryDb() {
   const db: any = {
     filme: table(filmes, (w) => w.id),
     serie: table(series, (w) => w.id),
-    episodio: table(eps, (w) => key(w.serieId_temporada_numeroEp)),
+    episodio: memoryEpisodeTable(eps),
     genero: { upsert: async () => ({}) },
     filmeGenero: {
       deleteMany: async ({ where }: any) => {

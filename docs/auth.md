@@ -58,40 +58,27 @@ O `id` e `role` do usuário estão disponíveis em qualquer Server Component via
 
 ## Autorização Admin
 
-```typescript
-export async function requireAdmin(req?) {
-  // 1. Preflight CORS para o painel admin externo
-  if (req?.method === "OPTIONS") return CORS 204;
+Detalhes e estado final: `docs/admin-cutover-final.md`.
 
-  // 2. Token estático (scripts do painel Megaflix)
-  if (req?.headers.get("x-admin-token") === ADMIN_SECRET_TOKEN) return null; // ok
+| Guarda (`src/lib/auth.ts`) | Aceita | Onde |
+|---|---|---|
+| `requireAdmin` / `requireAdminSession` | **só** sessão com `role=admin` reconfirmado no banco a cada requisição. `x-admin-token` → 403 sem consultar sessão | toda API humana em `/api/admin/*` e `/api/player/debug-segment` |
+| `requireAdminAction` | idem + origem = host + rate limit por admin; grava `AdminAudit` | ações sensíveis (senha, assinatura, canais) |
+| `requireAdminOrLegacyCatalogToken` | sessão admin; **ou**, na transição, `x-admin-token` só em GET/POST, superfície pública, cutover desligado e `ADMIN_SECRET_TOKEN` ≥ 32 | `/api/admin/{filme,serie,episodio/bulk}` (DELETE/PUT sempre sessão) |
+| `requireCatalogSync` | `CATALOG_SYNC_TOKEN` (Bearer), escopo `/api/integracoes/catalogo/*` | integrações de catálogo |
 
-  // 3. JWT session com role="admin"
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return 401;
-  if (session.user.role !== "admin") return 403;
-  return null; // ok
-}
-```
-
-Uso em rotas admin:
 ```typescript
 const guard = await requireAdmin(req);
-if (guard) return guard; // retorna 401/403 direto
+if (guard) return guard; // 401 sem sessão, 403 sem role admin no banco ou com token legado
 ```
 
 ## CORS Admin
 
-O painel admin externo (`admin.megafrixapi.com`) tem CORS liberado para rotas admin:
-
-```typescript
-export const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
-
-// Headers retornados quando origin === ADMIN_CORS_ORIGIN:
-Access-Control-Allow-Origin: https://admin.megafrixapi.com
-Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
-Access-Control-Allow-Headers: Content-Type, x-admin-token
-```
+Só o legado de catálogo tem CORS, e só para `https://admin.megafrixapi.com`
+(origem do Tampermonkey; é **fonte** MegaFlix, não o admin do Obaflix), só
+`GET, POST, OPTIONS`, e nunca no painel separado nem com o cutover ligado.
+O Tampermonkey usa `GM_xmlhttpRequest`, que não depende de CORS; a integração
+não tem CORS nenhum.
 
 ## Cadastro
 
@@ -117,4 +104,5 @@ Erros tratados:
 | `NEXTAUTH_URL` | URL base do site (para callbacks OAuth) |
 | `GOOGLE_CLIENT_ID` | Client ID OAuth do Google (opcional) |
 | `GOOGLE_CLIENT_SECRET` | Client Secret OAuth do Google (opcional) |
-| `ADMIN_SECRET_TOKEN` | Token estático para scripts admin |
+| `ADMIN_SECRET_TOKEN` | Legado em descontinuação: só catálogo (`filme`/`serie`/`episodio/bulk`, GET/POST) no público com cutover desligado |
+| `CATALOG_SYNC_TOKEN` | Integração de catálogo máquina→máquina (`/api/integracoes/catalogo/*`) |

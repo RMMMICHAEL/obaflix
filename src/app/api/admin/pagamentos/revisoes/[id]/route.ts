@@ -19,7 +19,8 @@ const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, privat
  *   operador por ação. Repetir a mesma chave não executa de novo;
  * - `observacao`: obrigatória em `encerrar_sem_alteracao`. Sem dado de pagador.
  *
- * Quem executou vem da autenticação, nunca do corpo.
+ * Só sessão admin (role revalidado no banco); o token legado é recusado.
+ * Quem executou vem da sessão, nunca do corpo.
  */
 function createAcaoRevisaoHandler(deps: any = {}) {
   const autorizar = deps.requireAdmin ?? requireAdmin;
@@ -32,7 +33,7 @@ function createAcaoRevisaoHandler(deps: any = {}) {
     // Mutação por cookie vinda de navegador: a origem precisa ser a do site.
     const origin = req.headers.get("origin");
     const host = req.headers.get("host");
-    if (origin && host && !req.headers.get("x-admin-token") && !headerMatchesHost(origin, host)) {
+    if (origin && host && !headerMatchesHost(origin, host)) {
       return NextResponse.json({ error: "Acesso negado", codigo: "origem_invalida" }, { status: 403, headers: NO_STORE });
     }
 
@@ -46,10 +47,10 @@ function createAcaoRevisaoHandler(deps: any = {}) {
       return NextResponse.json({ error: "Parâmetros inválidos", codigo: "parametros_invalidos" }, { status: 400, headers: NO_STORE });
     }
 
-    let ator = "token_admin";
-    if (!req.headers.get("x-admin-token")) {
-      const s = await sessao();
-      ator = (s?.user as { id?: string } | undefined)?.id ?? "admin";
+    const s = await sessao();
+    const ator = (s?.user as { id?: string } | undefined)?.id;
+    if (!ator) {
+      return NextResponse.json({ error: "Sessão administrativa obrigatória", codigo: "sessao_obrigatoria" }, { status: 401, headers: NO_STORE });
     }
 
     const r = await executar({

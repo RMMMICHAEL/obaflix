@@ -8,9 +8,10 @@
  *   npx tsx scripts/sync-app.ts --init     — pré-popula memória com todos os IDs já no obaflix
  *
  * Destino (src/lib/catalog-destino.ts):
- *   OBAFLIX_SYNC_DESTINO=legado (padrão)  → /api/admin/* com ADMIN_SECRET_TOKEN
- *   OBAFLIX_SYNC_DESTINO=integracao       → /api/integracoes/catalogo/* com CATALOG_SYNC_TOKEN
- * O legado continua o padrão até o cutover.
+ *   CATALOG_SYNC_TOKEN configurado          → /api/integracoes/catalogo/* (caminho final)
+ *   OBAFLIX_SYNC_DESTINO=legado (transição) → /api/admin/* com ADMIN_SECRET_TOKEN
+ * Sem OBAFLIX_SYNC_DESTINO, integração quando há CATALOG_SYNC_TOKEN; senão
+ * legado com aviso. Após o cutover o legado responde 404.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -24,6 +25,7 @@ export {};
 // CATALOG_SYNC_TOKEN (integração) e lança se faltar.
 const DESTINO = resolveCatalogDestino();
 const OBAFLIX = DESTINO.baseUrl;
+for (const aviso of DESTINO.avisos) console.warn(`⚠️  ${aviso}`);
 const UA      = "okhttp/4.9.3";
 const DELAY   = 400;
 const MEMORY_FILE = join(import.meta.dirname, ".sync-memory.json");
@@ -185,10 +187,7 @@ async function obaEpCount(serieId: string): Promise<number> {
 // ── --init: pré-popular memória com todos os IDs do obaflix ──────────────────
 
 async function initMemory() {
-  if (DESTINO.modo === "integracao") {
-    // A integração não lista o catálogo inteiro de propósito (só consulta IDs).
-    throw new Error("--init usa a listagem administrativa; rode com OBAFLIX_SYNC_DESTINO=legado");
-  }
+  if (DESTINO.modo === "integracao") return initMemoryIntegracao();
   console.log("🔄 Buscando todos os IDs do obaflix para pré-popular memória...");
   const mem = loadMemory();
   const filmesSet = new Set(mem.filmes);
@@ -224,6 +223,25 @@ async function initMemory() {
   mem.series = [...seriesSet];
   saveMemory(mem);
   console.log(`💾 Memória salva em .sync-memory.json\n`);
+}
+
+/**
+ * --init na integração: a credencial de catálogo não lista o catálogo inteiro
+ * (de propósito). Marca como vistos os IDs da home do MegaFlix que já existem
+ * no Obaflix — é exatamente o conjunto que o sync normal consultaria. Mesmo
+ * sem --init o sync é idempotente (upsert pela chave), só faz mais consultas.
+ */
+async function initMemoryIntegracao() {
+  console.log("🔄 Consultando no obaflix os IDs da home do MegaFlix...");
+  const mem = loadMemory();
+  const homeHtml = await fetchApp("?page=viewHome");
+  const filmes = [...new Set(parseUltimosFilmes(homeHtml))];
+  const series = [...new Set([...parseUltimasSeries(homeHtml), ...parseEpsRecentes(homeHtml).map((e) => e.serieId)])];
+  const existe = await obaConsulta(filmes, series);
+  mem.filmes = [...new Set([...mem.filmes, ...Object.keys(existe.filmes ?? {})])];
+  mem.series = [...new Set([...mem.series, ...Object.keys(existe.series ?? {})])];
+  saveMemory(mem);
+  console.log(`💾 ${Object.keys(existe.filmes ?? {}).length} filmes e ${Object.keys(existe.series ?? {}).length} séries marcados como vistos\n`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────

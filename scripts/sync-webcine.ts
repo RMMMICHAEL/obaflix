@@ -17,6 +17,7 @@
  */
 
 import { PrismaClient } from "@prisma/client";
+import { writeEpisodesByCoordinate } from "../src/lib/episode-coordinate";
 try { require("dotenv").config(); } catch { /* sem dotenv, usa vars do ambiente */ }
 
 const prisma = new PrismaClient();
@@ -279,10 +280,10 @@ async function fetchAndSaveEpisodes(targets: EpTarget[]) {
       );
 
       if (epRows.length > 0) {
-        for (const batch of chunks(epRows, DB_BATCH)) {
-          await prisma.episodio.createMany({ data: batch, skipDuplicates: true });
-        }
-        epTotal += epRows.length;
+        // Pela coordenada: o mesmo episódio já cadastrado por outro produtor
+        // (MegaFlix, SuperFlix) com outro ID não vira segunda linha.
+        const gravados = await writeEpisodesByCoordinate(prisma, epRows);
+        epTotal += gravados.created;
         epRows.forEach((e) => existingEpIds.add(e.id));
       }
     } catch { erros++; }

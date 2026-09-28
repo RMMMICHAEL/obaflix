@@ -1,16 +1,16 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin, withCors } from "@/lib/auth";
+import { isLegacyAdminTokenRequest, requireAdmin, requireAdminOrLegacyCatalogToken, withCors } from "@/lib/auth";
 import { getTVImages, pickLogo, pickBackdrop } from "@/lib/tmdb";
-import { upsertCatalogSeries } from "@/lib/catalog-write";
+import { CATALOG_WRITE_MAQUINA, upsertCatalogSeries } from "@/lib/catalog-write";
 
 export async function OPTIONS(req: NextRequest) {
-  const guard = await requireAdmin(req); return guard ?? new NextResponse(null, { status: 204 });
+  const guard = await requireAdminOrLegacyCatalogToken(req); return guard ?? new NextResponse(null, { status: 204 });
 }
 
 export async function GET(req: NextRequest) {
-  const guard = await requireAdmin(req); if (guard) return guard;
+  const guard = await requireAdminOrLegacyCatalogToken(req); if (guard) return guard;
 
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const tipo = req.nextUrl.searchParams.get("tipo") ?? "";
@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const guard = await requireAdmin(req); if (guard) return guard;
+  const guard = await requireAdminOrLegacyCatalogToken(req); if (guard) return guard;
 
   const body = await req.json();
   const {
@@ -65,7 +65,9 @@ export async function POST(req: NextRequest) {
     tipo: tipo || "serie",
     ...(logo ? { logo } : {}),
     generos,
-  }, undefined, { emptyStringClears: true });
+  // Token legado = produtor máquina (Tampermonkey manda `tipo: "serie"` e null
+  // no que não tem): null não apaga e anime/desenho não é rebaixado.
+  }, undefined, isLegacyAdminTokenRequest(req) ? CATALOG_WRITE_MAQUINA : { emptyStringClears: true });
   return withCors(NextResponse.json({ ok: true, id: result.id }), req);
 }
 

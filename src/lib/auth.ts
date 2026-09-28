@@ -4,10 +4,10 @@ import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { getServerSession } from "next-auth";
 import { prisma } from "./prisma";
-import { checkRateLimit } from "./requestSecurity";
+import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
-import { canRoleSignInToSurface, getObaflixSurface } from "@/config/obaflix-surface";
+import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -17,13 +17,12 @@ export const SESSION_COOKIE_NAME = `${USE_SECURE_COOKIES ? "__Secure-" : ""}next
 export const encodeObaflixSession = (params: Parameters<typeof encodeNextAuthJwt>[0]) => encodeNextAuthJwt(params);
 export const decodeObaflixSession = (params: Parameters<typeof decodeNextAuthJwt>[0]) => decodeNextAuthJwt(params);
 
-/**
- * Autoriza apenas usuários autenticados com role "admin".
- * Lança NextResponse 401/403 que deve ser propagado pela rota.
- * Uso:  const guard = await requireAdmin(); if (guard) return guard;
- */
 export const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
+/**
+ * CORS só para o painel MegaFlix (origem do Tampermonkey legado) e só nas
+ * rotas de catálogo legado. No painel separado nunca há CORS.
+ */
 export function withCors<T extends import("next/server").NextResponse>(res: T, req: import("next/server").NextRequest): T {
   if (getObaflixSurface() === "admin") return res;
   const origin = req.headers.get("origin");
@@ -34,58 +33,34 @@ export function withCors<T extends import("next/server").NextResponse>(res: T, r
 function addCors(res: import("next/server").NextResponse, origin: string | null) {
   if (origin === ADMIN_CORS_ORIGIN) {
     res.headers.set("Access-Control-Allow-Origin", ADMIN_CORS_ORIGIN);
-    res.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.headers.set("Access-Control-Allow-Headers", "Content-Type, x-admin-token");
   }
   return res;
 }
 
-export async function requireAdmin(req?: import("next/server").NextRequest) {
-  const { NextResponse } = await import("next/server");
-  const origin = req?.headers.get("origin") ?? null;
-
-  // Preflight
-  if (req?.method === "OPTIONS") {
-    return addCors(new NextResponse(null, { status: 204 }), origin);
-  }
-
-  // Token direto (console script do painel Megaflix)
-  const suppliedAdminToken = getObaflixSurface() === "public" ? req?.headers.get("x-admin-token") : null;
-  if (suppliedAdminToken) {
-    const expectedAdminToken = process.env.ADMIN_SECRET_TOKEN ?? "";
-    const forwarded = req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    const rate = await checkRateLimit(`admin-token:${forwarded}`, 30, 60);
-    const validLength = expectedAdminToken.length >= 32 && suppliedAdminToken.length === expectedAdminToken.length;
-    const validToken = validLength && crypto.timingSafeEqual(
-      Buffer.from(suppliedAdminToken), Buffer.from(expectedAdminToken)
-    );
-    if (rate.allowed && validToken) {
-      return null; // autorizado
-    }
-    return addCors(
-      NextResponse.json({ error: "Token inválido" }, { status: 403 }),
-      origin
-    );
-  }
-
-  return requireAdminSessionOnly(origin);
-}
-
-/** A requisição foi autorizada pelo token legado (e não por sessão)? */
-export function isLegacyAdminTokenRequest(req: import("next/server").NextRequest): boolean {
-  return getObaflixSurface() === "public" && !!req.headers.get("x-admin-token");
-}
-
-/**
- * Guarda das APIs humanas (usuários, assinaturas, pagamentos, auditoria...):
- * exige sessão com `role=admin` reconfirmado no banco e ignora `x-admin-token`.
- * O token legado existe para produtores de catálogo (MegaFlix/scripts) e não
- * pode abrir dados de pessoas nem ações de suporte.
- */
 export type AdminSessionDeps = {
   loadSession?: () => Promise<{ user?: unknown } | null>;
   roleOf?: (userId: string) => Promise<string | null>;
 };
+
+/**
+ * Guarda de toda API administrativa humana: sessão com `role=admin`
+ * reconfirmado no banco. `x-admin-token` nunca autoriza aqui — se vier, é 403
+ * sem sequer consultar a sessão, para ninguém confundir o token legado com
+ * credencial de operador. `CATALOG_SYNC_TOKEN` também não serve (escopo
+ * próprio em `/api/integracoes/catalogo/*`).
+ *
+ * Uso: `const guard = await requireAdmin(req); if (guard) return guard;`
+ */
+export async function requireAdmin(req: import("next/server").NextRequest, deps: AdminSessionDeps = {}) {
+  return requireAdminSession(req, deps);
+}
+
+/** A requisição traz o header do token legado (em qualquer superfície)? */
+export function isLegacyAdminTokenRequest(req: import("next/server").NextRequest): boolean {
+  return !!req.headers.get("x-admin-token");
+}
 
 export async function requireAdminSession(req: import("next/server").NextRequest, deps: AdminSessionDeps = {}) {
   const { NextResponse } = await import("next/server");
@@ -93,6 +68,44 @@ export async function requireAdminSession(req: import("next/server").NextRequest
     return NextResponse.json({ error: "Sessão administrativa obrigatória" }, { status: 403 });
   }
   return requireAdminSessionOnly(null, deps);
+}
+
+/** Métodos que o token legado ainda pode usar nas rotas de catálogo. */
+const LEGACY_CATALOG_METHODS = new Set(["GET", "POST"]);
+
+/**
+ * Transição do catálogo legado: `/api/admin/{filme,serie,episodio,episodio/bulk}`
+ * aceitam, além da sessão admin, o `x-admin-token` (ADMIN_SECRET_TOKEN) do
+ * Tampermonkey/sync-app antigos — e apenas enquanto TODAS valem:
+ *   - superfície pública (no painel separado nunca);
+ *   - cutover desligado (ligado, essas rotas já são 404 no público);
+ *   - método GET ou POST (upsert/leitura; nunca PUT/DELETE);
+ *   - ADMIN_SECRET_TOKEN configurado com ≥ 32 caracteres.
+ * Para desligar antes do cutover basta remover ADMIN_SECRET_TOKEN do deploy.
+ * O destino final desses produtores é `/api/integracoes/catalogo/*`.
+ */
+export async function requireAdminOrLegacyCatalogToken(req: import("next/server").NextRequest, deps: AdminSessionDeps = {}) {
+  const { NextResponse } = await import("next/server");
+  const origin = req.headers.get("origin");
+  const legacyWindow = getObaflixSurface() === "public" && !publicCutoverEnabled();
+
+  if (req.method === "OPTIONS") {
+    const res = new NextResponse(null, { status: 204 });
+    return legacyWindow ? addCors(res, origin) : res;
+  }
+
+  const supplied = req.headers.get("x-admin-token");
+  if (!supplied) return requireAdminSessionOnly(null, deps);
+  if (!legacyWindow || !LEGACY_CATALOG_METHODS.has(req.method)) {
+    return addCors(NextResponse.json({ error: "Sessão administrativa obrigatória" }, { status: 403 }), legacyWindow ? origin : null);
+  }
+
+  const expected = process.env.ADMIN_SECRET_TOKEN ?? "";
+  const rate = await checkRateLimit(`admin-token:${clientIp(req)}`, 30, 60);
+  const valid = expected.length >= 32 && supplied.length === expected.length
+    && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  if (rate.allowed && valid) return null;
+  return addCors(NextResponse.json({ error: "Token inválido" }, { status: 403 }), origin);
 }
 
 async function requireAdminSessionOnly(origin: string | null, deps: AdminSessionDeps = {}) {

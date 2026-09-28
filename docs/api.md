@@ -204,7 +204,12 @@ Handler padrão do NextAuth — login, logout, callbacks OAuth.
 
 ---
 
-## Admin (requer role="admin" ou x-admin-token)
+## Admin (requer sessão com role="admin" revalidado no banco)
+
+`x-admin-token` não autoriza API humana. Só `filme`, `serie` e `episodio/bulk`
+aceitam o token legado, em GET/POST, durante a transição (ver
+`docs/admin-cutover-final.md`). Produtores de catálogo usam
+`/api/integracoes/catalogo/*` com `CATALOG_SYNC_TOKEN`.
 
 ### GET /api/admin/stats
 
