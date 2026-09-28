@@ -150,6 +150,7 @@ model User {
   /// Também virtual. Um pedido é tentativa de compra, não direito: a conta pode
   /// ter dezenas aqui e nenhuma assinatura.
   pedidos      PedidoPagamento[]
+  auditoriasAdmin AdminAudit[]
 }
 
 /// Um aparelho de TV pareado.
@@ -285,6 +286,47 @@ model SyncMetric {
   ok               Boolean
   errorMessage     String?  @db.Text
   detail           String?  @db.Text
+}
+
+/// Execução observável de qualquer produtor de catálogo. Não armazena URLs,
+/// credenciais nem payloads de origem.
+model SyncRun {
+  id                 String   @id @default(cuid())
+  source             String
+  job                String
+  status             String
+  startedAt          DateTime @default(now())
+  finishedAt         DateTime?
+  expectedNextAt     DateTime?
+  moviesAdded        Int      @default(0)
+  moviesUpdated      Int      @default(0)
+  seriesAdded        Int      @default(0)
+  seriesUpdated      Int      @default(0)
+  episodesAdded      Int      @default(0)
+  episodesUpdated    Int      @default(0)
+  errors             Int      @default(0)
+  errorSummary       String?  @db.Text
+  heartbeatAt        DateTime?
+
+  @@index([source, job, startedAt(sort: Desc)])
+  @@index([status, startedAt(sort: Desc)])
+}
+
+/// Registro imutável de ações humanas sensíveis no painel.
+model AdminAudit {
+  id          String   @id @default(cuid())
+  adminUserId String
+  adminUser   User     @relation(fields: [adminUserId], references: [id], onDelete: NoAction)
+  action      String
+  targetType  String
+  targetId    String?
+  reason      String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([adminUserId, createdAt(sort: Desc)])
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
