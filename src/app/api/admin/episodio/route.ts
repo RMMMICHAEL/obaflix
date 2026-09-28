@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { upsertCatalogEpisode } from "@/lib/catalog-write";
 
 export async function GET(req: NextRequest) {
   const guard = await requireAdmin(req); if (guard) return guard;
@@ -27,23 +28,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "serieId, numeroEp e temporada obrigatórios" }, { status: 400 });
   }
 
-  const epId = id || `${serieId}-t${temporada}e${numeroEp}`;
-
-  const ep = await prisma.episodio.upsert({
-    where: { id: epId },
-    update: { titulo, thumbnail, urlDub: urlDub || null, urlLeg: urlLeg || null },
-    create: {
-      id: epId,
-      serieId,
-      numeroEp: Number(numeroEp),
-      temporada: Number(temporada),
-      titulo,
-      thumbnail,
-      urlDub: urlDub || null,
-      urlLeg: urlLeg || null,
-    },
-  });
-
+  const ep = await upsertCatalogEpisode({ id, serieId, numeroEp, temporada, titulo, thumbnail, urlDub, urlLeg }, undefined, { emptyStringClears: true });
   return NextResponse.json({ ok: true, id: ep.id });
 }
 
