@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ALTURA_DO_BANNER,
-  SANDBOX_DO_BANNER,
+  ORIGEM_DO_BANNER,
+  PERMISSOES_DO_BANNER,
   TEMPO_SEM_ANUNCIO_MS,
   alturaDoIframe,
   criarControleDeFalhas,
@@ -41,12 +42,16 @@ import {
  *
  * ## Isolamento
  *
- * O script publicitário nunca roda neste documento. Ele vive em
- * `/desktop/banner.html`, num iframe `sandbox` sem `allow-same-origin` (ver
- * `SANDBOX_DO_BANNER`). O preload do Electron só roda no frame principal, e o
- * main.js prende o iframe ao próprio documento e manda cliques externos ao
- * navegador do sistema. A única via de volta é a mensagem `{estado, altura}`,
- * aceita só deste iframe (`source`) e de origem opaca.
+ * O script publicitário nunca roda neste documento. Ele vive em outro site
+ * (`ORIGEM_DO_BANNER`, projeto `ads-site/`), num iframe **sem `sandbox`**: a
+ * tag In-Page Push não entrega em iframe sandboxed. Ser cross-site é o que
+ * isola o DOM, a ponte `obaflixDesktop`, cookies e storage do app; o `allow`
+ * não delega recurso sensível nenhum. O preload do Electron só roda no frame
+ * principal, e o main.js (window-policy.js) prende o iframe ao próprio
+ * documento, recusa que ele ou seus frames troquem a janela principal, cancela
+ * download, nega janela nova e manda só clique HTTPS ao navegador do sistema.
+ * A única via de volta é a mensagem `{estado, altura}`, aceita só deste
+ * iframe (`source`) e da origem exata dos anúncios.
  */
 
 /**
@@ -158,12 +163,12 @@ function SlotDoBanner({ posicao, interativo, className }: Required<Props>) {
     return () => io.disconnect();
   }, [montado]);
 
-  // Mensagens do documento isolado — só deste iframe, só de origem opaca.
+  // Mensagens do documento isolado — só deste iframe, só da origem dos anúncios.
   useEffect(() => {
     if (!montado) return;
     const aoReceber = (e: MessageEvent) => {
       const alvo = iframeRef.current?.contentWindow;
-      if (!alvo || e.source !== alvo || e.origin !== "null") return;
+      if (!alvo || e.source !== alvo || e.origin !== ORIGEM_DO_BANNER) return;
       const msg = lerMensagemDoBanner(e.data);
       if (!msg) return;
       if (msg.estado === "anuncio") {
@@ -214,7 +219,7 @@ function SlotDoBanner({ posicao, interativo, className }: Required<Props>) {
           ref={iframeRef}
           title="Publicidade"
           src={urlDoBanner(posicao)}
-          sandbox={SANDBOX_DO_BANNER}
+          allow={PERMISSOES_DO_BANNER}
           referrerPolicy="no-referrer"
           scrolling="no"
           tabIndex={clicavel ? 0 : -1}

@@ -969,20 +969,43 @@ function configureSession() {
   // "fullscreen" e "pointerLock" sao capacidades de apresentacao, sempre iniciadas
   // por gesto do usuario e reversiveis com Esc — nao expoem dado nenhum.
   // "mediaKeySystem" e o EME: sem ele, qualquer fonte protegida falha calada.
+  //
+  // A origem dos anúncios (iframe sem sandbox) não recebe nenhuma, nem essas.
   const PERMISSOES_LIBERADAS = new Set(["fullscreen", "pointerLock", "mediaKeySystem"]);
 
-  ses.setPermissionCheckHandler((_webContents, permission) => {
-    const liberada = PERMISSOES_LIBERADAS.has(permission);
+  ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+    const liberada = politica.permissaoLiberada({
+      permissao: permission,
+      origens: [requestingOrigin, details?.embeddingOrigin, details?.requestingUrl],
+      liberadas: PERMISSOES_LIBERADAS,
+    });
     if (!liberada) log.debug("permissao", "consulta negada", { permissao: permission });
     return liberada;
   });
 
-  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const liberada = PERMISSOES_LIBERADAS.has(permission);
+  ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const liberada = politica.permissaoLiberada({
+      permissao: permission,
+      origens: [details?.requestingUrl],
+      liberadas: PERMISSOES_LIBERADAS,
+    });
     log[liberada ? "debug" : "info"]("permissao", liberada ? "pedido liberado" : "pedido negado", {
       permissao: permission,
     });
     callback(liberada);
+  });
+
+  // ── Downloads ───────────────────────────────────────────────────────────
+  // O app não baixa nada pelo navegador (mídia vai por media-download.js). O
+  // iframe do anúncio, sem sandbox, consegue disparar download; o DownloadItem
+  // não diz de qual frame veio. Fora da origem do app → cancelado. Ver
+  // window-policy.js (decidirDownload).
+  ses.on("will-download", (event, item) => {
+    let cadeia = [];
+    try { cadeia = item.getURLChain(); } catch { /* item inválido: cadeia vazia cancela */ }
+    if (politica.decidirDownload({ cadeiaDeUrls: cadeia, appOrigin: OBAFLIX_ORIGIN }) === "permitir") return;
+    event.preventDefault();
+    log.info("download", "download fora do app cancelado", { url: log.safeUrl(cadeia[cadeia.length - 1] || "-") });
   });
 
   // ── Strip CSP do Vercel ─────────────────────────────────────────────────
@@ -1141,20 +1164,61 @@ function setupWebContents() {
     if (destino) shell.openExternal(destino);
   };
 
+  // Último gesto real do usuário (clique, tecla, toque) nesta janela; script
+  // não gera nenhum dos dois eventos. `input-event` não vê o que é roteado a
+  // iframe de outro site (o anúncio): o clique nele chega por
+  // `before-mouse-event` (medido no Electron 43). 0 = consumido.
+  let ultimoGestoEm = 0;
+  const registrarGesto = (_e, input) => {
+    if (politica.GESTOS.has(input.type)) ultimoGestoEm = Date.now();
+  };
+  wc.on("input-event", registrarGesto);
+  wc.on("before-mouse-event", registrarGesto);
+
   // Nenhum window.open cria janela Electron: uma filha herdaria o preload
-  // privilegiado sem guarda de navegação. Externo → navegador do sistema; URL
-  // do app → negada. Ver window-policy.js.
+  // privilegiado sem guarda de navegação. Externo https com gesto real →
+  // navegador do sistema, uma vez por gesto; sem gesto, outro esquema ou URL
+  // do app → negado. Ver window-policy.js.
   wc.setWindowOpenHandler(({ url }) => {
-    const decisao = politica.decidirJanelaNova(url, OBAFLIX_ORIGIN);
-    if (decisao.acao === "externo") shell.openExternal(decisao.url);
+    const decisao = politica.decidirJanelaNova(url, OBAFLIX_ORIGIN, {
+      gestoRecente: politica.gestoRecente(ultimoGestoEm, Date.now()),
+    });
+    if (decisao.acao === "externo") { ultimoGestoEm = 0; shell.openExternal(decisao.url); }
     else log.info("janela", "window.open negado", { motivo: decisao.motivo, url: log.safeUrl(url) });
     return { action: "deny" };
   });
+
+  // Cadeia do frame que iniciou a navegação até o topo: URL e origem de cada
+  // um. `null` = iniciador desconhecido (não informado ou já destruído).
+  const cadeiaDoIniciador = (initiator) => {
+    if (!initiator) return null;
+    const cadeia = [];
+    try {
+      for (let f = initiator; f && cadeia.length < 32; f = f.parent) cadeia.push({ url: f.url, origin: f.origin });
+    } catch { return null; }
+    return cadeia;
+  };
+
+  // O anúncio (ou um frame dentro dele) nunca troca a janela principal: nem
+  // para o app, nem para fora — e não vai ao navegador (seria um popunder).
+  // Retorna true quando a navegação foi recusada. Ver window-policy.js.
+  const bloquearTopoDoAnuncio = (details, url) => {
+    const decisao = politica.decidirNavegacaoPrincipal({
+      destino: url,
+      cadeiaDoIniciador: cadeiaDoIniciador(details.initiator),
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+    if (decisao !== "bloquear") return false;
+    details.preventDefault();
+    log.info("janela", "navegação da janela principal recusada", { destino: log.safeUrl(url) });
+    return true;
+  };
 
   // O iframe do banner publicitário fica no próprio documento. O clique
   // legítimo do anúncio usa window.open (acima); navegar o iframe para outro
   // endereço exibiria página de terceiro dentro do app, sem barra de endereço.
   wc.on("will-frame-navigate", (details) => {
+    if (details.isMainFrame) { bloquearTopoDoAnuncio(details, details.url); return; }
     let urlAtual = "";
     try { urlAtual = details.frame ? details.frame.url : ""; } catch { /* frame já destruído */ }
     const decisao = politica.decidirNavegacaoDeSubframe({
@@ -1170,6 +1234,7 @@ function setupWebContents() {
   });
 
   wc.on("will-navigate", (event, url) => {
+    if (bloquearTopoDoAnuncio(event, url)) return;
     try {
       const parsed = new URL(url);
       const isLocalWrapper = parsed.origin === `http://127.0.0.1:${localPort}` &&

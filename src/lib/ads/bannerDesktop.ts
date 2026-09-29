@@ -7,11 +7,14 @@
  *
  * ## Onde o banner vive, e por que ali
  *
- * Só no Electron. O script de terceiros roda num documento próprio
- * (`public/desktop/banner.html`) carregado num iframe `sandbox` **sem**
- * `allow-same-origin`: origem opaca, sem acesso ao `parent` (onde mora a ponte
- * `obaflixDesktop`), sem cookie, sem storage, sem service worker, sem navegação
- * da janela principal e sem download. Ver `src/components/ads/BannerDesktop.tsx`.
+ * Só no Electron. O script de terceiros roda num documento próprio servido
+ * por **outro site** (`ORIGEM_DO_BANNER`, projeto Vercel `ads-site/`), num
+ * iframe **sem `sandbox`** — a tag In-Page Push não entrega em iframe
+ * sandboxed (medido). O isolamento vem de ser cross-site: o documento não lê o
+ * `parent` (onde mora a ponte `obaflixDesktop`), nem cookie ou storage do app.
+ * O que o sandbox fazia — impedir navegação da janela principal, download e
+ * janela nova — o `main.js` do Electron faz no processo principal
+ * (`desktop/electron/window-policy.js`). Ver `src/components/ads/BannerDesktop.tsx`.
  *
  * ## O que decide
  *
@@ -73,32 +76,40 @@ export function decidirBannerDesktop(fatos: {
 }
 
 /**
- * O único documento que carrega o script publicitário. Estático, sem
- * querystring: nada da sessão, do título aberto ou do usuário chega ao
- * anunciante pela URL. Mora sob `/desktop/`, então o middleware já o recusa a
- * navegador e Android (`decidirRota`).
+ * Site isolado dos anúncios (`ads-site/`). **Nunca** servir o documento do
+ * anúncio pela origem do app: sem sandbox, lá ele teria a origem do app e
+ * alcançaria `parent.obaflixDesktop`. O Electron reconhece esta mesma origem
+ * em `desktop/electron/window-policy.js` (`ORIGEM_DOS_ANUNCIOS`).
  */
-export const DOCUMENTO_DO_BANNER = "/desktop/banner.html";
+export const ORIGEM_DO_BANNER = "https://obaflix-ads.vercel.app";
 
 /**
- * Permissões do iframe. **Sem `allow-same-origin`** — é isso que isola: com ele,
- * um documento do nosso próprio host alcançaria `parent.obaflixDesktop` e o
- * DOM do app. Sem `allow-top-navigation*` (não troca a janela principal), sem
- * `allow-downloads`, sem `allow-forms`, sem `allow-modals` e sem
- * `allow-popups-to-escape-sandbox` (uma janela que o anúncio abrir herda o
- * sandbox). `allow-popups` fica: o clique no anúncio abre o destino, e o
- * Electron manda todo destino externo ao navegador do sistema.
+ * O único documento que carrega o script publicitário. Estático, sem
+ * querystring: nada da sessão, do título aberto ou do usuário chega ao
+ * anunciante pela URL. Só é emoldurável pelas origens do Obaflix
+ * (`frame-ancestors` em `ads-site/vercel.json`).
  */
-export const SANDBOX_DO_BANNER = "allow-scripts allow-popups";
+export const DOCUMENTO_DO_BANNER = `${ORIGEM_DO_BANNER}/banner.html`;
+
+/**
+ * Permissions Policy do iframe (atributo `allow`): nenhum recurso sensível é
+ * delegado ao anúncio nem aos frames dele. Compatível com a tag (medido, ver
+ * `ads-site/README.md`). O Electron também nega essas permissões à origem dos
+ * anúncios no processo principal.
+ */
+export const PERMISSOES_DO_BANNER = [
+  "camera", "microphone", "geolocation", "payment", "usb", "serial", "hid",
+  "bluetooth", "display-capture", "fullscreen", "clipboard-read", "clipboard-write",
+  "publickey-credentials-get", "screen-wake-lock", "encrypted-media", "midi",
+].map((p) => `${p} 'none'`).join("; ");
 
 // ── Posições (placements) ─────────────────────────────────────────────────────
 
 /**
  * Onde o banner aparece. Cada posição vira o hash do documento isolado
- * (`/desktop/banner.html#feed`): o hash não vai ao servidor, não fragmenta
- * cache e não sai no Referer. É lá, e só lá, que a posição vira zona Monetag
- * (tabela `ZONAS` em `public/desktop/banner.html`). Hoje as três usam a única
- * zona criada; zonas por posição precisam ser criadas no painel da Monetag.
+ * (`https://obaflix-ads.vercel.app/banner.html#feed`): o hash não vai ao
+ * servidor, não fragmenta cache e não sai no Referer. É lá, e só lá, que a
+ * posição vira zona Monetag (tabela `ZONAS` em `ads-site/public/banner.html`).
  */
 export const POSICOES_DO_BANNER = ["feed", "detalhe", "player"] as const;
 export type PosicaoDoBanner = (typeof POSICOES_DO_BANNER)[number];
@@ -138,7 +149,7 @@ export type EstadoDoBanner = { estado: "anuncio"; altura: number } | { estado: "
 /**
  * Valida o que o documento isolado manda por `postMessage`. Formato fechado:
  * qualquer outra coisa é descartada. Quem chama ainda confere que `source` é o
- * iframe deste slot e que `origin` é `"null"` (origem opaca do sandbox).
+ * iframe deste slot e que `origin` é exatamente `ORIGEM_DO_BANNER`.
  *
  * A mensagem não é confiável por natureza — o script do anúncio roda no mesmo
  * documento e pode forjá-la. O pior que ela faz é *mostrar* a caixa; não abre

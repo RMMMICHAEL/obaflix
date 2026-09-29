@@ -7,8 +7,9 @@ import { GET as bannerGet } from "@/app/api/ads/banner-desktop/route";
 import {
   ALTURA_DO_BANNER,
   DOCUMENTO_DO_BANNER,
+  ORIGEM_DO_BANNER,
+  PERMISSOES_DO_BANNER,
   POSICOES_DO_BANNER,
-  SANDBOX_DO_BANNER,
   TEMPO_SEM_ANUNCIO_MS,
   alturaDoIframe,
   bannerDesktopAtivo,
@@ -33,9 +34,11 @@ import type { Entitlements } from "../entitlements";
  * Banner Monetag (In-Page Push) do app Windows.
  *
  * Trava três coisas: **quem** recebe (só Electron, só conta sujeita a anúncio,
- * só com a flag), **onde** o script existe (um documento estático isolado, e em
- * nenhum outro arquivo servido) e **como** é isolado (sandbox sem
- * `allow-same-origin`).
+ * só com a flag), **onde** o script existe (um documento estático em outro
+ * site, `obaflix-ads.vercel.app`, e em nenhum arquivo servido pelo app) e
+ * **como** é isolado (cross-site, sem `sandbox` — a tag não entrega com ele —,
+ * `allow` sem recurso nenhum; navegação, download e janela nova são barrados
+ * pelo Electron, ver desktop/electron/window-policy.js).
  */
 
 const raiz = process.cwd();
@@ -157,39 +160,64 @@ describe("GET /api/ads/banner-desktop", () => {
 });
 
 describe("isolamento do script publicitário", () => {
-  test("sandbox sem allow-same-origin, sem navegação do topo, sem download", () => {
-    const flags = SANDBOX_DO_BANNER.split(/\s+/);
-    assert.deepEqual(flags.sort(), ["allow-popups", "allow-scripts"]);
-    for (const proibida of [
-      "allow-same-origin",
-      "allow-top-navigation",
-      "allow-top-navigation-by-user-activation",
-      "allow-popups-to-escape-sandbox",
-      "allow-downloads",
-      "allow-forms",
-      "allow-modals",
-    ]) {
-      assert.ok(!flags.includes(proibida), proibida);
+  test("iframe do anúncio: outro site, https, sem sandbox, allow sem recurso nenhum", () => {
+    assert.equal(ORIGEM_DO_BANNER, "https://obaflix-ads.vercel.app");
+    assert.equal(new URL(DOCUMENTO_DO_BANNER).origin, ORIGEM_DO_BANNER);
+    // Nunca a origem do app: sem sandbox, lá o anúncio alcançaria a ponte.
+    assert.notEqual(new URL(DOCUMENTO_DO_BANNER).hostname, "obaflix.vercel.app");
+    const politica = PERMISSOES_DO_BANNER.split(";").map((d) => d.trim());
+    for (const recurso of ["camera", "microphone", "geolocation", "payment", "usb", "fullscreen", "clipboard-read", "display-capture"]) {
+      assert.ok(politica.includes(`${recurso} 'none'`), recurso);
     }
+    assert.ok(politica.every((d) => / 'none'$/.test(d)), "nenhum recurso delegado");
   });
 
-  test("componente usa o documento e o sandbox centrais, e só renderiza com isDesktop", () => {
+  test("componente usa o documento central, sem sandbox só nesse iframe, e só renderiza com isDesktop", () => {
     const fonte = ler("src/components/ads/BannerDesktop.tsx");
-    assert.match(fonte, /sandbox=\{SANDBOX_DO_BANNER\}/);
+    const codigo = fonte.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    assert.ok(!/sandbox=/.test(codigo), "iframe publicitário sem atributo sandbox");
+    assert.match(fonte, /allow=\{PERMISSOES_DO_BANNER\}/);
     assert.match(fonte, /src=\{urlDoBanner\(posicao\)\}/);
+    assert.match(fonte, /referrerPolicy="no-referrer"/);
     assert.match(fonte, /isDesktop === true/);
-    // Mensagem do documento isolado: só deste iframe e só de origem opaca.
+    // Mensagem do documento isolado: só deste iframe e só da origem exata dos anúncios.
     assert.match(fonte, /e\.source !== alvo/);
-    assert.match(fonte, /e\.origin !== "null"/);
+    assert.match(fonte, /e\.origin !== ORIGEM_DO_BANNER/);
+    // Os outros iframes do app continuam com sandbox (player do desafio).
+    assert.match(ler("src/components/player/CustomPlayer.tsx"), /sandbox=\{/);
     // Tela cheia do documento e da janela nativa desmontam o slot.
     assert.match(fonte, /fullscreenchange/);
     assert.match(fonte, /if \(!elegivel \|\| telaCheia\) return null;/);
     assert.ok(!fonte.includes("nap5k"), "o script não pode ser carregado no documento do app");
   });
 
-  test("o documento é estático, sem querystring, sob /desktop/", () => {
-    assert.equal(DOCUMENTO_DO_BANNER, "/desktop/banner.html");
+  test("o documento é estático, sem querystring, no ads-site", () => {
+    assert.equal(DOCUMENTO_DO_BANNER, "https://obaflix-ads.vercel.app/banner.html");
     assert.ok(!DOCUMENTO_DO_BANNER.includes("?"));
+    // O ads-site publica exatamente este documento e aceita ser emoldurado pelo app.
+    assert.ok(ler("ads-site/public/banner.html").includes("https://obaflix.vercel.app"));
+    assert.ok(ler("ads-site/vercel.json").includes('"source": "/banner.html"'));
+  });
+
+  test("web normal e Android nunca pedem nada ao site dos anúncios", () => {
+    // Só o módulo central conhece a origem; nenhum outro arquivo do app nem do Android.
+    const achados: string[] = [];
+    const varrer = (dir: string) => {
+      for (const nome of readdirSync(join(raiz, dir))) {
+        const rel = join(dir, nome);
+        if (nome === "__tests__" || nome === "node_modules" || nome === "build") continue;
+        if (statSync(join(raiz, rel)).isDirectory()) { varrer(rel); continue; }
+        if (!/\.(tsx?|jsx?|mjs|html|css|kt|java|xml|json)$/.test(nome)) continue;
+        if (readFileSync(join(raiz, rel), "utf8").includes("obaflix-ads")) achados.push(rel);
+      }
+    };
+    for (const d of ["src", "public", "android"]) varrer(d);
+    assert.deepEqual(achados, [join("src", "lib", "ads", "bannerDesktop.ts")]);
+    // O iframe só existe depois das duas portas: ponte do Electron e resposta do servidor.
+    const fonte = ler("src/components/ads/BannerDesktop.tsx");
+    assert.ok(fonte.indexOf("if (!noAplicativoWindows()) return;") < fonte.indexOf("perguntarAoServidor().then"));
+    assert.match(fonte, /return ponte\?\.isDesktop === true && ponte\.platform !== "android";/);
+    assert.match(fonte, /\{montado && \(\s*<iframe/);
   });
 
   test("documento do banner: detector + uma tag, só a zona 11917353, nenhum outro formato", () => {
@@ -265,19 +293,21 @@ describe("isolamento do script publicitário", () => {
     assert.match(conf, /source: "\/\(\(\?!assistir\)\.\*\)", headers: \[\.\.\.baseHeaders, csp\("'none'"\)\]/);
   });
 
-  test("middleware só entrega o documento ao Electron", () => {
-    assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "desktop"), { tipo: "segue" });
-    assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "navegador"), { tipo: "landing" });
-    assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "android"), { tipo: "landing" });
+  test("middleware só entrega o documento antigo (sandboxed, /desktop/) ao Electron", () => {
+    const antigo = "/desktop/banner.html";
+    assert.deepEqual(decidirRota(antigo, "desktop"), { tipo: "segue" });
+    assert.deepEqual(decidirRota(antigo, "navegador"), { tipo: "landing" });
+    assert.deepEqual(decidirRota(antigo, "android"), { tipo: "landing" });
   });
 });
 
 describe("placements", () => {
   test("url por posição usa hash (não vai ao servidor, não fragmenta cache)", () => {
-    for (const p of POSICOES_DO_BANNER) {
-      assert.equal(urlDoBanner(p), `/desktop/banner.html#${p}`);
-      assert.equal(decidirRota(urlDoBanner(p).split("#")[0], "desktop").tipo, "segue");
-    }
+    assert.deepEqual(POSICOES_DO_BANNER.map(urlDoBanner), [
+      "https://obaflix-ads.vercel.app/banner.html#feed",
+      "https://obaflix-ads.vercel.app/banner.html#detalhe",
+      "https://obaflix-ads.vercel.app/banner.html#player",
+    ]);
   });
 
   test("altura: nunca abaixo da inicial, nunca acima da máxima", () => {

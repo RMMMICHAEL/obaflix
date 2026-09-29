@@ -6,9 +6,12 @@
 // executa o que sai daqui.
 //
 // Contexto: a Home/catálogo exibem um banner publicitário (Monetag) num iframe
-// `sandbox` sem `allow-same-origin`, carregado de `/desktop/banner.html`
-// (ver src/components/ads/BannerDesktop.tsx). O sandbox isola o script no
-// renderer; estas regras fecham o que o sandbox não fecha no processo principal:
+// **sem `sandbox`** carregado de `https://obaflix-ads.vercel.app/banner.html`
+// (ver src/components/ads/BannerDesktop.tsx e ads-site/README.md): a tag não
+// entrega em iframe sandboxed. Ser outro site isola DOM, ponte e storage do
+// app; tudo o que o sandbox fazia no resto é feito aqui, no processo principal.
+// O documento antigo, sandboxed, `/desktop/banner.html` na origem do app,
+// continua reconhecido enquanto um site sem esta versão estiver no ar.
 //
 //  1. **nenhum `window.open` cria janela Electron.** Antes, URL do próprio app
 //     virava `{ action: "allow" }`: a filha herdava o preload privilegiado e não
@@ -23,9 +26,38 @@
 //     clique legítimo do anúncio usa `window.open`, que cai na regra 1);
 //  4. **console do iframe do banner vai para `trace`**: a tag re-tenta
 //     IndexedDB (negado na origem opaca) ~1x/s e cada falha virava uma linha
-//     ERROR no log do usuário. Só esse frame; o resto segue como antes.
+//     ERROR no log do usuário. Só esse frame; o resto segue como antes;
+//  5. **o anúncio nunca troca a janela principal.** Sem sandbox, o frame do
+//     anúncio navegou o topo para outro site sem gesto (medido). Navegação do
+//     frame principal iniciada pelo frame do anúncio ou por qualquer frame
+//     dentro dele é recusada — e **não** vai ao navegador (seria um popunder).
+//     Iniciador desconhecido (frame já destruído) indo para fora do app também;
+//  6. **download só da origem do app.** O `DownloadItem` não diz qual frame o
+//     iniciou, então não dá para atribuir ao anúncio um download servido por
+//     terceiro. O app não baixa nada pelo navegador (a mídia vai por
+//     media-download.js), então qualquer download com URL fora do app —
+//     anúncio inclusive — é cancelado;
+//  7. **nenhuma permissão para a origem dos anúncios**, nem as que o app libera
+//     para si (fullscreen, pointerLock, mediaKeySystem);
+//  8. **janela nova só vai ao navegador com gesto real.** O Electron repassa
+//     `window.open` sem ativação do usuário (medido: o anúncio abria o
+//     navegador do sistema sozinho, em laço). O main.js registra o último
+//     clique/tecla/toque de verdade (`input-event`, que script não forja) e
+//     cada gesto vale uma abertura só, por até `JANELA_DO_GESTO_MS`.
 
 const DOCUMENTO_DO_BANNER = "/desktop/banner.html";
+/** Site isolado dos anúncios (ads-site/). Mesma constante de src/lib/ads/bannerDesktop.ts. */
+const ORIGEM_DOS_ANUNCIOS = "https://obaflix-ads.vercel.app";
+const DOCUMENTO_DOS_ANUNCIOS = "/banner.html";
+/**
+ * Quanto tempo um gesto real autoriza abrir o navegador. Curto de propósito: o
+ * gesto vale para a janela inteira (o `input-event` não diz o frame), então um
+ * clique no app não pode virar, segundos depois, janela aberta pelo anúncio. O
+ * app não usa `window.open`; os links `_blank` abrem no mesmo clique.
+ */
+const JANELA_DO_GESTO_MS = 1000;
+/** Tipos de `input-event` que contam como gesto. Movimento e rolagem não contam. */
+const GESTOS = new Set(["mouseDown", "mouseUp", "rawKeyDown", "keyDown", "touchStart", "touchEnd", "gestureTap", "pointerDown", "pointerUp"]);
 const ROTA_EXTERNA = /^\/(planos|checkout)(?:\/|$)/;
 
 function parse(raw) {
@@ -49,6 +81,22 @@ function ehDocumentoDoBanner(raw, appOrigin) {
   return !!u && u.origin === appOrigin && u.pathname === DOCUMENTO_DO_BANNER;
 }
 
+/**
+ * Qualquer URL da origem dos anúncios. `blob:` herda a origem de quem criou
+ * (`new URL("blob:https://x/…").origin === "https://x"`), então conta também.
+ */
+function ehOrigemDeAnuncio(raw) {
+  const u = parse(raw);
+  return !!u && u.origin === ORIGEM_DOS_ANUNCIOS;
+}
+
+/** Documento de anúncio: o do ads-site ou o antigo, sandboxed, na origem do app. */
+function ehFrameDeAnuncio(raw, appOrigin) {
+  if (ehDocumentoDoBanner(raw, appOrigin)) return true;
+  const u = parse(raw);
+  return !!u && u.origin === ORIGEM_DOS_ANUNCIOS && u.pathname === DOCUMENTO_DOS_ANUNCIOS;
+}
+
 /** Só https sai para o navegador do sistema; qualquer outro esquema é descartado. */
 function destinoExternoSeguro(raw) {
   const u = parse(raw);
@@ -58,24 +106,73 @@ function destinoExternoSeguro(raw) {
 /**
  * `window.open` / `target=_blank` / clique do meio, de qualquer frame.
  * Retorna o que fazer; o chamador sempre responde `{ action: "deny" }`.
+ * `gestoRecente` tem de ser `true` para sair ao navegador (fail-closed).
  */
-function decidirJanelaNova(url, appOrigin) {
+function decidirJanelaNova(url, appOrigin, { gestoRecente } = {}) {
   if (!ehDoApp(url, appOrigin) || ehRotaExterna(url, appOrigin)) {
     const externo = destinoExternoSeguro(url);
-    return externo ? { acao: "externo", url: externo } : { acao: "negar", motivo: "esquema" };
+    if (!externo) return { acao: "negar", motivo: "esquema" };
+    return gestoRecente === true ? { acao: "externo", url: externo } : { acao: "negar", motivo: "sem_gesto" };
   }
   return { acao: "negar", motivo: "janela_do_app" };
 }
 
+/** Houve gesto real há no máximo `JANELA_DO_GESTO_MS`? `ultimoGestoEm` 0 = consumido/nunca. */
+function gestoRecente(ultimoGestoEm, agora) {
+  return ultimoGestoEm > 0 && agora - ultimoGestoEm >= 0 && agora - ultimoGestoEm <= JANELA_DO_GESTO_MS;
+}
+
 /**
  * Navegação de subframe. Só o iframe do banner é restringido: ele fica no
- * próprio documento. Players embed (/assistir) e demais iframes seguem livres,
- * como sempre — são eles que tocam o vídeo.
+ * próprio documento (só o hash muda). Os frames que a tag cria dentro dele
+ * carregam o criativo e seguem livres; players embed (/assistir) e demais
+ * iframes também, como sempre — são eles que tocam o vídeo.
  */
 function decidirNavegacaoDeSubframe({ isMainFrame, urlAtual, destino, appOrigin }) {
   if (isMainFrame) return "seguir";
-  if (!ehDocumentoDoBanner(urlAtual, appOrigin)) return "seguir";
-  return ehDocumentoDoBanner(destino, appOrigin) ? "seguir" : "cancelar";
+  if (!ehFrameDeAnuncio(urlAtual, appOrigin)) return "seguir";
+  const a = parse(urlAtual);
+  const d = parse(destino);
+  return d && d.origin === a.origin && d.pathname === a.pathname && d.search === a.search ? "seguir" : "cancelar";
+}
+
+/**
+ * Navegação do frame principal (`will-navigate`/`will-frame-navigate`), pela
+ * cadeia do iniciador: URL e origem do frame que iniciou e de cada ancestral,
+ * até o topo. `null` = iniciador desconhecido.
+ *
+ *  - `"bloquear"`: veio do anúncio ou de um frame dentro dele (qualquer destino,
+ *    do app ou não), ou de iniciador desconhecido para fora do app. Não abre
+ *    nada no navegador do sistema;
+ *  - `"seguir"`: segue a regra de sempre do main.js (app navega dentro; fora
+ *    do app vai ao navegador do sistema, só https).
+ */
+function decidirNavegacaoPrincipal({ destino, cadeiaDoIniciador, appOrigin }) {
+  if (!Array.isArray(cadeiaDoIniciador) || cadeiaDoIniciador.length === 0) {
+    return ehDoApp(destino, appOrigin) ? "seguir" : "bloquear";
+  }
+  const doAnuncio = cadeiaDoIniciador.some((f) =>
+    !!f && (ehOrigemDeAnuncio(f.origin) || ehOrigemDeAnuncio(f.url) || ehFrameDeAnuncio(f.url, appOrigin)));
+  return doAnuncio ? "bloquear" : "seguir";
+}
+
+/**
+ * Download no navegador: só quando toda a cadeia de redirecionamento está na
+ * origem do app. Qualquer outra (anúncio, terceiro, `data:`, `blob:` alheio,
+ * cadeia vazia) é cancelada.
+ */
+function decidirDownload({ cadeiaDeUrls, appOrigin }) {
+  if (!Array.isArray(cadeiaDeUrls) || cadeiaDeUrls.length === 0) return "cancelar";
+  return cadeiaDeUrls.every((u) => ehDoApp(u, appOrigin)) ? "permitir" : "cancelar";
+}
+
+/**
+ * Permissão pedida/consultada: a origem dos anúncios não recebe nenhuma, nem
+ * como quem pede nem como quem emoldura. O resto segue a lista do app.
+ */
+function permissaoLiberada({ permissao, origens, liberadas }) {
+  if ((origens || []).some((o) => ehOrigemDeAnuncio(o))) return false;
+  return liberadas.has(permissao);
 }
 
 /**
@@ -95,18 +192,27 @@ const NIVEL_DO_CONSOLE = { debug: "debug", info: "debug", warning: "warn", error
  * exceto o iframe do banner, que vai para `trace`.
  */
 function nivelDoConsole({ level, isMainFrame, frameUrl, appOrigin }) {
-  if (isMainFrame === false && ehDocumentoDoBanner(frameUrl, appOrigin)) return "trace";
+  if (isMainFrame === false && ehFrameDeAnuncio(frameUrl, appOrigin)) return "trace";
   return NIVEL_DO_CONSOLE[level] || "debug";
 }
 
 module.exports = {
   DOCUMENTO_DO_BANNER,
+  ORIGEM_DOS_ANUNCIOS,
+  JANELA_DO_GESTO_MS,
+  GESTOS,
+  gestoRecente,
   ehDoApp,
   ehRotaExterna,
   ehDocumentoDoBanner,
+  ehOrigemDeAnuncio,
+  ehFrameDeAnuncio,
   destinoExternoSeguro,
   decidirJanelaNova,
   decidirNavegacaoDeSubframe,
+  decidirNavegacaoPrincipal,
+  decidirDownload,
+  permissaoLiberada,
   ipcConfiavel,
   nivelDoConsole,
 };
