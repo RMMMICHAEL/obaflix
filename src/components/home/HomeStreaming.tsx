@@ -7,6 +7,7 @@ import { Top10Band } from "@/components/ui/Top10Band";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
@@ -286,6 +287,9 @@ export async function HomeStreaming() {
         {trending.length > 0 && (
           <LandscapeRow titulo="Em Alta" items={trending} />
         )}
+
+        {/* Só aparece no app Windows; em qualquer outro ambiente não renderiza nada. */}
+        <BannerDesktop />
 
         {/* Filmes */}
         {dbPopFilmes.length > 0 && (

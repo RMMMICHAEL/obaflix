@@ -4,6 +4,7 @@ import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
@@ -180,6 +181,7 @@ export default async function SeriesPage({
         <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
         {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
         {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}
+        <BannerDesktop />
         {drama.length > 0      && <LazyRow><LandscapeRow titulo="Drama"               items={drama.map(toRow)}      verTodosHref="/genero/18" /></LazyRow>}
         {crime.length > 0      && <LazyRow><LandscapeRow titulo="Crime"               items={crime.map(toRow)}      verTodosHref="/genero/80" /></LazyRow>}
         {comedia.length > 0    && <LazyRow><LandscapeRow titulo="Comédia"             items={comedia.map(toRow)}    verTodosHref="/genero/35" /></LazyRow>}

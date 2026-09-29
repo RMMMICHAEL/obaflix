@@ -4,6 +4,7 @@ import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
@@ -156,6 +157,7 @@ export default async function FilmesPage({
         {populares.length > 0 && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/filmes?ordem=popular" />}
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)} verTodosHref="/filmes?ordem=recente" />}
         {avaliados.length > 0 && <LandscapeRow titulo="Mais Bem Avaliados"       items={avaliados.map(toRow)} verTodosHref="/filmes?ordem=nota" />}
+        <BannerDesktop />
         <Suspense fallback={<CollectionRowSkeleton />}><CollectionsRow /></Suspense>
         {acao.length > 0      && <LazyRow><LandscapeRow titulo="Ação"            items={acao.map(toRow)}      verTodosHref="/genero/28" /></LazyRow>}
         {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"         items={comedia.map(toRow)}   verTodosHref="/genero/35" /></LazyRow>}
