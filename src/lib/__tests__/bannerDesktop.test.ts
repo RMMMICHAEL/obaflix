@@ -227,7 +227,14 @@ describe("isolamento do script publicitário", () => {
     for (const d of ["src", "public", "android", "desktop/electron"]) {
       try { varrer(d); } catch { /* diretório opcional */ }
     }
-    assert.deepEqual(achados, [join("public", "desktop", "banner.html")]);
+    // Exceção única: o diagnóstico A/B do Electron (--diagnostico-monetag) roda
+    // no processo principal, não é servido, não carrega a tag e usa o número
+    // só para filtrar o relatório. Sai daqui quando a zona do obaflix-ads
+    // substituir a atual.
+    assert.deepEqual(achados.sort(), [
+      join("desktop", "electron", "monetag-diagnostico.js"),
+      join("public", "desktop", "banner.html"),
+    ].sort());
   });
 
   test("layout global, login e planos/checkout não montam o banner", () => {
