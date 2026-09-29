@@ -683,6 +683,8 @@ object ApiObaflix {
         val streamUrl: String? = null,
         val referer: String? = null,
         val legendas: List<SubtitleTrack> = emptyList(),
+        /** Coordenadas de episodio que o servidor tem para esta fonte (1..4). */
+        val tentativas: Int = 1,
     )
 
     /**
@@ -700,10 +702,10 @@ object ApiObaflix {
         )
     }
 
-    internal suspend fun fonteNativa(sessao: String, fonteId: String): FonteNativa? {
+    internal suspend fun fonteNativa(sessao: String, fonteId: String, tentativa: Int = 0): FonteNativa? {
         val raiz = objeto(
             "/api/player/fonte-nativa",
-            JSONObject().put("sessao", sessao).put("fonteId", fonteId),
+            com.obaflix.tv.player.CoordenadasTv.corpo(sessao, fonteId, tentativa),
         ) ?: return null
 
         val embed = texto(raiz, "embedUrl")
@@ -730,6 +732,7 @@ object ApiObaflix {
             streamUrl = stream,
             referer = texto(raiz, "referer"),
             legendas = legendas,
+            tentativas = com.obaflix.tv.player.CoordenadasTv.total(raiz),
         )
     }
 

@@ -21,6 +21,11 @@
 
 import crypto from "crypto";
 import { getRedis } from "./redis";
+import {
+  resolveEpisodeCoordinates, urlComCoordenada, PROVEDORES_COM_COORDENADA,
+  type EpisodeCoordinate, type RegraCoordenada, type estruturaDoCatalogo,
+} from "./episodeCoordinates";
+import type { MapaAprendido } from "./episodeCoordinateCache";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -51,6 +56,12 @@ export interface FonteReal {
   disponivel: boolean;
   motivoIndisponivel?: string;
   videoId?: number;
+  /**
+   * Coordenadas de episódio a tentar neste provedor, em ordem (ver
+   * `episodeCoordinates.ts`). Ausente: só a `embedUrl`, como sempre foi. Nunca
+   * sai do servidor — nenhuma projeção a copia.
+   */
+  coordenadas?: { tmdbId: string; tentativas: EpisodeCoordinate[] };
 }
 
 /** O que o usuário comum recebe. Nenhum campo identifica o provedor. */
@@ -617,6 +628,65 @@ export function montarFontes(e: EntradaMontagem): Omit<FonteReal, "id" | "ordem"
   if (ehAndroid && redeCanais) fontes.push(base(redeCanais.url, "RedeCanais", redeCanais.idioma));
 
   return fontes;
+}
+
+// ── Coordenadas alternativas de episódio ──────────────────────────────────────
+
+/**
+ * Anexa a lista de tentativas às fontes cujo provedor monta a URL por
+ * temporada/episódio. Só anexa quando existe mais de uma tentativa, ou quando a
+ * primeira não é a canônica — no caso comum a fonte fica idêntica à de antes.
+ *
+ * A `embedUrl` continua sendo a canônica: é nela que o play token é assinado,
+ * e é ela que identifica a fonte na sessão.
+ */
+export function anexarCoordenadas<T extends Omit<FonteReal, "id" | "ordem">>(
+  fontes: T[],
+  ctx: {
+    tmdbId: string | null;
+    temporada: number;
+    numeroEp: number;
+    estrutura: ReturnType<typeof estruturaDoCatalogo>;
+    regras: ReadonlyArray<RegraCoordenada>;
+    aprendidas: MapaAprendido;
+  },
+): T[] {
+  const tmdbId = ctx.tmdbId;
+  if (!tmdbId) return fontes;
+  return fontes.map((f) => {
+    if (!PROVEDORES_COM_COORDENADA.has(f.provider)) return f;
+    const tentativas = resolveEpisodeCoordinates({
+      tmdbId,
+      provider: f.provider,
+      season: ctx.temporada,
+      episode: ctx.numeroEp,
+      estrutura: ctx.estrutura,
+      regras: ctx.regras,
+      aprendida: ctx.aprendidas[f.provider] ?? null,
+    }).filter((c) => urlComCoordenada(f.provider, f.embedUrl, c) !== null);
+    if (tentativas.length === 0) return f;
+    if (tentativas.length === 1 && tentativas[0].strategy === "canonical") return f;
+    return { ...f, coordenadas: { tmdbId, tentativas } };
+  });
+}
+
+/** Quantas tentativas de coordenada a fonte tem. Sempre ≥ 1. */
+export function totalTentativas(f: Pick<FonteReal, "coordenadas">): number {
+  return f.coordenadas?.tentativas.length || 1;
+}
+
+/**
+ * URL da tentativa `i`. Sem coordenadas, a 0 é a própria `embedUrl` — o
+ * comportamento de sempre. Índice fora da lista devolve null.
+ */
+export function urlDaTentativa(
+  f: Pick<FonteReal, "embedUrl" | "provider" | "coordenadas">,
+  i: number,
+): string | null {
+  if (!Number.isInteger(i) || i < 0) return null;
+  if (!f.coordenadas) return i === 0 ? f.embedUrl : null;
+  const c = f.coordenadas.tentativas[i];
+  return c ? urlComCoordenada(f.provider, f.embedUrl, c) : null;
 }
 
 /** Atribui id opaco e numeração estável a uma lista recém-montada. */

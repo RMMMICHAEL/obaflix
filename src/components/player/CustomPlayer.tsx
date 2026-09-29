@@ -407,7 +407,7 @@ export function CustomPlayer({
   // Identidade da fonte ativa por URL, imune ao crescimento da lista de fontes.
   const fonteSelecionadaRef = useRef<string | null>(null);
   const allFontesRef = useRef<Fonte[]>([]);
-  const resolverUrlNativaRef = useRef<(id: string, signal?: AbortSignal) => Promise<string>>(
+  const resolverUrlNativaRef = useRef<(id: string, signal?: AbortSignal, tentativa?: number) => Promise<string>>(
     async () => { throw new Error("indisponível"); },
   );
   // ── Failover ──────────────────────────────────────────────────────────────
@@ -496,6 +496,30 @@ export function CustomPlayer({
    * episódio — sem o cache seria uma ida ao servidor por renovação.
    */
   const urlNativaRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Coordenada de episódio por fonte (ver lib/episodeCoordinates.ts). Alguns
+   * provedores numeram as temporadas de outro jeito; o servidor manda até 4
+   * tentativas por fonte e o aparelho, que é quem extrai, pede a seguinte
+   * quando a atual não reproduz. O episódio do Obaflix não muda — só o que o
+   * provedor recebe. `tentativaNativaRef` guarda a que funcionou, para a
+   * renovação de token reextrair a mesma.
+   */
+  const tentativaNativaRef = useRef<Map<string, number>>(new Map());
+  const totalTentativasRef = useRef<Map<string, number>>(new Map());
+  /**
+   * Mesma memória no site, onde quem itera é o servidor (/extract): a resposta
+   * diz qual índice reproduziu e a renovação de token pede esse primeiro. Sem
+   * isto a renovação recomeçava da tentativa 0 e podia trocar de episódio no
+   * meio da reprodução.
+   */
+  const parametroTentativaRef = useRef((fonteId: string) => {
+    const t = tentativaNativaRef.current.get(fonteId);
+    return t ? `&tentativa=${t}` : "";
+  });
+  const lembrarTentativaRef = useRef((fonteId: string, data: { tentativa?: unknown } | null) => {
+    const t = data?.tentativa;
+    if (typeof t === "number" && Number.isInteger(t) && t >= 0 && t < 4) tentativaNativaRef.current.set(fonteId, t);
+  });
   /**
    * Última reabertura de sessão. Existe para não repetir o incidente que esta
    * regressão produziu: com a sessão morta, cada fonte tentada gerava um
@@ -1073,25 +1097,77 @@ export function CustomPlayer({
    * datacenter da Vercel e a mídia volta para o proxy (centenas de MB por
    * episódio). No site esta função nunca é chamada.
    */
-  const resolverUrlNativa = useCallback(async (fonteId: string, signal?: AbortSignal) => {
-    const cache = urlNativaRef.current.get(fonteId);
+  const resolverUrlNativa = useCallback(async (fonteId: string, signal?: AbortSignal, tentativa?: number) => {
+    // Sem índice explícito: a coordenada que já reproduziu (renovação de token),
+    // ou a primeira.
+    const t = tentativa ?? tentativaNativaRef.current.get(fonteId) ?? 0;
+    const chave = `${fonteId}#${t}`;
+    const cache = urlNativaRef.current.get(chave);
     if (cache) return cache;
     const sessao = sessaoFontesRef.current;
     if (!sessao) throw new Error("Sessão de reprodução indisponível");
     const res = await fetch("/api/player/fonte-nativa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessao, fonteId }),
+      body: JSON.stringify(t === 0 ? { sessao, fonteId } : { sessao, fonteId, tentativa: t }),
       signal,
     });
     if (!res.ok) throw new Error("Fonte indisponível");
-    const { embedUrl } = await res.json();
+    const { embedUrl, tentativas } = await res.json();
     if (!embedUrl) throw new Error("Fonte indisponível");
-    urlNativaRef.current.set(fonteId, embedUrl);
+    urlNativaRef.current.set(chave, embedUrl);
+    totalTentativasRef.current.set(
+      fonteId,
+      Number.isInteger(tentativas) && tentativas >= 1 ? Math.min(tentativas, 4) : 1,
+    );
     return embedUrl as string;
   }, []);
 
   resolverUrlNativaRef.current = resolverUrlNativa;
+
+  /**
+   * Roda `tentar` sobre as coordenadas da fonte até uma reproduzir. O critério
+   * de sucesso é o de sempre, decidido por quem chama (stream presente, sem
+   * erro). Finito: no máximo o total declarado pelo servidor (≤ 4), cada índice
+   * uma vez, começando pelo que já funcionou. Todas falhando, relança o erro da
+   * última — o failover para o próximo servidor segue exatamente como antes.
+   * `null` de `tentar` = extração abortada: devolve null sem tentar mais nada.
+   */
+  const tentarCoordenadasNativas = useCallback(async <T,>(
+    fonteId: string,
+    signal: AbortSignal,
+    tentar: (embedUrl: string) => Promise<{ ok: true; valor: T } | { ok: false; erro: Error } | null>,
+  ): Promise<T | null> => {
+    const preferida = tentativaNativaRef.current.get(fonteId) ?? 0;
+    const feitas = new Set<number>();
+    let ultimoErro: unknown = new Error("Stream não encontrado");
+    for (let passo = 0; passo < 4; passo++) {
+      const total = totalTentativasRef.current.get(fonteId) ?? 1;
+      const t = passo === 0
+        ? preferida
+        : Array.from({ length: total }, (_, i) => i).find((i) => !feitas.has(i));
+      if (t === undefined) break;
+      feitas.add(t);
+      let r: Awaited<ReturnType<typeof tentar>>;
+      try {
+        const embedUrl = await resolverUrlNativa(fonteId, signal, t);
+        r = await tentar(embedUrl);
+      } catch (e) {
+        if (signal.aborted) throw e;
+        r = { ok: false, erro: e instanceof Error ? e : new Error(String(e)) };
+      }
+      if (r === null) return null;
+      if (r.ok) {
+        tentativaNativaRef.current.set(fonteId, t);
+        return r.valor;
+      }
+      ultimoErro = r.erro;
+      const totalAgora = totalTentativasRef.current.get(fonteId) ?? 1;
+      if (feitas.size >= totalAgora) break;
+      console.warn(`[player] coordenada ${t + 1}/${totalAgora} sem vídeo; tentando a próxima no mesmo servidor`);
+    }
+    throw ultimoErro;
+  }, [resolverUrlNativa]);
 
   const applyEffectiveSuperflixOption = useCallback((
     sessionId: string,
@@ -1216,39 +1292,8 @@ export function CustomPlayer({
           kind: "captions",
         })));
       } else if (alvo.iframeDesafio && desktop?.prepareSuperflix && desktop?.resolveSuperflix) {
-        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
-        if (ctrl.signal.aborted || unmountedRef.current) return;
-        const prepared = await desktop.prepareSuperflix(embedUrl);
-        if (ctrl.signal.aborted || unmountedRef.current) return;
-        if (prepared.error) throw new Error(prepared.error);
-        if (!prepared.sessionId || !Array.isArray(prepared.options) || !prepared.options.length) {
-          throw new Error("Superflix não retornou servidores");
-        }
-
-        const outerIndex = allFontesRef.current.findIndex((item) => item.id === fonteId);
-        const localOptions: Fonte[] = prepared.options.map((option: {
-          key: string; label: string; isFile?: boolean;
-        }) => ({
-          ...alvo,
-          id: `sf-local:${prepared.sessionId}:${option.key}`,
-          rotulo: option.label,
-          iframeDesafio: false,
-          iframeDireto: false,
-          superflixLocal: {
-            sessionId: prepared.sessionId,
-            optionKey: option.key,
-            parentId: fonteId,
-            isFile: !!option.isFile,
-          },
-        }));
-        const updated = [...allFontesRef.current];
-        updated.splice(Math.max(0, outerIndex), 1, ...localOptions);
-        allFontesRef.current = updated;
-        setAllFontes(updated);
-
-        const selectedIndex = Math.max(0, outerIndex);
-        let chosen = 0;
-        let data: {
+        type Preparado = { sessionId: string; options: { key: string; label: string; isFile?: boolean }[] };
+        type Resolvido = {
           stream?: string;
           tipo?: string;
           referer?: string;
@@ -1258,17 +1303,73 @@ export function CustomPlayer({
           effectiveOptionLabel?: string;
           effectiveOptionIsFile?: boolean;
           error?: string;
-        } = {};
-        for (let index = 0; index < prepared.options.length; index += 1) {
-          data = await desktop.resolveSuperflix(prepared.sessionId, prepared.options[index].key);
-          if (ctrl.signal.aborted || unmountedRef.current) return;
-          if (!data.error && data.stream) {
-            chosen = index;
-            break;
-          }
-          console.warn(`[superflix] candidato ${index + 1} rejeitado; tentando o próximo`);
+        };
+
+        // As opções locais substituem o servidor externo no seletor — mesmo
+        // splice de sempre, agora feito com a coordenada que resolveu.
+        const inserirOpcoes = (prepared: Preparado) => {
+          const outerIndex = allFontesRef.current.findIndex((item) => item.id === fonteId);
+          const localOptions: Fonte[] = prepared.options.map((option) => ({
+            ...alvo,
+            id: `sf-local:${prepared.sessionId}:${option.key}`,
+            rotulo: option.label,
+            iframeDesafio: false,
+            iframeDireto: false,
+            superflixLocal: {
+              sessionId: prepared.sessionId,
+              optionKey: option.key,
+              parentId: fonteId,
+              isFile: !!option.isFile,
+            },
+          }));
+          const updated = [...allFontesRef.current];
+          updated.splice(Math.max(0, outerIndex), 1, ...localOptions);
+          allFontesRef.current = updated;
+          setAllFontes(updated);
+          return { localOptions, selectedIndex: Math.max(0, outerIndex) };
+        };
+
+        // Cada coordenada de episódio passa pelo mesmo prepare + opções. Só a
+        // última preparada que não reproduziu é mostrada no seletor, como antes.
+        let ultimaPreparada: Preparado | null = null;
+        let resolvida: { prepared: Preparado; data: Resolvido; chosen: number } | null;
+        try {
+          resolvida = await tentarCoordenadasNativas(fonteId, ctrl.signal, async (embedUrl) => {
+            if (ctrl.signal.aborted || unmountedRef.current) return null;
+            const prepared = await desktop.prepareSuperflix(embedUrl);
+            if (ctrl.signal.aborted || unmountedRef.current) return null;
+            if (prepared.error) return { ok: false, erro: new Error(prepared.error) };
+            if (!prepared.sessionId || !Array.isArray(prepared.options) || !prepared.options.length) {
+              return { ok: false, erro: new Error("Superflix não retornou servidores") };
+            }
+            let chosenAqui = 0;
+            let dataAqui: Resolvido = {};
+            for (let index = 0; index < prepared.options.length; index += 1) {
+              dataAqui = await desktop.resolveSuperflix(prepared.sessionId, prepared.options[index].key);
+              if (ctrl.signal.aborted || unmountedRef.current) return null;
+              if (!dataAqui.error && dataAqui.stream) {
+                chosenAqui = index;
+                break;
+              }
+              console.warn(`[superflix] candidato ${index + 1} rejeitado; tentando o próximo`);
+            }
+            if (dataAqui.error || !dataAqui.stream) {
+              ultimaPreparada = prepared;
+              return { ok: false, erro: new Error(dataAqui.error || "Stream não encontrado") };
+            }
+            return { ok: true, valor: { prepared, data: dataAqui, chosen: chosenAqui } };
+          });
+        } catch (erro) {
+          if (ultimaPreparada && !ctrl.signal.aborted && !unmountedRef.current) inserirOpcoes(ultimaPreparada);
+          throw erro;
         }
-        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        if (!resolvida || ctrl.signal.aborted || unmountedRef.current) return;
+
+        const { prepared } = resolvida;
+        // Sucesso garante `stream` (critério acima); o tipo não sabe disso.
+        const data = resolvida.data as Resolvido & { stream: string };
+        let chosen = resolvida.chosen;
+        const { localOptions, selectedIndex } = inserirOpcoes(prepared);
         const effectiveKey = data.effectiveOptionKey || prepared.options[chosen].key;
         const effectiveOffset = localOptions.findIndex((item) =>
           item.superflixLocal?.optionKey === effectiveKey,
@@ -1296,10 +1397,14 @@ export function CustomPlayer({
       } else if (isAndroid && alvo.iframeDesafio) {
         // Compatibilidade com APK antigo: a versão nova nunca usa o embed para
         // seleção, mas o site ainda pode ser aberto por uma instalação anterior.
-        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
-        if (ctrl.signal.aborted || unmountedRef.current) return;
-        const data = await desktop.extractStream(embedUrl);
-        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
+        const data = await tentarCoordenadasNativas(fonteId, ctrl.signal, async (embedUrl) => {
+          if (ctrl.signal.aborted || unmountedRef.current) return null;
+          const r = await desktop.extractStream(embedUrl);
+          return r.error || !r.stream
+            ? { ok: false, erro: new Error(r.error || "Stream não encontrado") }
+            : { ok: true, valor: r };
+        });
+        if (!data || ctrl.signal.aborted || unmountedRef.current) return;
         streamExpiresAtRef.current = data.expiresAt ?? null;
         tipo = data.tipo ?? "hls";
         playerUrl = buildElectronProxyUrl(data.stream, data.referer);
@@ -1322,25 +1427,33 @@ export function CustomPlayer({
         return;
       } else if ((mediaApi?.start || desktop?.extractStream) && alvo.nativo) {
         // Electron/Android: extração nativa via bridge (IP residencial do usuário)
-        const embedUrl = await resolverUrlNativa(fonteId, ctrl.signal);
-        if (ctrl.signal.aborted || unmountedRef.current) return;
-        const useLocalPlayerflix = !!mediaApi?.start && isAndroid && conteudoTipo === "serie" &&
-          /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl);
-        console.info("[obaflix-media] NATIVE_START", {
-          via: useLocalPlayerflix ? "mediaApi" : "desktop.extractStream",
-          sourceId: fonteId,
-          playerflix: /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl),
-        });
-        const data: { sessionId?: string; streamType?: string; stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string } =
-          await (useLocalPlayerflix
+        type Nativo = { sessionId?: string; streamType?: string; stream?: string; tipo?: string; referer?: string; subtitles?: SubtitleTrack[]; expiresAt?: number | null; error?: string };
+        const data = await tentarCoordenadasNativas<Nativo & { stream: string }>(fonteId, ctrl.signal, async (embedUrl) => {
+          if (ctrl.signal.aborted || unmountedRef.current) return null;
+          const useLocalPlayerflix = !!mediaApi?.start && isAndroid && conteudoTipo === "serie" &&
+            /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl);
+          console.info("[obaflix-media] NATIVE_START", {
+            via: useLocalPlayerflix ? "mediaApi" : "desktop.extractStream",
+            sourceId: fonteId,
+            playerflix: /^https:\/\/(?:[^/]+\.)?playerflix\.ink\/inc\/Ajax\.php(?:[/?]|$)/i.test(embedUrl),
+          });
+          const r: Nativo = await (useLocalPlayerflix
             ? mediaApi.start({ embedUrl, sourceId: fonteId, contentType: conteudoTipo })
             : desktop.extractStream(embedUrl));
-        if (ctrl.signal.aborted || unmountedRef.current) {
-          if (data.sessionId) void mediaApi?.stop(data.sessionId).catch(() => {});
-          return;
-        }
+          if (ctrl.signal.aborted || unmountedRef.current) {
+            if (r.sessionId) void mediaApi?.stop(r.sessionId).catch(() => {});
+            return null;
+          }
+          if (r.error || !r.stream) {
+            // Sessão local de uma coordenada que não reproduziu: encerra antes
+            // da próxima, para não deixar servidor local órfão.
+            if (r.sessionId) void mediaApi?.stop(r.sessionId).catch(() => {});
+            return { ok: false, erro: new Error(r.error || "Stream não encontrado") };
+          }
+          return { ok: true, valor: r as Nativo & { stream: string } };
+        });
+        if (!data) return;
         if (data.sessionId) mediaSessionRef.current = { api: mediaApi, id: data.sessionId };
-        if (data.error || !data.stream) throw new Error(data.error || "Stream não encontrado");
         console.info("[obaflix-media] NATIVE_RESULT", {
           session: !!data.sessionId,
           localStream: /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//i.test(data.stream),
@@ -1377,10 +1490,11 @@ export function CustomPlayer({
 
         const extractRes = await fetch(
           `/api/player/extract?sessao=${encodeURIComponent(sessao)}&fonteId=${encodeURIComponent(fonteId)}`
-          + `&playToken=${encodeURIComponent(playToken)}`,
+          + `&playToken=${encodeURIComponent(playToken)}${parametroTentativaRef.current(fonteId)}`,
           { signal: ctrl.signal },
         );
         const data = await extractRes.json();
+        lembrarTentativaRef.current(fonteId, data);
 
         // A rota responde 404 quando a extração falha numa fonte cujo iframe
         // nunca reproduz. Antes ela devolvia 200 com a URL do provedor, e era o
@@ -1495,7 +1609,7 @@ export function CustomPlayer({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa, applyEffectiveSuperflixOption]);
+  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa, tentarCoordenadasNativas, applyEffectiveSuperflixOption]);
 
   extractRef.current = extract;
 
@@ -1695,6 +1809,8 @@ export function CustomPlayer({
     sessaoFontesRef.current = data?.sessao ?? null;
     // Os ids mudam a cada sessão: o cache de URL nativa da anterior não vale.
     urlNativaRef.current.clear();
+    tentativaNativaRef.current.clear();
+    totalTentativasRef.current.clear();
     ultimaReaberturaRef.current = Date.now();
     setSessaoFontes(data?.sessao ?? null);
     setAllFontes(lista);
@@ -1716,6 +1832,8 @@ export function CustomPlayer({
     setSessaoFontes(null);
     sessaoFontesRef.current = null;
     urlNativaRef.current.clear();
+    tentativaNativaRef.current.clear();
+    totalTentativasRef.current.clear();
     ultimaReaberturaRef.current = 0;
     // Título novo: a tela volta ao carregamento desde o primeiro frame, e nada do
     // título anterior (erro, "tocando") vaza para ele.
@@ -2743,10 +2861,12 @@ export function CustomPlayer({
 
               const extractRes = await fetch(
                 `/api/player/extract?sessao=${encodeURIComponent(sessaoFontesRef.current ?? "")}`
-                + `&fonteId=${encodeURIComponent(fonteId)}&playToken=${encodeURIComponent(playToken)}`,
+                + `&fonteId=${encodeURIComponent(fonteId)}&playToken=${encodeURIComponent(playToken)}`
+                + parametroTentativaRef.current(fonteId),
                 { signal: abortCtrl.signal },
               );
               const data = await extractRes.json();
+              lembrarTentativaRef.current(fonteId, data);
               if (data?.codigo === "sessao_invalida") {
                 throw new Error("Sessão de reprodução expirada; recarregue a página");
               }

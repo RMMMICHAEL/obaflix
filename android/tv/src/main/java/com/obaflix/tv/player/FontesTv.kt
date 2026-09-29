@@ -441,14 +441,48 @@ object FontesTv {
             )
         }
 
-        val resposta = ApiObaflix.fonteNativa(sessao, fonte.id)
-        if (resposta == null) {
-            ObaLog.alerta(
-                ObaLog.Fase.EXTRACAO, "tv_fonte_sem_url",
-                "servidor" to fonte.rotulo, "fonte" to fonte.id.take(8) + "…",
-            )
-            return null
+        // Coordenadas de episodio (ver CoordenadasTv): quando o provedor numera
+        // as temporadas de outro jeito, o servidor declara mais de uma e a mesma
+        // fonte e tentada em cada uma antes de o failover passar a proxima. Com
+        // desafio (SuperFlix) fica na primeira: cada coordenada custaria outro
+        // Turnstile e outro conjunto de opcoes no seletor.
+        val feitas = mutableSetOf<Int>()
+        var tentativa: Int? = CoordenadasTv.lembrada(fonte.id)
+        while (tentativa != null) {
+            feitas += tentativa
+            val resposta = ApiObaflix.fonteNativa(sessao, fonte.id, tentativa)
+            if (resposta == null) {
+                ObaLog.alerta(
+                    ObaLog.Fase.EXTRACAO, "tv_fonte_sem_url",
+                    "servidor" to fonte.rotulo, "fonte" to fonte.id.take(8) + "…",
+                    "coordenada" to tentativa,
+                )
+                return null
+            }
+            val midia = resolverResposta(fonte, resposta, onSuperflixOptions)
+            if (midia != null) {
+                CoordenadasTv.lembrar(fonte.id, tentativa)
+                return midia
+            }
+            if (fonte.exigeDesafio) return null
+            tentativa = CoordenadasTv.proxima(feitas, resposta.tentativas)
+            if (tentativa != null) {
+                ObaLog.evento(
+                    ObaLog.Fase.EXTRACAO, "tv_coordenada_seguinte",
+                    "servidor" to fonte.rotulo, "coordenada" to (tentativa + 1),
+                    "total" to resposta.tentativas,
+                )
+            }
         }
+        return null
+    }
+
+    /** Uma coordenada da fonte: resposta de `fonte-nativa` → midia pronta, ou null. */
+    private suspend fun resolverResposta(
+        fonte: Fonte,
+        resposta: ApiObaflix.FonteNativa,
+        onSuperflixOptions: (List<Fonte>) -> Unit,
+    ): Midia? {
 
         // Midia ja resolvida pelo servidor: nao ha o que extrair aqui. Continua
         // valendo a mesma regra do resto — so conta como sucesso quando o Media3
