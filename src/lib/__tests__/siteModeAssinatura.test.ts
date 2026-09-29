@@ -23,6 +23,20 @@ test("navegador comum: streaming continua fechado", () => {
   }
 });
 
+test("sw.js da verificação de domínio é servido a qualquer ambiente", async () => {
+  for (const ambiente of ["navegador", "android", "desktop"] as const) {
+    assert.deepEqual(decidirRota("/sw.js", ambiente), { tipo: "segue" }, ambiente);
+  }
+  assert.deepEqual(decidirRota("/sw.jsx", "navegador"), { tipo: "landing" });
+  // Só o arquivo: nenhum código do app registra um service worker.
+  const { execSync } = await import("node:child_process");
+  const registros = execSync(
+    "git grep -l \"serviceWorker\" -- src \":(exclude)src/**/__tests__/**\" || true",
+    { encoding: "utf8" },
+  ).trim();
+  assert.equal(registros, "");
+});
+
 test("prefixo parecido não herda a abertura", () => {
   for (const rota of ["/planosx", "/checkout-falso", "/contas"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "landing" }, rota);

@@ -99,6 +99,9 @@ const PUBLICO = [
   "/manifest",
   "/favicon.ico",
   "/opensearch.xml",
+  // Verificação de domínio da Monetag: o arquivo precisa responder na raiz. Só é
+  // servido — nenhuma página o registra como service worker.
+  "/sw.js",
 ];
 
 const dentroDe = (pathname: string, base: string) =>
