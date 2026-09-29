@@ -242,6 +242,19 @@ async function assertPublicHttpsStream(raw) {
 let mainWindow = null;
 let localPort = null;
 
+// ── Gesto real do usuário ────────────────────────────────────────────────────
+// Último clique/tecla/toque de verdade na janela principal (ver
+// setupWebContents). Todo caminho que abre o navegador do sistema — window.open,
+// navegação do topo para fora, link patrocinado, anúncio por clique — exige um
+// gesto recente e o consome: um gesto, uma abertura. Script não gera gesto.
+let ultimoGestoEm = 0;
+function gestoDisponivel() {
+  return politica.gestoRecente(ultimoGestoEm, Date.now());
+}
+function consumirGesto() {
+  ultimoGestoEm = 0;
+}
+
 // ── Instância única + deep link ────────────────────────────────────────────────
 // Windows entrega obaflix://... pela linha de comando. Se o app já está aberto,
 // a segunda instância repassa o URL para esta; no cold start ele vem em argv.
@@ -1159,16 +1172,17 @@ function setupWebContents() {
   // desenhado para o browser e nao deve ficar preso na janela do app. Cobre
   // /planos, /checkout e subrotas; o resto do site continua navegando interno.
   const isRotaExterna = (raw) => politica.ehRotaExterna(raw, OBAFLIX_ORIGIN);
+  // Saída do frame principal para o navegador do sistema: só https e só com
+  // gesto real (consumido). Sem gesto, a navegação é recusada sem abrir nada.
   const openExternalHttp = (raw) => {
-    const destino = politica.destinoExternoSeguro(raw);
-    if (destino) shell.openExternal(destino);
+    const decisao = politica.decidirSaidaExterna(raw, { gestoRecente: gestoDisponivel() });
+    if (decisao.acao === "externo") { consumirGesto(); shell.openExternal(decisao.url); }
+    else log.info("nav", "saída para o navegador recusada", { motivo: decisao.motivo, url: log.safeUrl(raw) });
   };
 
-  // Último gesto real do usuário (clique, tecla, toque) nesta janela; script
-  // não gera nenhum dos dois eventos. `input-event` não vê o que é roteado a
-  // iframe de outro site (o anúncio): o clique nele chega por
-  // `before-mouse-event` (medido no Electron 43). 0 = consumido.
-  let ultimoGestoEm = 0;
+  // Gesto real (estado em `ultimoGestoEm`, no topo do arquivo). `input-event`
+  // não vê o que é roteado a iframe de outro site (o anúncio): o clique nele
+  // chega por `before-mouse-event` (medido no Electron 43).
   const registrarGesto = (_e, input) => {
     if (politica.GESTOS.has(input.type)) ultimoGestoEm = Date.now();
   };
@@ -1181,9 +1195,9 @@ function setupWebContents() {
   // do app → negado. Ver window-policy.js.
   wc.setWindowOpenHandler(({ url }) => {
     const decisao = politica.decidirJanelaNova(url, OBAFLIX_ORIGIN, {
-      gestoRecente: politica.gestoRecente(ultimoGestoEm, Date.now()),
+      gestoRecente: gestoDisponivel(),
     });
-    if (decisao.acao === "externo") { ultimoGestoEm = 0; shell.openExternal(decisao.url); }
+    if (decisao.acao === "externo") { consumirGesto(); shell.openExternal(decisao.url); }
     else log.info("janela", "window.open negado", { motivo: decisao.motivo, url: log.safeUrl(url) });
     return { action: "deny" };
   });
@@ -1502,7 +1516,14 @@ ipcMain.handle("install-update", (event) => {
 
 ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
   if (!isTrustedIpc(event)) return { opened: false };
-  if (rawUrl !== SPONSORED_LINK_URL) return { opened: false };
+  const decisao = politica.decidirLinkPatrocinado({
+    pedida: rawUrl, homologada: SPONSORED_LINK_URL, gestoRecente: gestoDisponivel(),
+  });
+  if (decisao.acao !== "abrir") {
+    log.info("anuncio", "link patrocinado recusado", { motivo: decisao.motivo });
+    return { opened: false };
+  }
+  consumirGesto();
   const janela = BrowserWindow.fromWebContents(event.sender);
   if (!janela || janela.isDestroyed()) return { opened: false };
   let perdeuFoco = false;
@@ -1514,7 +1535,7 @@ ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
   janela.on("focus", aoRecuperarFoco);
   const timeout = setTimeout(() => resolverRetorno(false), 4 * 60 * 1000);
   try {
-    await shell.openExternal(SPONSORED_LINK_URL);
+    await shell.openExternal(decisao.url);
     const returned = await retorno;
     return { opened: true, returned };
   } catch {
@@ -1523,6 +1544,35 @@ ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
     clearTimeout(timeout);
     janela.removeListener("blur", aoPerderFoco);
     janela.removeListener("focus", aoRecuperarFoco);
+  }
+});
+
+// ── Anúncio por clique (Direct Link) ─────────────────────────────────────────
+// O site conta os cliques reais elegíveis (src/components/ads/CliqueDesktop.tsx)
+// e, na vez, chama a ponte SEM parâmetro. A URL é esta, fixa: o renderer nunca
+// escolhe destino. Exige frame principal do app, gesto real recente (consumido
+// aqui) e o piso de intervalo da window-policy. Abre só no navegador do sistema.
+const DIRECT_LINK_DO_CLIQUE = SPONSORED_LINK_URL;
+let ultimoAnuncioDeCliqueEm = 0;
+ipcMain.handle("open-click-ad", async (event) => {
+  if (!isTrustedIpc(event)) return { opened: false };
+  const agora = Date.now();
+  const decisao = politica.decidirAnuncioDeClique({
+    url: DIRECT_LINK_DO_CLIQUE, gestoRecente: gestoDisponivel(), agora, ultimaAberturaEm: ultimoAnuncioDeCliqueEm,
+  });
+  if (decisao.acao !== "abrir") {
+    log.debug("anuncio", "anúncio por clique não aberto", { motivo: decisao.motivo });
+    return { opened: false };
+  }
+  consumirGesto();
+  ultimoAnuncioDeCliqueEm = agora;
+  try {
+    await shell.openExternal(decisao.url);
+    log.info("anuncio", "anúncio por clique aberto no navegador do sistema");
+    return { opened: true };
+  } catch (error) {
+    log.warn("anuncio", "falha ao abrir anúncio por clique", error);
+    return { opened: false };
   }
 });
 

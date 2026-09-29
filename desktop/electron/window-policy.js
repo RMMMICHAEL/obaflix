@@ -43,7 +43,11 @@
 //     `window.open` sem ativação do usuário (medido: o anúncio abria o
 //     navegador do sistema sozinho, em laço). O main.js registra o último
 //     clique/tecla/toque de verdade (`input-event`, que script não forja) e
-//     cada gesto vale uma abertura só, por até `JANELA_DO_GESTO_MS`.
+//     cada gesto vale uma abertura só, por até `JANELA_DO_GESTO_MS`;
+//  9. **nada sai ao navegador sem gesto real**, por nenhum caminho: além do
+//     `window.open`, a navegação do frame principal para fora do app, o link
+//     patrocinado (anúncio recompensado) e o anúncio por clique (Direct Link)
+//     exigem e consomem o mesmo gesto.
 
 const DOCUMENTO_DO_BANNER = "/desktop/banner.html";
 /** Site isolado dos anúncios (ads-site/). Mesma constante de src/lib/ads/bannerDesktop.ts. */
@@ -57,6 +61,12 @@ const DOCUMENTO_DOS_ANUNCIOS = "/banner.html";
  */
 const JANELA_DO_GESTO_MS = 1000;
 /** Tipos de `input-event` que contam como gesto. Movimento e rolagem não contam. */
+/**
+ * Piso do intervalo entre duas aberturas do anúncio por clique, imposto aqui,
+ * independente do que o servidor configurar (ver `LIMITES_DA_FREQUENCIA` em
+ * src/lib/ads/cliqueDesktop.ts, cujo mínimo é o mesmo).
+ */
+const COOLDOWN_MINIMO_DO_CLIQUE_MS = 30_000;
 const GESTOS = new Set(["mouseDown", "mouseUp", "rawKeyDown", "keyDown", "touchStart", "touchEnd", "gestureTap", "pointerDown", "pointerUp"]);
 const ROTA_EXTERNA = /^\/(planos|checkout)(?:\/|$)/;
 
@@ -115,6 +125,40 @@ function decidirJanelaNova(url, appOrigin, { gestoRecente } = {}) {
     return gestoRecente === true ? { acao: "externo", url: externo } : { acao: "negar", motivo: "sem_gesto" };
   }
   return { acao: "negar", motivo: "janela_do_app" };
+}
+
+/**
+ * Navegação do frame principal para fora do app (ou para /planos, /checkout),
+ * depois de `decidirNavegacaoPrincipal` dizer "seguir": só https e só com
+ * gesto real vai ao navegador do sistema. Sem gesto, é recusada sem abrir nada.
+ */
+function decidirSaidaExterna(url, { gestoRecente } = {}) {
+  const externo = destinoExternoSeguro(url);
+  if (!externo) return { acao: "negar", motivo: "esquema" };
+  return gestoRecente === true ? { acao: "externo", url: externo } : { acao: "negar", motivo: "sem_gesto" };
+}
+
+/**
+ * Link patrocinado do anúncio recompensado: exatamente a URL homologada, só
+ * https, só com gesto real.
+ */
+function decidirLinkPatrocinado({ pedida, homologada, gestoRecente }) {
+  if (typeof pedida !== "string" || pedida !== homologada) return { acao: "negar", motivo: "url" };
+  if (!destinoExternoSeguro(homologada)) return { acao: "negar", motivo: "esquema" };
+  return gestoRecente === true ? { acao: "abrir", url: homologada } : { acao: "negar", motivo: "sem_gesto" };
+}
+
+/**
+ * Anúncio por clique (Direct Link). A URL é a do processo principal — o
+ * renderer não manda nenhuma. Só https, gesto real e piso de intervalo.
+ */
+function decidirAnuncioDeClique({ url, gestoRecente, agora, ultimaAberturaEm }) {
+  if (!destinoExternoSeguro(url)) return { acao: "negar", motivo: "esquema" };
+  if (gestoRecente !== true) return { acao: "negar", motivo: "sem_gesto" };
+  if (ultimaAberturaEm > 0 && agora - ultimaAberturaEm < COOLDOWN_MINIMO_DO_CLIQUE_MS) {
+    return { acao: "negar", motivo: "intervalo" };
+  }
+  return { acao: "abrir", url: destinoExternoSeguro(url) };
 }
 
 /** Houve gesto real há no máximo `JANELA_DO_GESTO_MS`? `ultimoGestoEm` 0 = consumido/nunca. */
@@ -200,8 +244,12 @@ module.exports = {
   DOCUMENTO_DO_BANNER,
   ORIGEM_DOS_ANUNCIOS,
   JANELA_DO_GESTO_MS,
+  COOLDOWN_MINIMO_DO_CLIQUE_MS,
   GESTOS,
   gestoRecente,
+  decidirSaidaExterna,
+  decidirLinkPatrocinado,
+  decidirAnuncioDeClique,
   ehDoApp,
   ehRotaExterna,
   ehDocumentoDoBanner,

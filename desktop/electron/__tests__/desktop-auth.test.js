@@ -53,9 +53,10 @@ test("Direct Link desktop usa IPC restrito e exige retorno de foco", () => {
   const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
   assert.match(main, /const SPONSORED_LINK_URL = "https:\/\/omg10\.com\/4\/11767843"/);
-  assert.match(main, /rawUrl !== SPONSORED_LINK_URL/);
+  // URL exata, https e gesto real: decidirLinkPatrocinado (window-policy.test.js).
+  assert.match(main, /pedida: rawUrl, homologada: SPONSORED_LINK_URL, gestoRecente: gestoDisponivel\(\)/);
   assert.match(main, /janela\.on\("blur"/);
   assert.match(main, /janela\.on\("focus"/);
-  assert.match(main, /await shell\.openExternal\(SPONSORED_LINK_URL\)/);
+  assert.match(main, /await shell\.openExternal\(decisao\.url\)/);
   assert.match(preload, /openSponsoredLink: \(url\) => ipcRenderer\.invoke\("open-sponsored-link", url\)/);
 });

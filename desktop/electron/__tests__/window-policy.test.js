@@ -209,8 +209,9 @@ test("main.js: anúncio sem preload/IPC/nodeIntegration e com as guardas ligadas
   assert.match(main, /politica\.permissaoLiberada\(/);
   assert.match(main, /wc\.on\("before-mouse-event", registrarGesto\)/);
   assert.match(main, /wc\.on\("input-event", registrarGesto\)/);
-  assert.match(main, /gestoRecente: politica\.gestoRecente\(ultimoGestoEm, Date\.now\(\)\)/);
-  assert.match(main, /ultimoGestoEm = 0; shell\.openExternal\(decisao\.url\)/, "um gesto, uma abertura");
+  assert.match(main, /gestoRecente: gestoDisponivel\(\)/);
+  assert.match(main, /return politica\.gestoRecente\(ultimoGestoEm, Date\.now\(\)\);/);
+  assert.match(main, /consumirGesto\(\); shell\.openExternal\(decisao\.url\)/, "um gesto, uma abertura");
   // A navegação recusada do topo não vai ao navegador (seria popunder).
   const bloqueio = main.slice(main.indexOf("const bloquearTopoDoAnuncio"), main.indexOf("wc.on(\"will-frame-navigate\""));
   assert.ok(!/openExternal/.test(bloqueio));
@@ -268,4 +269,93 @@ test("logger tem trace abaixo de debug (o padrão grava debug, não trace)", () 
   assert.match(logger, /trace/);
   const log = require("../logger");
   assert.equal(typeof log.trace, "function");
+});
+
+// ── Gesto real em todo caminho para o navegador (anúncio por clique, link
+//    patrocinado, navegação do topo) ─────────────────────────────────────────
+
+const DIRECT_LINK = "https://omg10.com/4/11767843";
+const PERIGOSOS = [
+  "javascript:alert(1)", "data:text/html,x", "file:///C:/Windows/system32/calc.exe",
+  "http://omg10.com/4/11767843", "vbscript:x", "ms-msdt:/id", "obaflix://x", "", "lixo",
+];
+
+test("gesto: inexistente, expirado e consumido bloqueiam", () => {
+  const J = politica.JANELA_DO_GESTO_MS;
+  assert.equal(politica.gestoRecente(0, 1_000), false, "inexistente");
+  assert.equal(politica.gestoRecente(1_000, 1_000 + J + 1), false, "expirado");
+  // Consumir = zerar: o mesmo gesto não serve para a segunda abertura.
+  let ultimo = 5_000;
+  assert.equal(politica.gestoRecente(ultimo, 5_100), true);
+  ultimo = 0;
+  assert.equal(politica.gestoRecente(ultimo, 5_200), false, "consumido");
+});
+
+test("anúncio por clique: só https, só com gesto, com piso de intervalo", () => {
+  const base = { url: DIRECT_LINK, gestoRecente: true, agora: 100_000, ultimaAberturaEm: 0 };
+  assert.deepEqual(politica.decidirAnuncioDeClique(base), { acao: "abrir", url: DIRECT_LINK });
+  assert.equal(politica.decidirAnuncioDeClique({ ...base, gestoRecente: false }).motivo, "sem_gesto");
+  assert.equal(politica.decidirAnuncioDeClique({ ...base, gestoRecente: undefined }).motivo, "sem_gesto");
+  const piso = politica.COOLDOWN_MINIMO_DO_CLIQUE_MS;
+  assert.equal(piso, 30_000);
+  assert.equal(politica.decidirAnuncioDeClique({ ...base, ultimaAberturaEm: base.agora - piso + 1 }).motivo, "intervalo");
+  assert.equal(politica.decidirAnuncioDeClique({ ...base, ultimaAberturaEm: base.agora - piso }).acao, "abrir");
+  for (const url of PERIGOSOS) {
+    assert.equal(politica.decidirAnuncioDeClique({ ...base, url }).motivo, "esquema", url);
+  }
+});
+
+test("link patrocinado: exige a URL homologada, https e gesto real", () => {
+  const ok = { pedida: DIRECT_LINK, homologada: DIRECT_LINK, gestoRecente: true };
+  assert.deepEqual(politica.decidirLinkPatrocinado(ok), { acao: "abrir", url: DIRECT_LINK });
+  assert.equal(politica.decidirLinkPatrocinado({ ...ok, gestoRecente: false }).motivo, "sem_gesto");
+  assert.equal(politica.decidirLinkPatrocinado({ ...ok, gestoRecente: undefined }).motivo, "sem_gesto");
+  for (const pedida of ["https://evil.test/", `${DIRECT_LINK}?x=1`, undefined, null, 1, ...PERIGOSOS]) {
+    assert.equal(politica.decidirLinkPatrocinado({ ...ok, pedida }).motivo, "url", String(pedida));
+  }
+  for (const homologada of PERIGOSOS.filter(Boolean)) {
+    assert.equal(politica.decidirLinkPatrocinado({ pedida: homologada, homologada, gestoRecente: true }).motivo, "esquema", homologada);
+  }
+});
+
+test("navegação do topo para fora: sem gesto não abre o navegador; com gesto só https", () => {
+  assert.deepEqual(politica.decidirSaidaExterna("https://externo.test/p", { gestoRecente: true }), {
+    acao: "externo", url: "https://externo.test/p",
+  });
+  assert.equal(politica.decidirSaidaExterna("https://externo.test/p", { gestoRecente: false }).motivo, "sem_gesto");
+  assert.equal(politica.decidirSaidaExterna("https://externo.test/p").motivo, "sem_gesto");
+  assert.equal(politica.decidirSaidaExterna(`${APP}/planos`, { gestoRecente: true }).acao, "externo");
+  for (const url of PERIGOSOS) {
+    assert.equal(politica.decidirSaidaExterna(url, { gestoRecente: true }).motivo, "esquema", url);
+  }
+});
+
+test("main.js/preload: URL do anúncio nunca vem do renderer; todo caminho externo consome gesto", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+  // Ponte sem parâmetro e handler que não lê argumento do renderer.
+  assert.match(preload, /openClickAd: \(\) => ipcRenderer\.invoke\("open-click-ad"\),/);
+  assert.match(main, /ipcMain\.handle\("open-click-ad", async \(event\) => \{/);
+  assert.match(main, /const DIRECT_LINK_DO_CLIQUE = SPONSORED_LINK_URL;/);
+  assert.match(main, /const SPONSORED_LINK_URL = "https:\/\/omg10\.com\/4\/11767843";/);
+  const clique = main.slice(main.indexOf('ipcMain.handle("open-click-ad"'), main.indexOf("// Extração nativa multi-provider"));
+  assert.match(clique, /if \(!isTrustedIpc\(event\)\) return \{ opened: false \};/);
+  assert.match(clique, /politica\.decidirAnuncioDeClique\(\{\s*url: DIRECT_LINK_DO_CLIQUE, gestoRecente: gestoDisponivel\(\)/);
+  assert.ok(clique.indexOf("consumirGesto()") < clique.indexOf("shell.openExternal("), "consome antes de abrir");
+  assert.match(clique, /shell\.openExternal\(decisao\.url\)/);
+  // Link patrocinado: gesto exigido e consumido antes de abrir.
+  const patrocinado = main.slice(main.indexOf('ipcMain.handle("open-sponsored-link"'), main.indexOf("// ── Anúncio por clique"));
+  assert.match(patrocinado, /politica\.decidirLinkPatrocinado\(\{/);
+  assert.match(patrocinado, /gestoRecente: gestoDisponivel\(\)/);
+  assert.ok(patrocinado.indexOf("consumirGesto()") < patrocinado.indexOf("shell.openExternal("));
+  assert.ok(!/shell\.openExternal\(SPONSORED_LINK_URL\)/.test(main), "nenhuma abertura direta sem decisão");
+  // will-navigate: a saída para o navegador passa pela decisão com gesto.
+  const saida = main.slice(main.indexOf("const openExternalHttp"), main.indexOf("wc.setWindowOpenHandler"));
+  assert.match(saida, /politica\.decidirSaidaExterna\(raw, \{ gestoRecente: gestoDisponivel\(\) \}\)/);
+  assert.match(saida, /consumirGesto\(\); shell\.openExternal\(decisao\.url\)/);
+  // O gesto é um só para toda a janela, consumido por qualquer abertura.
+  assert.equal((main.match(/let ultimoGestoEm = 0;/g) || []).length, 1);
+  assert.match(main, /if \(decisao\.acao === "externo"\) \{ consumirGesto\(\); shell\.openExternal\(decisao\.url\); \}/);
+  // Nenhum shell.openExternal com URL vinda do renderer sem validação.
+  assert.ok(!/shell\.openExternal\(rawUrl\)/.test(main));
 });
