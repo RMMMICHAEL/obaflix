@@ -30,7 +30,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      VERSAO: 1.0.12-homolog.2
+      VERSAO: 1.0.12-homolog.3
       # Sem certificado: o electron-builder não tenta assinar nem procurar identidade.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
