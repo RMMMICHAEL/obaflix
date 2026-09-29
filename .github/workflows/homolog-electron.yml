@@ -4,7 +4,7 @@
 # release e não alimenta o updater. O instalador sai só como artefato desta
 # execução (aba Actions → execução → Artifacts), para teste.
 #
-# Versão 1.0.12-homolog.1 injetada no build (package.json continua 1.0.11):
+# Versão de homologação (VERSAO abaixo) injetada no build (package.json continua 1.0.11):
 # acima de qualquer 1.0.11 publicada (o updater não troca o build de teste por
 # ela) e abaixo da 1.0.12 oficial (que o atualiza normalmente quando sair).
 name: homolog-electron
@@ -30,7 +30,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      VERSAO: 1.0.12-homolog.1
+      VERSAO: 1.0.12-homolog.2
       # Sem certificado: o electron-builder não tenta assinar nem procurar identidade.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
@@ -80,7 +80,7 @@ jobs:
       - name: Publicar artefato
         uses: actions/upload-artifact@v4
         with:
-          name: Obaflix-Setup-1.0.12-homolog.1
+          name: Obaflix-Setup-${{ env.VERSAO }}
           path: |
             desktop/dist/Obaflix-Setup-*.exe
             desktop/dist/SHA256.txt

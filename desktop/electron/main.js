@@ -51,9 +51,17 @@ const OBAFLIX_ORIGIN = new URL(OBAFLIX_URL).origin;
 // User-Agent —, mas apontar direto para cá evita esse salto a cada abertura.
 const OBAFLIX_ENTRADA = OBAFLIX_URL.replace(/\/+$/, "") + "/desktop";
 const LOCAL_SERVER_TOKEN = crypto.randomBytes(32).toString("base64url");
+// Diagnóstico A/B da Monetag: só com --diagnostico-monetag na linha de comando.
+// Sem a flag é null e nenhum gancho abaixo faz nada. Ver monetag-diagnostico.js.
+const DIAGNOSTICO_MONETAG = process.argv.includes("--diagnostico-monetag");
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
+const diagnosticoMonetag = DIAGNOSTICO_MONETAG
+  ? require("./monetag-diagnostico").criar({
+    app, BrowserWindow, session, shell, log, politica, OBAFLIX_URL, OBAFLIX_ORIGIN, UA,
+  })
+  : null;
 
 function registerDesktopProtocol() {
   if (process.platform !== "win32") return false;
@@ -917,9 +925,11 @@ function configureSession() {
   ses.webRequest.onSendHeaders({ urls: ["*://*/*"] }, (details) => {
     if (startedAt.size > 5000) startedAt.clear();
     startedAt.set(details.id, Date.now());
+    diagnosticoMonetag?.envio(details);
   });
 
   ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
+    diagnosticoMonetag?.conclusao(details);
     const ms = startedAt.has(details.id) ? Date.now() - startedAt.get(details.id) : null;
     startedAt.delete(details.id);
     const fields = {
@@ -935,6 +945,7 @@ function configureSession() {
   });
 
   ses.webRequest.onErrorOccurred({ urls: ["*://*/*"] }, (details) => {
+    diagnosticoMonetag?.falha(details);
     const ms = startedAt.has(details.id) ? Date.now() - startedAt.get(details.id) : null;
     startedAt.delete(details.id);
     // net::ERR_ABORTED é rotina (troca de player, navegação) — fica em debug.
@@ -1196,6 +1207,7 @@ function setupWebContents() {
     if (url.startsWith(OBAFLIX_ORIGIN)) {
       if (bootTimer && !siteLoaded) { siteLoaded = true; bootTimer.done({ url: log.safeUrl(url) }); bootTimer = null; }
       wc.executeJavaScript("window.__OBAFLIX_DESKTOP__ = true;").catch(() => {});
+      diagnosticoMonetag?.iniciar(mainWindow);
     }
   });
 
