@@ -23,6 +23,7 @@ const {
   retryNativeOptionOnce,
 } = require("./superflix-extractor");
 const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./browser-extractor");
+const politica = require("./window-policy");
 
 const SPONSORED_LINK_URL = "https://omg10.com/4/11767843";
 const { baixarMidia } = require("./media-download");
@@ -1118,30 +1119,43 @@ function configureSession() {
 function setupWebContents() {
   const wc = mainWindow.webContents;
 
-  const isAppUrl = (raw) => {
-    try { return new URL(raw).origin === OBAFLIX_ORIGIN; } catch { return false; }
-  };
+  const isAppUrl = (raw) => politica.ehDoApp(raw, OBAFLIX_ORIGIN);
   // Planos e Checkout: mesmo sendo do proprio site, saem para o navegador do
   // sistema. O fluxo de assinatura/pagamento (login externo, PIX/Blackcat) foi
   // desenhado para o browser e nao deve ficar preso na janela do app. Cobre
   // /planos, /checkout e subrotas; o resto do site continua navegando interno.
-  const isRotaExterna = (raw) => {
-    try {
-      const u = new URL(raw);
-      if (u.origin !== OBAFLIX_ORIGIN) return false;
-      return /^\/(planos|checkout)(?:\/|$)/.test(u.pathname);
-    } catch { return false; }
-  };
+  const isRotaExterna = (raw) => politica.ehRotaExterna(raw, OBAFLIX_ORIGIN);
   const openExternalHttp = (raw) => {
-    try {
-      const parsed = new URL(raw);
-      if (parsed.protocol === "https:") shell.openExternal(parsed.href);
-    } catch { /**/ }
+    const destino = politica.destinoExternoSeguro(raw);
+    if (destino) shell.openExternal(destino);
   };
 
+  // Nenhum window.open cria janela Electron: uma filha herdaria o preload
+  // privilegiado sem guarda de navegação. Externo → navegador do sistema; URL
+  // do app → negada. Ver window-policy.js.
   wc.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url) || isRotaExterna(url)) { openExternalHttp(url); return { action: "deny" }; }
-    return { action: "allow" };
+    const decisao = politica.decidirJanelaNova(url, OBAFLIX_ORIGIN);
+    if (decisao.acao === "externo") shell.openExternal(decisao.url);
+    else log.info("janela", "window.open negado", { motivo: decisao.motivo, url: log.safeUrl(url) });
+    return { action: "deny" };
+  });
+
+  // O iframe do banner publicitário fica no próprio documento. O clique
+  // legítimo do anúncio usa window.open (acima); navegar o iframe para outro
+  // endereço exibiria página de terceiro dentro do app, sem barra de endereço.
+  wc.on("will-frame-navigate", (details) => {
+    let urlAtual = "";
+    try { urlAtual = details.frame ? details.frame.url : ""; } catch { /* frame já destruído */ }
+    const decisao = politica.decidirNavegacaoDeSubframe({
+      isMainFrame: details.isMainFrame,
+      urlAtual,
+      destino: details.url,
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+    if (decisao === "cancelar") {
+      details.preventDefault();
+      log.info("janela", "navegação do iframe do banner bloqueada", { destino: log.safeUrl(details.url) });
+    }
   });
 
   wc.on("will-navigate", (event, url) => {
@@ -1214,13 +1228,18 @@ function setupWebContents() {
   wc.on("responsive", () => log.info("renderer", "página voltou a responder"));
 
   // ── Console e erros de JavaScript da página ────────────────────────────
-  const CONSOLE_LEVEL = ["debug", "info", "warn", "error"];
-  wc.on("console-message", (_e, level, message, line, sourceId) => {
-    const name = CONSOLE_LEVEL[level] || "info";
-    // O ruído de terceiros (players embed) fica em debug; o que o app registra
-    // como warn/error sobe junto com a origem e a linha.
-    log[name === "info" ? "debug" : name]("console", message.slice(0, 500), {
-      origem: log.safeUrl(sourceId || "-"), linha: line,
+  // O que o app registra como warn/error sobe junto com a origem e a linha.
+  // Exceção única: o iframe do banner publicitário (a tag re-tenta IndexedDB,
+  // negado na origem opaca, ~1x/s) vai para `trace`. Ver window-policy.js.
+  wc.on("console-message", (details) => {
+    let isMainFrame = true;
+    let frameUrl = "";
+    try {
+      if (details.frame) { isMainFrame = details.frame.parent === null; frameUrl = details.frame.url; }
+    } catch { /* frame já destruído: trata como antes */ }
+    const nivel = politica.nivelDoConsole({ level: details.level, isMainFrame, frameUrl, appOrigin: OBAFLIX_ORIGIN });
+    log[nivel]("console", String(details.message || "").slice(0, 500), {
+      origem: log.safeUrl(details.sourceId || "-"), linha: details.lineNumber,
     });
   });
 
@@ -1247,8 +1266,18 @@ function setupWebContents() {
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────────
+// Origem do app E frame principal da janela principal. Subframe (iframe do
+// banner inclusive) ou qualquer outra janela nunca chega aos handlers abaixo.
 function isTrustedIpc(event) {
-  try { return new URL(event.senderFrame.url).origin === OBAFLIX_ORIGIN; } catch { return false; }
+  try {
+    const frame = event.senderFrame;
+    return politica.ipcConfiavel({
+      remetenteEhJanelaPrincipal: !!mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents,
+      ehFramePrincipal: !!frame && frame.parent === null,
+      urlDoFrame: frame ? frame.url : "",
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+  } catch { return false; }
 }
 
 ipcMain.handle("toggle-fullscreen", (event) => {
