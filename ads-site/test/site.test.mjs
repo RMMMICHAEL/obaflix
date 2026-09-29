@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const raiz = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,7 +17,7 @@ function arquivos(dir) {
     return statSync(p).isDirectory() ? arquivos(p) : [p];
   });
 }
-const todos = arquivos(raiz).map((p) => relative(raiz, p));
+const todos = arquivos(raiz).map((p) => relative(raiz, p).split(sep).join("/"));
 const publicados = todos.filter((p) => p.startsWith("public/"));
 
 function headersDe(caminho) {
@@ -39,7 +39,7 @@ test("site estático: sem build, sem dependências, só public/ é servido, sem 
   assert.equal(vercel.installCommand, null);
   assert.ok(!("redirects" in vercel) && !("rewrites" in vercel) && !("routes" in vercel));
   assert.ok(!todos.includes("package.json"), "sem package.json/dependências");
-  assert.deepEqual(publicados.sort(), ["public/404.html", "public/banner.html", "public/index.html", "public/robots.txt"]);
+  assert.deepEqual(publicados.sort(), ["public/404.html", "public/banner.html", "public/index.html", "public/robots.txt", "public/sw.js"]);
   for (const p of publicados) {
     const txt = ler(p);
     assert.ok(!/http-equiv=["']?refresh/i.test(txt), `${p}: meta refresh`);
@@ -58,25 +58,34 @@ test("nada do app principal: sem import, API, cookie, storage do Obaflix, segred
   }
 });
 
-test("sem zona antiga, sem sw.js, sem outros formatos", () => {
+test("sw.js só verifica a Monetag; sem zonas antigas, registro ou outros formatos", () => {
   for (const p of todos.filter((f) => !f.startsWith("test/"))) {
     const txt = ler(p);
     assert.ok(!txt.includes("11917353"), `${p}: zona do domínio antigo`);
-    assert.ok(!txt.includes("11767842") && !txt.includes("5gvci"), `${p}: sw.js antigo`);
-    assert.ok(!/serviceWorker/.test(txt), `${p}: service worker`);
+    assert.ok(!txt.includes("11767842"), `${p}: zona de service worker antiga`);
+    assert.ok(!/navigator\s*\.\s*serviceWorker\s*\.\s*register\s*\(/.test(txt), `${p}: registro de service worker`);
+    if (p !== "public/sw.js") {
+      assert.ok(!txt.includes("5gvci.com") && !txt.includes("11921240"), `${p}: dados de verificação fora do sw.js`);
+    }
   }
-  assert.ok(!todos.some((p) => /sw\.js$/.test(p)));
+  const sw = ler("public/sw.js");
+  assert.match(sw, /"domain": "5gvci\.com"/);
+  assert.match(sw, /"zoneId": 11921240/);
+  assert.match(sw, /importScripts\('https:\/\/5gvci\.com\/act\/files\/service-worker\.min\.js\?r=sw'\)/);
   // Só o código conta: os comentários citam os formatos justamente para proibi-los.
   const codigo = banner.replace(/<!--[\s\S]*?-->/g, "").replace(/\/\/.*$/gm, "");
   assert.ok(!/multitag|vignette|popunder|onclick|interstitial/i.test(codigo));
 });
 
-test("banner: zonas vazias não carregam a tag; snippet só com a zona da tabela", () => {
+test("banner: zonas Monetag configuradas; snippet só com a zona da tabela", () => {
   const tabela = /var ZONAS = \{([^}]*)\}/.exec(banner);
   assert.ok(tabela);
   const pares = [...tabela[1].matchAll(/(\w+): '([^']*)'/g)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(pares.map((p) => p[0]).sort(), ["detalhe", "feed", "player"]);
-  assert.ok(pares.every((p) => p[1] === ""), "zonas começam vazias");
+  assert.deepEqual(Object.fromEntries(pares), {
+    feed: "11921288",
+    detalhe: "11921288",
+    player: "11921288",
+  });
   assert.match(banner, /if \(!zona\) return;/);
   assert.match(banner, /s\.dataset\.zone=zona/);
   assert.equal((banner.match(/https:\/\/nap5k\.com\/tag\.min\.js/g) || []).length, 1);
