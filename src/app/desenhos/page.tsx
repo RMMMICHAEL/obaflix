@@ -5,6 +5,7 @@ import { LazyRow } from "@/components/ui/LazyRow";
 import { KidsHero } from "@/components/ui/KidsHero";
 import { KidsStudioBrowser } from "@/components/ui/KidsStudioBrowser";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
+import { ComBanners } from "@/components/ads/ComBanners";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
@@ -191,10 +192,14 @@ export default async function DesenhoPage({
           </Suspense>
         </div>
 
+        <ComBanners>
         {populares.length > 0 && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/desenhos?ordem=popular" />}
-        <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
+        {epsRecentesItems.length > 0 && <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>}
         {recentes.length > 0  && <LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}  verTodosHref="/desenhos?ordem=recente" />}
+        </ComBanners>
+        {/* Fora da intercalação: pode renderizar vazio no cliente. */}
         <ContinuarAssistindo />
+        <ComBanners>
         {avaliados.length > 0 && <LandscapeRow titulo="Melhores de Todos os Tempos" items={avaliados.map(toRow)} verTodosHref="/desenhos?ordem=nota" />}
 
         <LazyRow height={260}><AnimationCollectionsRow /></LazyRow>
@@ -208,6 +213,7 @@ export default async function DesenhoPage({
         {aventura.length > 0  && <LazyRow><LandscapeRow titulo="Aventura" items={aventura.map(toRow)}  verTodosHref="/genero/12" /></LazyRow>}
         {comedia.length > 0   && <LazyRow><LandscapeRow titulo="Comédia"  items={comedia.map(toRow)}   verTodosHref="/genero/35" /></LazyRow>}
         {familia.length > 0   && <LazyRow><LandscapeRow titulo="Família"  items={familia.map(toRow)}   verTodosHref="/genero/10751" /></LazyRow>}
+        </ComBanners>
       </div>
     </div>
   );

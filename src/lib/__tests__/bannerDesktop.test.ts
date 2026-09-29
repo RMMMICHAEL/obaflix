@@ -5,11 +5,26 @@ import { join } from "node:path";
 
 import { GET as bannerGet } from "@/app/api/ads/banner-desktop/route";
 import {
+  ALTURA_DO_BANNER,
   DOCUMENTO_DO_BANNER,
+  POSICOES_DO_BANNER,
   SANDBOX_DO_BANNER,
+  TEMPO_SEM_ANUNCIO_MS,
+  alturaDoIframe,
   bannerDesktopAtivo,
+  criarControleDeFalhas,
   decidirBannerDesktop,
+  lerMensagemDoBanner,
+  urlDoBanner,
 } from "../ads/bannerDesktop";
+import { ComBanners } from "@/components/ads/ComBanners";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
+import * as React from "react";
+import { createElement, isValidElement, type ReactElement } from "react";
+
+// `tsx` compila JSX no runtime clássico (tsconfig: jsx preserve; no app quem
+// transforma é o Next). Os componentes chamados aqui precisam de React no escopo.
+(globalThis as { React?: typeof React }).React = React;
 import { decidirRota } from "../../config/site-mode";
 import { PLANO_GRATUITO, PLANO_PREMIUM, type DireitosDoPlano, type PlanoSemeado } from "../planos";
 import type { Entitlements } from "../entitlements";
@@ -161,8 +176,14 @@ describe("isolamento do script publicitário", () => {
   test("componente usa o documento e o sandbox centrais, e só renderiza com isDesktop", () => {
     const fonte = ler("src/components/ads/BannerDesktop.tsx");
     assert.match(fonte, /sandbox=\{SANDBOX_DO_BANNER\}/);
-    assert.match(fonte, /src=\{DOCUMENTO_DO_BANNER\}/);
+    assert.match(fonte, /src=\{urlDoBanner\(posicao\)\}/);
     assert.match(fonte, /isDesktop === true/);
+    // Mensagem do documento isolado: só deste iframe e só de origem opaca.
+    assert.match(fonte, /e\.source !== alvo/);
+    assert.match(fonte, /e\.origin !== "null"/);
+    // Tela cheia do documento e da janela nativa desmontam o slot.
+    assert.match(fonte, /fullscreenchange/);
+    assert.match(fonte, /if \(!elegivel \|\| telaCheia\) return null;/);
     assert.ok(!fonte.includes("nap5k"), "o script não pode ser carregado no documento do app");
   });
 
@@ -171,13 +192,24 @@ describe("isolamento do script publicitário", () => {
     assert.ok(!DOCUMENTO_DO_BANNER.includes("?"));
   });
 
-  test("documento do banner carrega só a zona 11917353 e nenhum outro script", () => {
+  test("documento do banner: detector + uma tag, só a zona 11917353, nenhum outro formato", () => {
     const html = ler("public/desktop/banner.html");
-    assert.equal((html.match(/<script/g) || []).length, 1);
+    // Dois <script> inline: o detector do Obaflix e o snippet da Monetag.
+    assert.equal((html.match(/<script/g) || []).length, 2);
+    assert.ok(!/<script[^>]+src=/.test(html), "nenhum script externo além do que o snippet injeta");
     assert.equal((html.match(/https?:\/\//g) || []).length, 1);
-    assert.match(html, /s\.dataset\.zone='11917353'/);
     assert.match(html, /s\.src='https:\/\/nap5k\.com\/tag\.min\.js'/);
-    assert.ok(!/serviceWorker|sw\.js/.test(html));
+    assert.match(html, /s\.dataset\.zone=window\.__obaflixZona/);
+    // Tabela de zonas: exatamente as posições do app, todas na zona existente.
+    const tabela = /var ZONAS = \{([^}]*)\}/.exec(html);
+    assert.ok(tabela, "tabela ZONAS");
+    const pares = [...tabela![1].matchAll(/(\w+): '(\d+)'/g)].map((m) => [m[1], m[2]]);
+    assert.deepEqual(pares.map((p) => p[0]).sort(), [...POSICOES_DO_BANNER].sort());
+    assert.ok(pares.every((p) => p[1] === "11917353"), "nenhuma zona inventada");
+    assert.ok(!/serviceWorker|sw\.js|Notification|multitag|vignette|popunder|onclick/i.test(html));
+    // O aviso ao app vai só para a própria origem, nunca "*".
+    assert.match(html, /parent\.postMessage\(msg, destino\)/);
+    assert.ok(!/postMessage\([^)]*['"]\*['"]/.test(html));
   });
 
   test("nenhum outro arquivo servido referencia a tag ou a zona", () => {
@@ -198,16 +230,21 @@ describe("isolamento do script publicitário", () => {
     assert.deepEqual(achados, [join("public", "desktop", "banner.html")]);
   });
 
-  test("layout global, player, login e planos/checkout não montam o banner", () => {
+  test("layout global, login e planos/checkout não montam o banner", () => {
     for (const p of [
       "src/app/layout.tsx",
       "src/app/login/page.tsx",
       "src/app/planos/page.tsx",
       "src/app/checkout/page.tsx",
-      "src/components/player/CustomPlayer.tsx",
     ]) {
-      assert.ok(!ler(p).includes("BannerDesktop"), p);
+      assert.ok(!/BannerDesktop|ComBanners/.test(ler(p)), p);
     }
+  });
+
+  test("player: posição player, clicável só com o overlay visível", () => {
+    const player = ler("src/components/player/CustomPlayer.tsx");
+    assert.match(player, /<BannerDesktop posicao="player" interativo=\{showOverlay\} \/>/);
+    assert.equal((player.match(/<BannerDesktop/g) || []).length, 1);
   });
 
   test("headers globais dos quais o isolamento depende", () => {
@@ -225,5 +262,96 @@ describe("isolamento do script publicitário", () => {
     assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "desktop"), { tipo: "segue" });
     assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "navegador"), { tipo: "landing" });
     assert.deepEqual(decidirRota(DOCUMENTO_DO_BANNER, "android"), { tipo: "landing" });
+  });
+});
+
+describe("placements", () => {
+  test("url por posição usa hash (não vai ao servidor, não fragmenta cache)", () => {
+    for (const p of POSICOES_DO_BANNER) {
+      assert.equal(urlDoBanner(p), `/desktop/banner.html#${p}`);
+      assert.equal(decidirRota(urlDoBanner(p).split("#")[0], "desktop").tipo, "segue");
+    }
+  });
+
+  test("altura: nunca abaixo da inicial, nunca acima da máxima", () => {
+    for (const p of POSICOES_DO_BANNER) {
+      const { inicial, maxima } = ALTURA_DO_BANNER[p];
+      assert.equal(alturaDoIframe(p, 0), inicial);
+      assert.equal(alturaDoIframe(p, inicial + 10.2), inicial + 11);
+      assert.equal(alturaDoIframe(p, 99999), maxima);
+      assert.equal(alturaDoIframe(p, Number.NaN), inicial);
+    }
+  });
+
+  test("fallback sem anúncio é de 10 s", () => {
+    assert.equal(TEMPO_SEM_ANUNCIO_MS, 10_000);
+  });
+
+  test("mensagem do documento isolado: formato fechado", () => {
+    assert.deepEqual(lerMensagemDoBanner({ obaflixBanner: 1, estado: "anuncio", altura: 96 }), { estado: "anuncio", altura: 96 });
+    assert.deepEqual(lerMensagemDoBanner({ obaflixBanner: 1, estado: "vazio" }), { estado: "vazio" });
+    for (const ruim of [
+      null, "anuncio", 1, {}, { estado: "anuncio", altura: 1 },
+      { obaflixBanner: 2, estado: "anuncio", altura: 1 },
+      { obaflixBanner: 1, estado: "anuncio" },
+      { obaflixBanner: 1, estado: "anuncio", altura: -1 },
+      { obaflixBanner: 1, estado: "anuncio", altura: Infinity },
+      { obaflixBanner: 1, estado: "navegar", url: "https://x" },
+    ]) {
+      assert.equal(lerMensagemDoBanner(ruim), null, JSON.stringify(ruim));
+    }
+  });
+
+  test("recuo: 3 falhas seguidas pausam novos slots por 120 s; anúncio zera", () => {
+    const c = criarControleDeFalhas();
+    assert.equal(c.podeTentar(0), true);
+    c.registrarFalha(0); c.registrarFalha(0);
+    assert.equal(c.podeTentar(1), true);
+    c.registrarFalha(1000);
+    assert.equal(c.podeTentar(1000), false);
+    assert.equal(c.podeTentar(120_999), false);
+    assert.equal(c.podeTentar(121_000), true);
+    c.registrarFalha(200_000); c.registrarFalha(200_000); c.registrarSucesso(); c.registrarFalha(200_000);
+    assert.equal(c.podeTentar(200_000), true);
+  });
+
+  test("ComBanners: um banner feed depois de cada fileira; fileira ausente não gera banner", () => {
+    const fileira = (k: string) => createElement("section", { key: k, id: k });
+    const saida = ComBanners({
+      children: [fileira("a"), false, null, fileira("b"), undefined, fileira("c")],
+    }) as ReactElement<{ children: ReactElement<{ children: ReactElement[] }>[] }>;
+    const blocos = saida.props.children;
+    assert.equal(blocos.length, 3);
+    for (const bloco of blocos) {
+      const [row, banner] = bloco.props.children;
+      assert.ok(isValidElement(row));
+      assert.equal((banner as ReactElement).type, BannerDesktop);
+      assert.equal(((banner as ReactElement).props as { posicao: string }).posicao, "feed");
+    }
+  });
+
+  test("listagens intercalam; detalhes têm posição detalhe", () => {
+    for (const p of [
+      "src/components/home/HomeStreaming.tsx",
+      "src/app/filmes/page.tsx",
+      "src/app/series/page.tsx",
+      "src/app/animes/page.tsx",
+      "src/app/desenhos/page.tsx",
+    ]) {
+      const f = ler(p);
+      assert.ok(f.includes("<ComBanners>"), p);
+      assert.equal((f.match(/<ComBanners>/g) || []).length, (f.match(/<\/ComBanners>/g) || []).length, p);
+      // Nada que possa renderizar vazio no cliente dentro da intercalação.
+      for (const bloco of f.split("<ComBanners>").slice(1).map((b) => b.split("</ComBanners>")[0])) {
+        assert.ok(!bloco.includes("<ContinuarAssistindo"), `${p}: ContinuarAssistindo dentro de ComBanners`);
+        assert.ok(!bloco.includes("<PersonalizedRows"), `${p}: PersonalizedRows dentro de ComBanners`);
+        assert.ok(!/^\s*<LazyRow><EpisodioRecenteRow/m.test(bloco), `${p}: EpisodioRecenteRow sem condição`);
+      }
+    }
+    for (const p of ["src/app/filme/[id]/page.tsx", "src/app/serie/[id]/page.tsx"]) {
+      const f = ler(p);
+      assert.match(f, /<BannerDesktop posicao="detalhe" \/>/, p);
+      assert.ok(f.indexOf('<BannerDesktop posicao="detalhe"') > f.indexOf("<MediaHero"), `${p}: abaixo do hero`);
+    }
   });
 });

@@ -3,6 +3,7 @@ import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
+import { ComBanners } from "@/components/ads/ComBanners";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
@@ -190,8 +191,9 @@ export default async function AnimesPage({
           </Suspense>
         </div>
 
+        <ComBanners>
         {emAlta.length > 0       && <LandscapeRow titulo="Em Alta" items={emAlta.map(toRow)} />}
-        <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
+        {epsRecentesItems.length > 0 && <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>}
         {lancamentos.length > 0  && <LazyRow><LandscapeRow titulo="Lançamentos"             items={lancamentos.map(toRow)} verTodosHref="/animes?ordem=lancamento" /></LazyRow>}
         {recentes.length > 0     && <LazyRow><LandscapeRow titulo="Adicionados Recentemente" items={recentes.map(toRow)}    verTodosHref="/animes?ordem=recente" /></LazyRow>}
         {avaliados.length > 0    && <LazyRow><LandscapeRow titulo="Melhores de Todos os Tempos" items={avaliados.map(toRow)} verTodosHref="/animes?ordem=nota" /></LazyRow>}
@@ -201,6 +203,7 @@ export default async function AnimesPage({
         {drama.length > 0     && <LazyRow><LandscapeRow titulo="Drama"    items={drama.map(toRow)}     verTodosHref="/animes?genero=18" /></LazyRow>}
         {misterio.length > 0  && <LazyRow><LandscapeRow titulo="Mistério" items={misterio.map(toRow)}  verTodosHref="/animes?genero=9648" /></LazyRow>}
         {romance.length > 0   && <LazyRow><LandscapeRow titulo="Romance"  items={romance.map(toRow)}   verTodosHref="/animes?genero=10749" /></LazyRow>}
+        </ComBanners>
       </div>
     </div>
   );

@@ -90,3 +90,96 @@ export const DOCUMENTO_DO_BANNER = "/desktop/banner.html";
  * Electron manda todo destino externo ao navegador do sistema.
  */
 export const SANDBOX_DO_BANNER = "allow-scripts allow-popups";
+
+// ── Posições (placements) ─────────────────────────────────────────────────────
+
+/**
+ * Onde o banner aparece. Cada posição vira o hash do documento isolado
+ * (`/desktop/banner.html#feed`): o hash não vai ao servidor, não fragmenta
+ * cache e não sai no Referer. É lá, e só lá, que a posição vira zona Monetag
+ * (tabela `ZONAS` em `public/desktop/banner.html`). Hoje as três usam a única
+ * zona criada; zonas por posição precisam ser criadas no painel da Monetag.
+ */
+export const POSICOES_DO_BANNER = ["feed", "detalhe", "player"] as const;
+export type PosicaoDoBanner = (typeof POSICOES_DO_BANNER)[number];
+
+export function urlDoBanner(posicao: PosicaoDoBanner): string {
+  return `${DOCUMENTO_DO_BANNER}#${posicao}`;
+}
+
+/**
+ * Altura do iframe por posição, em px. `inicial` é a janela que a tag recebe
+ * para renderizar; o detector só pode **aumentar** a caixa (até `maxima`),
+ * nunca encolher abaixo da inicial — encolher reposicionaria um criativo
+ * ancorado ao rodapé a cada medição.
+ */
+export const ALTURA_DO_BANNER: Record<PosicaoDoBanner, { inicial: number; maxima: number }> = {
+  feed: { inicial: 120, maxima: 250 },
+  detalhe: { inicial: 120, maxima: 250 },
+  player: { inicial: 110, maxima: 160 },
+};
+
+export function alturaDoIframe(posicao: PosicaoDoBanner, reportada: number): number {
+  const { inicial, maxima } = ALTURA_DO_BANNER[posicao];
+  if (!Number.isFinite(reportada)) return inicial;
+  return Math.min(maxima, Math.max(inicial, Math.ceil(reportada)));
+}
+
+/**
+ * Sem anúncio real em até este tempo desde que o documento carregou, o espaço
+ * inteiro some (label inclusa) e o iframe é desmontado — a tag para de rodar.
+ */
+export const TEMPO_SEM_ANUNCIO_MS = 10_000;
+
+// ── Mensagem do documento isolado ─────────────────────────────────────────────
+
+export type EstadoDoBanner = { estado: "anuncio"; altura: number } | { estado: "vazio" };
+
+/**
+ * Valida o que o documento isolado manda por `postMessage`. Formato fechado:
+ * qualquer outra coisa é descartada. Quem chama ainda confere que `source` é o
+ * iframe deste slot e que `origin` é `"null"` (origem opaca do sandbox).
+ *
+ * A mensagem não é confiável por natureza — o script do anúncio roda no mesmo
+ * documento e pode forjá-la. O pior que ela faz é *mostrar* a caixa; não abre
+ * nada, não navega, não alcança a ponte. Por isso é aceitável.
+ */
+export function lerMensagemDoBanner(dado: unknown): EstadoDoBanner | null {
+  if (!dado || typeof dado !== "object") return null;
+  const m = dado as Record<string, unknown>;
+  if (m.obaflixBanner !== 1) return null;
+  if (m.estado === "vazio") return { estado: "vazio" };
+  if (m.estado === "anuncio" && typeof m.altura === "number" && Number.isFinite(m.altura) && m.altura >= 0) {
+    return { estado: "anuncio", altura: Math.min(m.altura, 10_000) };
+  }
+  return null;
+}
+
+// ── Recuo quando não há inventário ────────────────────────────────────────────
+
+/**
+ * Cada slot sem anúncio custa um documento, a tag (~150 KB, em cache) e as
+ * chamadas da Monetag. Sem inventário (IP/geo sem demanda), uma Home com uma
+ * dúzia de slots repetiria isso a cada rolagem. Depois de `limite` falhas
+ * seguidas, novos slots ficam em pausa por `pausaMs`. Um anúncio entregue zera.
+ */
+export function criarControleDeFalhas(limite = 3, pausaMs = 120_000) {
+  let seguidas = 0;
+  let pausaAte = 0;
+  return {
+    podeTentar(agora: number) {
+      return agora >= pausaAte;
+    },
+    registrarFalha(agora: number) {
+      seguidas += 1;
+      if (seguidas >= limite) {
+        pausaAte = agora + pausaMs;
+        seguidas = 0;
+      }
+    },
+    registrarSucesso() {
+      seguidas = 0;
+      pausaAte = 0;
+    },
+  };
+}

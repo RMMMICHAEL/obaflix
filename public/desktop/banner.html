@@ -2,8 +2,115 @@
 <html lang="pt-BR">
 <head>
 <script>
+// Detector do Obaflix. Roda ANTES da tag e só observa este documento: diz ao
+// app se a Monetag pintou um criativo de verdade, para o app mostrar a caixa ou
+// removê-la (sem inventário não sobra "PUBLICIDADE" vazio). Manda só
+// {estado, altura}; nenhum dado do app entra aqui, nenhum sai além disso.
+(function () {
+  var ZONAS = { feed: '11917353', detalhe: '11917353', player: '11917353' };
+  var posicao = String(location.hash || '').slice(1);
+  if (!Object.prototype.hasOwnProperty.call(ZONAS, posicao)) posicao = 'feed';
+  window.__obaflixZona = ZONAS[posicao];
+
+  // Hosts de shadow DOM (inclusive "closed"): o conteúdo não é legível, mas o
+  // host ocupa área e conta como pintura. Só registra; não altera o modo.
+  var hosts = [];
+  try {
+    var anexar = Element.prototype.attachShadow;
+    if (anexar) {
+      Element.prototype.attachShadow = function () {
+        hosts.push(this);
+        return anexar.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
+
+  var IGNORAR = { HTML: 1, HEAD: 1, BODY: 1, SCRIPT: 1, STYLE: 1, LINK: 1, META: 1, TITLE: 1, NOSCRIPT: 1, TEMPLATE: 1, BASE: 1 };
+  var PINTA = { IMG: 1, IFRAME: 1, VIDEO: 1, CANVAS: 1, SVG: 1, PICTURE: 1, OBJECT: 1, EMBED: 1 };
+
+  function opaco(cor) {
+    var m = /rgba?\(([^)]+)\)/.exec(cor || '');
+    if (!m) return false;
+    var p = m[1].split(',');
+    return p.length < 4 || parseFloat(p[3]) > 0.05;
+  }
+
+  function visivel(el, cs) {
+    if (el.checkVisibility) {
+      try { return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch (e) {}
+    }
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.05;
+  }
+
+  function temPintura(el, cs) {
+    if (PINTA[el.tagName.toUpperCase()]) return true;
+    if (hosts.indexOf(el) >= 0) return true;
+    if (cs.backgroundImage && cs.backgroundImage !== 'none') return true;
+    if (opaco(cs.backgroundColor)) return true;
+    for (var n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3 && /\S/.test(n.nodeValue)) return true;
+    }
+    return false;
+  }
+
+  // Maior "base" de um elemento pintado, visível, com área real e dentro da
+  // janela. 0 = nada renderizado.
+  function medir() {
+    var base = 0;
+    var todos = document.documentElement.getElementsByTagName('*');
+    var cabecalho = document.head;
+    for (var i = 0; i < todos.length; i++) {
+      var el = todos[i];
+      if (IGNORAR[el.tagName.toUpperCase()]) continue;
+      if (cabecalho && cabecalho.contains(el)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 100 || r.height < 30) continue;
+      if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) continue;
+      var cs = getComputedStyle(el);
+      if (!visivel(el, cs) || !temPintura(el, cs)) continue;
+      if (r.bottom > base) base = r.bottom;
+    }
+    return Math.ceil(base);
+  }
+
+  var destino = location.protocol + '//' + location.host;
+  var ultimo = '';
+  var vazioDesde = 0;
+  function avisar(msg) {
+    var chave = msg.estado + ':' + (msg.altura || 0);
+    if (chave === ultimo) return;
+    ultimo = chave;
+    try { parent.postMessage(msg, destino); } catch (e) {}
+  }
+
+  var agendado = false;
+  function checar() {
+    agendado = false;
+    var base = medir();
+    if (base > 0) {
+      vazioDesde = 0;
+      avisar({ obaflixBanner: 1, estado: 'anuncio', altura: base + 8 });
+    } else if (ultimo.indexOf('anuncio') === 0) {
+      // Some por um instante durante animação: só avisa depois de 1,5 s vazio.
+      if (!vazioDesde) vazioDesde = Date.now();
+      else if (Date.now() - vazioDesde >= 1500) avisar({ obaflixBanner: 1, estado: 'vazio' });
+    }
+  }
+  function agendar() {
+    if (agendado) return;
+    agendado = true;
+    setTimeout(checar, 200);
+  }
+
+  new MutationObserver(agendar).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, characterData: true,
+  });
+  setInterval(checar, 1000);
+})();
+</script>
+<script>
 (function(s){
-  s.dataset.zone='11917353',
+  s.dataset.zone=window.__obaflixZona,
   s.src='https://nap5k.com/tag.min.js'
 })([document.documentElement, document.body]
   .filter(Boolean)
@@ -17,11 +124,12 @@
 <meta name="color-scheme" content="dark">
 <title>Publicidade</title>
 <!--
-  Documento isolado do banner do app Windows (Monetag In-Page Push, zona 11917353).
-  Só é carregado por src/components/ads/BannerDesktop.tsx, dentro de um iframe
-  sandbox SEM allow-same-origin: este script roda em origem opaca e não alcança
-  o app (parent.obaflixDesktop, DOM, cookies, storage), não navega a janela
-  principal e não baixa arquivos. Não acrescente outras tags/zonas aqui.
+  Documento isolado do banner do app Windows (Monetag In-Page Push). Único lugar
+  com a tag e com as zonas. Só é carregado por src/components/ads/BannerDesktop.tsx,
+  num iframe sandbox SEM allow-same-origin: este script roda em origem opaca e não
+  alcança o app (parent.obaflixDesktop, DOM, cookies, storage), não navega a janela
+  principal e não baixa arquivos. Não acrescente outras tags/formatos aqui.
+  Zonas por posição: troque em ZONAS acima quando forem criadas na Monetag.
 -->
 <style>html,body{margin:0;padding:0;background:transparent;overflow:hidden}</style>
 </head>
