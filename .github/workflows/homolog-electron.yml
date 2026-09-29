@@ -53,7 +53,9 @@ jobs:
 
       - name: Build do instalador
         working-directory: desktop
-        run: npx electron-builder --win --x64 -c electron-builder.yml -c.extraMetadata.version=${{ env.VERSAO }} --publish never
+        # bash: o PowerShell parte "-c.extraMetadata.version=..." em dois argumentos.
+        shell: bash
+        run: npx electron-builder --win --x64 --config electron-builder.yml --config.extraMetadata.version="$VERSAO" --publish never
 
       - name: SHA-256 e origem
         working-directory: desktop
