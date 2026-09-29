@@ -39,14 +39,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Electron 43 e @electron/rebuild exigem Node >= 22.12.
+          node-version: "22"
 
       - name: Dependências do desktop
         working-directory: desktop
         run: npm ci
 
       - name: Testes do Electron
-        run: node --test "desktop/electron/__tests__/*.test.js"
+        # bash: o PowerShell não expande o curinga.
+        shell: bash
+        run: node --test desktop/electron/__tests__/*.test.js
 
       - name: Build do instalador
         working-directory: desktop
