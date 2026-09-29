@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<script>
+// ── Detector do Obaflix (roda ANTES da tag) ──────────────────────────────────
+// Diz ao app se a Monetag pintou um criativo, para o app mostrar a caixa ou
+// removê-la. Manda só {estado, altura}, e só para a origem do app que emoldura
+// esta página (mesma lista do frame-ancestors em ../vercel.json).
+(function () {
+  // ─── ZONAS IN-PAGE PUSH DO DOMÍNIO obaflix-ads ───────────────────────────
+  // Preencher com as zonas criadas na Monetag PARA ESTE DOMÍNIO (formato
+  // In-Page Push / Banner). Vazio = a tag não é carregada.
+  // Não usar zonas de outro site, MultiTag, Push, OnClick/Popunder ou Vignette.
+  var ZONAS = { feed: '', detalhe: '', player: '' };
+
+  // Origens do Obaflix autorizadas a emoldurar esta página.
+  var APP = ['https://obaflix.vercel.app', 'https://obaflix-git-claude-modest-newton-ehfcmn-michaeltrader.vercel.app'];
+
+  var posicao = String(location.hash || '').slice(1);
+  if (!Object.prototype.hasOwnProperty.call(ZONAS, posicao)) posicao = 'feed';
+  window.__obaflixZona = ZONAS[posicao];
+
+  var pai = '';
+  try {
+    var anc = location.ancestorOrigins;
+    if (anc && anc.length && APP.indexOf(anc[0]) >= 0) pai = anc[0];
+  } catch (e) {}
+
+  var hosts = [];
+  try {
+    var anexar = Element.prototype.attachShadow;
+    if (anexar) {
+      Element.prototype.attachShadow = function () {
+        hosts.push(this);
+        return anexar.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
+
+  var IGNORAR = { HTML: 1, HEAD: 1, BODY: 1, SCRIPT: 1, STYLE: 1, LINK: 1, META: 1, TITLE: 1, NOSCRIPT: 1, TEMPLATE: 1, BASE: 1 };
+  var PINTA = { IMG: 1, IFRAME: 1, VIDEO: 1, CANVAS: 1, SVG: 1, PICTURE: 1, OBJECT: 1, EMBED: 1 };
+
+  function opaco(cor) {
+    var m = /rgba?\(([^)]+)\)/.exec(cor || '');
+    if (!m) return false;
+    var p = m[1].split(',');
+    return p.length < 4 || parseFloat(p[3]) > 0.05;
+  }
+  function visivel(el, cs) {
+    if (el.checkVisibility) {
+      try { return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch (e) {}
+    }
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.05;
+  }
+  function temPintura(el, cs) {
+    if (PINTA[el.tagName.toUpperCase()]) return true;
+    if (hosts.indexOf(el) >= 0) return true;
+    if (cs.backgroundImage && cs.backgroundImage !== 'none') return true;
+    if (opaco(cs.backgroundColor)) return true;
+    for (var n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3 && /\S/.test(n.nodeValue)) return true;
+    }
+    return false;
+  }
+  function medir() {
+    var base = 0;
+    var todos = document.documentElement.getElementsByTagName('*');
+    var cabecalho = document.head;
+    for (var i = 0; i < todos.length; i++) {
+      var el = todos[i];
+      if (IGNORAR[el.tagName.toUpperCase()]) continue;
+      if (cabecalho && cabecalho.contains(el)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 100 || r.height < 30) continue;
+      if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) continue;
+      var cs = getComputedStyle(el);
+      if (!visivel(el, cs) || !temPintura(el, cs)) continue;
+      if (r.bottom > base) base = r.bottom;
+    }
+    return Math.ceil(base);
+  }
+
+  var ultimo = '';
+  var vazioDesde = 0;
+  function avisar(msg) {
+    if (!pai) return; // fora de uma moldura autorizada: não fala com ninguém
+    var chave = msg.estado + ':' + (msg.altura || 0);
+    if (chave === ultimo) return;
+    ultimo = chave;
+    try { parent.postMessage(msg, pai); } catch (e) {}
+  }
+  var agendado = false;
+  function checar() {
+    agendado = false;
+    var base = medir();
+    if (base > 0) {
+      vazioDesde = 0;
+      avisar({ obaflixBanner: 1, estado: 'anuncio', altura: base + 8 });
+    } else if (ultimo.indexOf('anuncio') === 0) {
+      if (!vazioDesde) vazioDesde = Date.now();
+      else if (Date.now() - vazioDesde >= 1500) avisar({ obaflixBanner: 1, estado: 'vazio' });
+    }
+  }
+  function agendar() {
+    if (agendado) return;
+    agendado = true;
+    setTimeout(checar, 200);
+  }
+  new MutationObserver(agendar).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, characterData: true,
+  });
+  setInterval(checar, 1000);
+})();
+</script>
+<!-- ─── TAG MONETAG IN-PAGE PUSH (Banner) ────────────────────────────────────
+     Snippet oficial, adaptado só para ler a zona da tabela ZONAS acima e para
+     não carregar nada enquanto a zona estiver vazia. Se a Monetag entregar um
+     snippet com outro domínio de script, troque SÓ a URL em s.src.
+-->
+<script>
+(function(zona){
+  if (!zona) return;
+  (function(s){
+    s.dataset.zone=zona,
+    s.src='https://nap5k.com/tag.min.js'
+  })([document.documentElement, document.body]
+    .filter(Boolean)
+    .pop()
+    .appendChild(document.createElement('script')))
+})(window.__obaflixZona);
+</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark">
+<title>Publicidade</title>
+<style>html,body{margin:0;padding:0;background:transparent;overflow:hidden}</style>
+</head>
+<body></body>
+</html>
