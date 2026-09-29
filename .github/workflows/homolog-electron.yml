@@ -1,0 +1,83 @@
+# Build de HOMOLOGAÇÃO do Electron (Windows), sem assinatura e sem publicar.
+#
+# Diferente de release-electron.yml: não usa os secrets Authenticode, não cria
+# release e não alimenta o updater. O instalador sai só como artefato desta
+# execução (aba Actions → execução → Artifacts), para teste.
+#
+# Versão 1.0.12-homolog.1 injetada no build (package.json continua 1.0.11):
+# acima de qualquer 1.0.11 publicada (o updater não troca o build de teste por
+# ela) e abaixo da 1.0.12 oficial (que o atualiza normalmente quando sair).
+name: homolog-electron
+
+on:
+  push:
+    branches: [claude/modest-newton-ehfcmn]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/homolog-electron.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: homolog-electron-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-win:
+    name: Instalador Windows (teste, não assinado)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSAO: 1.0.12-homolog.1
+      # Sem certificado: o electron-builder não tenta assinar nem procurar identidade.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Dependências do desktop
+        working-directory: desktop
+        run: npm ci
+
+      - name: Testes do Electron
+        run: node --test "desktop/electron/__tests__/*.test.js"
+
+      - name: Build do instalador
+        working-directory: desktop
+        run: npx electron-builder --win --x64 -c electron-builder.yml -c.extraMetadata.version=${{ env.VERSAO }} --publish never
+
+      - name: SHA-256 e origem
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter "Obaflix-Setup-$env:VERSAO.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "instalador não encontrado"; exit 1 }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          $sig = (Get-AuthenticodeSignature $exe.FullName).Status
+          $linhas = @(
+            "Arquivo : $($exe.Name)",
+            "Tamanho : $($exe.Length) bytes",
+            "SHA-256 : $hash",
+            "Versao  : $env:VERSAO (build de TESTE, nao e release)",
+            "Commit  : $env:GITHUB_SHA",
+            "Assinat.: $sig (sem Authenticode: o SmartScreen vai avisar)"
+          )
+          $linhas | Set-Content "dist/SHA256.txt"
+          $linhas | ForEach-Object { Write-Host $_ }
+          "## Instalador de homologação`n" + (($linhas | ForEach-Object { "- $_" }) -join "`n") | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Publicar artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: Obaflix-Setup-1.0.12-homolog.1
+          path: |
+            desktop/dist/Obaflix-Setup-*.exe
+            desktop/dist/SHA256.txt
+          retention-days: 30
+          if-no-files-found: error
