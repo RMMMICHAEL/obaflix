@@ -19,6 +19,7 @@ rootProject.name = "Obaflix"
 // Compartilhado entre o app movel e o app de TV para que os dois nao divirjam —
 // e a divergencia silenciosa entre ambientes ja custou caro antes.
 include(":core-extractor")
+include ":core-environment"
 
 include(":app")   // movel  — WebView + ponte
 include(":tv")    // Android TV / TV Box — Compose for TV

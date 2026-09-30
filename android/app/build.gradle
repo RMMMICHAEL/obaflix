@@ -127,6 +127,7 @@ dependencies {
     // deixaria o build nao reproduzivel — duas maquinas resolveriam versoes
     // diferentes. Fixado na maior existente hoje; sem dependencias proprias.
     implementation 'com.unity3d.ads-mediation:adquality-sdk:9.9.0'
+    implementation project(':core-environment')
 
     // A ponte de anuncio roda em JVM pura, com um provedor dublê: sem SDK, sem
     // Activity, sem WebView real.

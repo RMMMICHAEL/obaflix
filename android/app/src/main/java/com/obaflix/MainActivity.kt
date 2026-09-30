@@ -1,6 +1,9 @@
 package com.obaflix
 
 import android.Manifest
+import com.obaflix.environment.EnvironmentApplier
+import com.obaflix.environment.EnvironmentConfig
+import com.obaflix.environment.EnvironmentDetector
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Build
@@ -85,6 +88,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setupEnvironmentDetection() // OBAFLIX_ENV_CALL
         // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros).
         // DIAG_LOGS permite o mesmo num APK de release, para investigar um bug que
         // só aparece no aparelho de alguém — ver -PdiagLogs em app/build.gradle.
@@ -626,5 +630,15 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
         (webView.parent as? ViewGroup)?.removeView(webView)
         webView.destroy()
         super.onDestroy()
+    }
+
+// OBAFLIX_ENV_FUNCTION
+    // Obaflix: Deteccao de ambiente
+    private fun setupEnvironmentDetection() {
+        val env = EnvironmentDetector.getEnvironment(this)
+        val config = EnvironmentConfig(this).also { it.load() }
+        val applier = EnvironmentApplier(this, config)
+        applier.apply(env)
+        android.util.Log.d("ObaflixEnv", "VPN=${env.isVpn}, Emulador=${env.isEmulator}, Regiao=${env.region}")
     }
 }
