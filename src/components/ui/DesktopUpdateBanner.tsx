@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Download } from "lucide-react";
 
+import { DESKTOP_UPDATE_READY_EVENT } from "@/lib/desktop/versaoMinima";
+
 export function DesktopUpdateBanner() {
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
 
@@ -11,7 +13,15 @@ export function DesktopUpdateBanner() {
     if (!desktop) return;
 
     desktop.onUpdateReady((version: string) => {
-      setPendingVersion(version || "nova versão");
+      const resolvedVersion = version || "nova versão";
+
+      setPendingVersion(resolvedVersion);
+
+      window.dispatchEvent(
+        new CustomEvent(DESKTOP_UPDATE_READY_EVENT, {
+          detail: { version: resolvedVersion },
+        }),
+      );
     });
   }, []);
 

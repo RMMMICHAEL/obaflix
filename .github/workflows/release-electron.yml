@@ -1,77 +1,212 @@
-# PROPOSTA de workflow — build + assinatura Authenticode do Electron (GATE 2/4)
-# Aplicar no REPO DO APP em `.github/workflows/release-electron.yml`.
-# Assina SEMPRE dentro do CI (nunca no .exe congelado). Sem secrets no arquivo.
 name: release-electron
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Commit/tag a construir (usar o RC pentestado)"
+        description: "Commit/tag exato da versão final 1.0.12"
         required: true
-        default: "4c752ea29e81242b170306e18761d6fafd56ea16"
+        type: string
 
 permissions:
-  contents: write   # publicar o release no GitHub (feed do updater)
+  contents: write
 
 jobs:
-  build-sign:
+  build-sign-release:
     runs-on: windows-latest
+
     steps:
-      - name: Checkout (ref fixo = RC pentestado)
+      - name: Checkout do ref solicitado
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
 
-      - name: Setup Node
+      - name: Registrar commit exato
+        id: commit
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          Write-Host "Commit em build: $sha"
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
-      - name: Instalar deps do desktop
-        working-directory: desktop
-        run: npm ci
-
-      - name: Build + assinar (electron-builder)
-        working-directory: desktop
-        env:
-          # Certificado Authenticode — configurados como GitHub Secrets:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}            # base64 do .pfx
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # -c explícito: garante o uso do electron-builder.yml corrigido (artifactName +
-        # signtoolOptions) e NÃO o bloco `build` antigo do package.json (que coexiste na
-        # branch de release). Mesma config validada no dry-run local.
-        run: npx electron-builder --win --x64 -c electron-builder.yml --publish onTag
-
-      - name: GATE 4 — validar nome do asset no latest.yml
-        working-directory: desktop
-        shell: bash
-        run: |
-          set -e
-          echo "== latest.yml =="; cat dist/latest.yml
-          # Falha se houver espaço no nome do arquivo, ou se o exe com espaço existir
-          if grep -Eq 'url:\s*Obaflix Setup' dist/latest.yml; then
-            echo "::error::latest.yml ainda referencia nome com espaços"; exit 1; fi
-          if ! grep -Eq 'url:\s*Obaflix-Setup-[0-9].*\.exe' dist/latest.yml; then
-            echo "::error::latest.yml não referencia Obaflix-Setup-<versão>.exe"; exit 1; fi
-          test -f "dist/Obaflix-Setup-"*".exe" || { echo "::error::exe sem hífens não encontrado"; exit 1; }
-          echo "GATE4 OK: nome de asset coerente"
-
-      - name: GATE 2 — verificar assinatura Authenticode
+      - name: Validar versão final
         working-directory: desktop
         shell: pwsh
         run: |
-          $exe = Get-ChildItem dist -Filter 'Obaflix-Setup-*.exe' | Select-Object -First 1
-          $sig = Get-AuthenticodeSignature $exe.FullName
-          Write-Host "Status:" $sig.Status "Signer:" $sig.SignerCertificate.Subject
-          if ($sig.Status -ne 'Valid') { Write-Error "Assinatura inválida: $($sig.Status)"; exit 1 }
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.version -ne "1.0.12") {
+            throw "Versão inesperada: $($package.version)"
+          }
+          Write-Host "Versão validada: 1.0.12"
 
-      - name: Publicar artefatos (exe + blockmap + latest.yml)
+      - name: Validar configuração de assinatura
+        id: signing
+        shell: pwsh
+        env:
+          WIN_CSC_LINK_VALUE: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_PASSWORD_VALUE: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $hasLink = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_VALUE)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_PASSWORD_VALUE)
+
+          if ($hasLink -xor $hasPassword) {
+            throw "Configuração Authenticode incompleta: os dois secrets precisam existir juntos."
+          }
+
+          if ($hasLink -and $hasPassword) {
+            "enabled=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Authenticode configurado."
+          } else {
+            "enabled=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Authenticode não configurado. O candidato será construído, mas não será publicado como release final."
+          }
+
+      - name: Instalar dependências do desktop
+        working-directory: desktop
+        run: npm ci
+
+      - name: Testes do desktop
+        working-directory: desktop
+        run: npm test
+
+      - name: Build do instalador
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npx electron-builder --win --x64 -c electron-builder.yml --publish never
+
+      - name: Validar artefatos 1.0.12
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $exe = "dist/Obaflix-Setup-1.0.12.exe"
+          $blockmap = "dist/Obaflix-Setup-1.0.12.exe.blockmap"
+          $latest = "dist/latest.yml"
+
+          foreach ($arquivo in @($exe, $blockmap, $latest)) {
+            if (-not (Test-Path $arquivo)) {
+              throw "Artefato ausente: $arquivo"
+            }
+          }
+
+          $latestText = Get-Content $latest -Raw
+
+          if ($latestText -notmatch '(?m)^version:\s*1\.0\.12\s*$') {
+            throw "latest.yml não declara 1.0.12"
+          }
+
+          if ($latestText -notmatch 'Obaflix-Setup-1\.0\.12\.exe') {
+            throw "latest.yml não referencia o EXE final esperado"
+          }
+
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          $size = (Get-Item $exe).Length
+
+          Write-Host "EXE=$exe"
+          Write-Host "SIZE=$size"
+          Write-Host "SHA256=$hash"
+
+      - name: Validar Authenticode
+        id: authenticode
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $exe = Get-Item "dist/Obaflix-Setup-1.0.12.exe"
+          $sig = Get-AuthenticodeSignature $exe.FullName
+
+          Write-Host "Authenticode status: $($sig.Status)"
+
+          if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
+            if ($sig.Status -ne "Valid") {
+              throw "Assinatura Authenticode inválida: $($sig.Status)"
+            }
+
+            "valid=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Assinatura Authenticode válida."
+          } else {
+            "valid=false" >> $env:GITHUB_OUTPUT
+            Write-Warning "Build sem secrets de assinatura: publicação final será bloqueada."
+          }
+
+      - name: Publicar release final no próprio repositório
+        if: steps.authenticode.outputs.valid == 'true'
+        working-directory: desktop
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          $tag = "v1.0.12"
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            throw "A release/tag $tag já existe. Nada será sobrescrito."
+          }
+
+          gh release create $tag `
+            "dist/Obaflix-Setup-1.0.12.exe" `
+            "dist/Obaflix-Setup-1.0.12.exe.blockmap" `
+            "dist/latest.yml" `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:RELEASE_SHA `
+            --title "Obaflix 1.0.12" `
+            --notes "Obaflix Desktop 1.0.12"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao publicar release."
+          }
+
+      - name: Verificar release publicada
+        if: steps.authenticode.outputs.valid == 'true'
+        working-directory: desktop
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $json = gh release view "v1.0.12" `
+            --repo $env:GITHUB_REPOSITORY `
+            --json tagName,targetCommitish,assets
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release v1.0.12 não pôde ser consultada."
+          }
+
+          Write-Host $json
+
+          $release = $json | ConvertFrom-Json
+          $nomes = @($release.assets | ForEach-Object { $_.name })
+
+          foreach ($esperado in @(
+            "Obaflix-Setup-1.0.12.exe",
+            "Obaflix-Setup-1.0.12.exe.blockmap",
+            "latest.yml"
+          )) {
+            if ($esperado -notin $nomes) {
+              throw "Asset ausente na release: $esperado"
+            }
+          }
+
+      - name: Guardar candidato assinado ou não assinado
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: obaflix-electron-signed
+          name: obaflix-electron-1.0.12
+          if-no-files-found: error
           path: |
-            desktop/dist/Obaflix-Setup-*.exe
-            desktop/dist/Obaflix-Setup-*.exe.blockmap
+            desktop/dist/Obaflix-Setup-1.0.12.exe
+            desktop/dist/Obaflix-Setup-1.0.12.exe.blockmap
             desktop/dist/latest.yml
+
+      - name: Impedir release final sem Authenticode
+        if: steps.authenticode.outputs.valid != 'true'
+        shell: pwsh
+        run: |
+          throw "Candidato gerado, mas release pública bloqueada porque Authenticode não foi validado."

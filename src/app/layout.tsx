@@ -6,6 +6,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { AndroidShell } from "@/components/layout/AndroidShell";
 import { APP_MODE_BOOTSTRAP_SCRIPT, AppModeProvider } from "@/components/layout/AppMode";
 import { DesktopUpdateBanner } from "@/components/ui/DesktopUpdateBanner";
+import { DesktopVersionGate } from "@/components/ui/DesktopVersionGate";
 import { CliqueDesktop } from "@/components/ads/CliqueDesktop";
 import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
 import { JsonLd } from "@/components/seo/JsonLd";
@@ -114,6 +115,7 @@ export default function RootLayout({
             <AndroidShell />
             <Navbar />
             <main>{children}</main>
+            <DesktopVersionGate />
             <DesktopUpdateBanner />
             <CliqueDesktop />
           </AppModeProvider>}
