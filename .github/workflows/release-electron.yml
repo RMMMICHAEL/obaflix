@@ -1,5 +1,12 @@
 name: release-electron
 
+# Dois modos, escolhidos por `publish_release`:
+#   false (padrão) → CANDIDATO: build, testes, validação de versão/artefatos/feed/Authenticode
+#                    e upload como artifact do Actions. NÃO cria tag nem release.
+#   true           → PUBLICAÇÃO: o mesmo pipeline e, só se Authenticode = Valid e o commit
+#                    já estiver na main, cria a release v1.0.12 (EXE + blockmap + latest.yml).
+# Em nenhum dos modos um EXE sem Authenticode válido é aceito: o job termina em falha.
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,6 +14,11 @@ on:
         description: "Commit/tag exato da versão final 1.0.12"
         required: true
         type: string
+      publish_release:
+        description: "Criar a release pública v1.0.12 (somente após candidato homologado e merge na main)"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -19,16 +31,30 @@ jobs:
       - name: Checkout do ref solicitado
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref }}
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - name: Registrar commit exato
+      - name: Registrar commit exato e modo
         id: commit
         shell: pwsh
+        env:
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           $sha = (git rev-parse HEAD).Trim()
           Write-Host "Commit em build: $sha"
+          Write-Host "publish_release: $env:PUBLISH_RELEASE"
           "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Publicação exige commit já mesclado na main
+        if: inputs.publish_release
+        shell: pwsh
+        run: |
+          git fetch origin main --quiet
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "publish_release=true exige um commit já mesclado na main. Rode como candidato (publish_release=false)."
+          }
+          Write-Host "Commit está na main."
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -51,6 +77,7 @@ jobs:
         env:
           WIN_CSC_LINK_VALUE: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_PASSWORD_VALUE: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
           $hasLink = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_VALUE)
           $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_PASSWORD_VALUE)
@@ -63,8 +90,11 @@ jobs:
             "enabled=true" >> $env:GITHUB_OUTPUT
             Write-Host "Authenticode configurado."
           } else {
+            if ($env:PUBLISH_RELEASE -eq "true") {
+              throw "FALTA_CERTIFICADO_AUTHENTICODE: publish_release=true exige WIN_CSC_LINK e WIN_CSC_KEY_PASSWORD."
+            }
             "enabled=false" >> $env:GITHUB_OUTPUT
-            Write-Host "Authenticode não configurado. O candidato será construído, mas não será publicado como release final."
+            Write-Host "Authenticode não configurado. O candidato será construído para inspeção, mas o job terminará em falha."
           }
 
       - name: Instalar dependências do desktop
@@ -83,6 +113,7 @@ jobs:
         run: npx electron-builder --win --x64 -c electron-builder.yml --publish never
 
       - name: Validar artefatos 1.0.12
+        id: artefatos
         working-directory: desktop
         shell: pwsh
         run: |
@@ -102,8 +133,12 @@ jobs:
             throw "latest.yml não declara 1.0.12"
           }
 
-          if ($latestText -notmatch 'Obaflix-Setup-1\.0\.12\.exe') {
-            throw "latest.yml não referencia o EXE final esperado"
+          if ($latestText -notmatch '(?m)^\s*-\s*url:\s*Obaflix-Setup-1\.0\.12\.exe\s*$') {
+            throw "latest.yml (files[].url) não referencia o EXE final esperado"
+          }
+
+          if ($latestText -notmatch '(?m)^path:\s*Obaflix-Setup-1\.0\.12\.exe\s*$') {
+            throw "latest.yml (path) não referencia o EXE final esperado"
           }
 
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
@@ -112,6 +147,34 @@ jobs:
           Write-Host "EXE=$exe"
           Write-Host "SIZE=$size"
           Write-Host "SHA256=$hash"
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$size" >> $env:GITHUB_OUTPUT
+
+      - name: Validar feed do updater no binário (app-update.yml)
+        id: feed
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $appUpdate = "dist/win-unpacked/resources/app-update.yml"
+
+          if (-not (Test-Path $appUpdate)) {
+            throw "app-update.yml ausente no binário: $appUpdate"
+          }
+
+          $texto = Get-Content $appUpdate -Raw
+          Write-Host $texto
+
+          foreach ($esperado in @(
+            '(?m)^provider:\s*github\s*$',
+            '(?m)^owner:\s*RMMMICHAEL\s*$',
+            '(?m)^repo:\s*obaflix\s*$'
+          )) {
+            if ($texto -notmatch $esperado) {
+              throw "app-update.yml fora do esperado (github:RMMMICHAEL/obaflix): falhou em $esperado"
+            }
+          }
+
+          "feed=github:RMMMICHAEL/obaflix" >> $env:GITHUB_OUTPUT
 
       - name: Validar Authenticode
         id: authenticode
@@ -122,6 +185,7 @@ jobs:
           $sig = Get-AuthenticodeSignature $exe.FullName
 
           Write-Host "Authenticode status: $($sig.Status)"
+          "status=$($sig.Status)" >> $env:GITHUB_OUTPUT
 
           if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
             if ($sig.Status -ne "Valid") {
@@ -132,11 +196,42 @@ jobs:
             Write-Host "Assinatura Authenticode válida."
           } else {
             "valid=false" >> $env:GITHUB_OUTPUT
-            Write-Warning "Build sem secrets de assinatura: publicação final será bloqueada."
+            Write-Warning "Build sem secrets de assinatura: candidato não aprovado."
           }
 
+      - name: Resumo do build
+        if: always()
+        shell: pwsh
+        env:
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          @(
+            "## Obaflix Electron 1.0.12",
+            "",
+            "| Campo | Valor |",
+            "|---|---|",
+            "| Commit | ${{ steps.commit.outputs.sha }} |",
+            "| publish_release | $env:PUBLISH_RELEASE |",
+            "| SHA256 | ${{ steps.artefatos.outputs.sha256 }} |",
+            "| Tamanho (bytes) | ${{ steps.artefatos.outputs.size }} |",
+            "| Feed (app-update.yml) | ${{ steps.feed.outputs.feed }} |",
+            "| Authenticode | ${{ steps.authenticode.outputs.status }} |"
+          ) -join "`n" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Guardar candidato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: obaflix-electron-1.0.12
+          if-no-files-found: error
+          path: |
+            desktop/dist/Obaflix-Setup-1.0.12.exe
+            desktop/dist/Obaflix-Setup-1.0.12.exe.blockmap
+            desktop/dist/latest.yml
+            desktop/dist/win-unpacked/resources/app-update.yml
+
       - name: Publicar release final no próprio repositório
-        if: steps.authenticode.outputs.valid == 'true'
+        if: inputs.publish_release && steps.authenticode.outputs.valid == 'true'
         working-directory: desktop
         shell: pwsh
         env:
@@ -165,7 +260,7 @@ jobs:
           }
 
       - name: Verificar release publicada
-        if: steps.authenticode.outputs.valid == 'true'
+        if: inputs.publish_release && steps.authenticode.outputs.valid == 'true'
         working-directory: desktop
         shell: pwsh
         env:
@@ -194,19 +289,8 @@ jobs:
             }
           }
 
-      - name: Guardar candidato assinado ou não assinado
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: obaflix-electron-1.0.12
-          if-no-files-found: error
-          path: |
-            desktop/dist/Obaflix-Setup-1.0.12.exe
-            desktop/dist/Obaflix-Setup-1.0.12.exe.blockmap
-            desktop/dist/latest.yml
-
-      - name: Impedir release final sem Authenticode
+      - name: Reprovar build sem Authenticode válido
         if: steps.authenticode.outputs.valid != 'true'
         shell: pwsh
         run: |
-          throw "Candidato gerado, mas release pública bloqueada porque Authenticode não foi validado."
+          throw "FALTA_CERTIFICADO_AUTHENTICODE ou assinatura inválida: candidato não aprovado e nenhuma release criada."
