@@ -6,7 +6,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { prisma } from "@/lib/prisma";
-import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "@/lib/playbackAuthorization";
+import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
@@ -20,10 +20,12 @@ import {
 import {
   decidirAnuncio,
   decidirPromocaoTv,
+  ehRequisicaoElectron,
   exigeAnuncio,
   meioDeExibicao,
   plataformaDaRequisicao,
 } from "@/lib/ads/politica";
+import { HEADER_CLIENTE } from "@/config/site-mode";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 import { resolverPromocaoTv } from "@/lib/ads/promocaoTv";
 
@@ -151,6 +153,7 @@ export interface DependenciasDeAutorizacao {
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
   anuncioAndroidAtivo?: () => boolean;
+  anuncioElectronAtivo?: () => boolean;
   entitlementsDoUsuario?: typeof entitlementsDoUsuario;
   registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
   emitirPasse?: typeof emitirPasse;
@@ -168,6 +171,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
+  const anuncioElectron = deps.anuncioElectronAtivo ?? anuncioElectronAtivo;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
   const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
   const criarPasse = deps.emitirPasse ?? emitirPasse;
@@ -248,10 +252,17 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // plataforma vem de `plataformaDaRequisicao` acima: `android_tv` só da
   // credencial, `android` só quando o cliente nativo a declara (a mesma lógica
   // que a global já usa) — um cookie/web que declare `android_tv` caiu em `web`.
-  // Web e Electron seguem o bypass de sempre com a global desligada.
+  // `ANUNCIO_ELECTRON_ATIVO` liga para requisições do Electron por qualquer sinal
+  // (`ehRequisicaoElectron`): declarar `web` de dentro do app não escapa. Se o
+  // sinal veio só do header e a plataforma ficou `web`, não há meio de exibição e
+  // a resposta abaixo é ANUNCIO_INDISPONIVEL — recusa, nunca liberação.
+  // Web segue o bypass de sempre com a global desligada.
   const enforcarPromocaoTv = promoTvAtiva() && plataforma === "android_tv";
   const enforcarAnuncioAndroid = anuncioAndroid() && plataforma === "android";
-  if (!flagAtiva() && !enforcarPromocaoTv && !enforcarAnuncioAndroid) {
+  const enforcarAnuncioElectron =
+    anuncioElectron() &&
+    ehRequisicaoElectron({ plataforma, userAgent: ua, headerCliente: req.headers.get(HEADER_CLIENTE) });
+  if (!flagAtiva() && !enforcarPromocaoTv && !enforcarAnuncioAndroid && !enforcarAnuncioElectron) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 

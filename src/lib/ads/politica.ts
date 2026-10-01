@@ -28,6 +28,7 @@
  */
 
 import type { DireitosDoPlano } from "../planos";
+import { detectarAmbiente } from "../../config/site-mode";
 
 /** O que o usuário está tentando abrir. */
 export type ConteudoDeAnuncio = "filme" | "serie" | "canal";
@@ -70,6 +71,37 @@ export function plataformaDaRequisicao(
     return "android_tv";
   }
   return declarada === "android" || declarada === "electron" ? declarada : "web";
+}
+
+/**
+ * A requisição veio do aplicativo Electron?
+ *
+ * Usada só para decidir se `ANUNCIO_ELECTRON_ATIVO` se aplica — nunca para
+ * escolher o meio de exibição, que continua vindo de `plataformaDaRequisicao`.
+ *
+ * **Qualquer** sinal de Electron basta, e é de propósito: a flag existe para
+ * cobrar, então rebaixar a requisição para `web` não pode ser o jeito de escapar.
+ *
+ *   - `plataforma` declarada `electron` — o que `/playback/authorize` recebe;
+ *   - `ambiente` declarado `electron` — o que o player manda para `/player/fontes`,
+ *     que não leva `plataforma` no corpo;
+ *   - o ambiente da requisição (`X-Obaflix-Client: desktop` ou o User-Agent
+ *     `ObaflixDesktop/`), que o `main.js` injeta em toda requisição ao site e que o
+ *     JavaScript da página não consegue trocar.
+ *
+ * Credencial de Android TV nunca é Electron: a TV continua reagindo só à própria
+ * flag. Um cliente adulterado fora do Electron, sem nenhum dos três sinais, é
+ * indistinguível do navegador — o mesmo limite que `ANUNCIO_ANDROID_ATIVO` tem.
+ */
+export function ehRequisicaoElectron(sinais: {
+  plataforma: PlataformaDeExibicao;
+  ambienteDeclarado?: unknown;
+  userAgent?: string | null;
+  headerCliente?: string | null;
+}): boolean {
+  if (sinais.plataforma === "android_tv") return false;
+  if (sinais.plataforma === "electron" || sinais.ambienteDeclarado === "electron") return true;
+  return detectarAmbiente(sinais.userAgent ?? null, sinais.headerCliente ?? null) === "desktop";
 }
 
 /**

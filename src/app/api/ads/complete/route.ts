@@ -5,7 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "@/lib/playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   TTL_CONCESSAO_PROMOCAO_TV_S,
@@ -93,6 +93,7 @@ export interface DependenciasDeConclusao {
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
   anuncioAndroidAtivo?: () => boolean;
+  anuncioElectronAtivo?: () => boolean;
   checkRateLimit?: typeof checkRateLimit;
   consumirDesafio?: typeof consumirDesafio;
   emitirConcessao?: typeof emitirConcessao;
@@ -109,6 +110,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
+  const anuncioElectron = deps.anuncioElectronAtivo ?? anuncioElectronAtivo;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const consumir = deps.consumirDesafio ?? consumirDesafio;
   const emitir = deps.emitirConcessao ?? emitirConcessao;
@@ -149,13 +151,14 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // Com o enforcement desligado ninguém deveria chegar aqui — `/authorize`
   // responde PERMITIDO sem abrir desafio. Recusar em vez de emitir concessão
   // fecha a porta de pré-fabricar concessões antes de a monetização ligar.
-  // `PROMOCAO_TV_ATIVA` e `ANUNCIO_ANDROID_ATIVO` também abrem a porta, cada uma
-  // só para concluir o desafio da sua plataforma: a checagem por plataforma vem
-  // depois, quando o desafio já foi carregado.
+  // `PROMOCAO_TV_ATIVA`, `ANUNCIO_ANDROID_ATIVO` e `ANUNCIO_ELECTRON_ATIVO` também
+  // abrem a porta, cada uma só para concluir o desafio da sua plataforma: a
+  // checagem por plataforma vem depois, quando o desafio já foi carregado.
   const globalAtiva = flagAtiva();
   const tvAtiva = promoTvAtiva();
   const androidAtiva = anuncioAndroid();
-  if (!globalAtiva && !tvAtiva && !androidAtiva) {
+  const electronAtiva = anuncioElectron();
+  if (!globalAtiva && !tvAtiva && !androidAtiva && !electronAtiva) {
     return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
   }
 
@@ -210,7 +213,8 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   if (!globalAtiva) {
     const plataformaPermitida =
       (tvAtiva && desafio.plataforma === "android_tv") ||
-      (androidAtiva && desafio.plataforma === "android");
+      (androidAtiva && desafio.plataforma === "android") ||
+      (electronAtiva && desafio.plataforma === "electron");
     if (!plataformaPermitida) {
       await registrarAbuso(ip);
       audit("play_token_rejected", { userId, ip, ua, detail: `/ads/complete: plataforma ${desafio.plataforma} sem flag correspondente (global off)` });

@@ -22,7 +22,7 @@
  */
 
 import { entitlementsDoUsuario } from "../entitlements";
-import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo } from "../playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "../playbackAuthorization";
 import { consumirConcessao, type AlvoDeConcessao, type FinalidadeDeConcessao } from "./concessoes";
 import { exigeAnuncio, type ConteudoDeAnuncio, type PlataformaDeExibicao } from "./politica";
 import type { Entitlements } from "../entitlements";
@@ -46,6 +46,13 @@ export interface OpcoesDeEnforcement {
    * Unity sem ligar o enforcement para Web/Electron/TV. Injetável para o teste.
    */
   anuncioAndroidAtivo?: boolean;
+  /**
+   * A flag do anúncio do Electron (`ANUNCIO_ELECTRON_ATIVO`) já interpretada. Só
+   * tem efeito quando a requisição é do Electron (`entrada.plataforma ===
+   * "electron"` ou `entrada.electron`): cobra a concessão do Direct Link sem ligar
+   * o enforcement para Web/Android/TV. Injetável para o teste.
+   */
+  anuncioElectronAtivo?: boolean;
   /** Como resolver os direitos. Injetável para dispensar banco e Redis. */
   resolver?: (userId: string) => Promise<Entitlements>;
   /** Como consumir a concessão. Injetável pelo mesmo motivo. */
@@ -86,20 +93,30 @@ export async function autorizarPorAnuncio(
      * `"android_tv"` reage a `PROMOCAO_TV_ATIVA`; ausente/`web` segue a global.
      */
     plataforma?: PlataformaDeExibicao;
+    /**
+     * A requisição é do Electron por qualquer sinal (`ehRequisicaoElectron`): o
+     * player manda `ambiente: "electron"` para `/fontes`, sem `plataforma` no corpo.
+     * Só serve para `ANUNCIO_ELECTRON_ATIVO`; não muda nenhuma outra flag.
+     */
+    electron?: boolean;
   },
   opcoes: OpcoesDeEnforcement = {},
 ): Promise<ResultadoDeAnuncio> {
   // Global liga para todos; cada flag específica liga SÓ para a sua plataforma:
-  // a da TV para `android_tv`, a do Android para `android`. Assim cada uma cobra a
-  // sua concessão sem reativar o enforcement das outras (Web/Electron seguem a
-  // global, que está desligada).
+  // a da TV para `android_tv`, a do Android para `android`, a do Electron para
+  // requisições do Electron. Assim cada uma cobra a sua concessão sem reativar o
+  // enforcement das outras (Web segue a global, que está desligada).
   const global = opcoes.ativa ?? monetizacaoAtiva();
   const tvAtiva = opcoes.promocaoTvAtiva ?? promocaoTvAtiva();
   const androidAtiva = opcoes.anuncioAndroidAtivo ?? anuncioAndroidAtivo();
+  const electronAtiva = opcoes.anuncioElectronAtivo ?? anuncioElectronAtivo();
+  const daRequisicaoElectron =
+    entrada.plataforma !== "android_tv" && (entrada.plataforma === "electron" || entrada.electron === true);
   const ativa =
     global ||
     (tvAtiva && entrada.plataforma === "android_tv") ||
-    (androidAtiva && entrada.plataforma === "android");
+    (androidAtiva && entrada.plataforma === "android") ||
+    (electronAtiva && daRequisicaoElectron);
   if (!ativa) return { liberado: true, via: "flag_desligada" };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;

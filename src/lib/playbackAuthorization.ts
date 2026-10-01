@@ -119,6 +119,32 @@ export function anuncioAndroidAtivo(
 }
 
 /**
+ * Flag servidor-only, **exclusiva do anúncio antes da reprodução no Electron**
+ * (convite + Direct Link no navegador externo).
+ *
+ * A terceira irmã, depois de `promocaoTvAtiva` e `anuncioAndroidAtivo`. Existe para
+ * o Electron voltar a exigir o anúncio antes de filme/episódio em Production
+ * **sem** ligar o enforcement global de `MONETIZACAO_ATIVA` (limite de telas,
+ * catálogo, downloads, promoção da TV, Unity do celular). Nunca é uma segunda
+ * `MONETIZACAO_ATIVA`: só é consultada para requisições do Electron
+ * (`ehRequisicaoElectron`), e apenas para o fluxo publicitário
+ * (`/playback/authorize`, `/ads/complete` e o consumo da concessão em
+ * `/player/fontes`). Web, Android e Android TV seguem exatamente o que já faziam,
+ * cada um reagindo só à própria flag.
+ *
+ * Não toca no anúncio por clique (`ANUNCIO_CLICK_DESKTOP_*`): são fluxos e
+ * flags independentes.
+ *
+ * Mesma leitura estrita de `monetizacaoAtiva`: **só a string exata `"true"`
+ * liga**. Sem `NEXT_PUBLIC_`. `env` é injetável para o teste.
+ */
+export function anuncioElectronAtivo(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.ANUNCIO_ELECTRON_ATIVO === "true";
+}
+
+/**
  * O direito que responde por este tipo de conteúdo. Função total e pura.
  *
  * Comparação estrita com `true` de propósito: se um dia um direito chegar
