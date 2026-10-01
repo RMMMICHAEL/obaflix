@@ -76,11 +76,15 @@ foreach ($esperado in @(
   }
 }
 
-# Authenticode obrigatório.
+# ASSINATURA_POLICY=UNSIGNED_ACCEPTED: a 1.0.12 sai sem certificado, então NotSigned é o
+# estado esperado. Valid também é aceito se um dia houver assinatura. Qualquer outro
+# estado (HashMismatch, NotTrusted, UnknownError, Incompatible...) indica binário
+# adulterado ou assinatura quebrada e é recusado.
 $sig = Get-AuthenticodeSignature -FilePath $exe
+$status = [string] $sig.Status
 
-if ($sig.Status -ne "Valid") {
-  throw "Assinatura Authenticode inválida: $($sig.Status)"
+if ($status -notin @("NotSigned", "Valid")) {
+  throw "Estado Authenticode inesperado: $status"
 }
 
 return [ordered]@{
@@ -90,8 +94,8 @@ return [ordered]@{
   app_update   = Get-Info $appUpdate
   feed         = "github:RMMMICHAEL/obaflix"
   authenticode = [ordered]@{
-    status            = [string] $sig.Status
-    signer_subject    = $sig.SignerCertificate.Subject
-    signer_thumbprint = $sig.SignerCertificate.Thumbprint
+    status            = $status
+    signer_subject    = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+    signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
   }
 }

@@ -3,7 +3,7 @@ name: release-electron
 # BUILD ONCE / PROMOTE EXACT ARTIFACT
 #
 #   publish_release=false → job `candidate`: o ÚNICO lugar onde electron-builder roda.
-#     Build no commit exato, assinatura Authenticode obrigatória, validação e manifest.json.
+#     Build no commit exato, sem assinatura, validação e manifest.json.
 #     Guarda EXE + blockmap + latest.yml + app-update.yml + manifest.json como artifact.
 #     Não cria tag nem release. É esse EXE que vai para o R2 e para a homologação.
 #
@@ -11,6 +11,10 @@ name: release-electron
 #     NÃO roda electron-builder. Baixa o artifact do candidate_run_id informado, confere
 #     commit/SHA256 esperados, recalcula hashes, revalida Authenticode/latest.yml/feed e
 #     publica ESSES MESMOS BYTES em v1.0.12.
+#
+# ASSINATURA_POLICY=UNSIGNED_ACCEPTED (decisão do dono para a 1.0.12): o build não usa
+# certificado e o estado esperado é Authenticode = NotSigned. O validador também aceita
+# Valid, mas recusa qualquer outro estado (HashMismatch, NotTrusted, UnknownError...).
 #
 # Um arquivo só (e não dois workflows) porque workflow_dispatch exige o arquivo na branch
 # padrão: um workflow novo só poderia gerar o candidato depois do merge.
@@ -73,21 +77,6 @@ jobs:
             throw "ref precisa ser o SHA completo (40 hex, minúsculo) do commit exato."
           }
 
-      - name: Exigir secrets de assinatura antes do build
-        shell: pwsh
-        env:
-          WIN_CSC_LINK_VALUE: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_PASSWORD_VALUE: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: |
-          $hasLink = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_VALUE)
-          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_PASSWORD_VALUE)
-
-          if (-not ($hasLink -and $hasPassword)) {
-            throw "FALTA_CERTIFICADO_AUTHENTICODE: configure WIN_CSC_LINK e WIN_CSC_KEY_PASSWORD. Nenhum candidato é gerado sem assinatura."
-          }
-
-          Write-Host "Authenticode configurado."
-
       - name: Checkout do commit exato
         uses: actions/checkout@v4
         with:
@@ -130,11 +119,9 @@ jobs:
         working-directory: desktop
         run: npm test
 
-      - name: Build do instalador (única execução do electron-builder)
+      # ASSINATURA_POLICY=UNSIGNED_ACCEPTED: nenhum certificado é configurado (sem CSC_*).
+      - name: Build do instalador (única execução do electron-builder, sem assinatura)
         working-directory: desktop
-        env:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win --x64 -c electron-builder.yml --publish never
 
       - name: Montar, validar e registrar manifest do candidato
@@ -164,6 +151,7 @@ jobs:
             built_at_utc    = (Get-Date).ToUniversalTime().ToString("o")
             node_version    = (node -v).Trim()
             feed            = $r.feed
+            assinatura_policy = "UNSIGNED_ACCEPTED"
             authenticode    = $r.authenticode
             files           = [ordered]@{
               exe        = $r.exe
@@ -178,6 +166,7 @@ jobs:
 
           "sha256=$($r.exe.sha256)" >> $env:GITHUB_OUTPUT
           "size=$($r.exe.size)" >> $env:GITHUB_OUTPUT
+          "authenticode=$($r.authenticode.status)" >> $env:GITHUB_OUTPUT
 
       - name: Guardar candidato (artifact imutável)
         id: upload
@@ -194,6 +183,7 @@ jobs:
           COMMIT_SHA: ${{ steps.commit.outputs.sha }}
           EXE_SHA256: ${{ steps.manifest.outputs.sha256 }}
           EXE_SIZE: ${{ steps.manifest.outputs.size }}
+          AUTHENTICODE: ${{ steps.manifest.outputs.authenticode }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
         run: |
           @(
@@ -206,7 +196,7 @@ jobs:
             "| Artifact | $env:ARTIFACT_NAME (id $env:ARTIFACT_ID) |",
             "| SHA256 | $env:EXE_SHA256 |",
             "| Tamanho (bytes) | $env:EXE_SIZE |",
-            "| Authenticode | Valid |",
+            "| Authenticode | $env:AUTHENTICODE (ASSINATURA_POLICY=UNSIGNED_ACCEPTED) |",
             "| Feed | github:RMMMICHAEL/obaflix |",
             "",
             "Promover ESTE artifact (sem rebuild) depois de homologado e mesclado:",
@@ -297,6 +287,10 @@ jobs:
             if ($calc.sha256 -ne $decl.sha256 -or [int64]$calc.size -ne [int64]$decl.size) {
               throw "Bytes de $chave divergem do manifest."
             }
+          }
+
+          if ($r.authenticode.status -ne $m.authenticode.status) {
+            throw "Authenticode recalculado ($($r.authenticode.status)) difere do manifest ($($m.authenticode.status))."
           }
 
           if ($r.exe.sha256 -ne $env:EXPECTED_SHA256.ToUpperInvariant()) {
