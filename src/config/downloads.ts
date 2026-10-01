@@ -35,10 +35,10 @@ export const INSTALADORES = {
   windows: {
     url: ou(
       process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS,
-      "https://app.obaflix.online/Obaflix-Setup-1.0.10.exe",
+      "https://app.obaflix.online/Obaflix-Setup-1.0.12.exe",
     ),
-    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.10"),
-    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116,3 MB"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.12"),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116,4 MB"),
   },
 } satisfies Record<string, Instalador>;
 
