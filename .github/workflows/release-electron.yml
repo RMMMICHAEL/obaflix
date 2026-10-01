@@ -1,60 +1,106 @@
 name: release-electron
 
-# Dois modos, escolhidos por `publish_release`:
-#   false (padrão) → CANDIDATO: build, testes, validação de versão/artefatos/feed/Authenticode
-#                    e upload como artifact do Actions. NÃO cria tag nem release.
-#   true           → PUBLICAÇÃO: o mesmo pipeline e, só se Authenticode = Valid e o commit
-#                    já estiver na main, cria a release v1.0.12 (EXE + blockmap + latest.yml).
-# Em nenhum dos modos um EXE sem Authenticode válido é aceito: o job termina em falha.
+# BUILD ONCE / PROMOTE EXACT ARTIFACT
+#
+#   publish_release=false → job `candidate`: o ÚNICO lugar onde electron-builder roda.
+#     Build no commit exato, assinatura Authenticode obrigatória, validação e manifest.json.
+#     Guarda EXE + blockmap + latest.yml + app-update.yml + manifest.json como artifact.
+#     Não cria tag nem release. É esse EXE que vai para o R2 e para a homologação.
+#
+#   publish_release=true  → job `promote`: NÃO faz checkout do app, NÃO instala Node,
+#     NÃO roda electron-builder. Baixa o artifact do candidate_run_id informado, confere
+#     commit/SHA256 esperados, recalcula hashes, revalida Authenticode/latest.yml/feed e
+#     publica ESSES MESMOS BYTES em v1.0.12.
+#
+# Um arquivo só (e não dois workflows) porque workflow_dispatch exige o arquivo na branch
+# padrão: um workflow novo só poderia gerar o candidato depois do merge.
 
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Commit/tag exato da versão final 1.0.12"
-        required: true
-        type: string
       publish_release:
-        description: "Criar a release pública v1.0.12 (somente após candidato homologado e merge na main)"
+        description: "false = gerar candidato | true = promover um candidato já homologado para v1.0.12"
         required: true
         default: false
         type: boolean
+      ref:
+        description: "[candidato] SHA completo (40 hex) do commit a construir"
+        required: false
+        default: ""
+        type: string
+      candidate_run_id:
+        description: "[promoção] ID do run candidato homologado"
+        required: false
+        default: ""
+        type: string
+      expected_commit:
+        description: "[promoção] SHA completo do commit homologado (tem de bater com o manifest)"
+        required: false
+        default: ""
+        type: string
+      expected_sha256:
+        description: "[promoção] SHA256 do EXE homologado/publicado no R2 (tem de bater com os bytes)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  VERSAO: "1.0.12"
+  ARTIFACT_NAME: obaflix-electron-1.0.12-candidate
 
 jobs:
-  build-sign-release:
+  candidate:
+    if: ${{ !inputs.publish_release }}
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout do ref solicitado
+      - name: Validar entrada
+        shell: pwsh
+        env:
+          REF_INPUT: ${{ inputs.ref }}
+        run: |
+          if ($env:REF_INPUT -notmatch '^[0-9a-f]{40}$') {
+            throw "ref precisa ser o SHA completo (40 hex, minúsculo) do commit exato."
+          }
+
+      - name: Exigir secrets de assinatura antes do build
+        shell: pwsh
+        env:
+          WIN_CSC_LINK_VALUE: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_PASSWORD_VALUE: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $hasLink = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_VALUE)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_PASSWORD_VALUE)
+
+          if (-not ($hasLink -and $hasPassword)) {
+            throw "FALTA_CERTIFICADO_AUTHENTICODE: configure WIN_CSC_LINK e WIN_CSC_KEY_PASSWORD. Nenhum candidato é gerado sem assinatura."
+          }
+
+          Write-Host "Authenticode configurado."
+
+      - name: Checkout do commit exato
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - name: Registrar commit exato e modo
+      - name: Confirmar commit exato
         id: commit
         shell: pwsh
         env:
-          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          REF_INPUT: ${{ inputs.ref }}
         run: |
           $sha = (git rev-parse HEAD).Trim()
-          Write-Host "Commit em build: $sha"
-          Write-Host "publish_release: $env:PUBLISH_RELEASE"
-          "sha=$sha" >> $env:GITHUB_OUTPUT
-
-      - name: Publicação exige commit já mesclado na main
-        if: inputs.publish_release
-        shell: pwsh
-        run: |
-          git fetch origin main --quiet
-          git merge-base --is-ancestor HEAD origin/main
-          if ($LASTEXITCODE -ne 0) {
-            throw "publish_release=true exige um commit já mesclado na main. Rode como candidato (publish_release=false)."
+          if ($sha -ne $env:REF_INPUT) {
+            throw "Checkout em $sha, esperado $env:REF_INPUT"
           }
-          Write-Host "Commit está na main."
+          Write-Host "Commit em build: $sha"
+          "sha=$sha" >> $env:GITHUB_OUTPUT
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -66,36 +112,10 @@ jobs:
         shell: pwsh
         run: |
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($package.version -ne "1.0.12") {
+          if ($package.version -ne $env:VERSAO) {
             throw "Versão inesperada: $($package.version)"
           }
-          Write-Host "Versão validada: 1.0.12"
-
-      - name: Validar configuração de assinatura
-        id: signing
-        shell: pwsh
-        env:
-          WIN_CSC_LINK_VALUE: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_PASSWORD_VALUE: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          PUBLISH_RELEASE: ${{ inputs.publish_release }}
-        run: |
-          $hasLink = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK_VALUE)
-          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_PASSWORD_VALUE)
-
-          if ($hasLink -xor $hasPassword) {
-            throw "Configuração Authenticode incompleta: os dois secrets precisam existir juntos."
-          }
-
-          if ($hasLink -and $hasPassword) {
-            "enabled=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Authenticode configurado."
-          } else {
-            if ($env:PUBLISH_RELEASE -eq "true") {
-              throw "FALTA_CERTIFICADO_AUTHENTICODE: publish_release=true exige WIN_CSC_LINK e WIN_CSC_KEY_PASSWORD."
-            }
-            "enabled=false" >> $env:GITHUB_OUTPUT
-            Write-Host "Authenticode não configurado. O candidato será construído para inspeção, mas o job terminará em falha."
-          }
+          Write-Host "Versão validada: $env:VERSAO"
 
       - name: Instalar dependências do desktop
         working-directory: desktop
@@ -105,192 +125,254 @@ jobs:
         working-directory: desktop
         run: npm test
 
-      - name: Build do instalador
+      - name: Build do instalador (única execução do electron-builder)
         working-directory: desktop
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win --x64 -c electron-builder.yml --publish never
 
-      - name: Validar artefatos 1.0.12
-        id: artefatos
-        working-directory: desktop
-        shell: pwsh
-        run: |
-          $exe = "dist/Obaflix-Setup-1.0.12.exe"
-          $blockmap = "dist/Obaflix-Setup-1.0.12.exe.blockmap"
-          $latest = "dist/latest.yml"
-
-          foreach ($arquivo in @($exe, $blockmap, $latest)) {
-            if (-not (Test-Path $arquivo)) {
-              throw "Artefato ausente: $arquivo"
-            }
-          }
-
-          $latestText = Get-Content $latest -Raw
-
-          if ($latestText -notmatch '(?m)^version:\s*1\.0\.12\s*$') {
-            throw "latest.yml não declara 1.0.12"
-          }
-
-          if ($latestText -notmatch '(?m)^\s*-\s*url:\s*Obaflix-Setup-1\.0\.12\.exe\s*$') {
-            throw "latest.yml (files[].url) não referencia o EXE final esperado"
-          }
-
-          if ($latestText -notmatch '(?m)^path:\s*Obaflix-Setup-1\.0\.12\.exe\s*$') {
-            throw "latest.yml (path) não referencia o EXE final esperado"
-          }
-
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          $size = (Get-Item $exe).Length
-
-          Write-Host "EXE=$exe"
-          Write-Host "SIZE=$size"
-          Write-Host "SHA256=$hash"
-          "sha256=$hash" >> $env:GITHUB_OUTPUT
-          "size=$size" >> $env:GITHUB_OUTPUT
-
-      - name: Validar feed do updater no binário (app-update.yml)
-        id: feed
-        working-directory: desktop
-        shell: pwsh
-        run: |
-          $appUpdate = "dist/win-unpacked/resources/app-update.yml"
-
-          if (-not (Test-Path $appUpdate)) {
-            throw "app-update.yml ausente no binário: $appUpdate"
-          }
-
-          $texto = Get-Content $appUpdate -Raw
-          Write-Host $texto
-
-          foreach ($esperado in @(
-            '(?m)^provider:\s*github\s*$',
-            '(?m)^owner:\s*RMMMICHAEL\s*$',
-            '(?m)^repo:\s*obaflix\s*$'
-          )) {
-            if ($texto -notmatch $esperado) {
-              throw "app-update.yml fora do esperado (github:RMMMICHAEL/obaflix): falhou em $esperado"
-            }
-          }
-
-          "feed=github:RMMMICHAEL/obaflix" >> $env:GITHUB_OUTPUT
-
-      - name: Validar Authenticode
-        id: authenticode
-        working-directory: desktop
-        shell: pwsh
-        run: |
-          $exe = Get-Item "dist/Obaflix-Setup-1.0.12.exe"
-          $sig = Get-AuthenticodeSignature $exe.FullName
-
-          Write-Host "Authenticode status: $($sig.Status)"
-          "status=$($sig.Status)" >> $env:GITHUB_OUTPUT
-
-          if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
-            if ($sig.Status -ne "Valid") {
-              throw "Assinatura Authenticode inválida: $($sig.Status)"
-            }
-
-            "valid=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Assinatura Authenticode válida."
-          } else {
-            "valid=false" >> $env:GITHUB_OUTPUT
-            Write-Warning "Build sem secrets de assinatura: candidato não aprovado."
-          }
-
-      - name: Resumo do build
-        if: always()
+      - name: Montar, validar e registrar manifest do candidato
+        id: manifest
         shell: pwsh
         env:
-          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          $staging = "candidate"
+          New-Item -ItemType Directory -Force $staging | Out-Null
+
+          Copy-Item "desktop/dist/Obaflix-Setup-$env:VERSAO.exe" $staging
+          Copy-Item "desktop/dist/Obaflix-Setup-$env:VERSAO.exe.blockmap" $staging
+          Copy-Item "desktop/dist/latest.yml" $staging
+          Copy-Item "desktop/dist/win-unpacked/resources/app-update.yml" $staging
+
+          $r = & ./.github/scripts/validar-candidato-electron.ps1 -Dir $staging -Version $env:VERSAO
+
+          $manifest = [ordered]@{
+            schema          = 1
+            app             = "obaflix-desktop"
+            version         = $env:VERSAO
+            commit          = $env:COMMIT_SHA
+            repository      = $env:GITHUB_REPOSITORY
+            workflow_run_id = $env:GITHUB_RUN_ID
+            run_attempt     = $env:GITHUB_RUN_ATTEMPT
+            built_at_utc    = (Get-Date).ToUniversalTime().ToString("o")
+            node_version    = (node -v).Trim()
+            feed            = $r.feed
+            authenticode    = $r.authenticode
+            files           = [ordered]@{
+              exe        = $r.exe
+              blockmap   = $r.blockmap
+              latest_yml = $r.latest_yml
+              app_update = $r.app_update
+            }
+          }
+
+          $manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 "$staging/manifest.json"
+          Get-Content "$staging/manifest.json"
+
+          "sha256=$($r.exe.sha256)" >> $env:GITHUB_OUTPUT
+          "size=$($r.exe.size)" >> $env:GITHUB_OUTPUT
+
+      - name: Guardar candidato (artifact imutável)
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Resumo do candidato
+        shell: pwsh
+        env:
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          EXE_SHA256: ${{ steps.manifest.outputs.sha256 }}
+          EXE_SIZE: ${{ steps.manifest.outputs.size }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
         run: |
           @(
-            "## Obaflix Electron 1.0.12",
+            "## Candidato Obaflix Electron $env:VERSAO",
             "",
             "| Campo | Valor |",
             "|---|---|",
-            "| Commit | ${{ steps.commit.outputs.sha }} |",
-            "| publish_release | $env:PUBLISH_RELEASE |",
-            "| SHA256 | ${{ steps.artefatos.outputs.sha256 }} |",
-            "| Tamanho (bytes) | ${{ steps.artefatos.outputs.size }} |",
-            "| Feed (app-update.yml) | ${{ steps.feed.outputs.feed }} |",
-            "| Authenticode | ${{ steps.authenticode.outputs.status }} |"
+            "| Commit | $env:COMMIT_SHA |",
+            "| candidate_run_id | $env:GITHUB_RUN_ID |",
+            "| Artifact | $env:ARTIFACT_NAME (id $env:ARTIFACT_ID) |",
+            "| SHA256 | $env:EXE_SHA256 |",
+            "| Tamanho (bytes) | $env:EXE_SIZE |",
+            "| Authenticode | Valid |",
+            "| Feed | github:RMMMICHAEL/obaflix |",
+            "",
+            "Promover ESTE artifact (sem rebuild) depois de homologado e mesclado:",
+            "",
+            "``gh workflow run release-electron -f publish_release=true -f candidate_run_id=$env:GITHUB_RUN_ID -f expected_commit=$env:COMMIT_SHA -f expected_sha256=$env:EXE_SHA256``"
           ) -join "`n" >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Guardar candidato
-        if: always()
-        uses: actions/upload-artifact@v4
+  promote:
+    if: ${{ inputs.publish_release }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: release-electron-v1.0.12
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+      EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+
+    steps:
+      - name: Validar entradas
+        shell: pwsh
+        run: |
+          if ($env:CANDIDATE_RUN_ID -notmatch '^\d+$') { throw "candidate_run_id inválido." }
+          if ($env:EXPECTED_COMMIT -notmatch '^[0-9a-f]{40}$') { throw "expected_commit precisa ser SHA completo (40 hex)." }
+          if ($env:EXPECTED_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') { throw "expected_sha256 precisa ter 64 hex." }
+
+      # Só o script de validação, na mesma revisão deste workflow. Nenhum código do app.
+      - name: Obter script de validação
+        uses: actions/checkout@v4
         with:
-          name: obaflix-electron-1.0.12
-          if-no-files-found: error
-          path: |
-            desktop/dist/Obaflix-Setup-1.0.12.exe
-            desktop/dist/Obaflix-Setup-1.0.12.exe.blockmap
-            desktop/dist/latest.yml
-            desktop/dist/win-unpacked/resources/app-update.yml
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
 
-      - name: Publicar release final no próprio repositório
-        if: inputs.publish_release && steps.authenticode.outputs.valid == 'true'
-        working-directory: desktop
+      - name: Conferir run candidato
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          $tag = "v1.0.12"
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:CANDIDATE_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Run $env:CANDIDATE_RUN_ID não encontrado." }
 
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($run.path -ne ".github/workflows/release-electron.yml") { throw "Run não pertence a release-electron: $($run.path)" }
+          if ($run.status -ne "completed" -or $run.conclusion -ne "success") { throw "Run candidato não concluiu com sucesso: $($run.status)/$($run.conclusion)" }
+          if ($run.repository.full_name -ne $env:GITHUB_REPOSITORY) { throw "Run de outro repositório." }
 
-          if ($LASTEXITCODE -eq 0) {
-            throw "A release/tag $tag já existe. Nada será sobrescrito."
-          }
+          Write-Host "Run candidato $env:CANDIDATE_RUN_ID OK ($($run.head_branch))"
 
-          gh release create $tag `
-            "dist/Obaflix-Setup-1.0.12.exe" `
-            "dist/Obaflix-Setup-1.0.12.exe.blockmap" `
-            "dist/latest.yml" `
-            --repo $env:GITHUB_REPOSITORY `
-            --target $env:RELEASE_SHA `
-            --title "Obaflix 1.0.12" `
-            --notes "Obaflix Desktop 1.0.12"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao publicar release."
-          }
-
-      - name: Verificar release publicada
-        if: inputs.publish_release && steps.authenticode.outputs.valid == 'true'
-        working-directory: desktop
+      - name: Baixar exatamente o artifact do candidato
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $json = gh release view "v1.0.12" `
-            --repo $env:GITHUB_REPOSITORY `
-            --json tagName,targetCommitish,assets
+          gh run download $env:CANDIDATE_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:ARTIFACT_NAME --dir promote
+          if ($LASTEXITCODE -ne 0) { throw "Artifact $env:ARTIFACT_NAME não disponível no run $env:CANDIDATE_RUN_ID." }
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Release v1.0.12 não pôde ser consultada."
+          $esperados = @(
+            "Obaflix-Setup-$env:VERSAO.exe",
+            "Obaflix-Setup-$env:VERSAO.exe.blockmap",
+            "app-update.yml",
+            "latest.yml",
+            "manifest.json"
+          ) | Sort-Object
+          $presentes = @(Get-ChildItem promote -File -Recurse | ForEach-Object { $_.Name }) | Sort-Object
+
+          if (Compare-Object $esperados $presentes) {
+            throw "Conteúdo do artifact diferente do esperado: $($presentes -join ', ')"
           }
 
-          Write-Host $json
+      - name: Conferir manifest, bytes, Authenticode, latest.yml e feed
+        id: verificado
+        shell: pwsh
+        run: |
+          $m = Get-Content promote/manifest.json -Raw | ConvertFrom-Json
 
-          $release = $json | ConvertFrom-Json
-          $nomes = @($release.assets | ForEach-Object { $_.name })
+          if ($m.version -ne $env:VERSAO) { throw "manifest.version = $($m.version)" }
+          if ($m.commit -ne $env:EXPECTED_COMMIT) { throw "manifest.commit ($($m.commit)) difere do commit homologado." }
+          if ([string]$m.workflow_run_id -ne $env:CANDIDATE_RUN_ID) { throw "manifest.workflow_run_id difere do candidate_run_id." }
+          if ($m.repository -ne $env:GITHUB_REPOSITORY) { throw "manifest.repository difere." }
 
-          foreach ($esperado in @(
-            "Obaflix-Setup-1.0.12.exe",
-            "Obaflix-Setup-1.0.12.exe.blockmap",
-            "latest.yml"
-          )) {
-            if ($esperado -notin $nomes) {
-              throw "Asset ausente na release: $esperado"
+          # Recalcula tudo a partir dos bytes baixados; o manifest não é aceito por confiança.
+          $r = & ./.github/scripts/validar-candidato-electron.ps1 -Dir promote -Version $env:VERSAO
+
+          foreach ($chave in @("exe", "blockmap", "latest_yml", "app_update")) {
+            $calc = $r[$chave]
+            $decl = $m.files.$chave
+            if ($calc.sha256 -ne $decl.sha256 -or [int64]$calc.size -ne [int64]$decl.size) {
+              throw "Bytes de $chave divergem do manifest."
             }
           }
 
-      - name: Reprovar build sem Authenticode válido
-        if: steps.authenticode.outputs.valid != 'true'
+          if ($r.exe.sha256 -ne $env:EXPECTED_SHA256.ToUpperInvariant()) {
+            throw "SHA256 do EXE ($($r.exe.sha256)) difere do expected_sha256 homologado."
+          }
+
+          Write-Host "EXE=$($r.exe.name) SIZE=$($r.exe.size) SHA256=$($r.exe.sha256) Authenticode=$($r.authenticode.status)"
+          "sha256=$($r.exe.sha256)" >> $env:GITHUB_OUTPUT
+          "size=$($r.exe.size)" >> $env:GITHUB_OUTPUT
+
+      - name: Exigir commit homologado já mesclado na main
         shell: pwsh
         run: |
-          throw "FALTA_CERTIFICADO_AUTHENTICODE ou assinatura inválida: candidato não aprovado e nenhuma release criada."
+          $status = gh api "repos/$env:GITHUB_REPOSITORY/compare/$env:EXPECTED_COMMIT...main" --jq ".status"
+          if ($LASTEXITCODE -ne 0) { throw "Não foi possível comparar $env:EXPECTED_COMMIT com main." }
+
+          if ($status -notin @("ahead", "identical")) {
+            throw "Commit homologado não é ancestral da main (status: $status)."
+          }
+
+          Write-Host "Commit homologado está na main ($status)."
+
+      - name: Impedir sobrescrita de v1.0.12
+        shell: pwsh
+        run: |
+          gh release view "v$env:VERSAO" --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw "A release v$env:VERSAO já existe. Nada será sobrescrito." }
+
+          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/v$env:VERSAO" *> $null
+          if ($LASTEXITCODE -eq 0) { throw "A tag v$env:VERSAO já existe. Nada será sobrescrito." }
+
+          $global:LASTEXITCODE = 0
+
+      - name: Publicar os mesmos bytes em v1.0.12
+        shell: pwsh
+        env:
+          EXE_SHA256: ${{ steps.verificado.outputs.sha256 }}
+        run: |
+          gh release create "v$env:VERSAO" `
+            "promote/Obaflix-Setup-$env:VERSAO.exe" `
+            "promote/Obaflix-Setup-$env:VERSAO.exe.blockmap" `
+            "promote/latest.yml" `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:EXPECTED_COMMIT `
+            --title "Obaflix $env:VERSAO" `
+            --notes "Obaflix Desktop $env:VERSAO — commit $env:EXPECTED_COMMIT — SHA256 $env:EXE_SHA256 — promovido do run $env:CANDIDATE_RUN_ID sem rebuild."
+
+          if ($LASTEXITCODE -ne 0) { throw "Falha ao publicar release." }
+
+      - name: Verificar que a release serve exatamente os bytes promovidos
+        shell: pwsh
+        run: |
+          gh release download "v$env:VERSAO" --repo $env:GITHUB_REPOSITORY --dir published
+          if ($LASTEXITCODE -ne 0) { throw "Falha ao baixar assets da release." }
+
+          foreach ($nome in @(
+            "Obaflix-Setup-$env:VERSAO.exe",
+            "Obaflix-Setup-$env:VERSAO.exe.blockmap",
+            "latest.yml"
+          )) {
+            $publicado = "published/$nome"
+            if (-not (Test-Path -LiteralPath $publicado)) { throw "Asset ausente na release: $nome" }
+
+            $a = (Get-FileHash -LiteralPath "promote/$nome" -Algorithm SHA256).Hash
+            $b = (Get-FileHash -LiteralPath $publicado -Algorithm SHA256).Hash
+            if ($a -ne $b) { throw "Asset $nome publicado difere do artifact promovido." }
+          }
+
+          Write-Host "Release v$env:VERSAO confere byte a byte com o candidato $env:CANDIDATE_RUN_ID."
+
+      - name: Resumo da promoção
+        shell: pwsh
+        env:
+          EXE_SHA256: ${{ steps.verificado.outputs.sha256 }}
+          EXE_SIZE: ${{ steps.verificado.outputs.size }}
+        run: |
+          @(
+            "## Release v$env:VERSAO promovida sem rebuild",
+            "",
+            "| Campo | Valor |",
+            "|---|---|",
+            "| Commit | $env:EXPECTED_COMMIT |",
+            "| candidate_run_id | $env:CANDIDATE_RUN_ID |",
+            "| SHA256 | $env:EXE_SHA256 |",
+            "| Tamanho (bytes) | $env:EXE_SIZE |"
+          ) -join "`n" >> $env:GITHUB_STEP_SUMMARY
