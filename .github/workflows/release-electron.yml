@@ -14,6 +14,11 @@ name: release-electron
 #
 # Um arquivo só (e não dois workflows) porque workflow_dispatch exige o arquivo na branch
 # padrão: um workflow novo só poderia gerar o candidato depois do merge.
+#
+# INTEGRAÇÃO NA MAIN: somente por MERGE COMMIT normal. Squash merge e rebase merge são
+# proibidos para a branch do candidato: os dois reescrevem os commits, o SHA homologado
+# (`expected_commit`) deixa de ser ancestral da main e a promoção recusa o candidato.
+# Se isso acontecer, é preciso gerar e homologar um candidato novo a partir da main.
 
 on:
   workflow_dispatch:
@@ -232,10 +237,12 @@ jobs:
           if ($env:EXPECTED_COMMIT -notmatch '^[0-9a-f]{40}$') { throw "expected_commit precisa ser SHA completo (40 hex)." }
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') { throw "expected_sha256 precisa ter 64 hex." }
 
-      # Só o script de validação, na mesma revisão deste workflow. Nenhum código do app.
+      # Só o script de validação, do MESMO commit que gerou o candidato (expected_commit),
+      # nunca uma versão posterior da main. Nenhum código do app é obtido nem executado.
       - name: Obter script de validação
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.expected_commit }}
           sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
 
@@ -300,6 +307,7 @@ jobs:
           "sha256=$($r.exe.sha256)" >> $env:GITHUB_OUTPUT
           "size=$($r.exe.size)" >> $env:GITHUB_OUTPUT
 
+      # Só passa se a branch do candidato entrou por MERGE COMMIT (squash/rebase reescrevem o SHA).
       - name: Exigir commit homologado já mesclado na main
         shell: pwsh
         run: |
@@ -307,7 +315,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Não foi possível comparar $env:EXPECTED_COMMIT com main." }
 
           if ($status -notin @("ahead", "identical")) {
-            throw "Commit homologado não é ancestral da main (status: $status)."
+            throw "Commit homologado não é ancestral da main (status: $status). A branch precisa entrar por merge commit; squash/rebase exigem novo candidato."
           }
 
           Write-Host "Commit homologado está na main ($status)."
