@@ -27,6 +27,7 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
 } from "@/lib/playerFailover";
@@ -3587,6 +3588,9 @@ export function CustomPlayer({
               {sinopse}
             </p>
           )}
+          {/* Abaixo da descrição, acima dos controles. Só no app Windows; some em
+              tela cheia e só aceita clique com o overlay visível. */}
+          <BannerDesktop posicao="player" interativo={showOverlay} />
         </div>}
 
         {/* ── Bottom: controles customizados ── */}

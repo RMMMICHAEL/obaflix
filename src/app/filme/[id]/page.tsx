@@ -12,6 +12,7 @@ import {
 } from "@/lib/tmdb";
 import { prisma } from "@/lib/prisma";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow } from "@/components/ui/PeopleRow";
 import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
@@ -183,6 +184,10 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         leg={!!filme.urlLeg}
         shareUrl={absoluteUrl(`/filme/${filme.id}`)}
       />
+
+      {/* Abaixo do hero, no fluxo: não cobre Assistir/Trailer nem as informações.
+          Só no app Windows; em qualquer outro ambiente não renderiza nada. */}
+      <BannerDesktop posicao="detalhe" />
 
       <div className="px-4 pb-4 md:px-14">
         <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: "Filmes", href: "/filmes" }, { label: filme.titulo }]} />

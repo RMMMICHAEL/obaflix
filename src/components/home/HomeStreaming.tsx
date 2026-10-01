@@ -7,6 +7,7 @@ import { Top10Band } from "@/components/ui/Top10Band";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { EpisodioRecenteRow } from "@/components/ui/EpisodioRecenteRow";
 import { PersonalizedRows } from "@/components/ui/PersonalizedRows";
+import { ComBanners } from "@/components/ads/ComBanners";
 import { prisma } from "@/lib/prisma";
 import { ANIME_HOME_EXCLUSIONS } from "@/lib/editorialCatalog";
 import {
@@ -283,6 +284,9 @@ export async function HomeStreaming() {
       <div className="mt-3">
         <ContinuarAssistindo />
 
+        {/* Um banner depois de cada fileira — só no app Windows; fora dele,
+            ComBanners devolve as fileiras como estavam. */}
+        <ComBanners>
         {trending.length > 0 && (
           <LandscapeRow titulo="Em Alta" items={trending} />
         )}
@@ -328,9 +332,11 @@ export async function HomeStreaming() {
         )}
 
         {/* Novidades e categorias */}
-        <LazyRow>
-          <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
-        </LazyRow>
+        {epsRecentesItems.length > 0 && (
+          <LazyRow>
+            <EpisodioRecenteRow titulo="Episódios Recentes" items={epsRecentesItems} />
+          </LazyRow>
+        )}
 
         {dbRecFilmes.length > 0 && (
           <LazyRow>
@@ -349,6 +355,7 @@ export async function HomeStreaming() {
             <LandscapeRow titulo="Animes" items={animeCards} verTodosHref="/animes" />
           </LazyRow>
         )}
+        </ComBanners>
 
         <PersonalizedRows />
       </div>

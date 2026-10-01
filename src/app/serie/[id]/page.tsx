@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
 import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
+import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
@@ -245,6 +246,10 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         trailerKey={trailer?.key}
         shareUrl={absoluteUrl(`/serie/${serie.id}`)}
       />
+
+      {/* Abaixo do hero, no fluxo: não cobre Assistir/Trailer nem as informações.
+          Só no app Windows; em qualquer outro ambiente não renderiza nada. */}
+      <BannerDesktop posicao="detalhe" />
 
       {/* Temporadas e episódios logo abaixo do hero */}
       {temporadas.length > 0 && (

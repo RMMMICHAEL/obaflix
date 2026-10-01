@@ -29,12 +29,24 @@ test("sw.js da verificação de domínio é servido a qualquer ambiente", async 
   }
   assert.deepEqual(decidirRota("/sw.jsx", "navegador"), { tipo: "landing" });
   // Só o arquivo: nenhum código do app registra um service worker.
-  const { execSync } = await import("node:child_process");
-  const registros = execSync(
-    "git grep -l \"serviceWorker\" -- src \":(exclude)src/**/__tests__/**\" || true",
+  const { spawnSync } = await import("node:child_process");
+  const busca = spawnSync(
+    "git",
+    [
+      "grep",
+      "-l",
+      "serviceWorker",
+      "--",
+      "src",
+      ":(exclude)src/**/__tests__/**",
+    ],
     { encoding: "utf8" },
-  ).trim();
-  assert.equal(registros, "");
+  );
+  assert.ok(
+    busca.status === 0 || busca.status === 1,
+    busca.stderr || `git grep falhou com status ${busca.status}`,
+  );
+  assert.equal(busca.stdout.trim(), "");
 });
 
 test("prefixo parecido não herda a abertura", () => {

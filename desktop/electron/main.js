@@ -23,6 +23,7 @@ const {
   retryNativeOptionOnce,
 } = require("./superflix-extractor");
 const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./browser-extractor");
+const politica = require("./window-policy");
 
 const SPONSORED_LINK_URL = "https://omg10.com/4/11767843";
 const { baixarMidia } = require("./media-download");
@@ -50,9 +51,17 @@ const OBAFLIX_ORIGIN = new URL(OBAFLIX_URL).origin;
 // User-Agent —, mas apontar direto para cá evita esse salto a cada abertura.
 const OBAFLIX_ENTRADA = OBAFLIX_URL.replace(/\/+$/, "") + "/desktop";
 const LOCAL_SERVER_TOKEN = crypto.randomBytes(32).toString("base64url");
+// Diagnóstico A/B da Monetag: só com --diagnostico-monetag na linha de comando.
+// Sem a flag é null e nenhum gancho abaixo faz nada. Ver monetag-diagnostico.js.
+const DIAGNOSTICO_MONETAG = process.argv.includes("--diagnostico-monetag");
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/122.0.0.0 Safari/537.36 ObaflixDesktop/1.0";
+const diagnosticoMonetag = DIAGNOSTICO_MONETAG
+  ? require("./monetag-diagnostico").criar({
+    app, BrowserWindow, session, shell, log, politica, OBAFLIX_URL, OBAFLIX_ORIGIN, UA,
+  })
+  : null;
 
 function registerDesktopProtocol() {
   if (process.platform !== "win32") return false;
@@ -232,6 +241,19 @@ async function assertPublicHttpsStream(raw) {
 
 let mainWindow = null;
 let localPort = null;
+
+// ── Gesto real do usuário ────────────────────────────────────────────────────
+// Último clique/tecla/toque de verdade na janela principal (ver
+// setupWebContents). Todo caminho que abre o navegador do sistema — window.open,
+// navegação do topo para fora, link patrocinado, anúncio por clique — exige um
+// gesto recente e o consome: um gesto, uma abertura. Script não gera gesto.
+let ultimoGestoEm = 0;
+function gestoDisponivel() {
+  return politica.gestoRecente(ultimoGestoEm, Date.now());
+}
+function consumirGesto() {
+  ultimoGestoEm = 0;
+}
 
 // ── Instância única + deep link ────────────────────────────────────────────────
 // Windows entrega obaflix://... pela linha de comando. Se o app já está aberto,
@@ -916,9 +938,11 @@ function configureSession() {
   ses.webRequest.onSendHeaders({ urls: ["*://*/*"] }, (details) => {
     if (startedAt.size > 5000) startedAt.clear();
     startedAt.set(details.id, Date.now());
+    diagnosticoMonetag?.envio(details);
   });
 
   ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
+    diagnosticoMonetag?.conclusao(details);
     const ms = startedAt.has(details.id) ? Date.now() - startedAt.get(details.id) : null;
     startedAt.delete(details.id);
     const fields = {
@@ -934,6 +958,7 @@ function configureSession() {
   });
 
   ses.webRequest.onErrorOccurred({ urls: ["*://*/*"] }, (details) => {
+    diagnosticoMonetag?.falha(details);
     const ms = startedAt.has(details.id) ? Date.now() - startedAt.get(details.id) : null;
     startedAt.delete(details.id);
     // net::ERR_ABORTED é rotina (troca de player, navegação) — fica em debug.
@@ -957,20 +982,43 @@ function configureSession() {
   // "fullscreen" e "pointerLock" sao capacidades de apresentacao, sempre iniciadas
   // por gesto do usuario e reversiveis com Esc — nao expoem dado nenhum.
   // "mediaKeySystem" e o EME: sem ele, qualquer fonte protegida falha calada.
+  //
+  // A origem dos anúncios (iframe sem sandbox) não recebe nenhuma, nem essas.
   const PERMISSOES_LIBERADAS = new Set(["fullscreen", "pointerLock", "mediaKeySystem"]);
 
-  ses.setPermissionCheckHandler((_webContents, permission) => {
-    const liberada = PERMISSOES_LIBERADAS.has(permission);
+  ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+    const liberada = politica.permissaoLiberada({
+      permissao: permission,
+      origens: [requestingOrigin, details?.embeddingOrigin, details?.requestingUrl],
+      liberadas: PERMISSOES_LIBERADAS,
+    });
     if (!liberada) log.debug("permissao", "consulta negada", { permissao: permission });
     return liberada;
   });
 
-  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const liberada = PERMISSOES_LIBERADAS.has(permission);
+  ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const liberada = politica.permissaoLiberada({
+      permissao: permission,
+      origens: [details?.requestingUrl],
+      liberadas: PERMISSOES_LIBERADAS,
+    });
     log[liberada ? "debug" : "info"]("permissao", liberada ? "pedido liberado" : "pedido negado", {
       permissao: permission,
     });
     callback(liberada);
+  });
+
+  // ── Downloads ───────────────────────────────────────────────────────────
+  // O app não baixa nada pelo navegador (mídia vai por media-download.js). O
+  // iframe do anúncio, sem sandbox, consegue disparar download; o DownloadItem
+  // não diz de qual frame veio. Fora da origem do app → cancelado. Ver
+  // window-policy.js (decidirDownload).
+  ses.on("will-download", (event, item) => {
+    let cadeia = [];
+    try { cadeia = item.getURLChain(); } catch { /* item inválido: cadeia vazia cancela */ }
+    if (politica.decidirDownload({ cadeiaDeUrls: cadeia, appOrigin: OBAFLIX_ORIGIN }) === "permitir") return;
+    event.preventDefault();
+    log.info("download", "download fora do app cancelado", { url: log.safeUrl(cadeia[cadeia.length - 1] || "-") });
   });
 
   // ── Strip CSP do Vercel ─────────────────────────────────────────────────
@@ -1118,33 +1166,89 @@ function configureSession() {
 function setupWebContents() {
   const wc = mainWindow.webContents;
 
-  const isAppUrl = (raw) => {
-    try { return new URL(raw).origin === OBAFLIX_ORIGIN; } catch { return false; }
-  };
+  const isAppUrl = (raw) => politica.ehDoApp(raw, OBAFLIX_ORIGIN);
   // Planos e Checkout: mesmo sendo do proprio site, saem para o navegador do
   // sistema. O fluxo de assinatura/pagamento (login externo, PIX/Blackcat) foi
   // desenhado para o browser e nao deve ficar preso na janela do app. Cobre
   // /planos, /checkout e subrotas; o resto do site continua navegando interno.
-  const isRotaExterna = (raw) => {
-    try {
-      const u = new URL(raw);
-      if (u.origin !== OBAFLIX_ORIGIN) return false;
-      return /^\/(planos|checkout)(?:\/|$)/.test(u.pathname);
-    } catch { return false; }
-  };
+  const isRotaExterna = (raw) => politica.ehRotaExterna(raw, OBAFLIX_ORIGIN);
+  // Saída do frame principal para o navegador do sistema: só https e só com
+  // gesto real (consumido). Sem gesto, a navegação é recusada sem abrir nada.
   const openExternalHttp = (raw) => {
-    try {
-      const parsed = new URL(raw);
-      if (parsed.protocol === "https:") shell.openExternal(parsed.href);
-    } catch { /**/ }
+    const decisao = politica.decidirSaidaExterna(raw, { gestoRecente: gestoDisponivel() });
+    if (decisao.acao === "externo") { consumirGesto(); shell.openExternal(decisao.url); }
+    else log.info("nav", "saída para o navegador recusada", { motivo: decisao.motivo, url: log.safeUrl(raw) });
   };
 
+  // Gesto real (estado em `ultimoGestoEm`, no topo do arquivo). `input-event`
+  // não vê o que é roteado a iframe de outro site (o anúncio): o clique nele
+  // chega por `before-mouse-event` (medido no Electron 43).
+  const registrarGesto = (_e, input) => {
+    if (politica.GESTOS.has(input.type)) ultimoGestoEm = Date.now();
+  };
+  wc.on("input-event", registrarGesto);
+  wc.on("before-mouse-event", registrarGesto);
+
+  // Nenhum window.open cria janela Electron: uma filha herdaria o preload
+  // privilegiado sem guarda de navegação. Externo https com gesto real →
+  // navegador do sistema, uma vez por gesto; sem gesto, outro esquema ou URL
+  // do app → negado. Ver window-policy.js.
   wc.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url) || isRotaExterna(url)) { openExternalHttp(url); return { action: "deny" }; }
-    return { action: "allow" };
+    const decisao = politica.decidirJanelaNova(url, OBAFLIX_ORIGIN, {
+      gestoRecente: gestoDisponivel(),
+    });
+    if (decisao.acao === "externo") { consumirGesto(); shell.openExternal(decisao.url); }
+    else log.info("janela", "window.open negado", { motivo: decisao.motivo, url: log.safeUrl(url) });
+    return { action: "deny" };
+  });
+
+  // Cadeia do frame que iniciou a navegação até o topo: URL e origem de cada
+  // um. `null` = iniciador desconhecido (não informado ou já destruído).
+  const cadeiaDoIniciador = (initiator) => {
+    if (!initiator) return null;
+    const cadeia = [];
+    try {
+      for (let f = initiator; f && cadeia.length < 32; f = f.parent) cadeia.push({ url: f.url, origin: f.origin });
+    } catch { return null; }
+    return cadeia;
+  };
+
+  // O anúncio (ou um frame dentro dele) nunca troca a janela principal: nem
+  // para o app, nem para fora — e não vai ao navegador (seria um popunder).
+  // Retorna true quando a navegação foi recusada. Ver window-policy.js.
+  const bloquearTopoDoAnuncio = (details, url) => {
+    const decisao = politica.decidirNavegacaoPrincipal({
+      destino: url,
+      cadeiaDoIniciador: cadeiaDoIniciador(details.initiator),
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+    if (decisao !== "bloquear") return false;
+    details.preventDefault();
+    log.info("janela", "navegação da janela principal recusada", { destino: log.safeUrl(url) });
+    return true;
+  };
+
+  // O iframe do banner publicitário fica no próprio documento. O clique
+  // legítimo do anúncio usa window.open (acima); navegar o iframe para outro
+  // endereço exibiria página de terceiro dentro do app, sem barra de endereço.
+  wc.on("will-frame-navigate", (details) => {
+    if (details.isMainFrame) { bloquearTopoDoAnuncio(details, details.url); return; }
+    let urlAtual = "";
+    try { urlAtual = details.frame ? details.frame.url : ""; } catch { /* frame já destruído */ }
+    const decisao = politica.decidirNavegacaoDeSubframe({
+      isMainFrame: details.isMainFrame,
+      urlAtual,
+      destino: details.url,
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+    if (decisao === "cancelar") {
+      details.preventDefault();
+      log.info("janela", "navegação do iframe do banner bloqueada", { destino: log.safeUrl(details.url) });
+    }
   });
 
   wc.on("will-navigate", (event, url) => {
+    if (bloquearTopoDoAnuncio(event, url)) return;
     try {
       const parsed = new URL(url);
       const isLocalWrapper = parsed.origin === `http://127.0.0.1:${localPort}` &&
@@ -1182,6 +1286,7 @@ function setupWebContents() {
     if (url.startsWith(OBAFLIX_ORIGIN)) {
       if (bootTimer && !siteLoaded) { siteLoaded = true; bootTimer.done({ url: log.safeUrl(url) }); bootTimer = null; }
       wc.executeJavaScript("window.__OBAFLIX_DESKTOP__ = true;").catch(() => {});
+      diagnosticoMonetag?.iniciar(mainWindow);
     }
   });
 
@@ -1214,13 +1319,18 @@ function setupWebContents() {
   wc.on("responsive", () => log.info("renderer", "página voltou a responder"));
 
   // ── Console e erros de JavaScript da página ────────────────────────────
-  const CONSOLE_LEVEL = ["debug", "info", "warn", "error"];
-  wc.on("console-message", (_e, level, message, line, sourceId) => {
-    const name = CONSOLE_LEVEL[level] || "info";
-    // O ruído de terceiros (players embed) fica em debug; o que o app registra
-    // como warn/error sobe junto com a origem e a linha.
-    log[name === "info" ? "debug" : name]("console", message.slice(0, 500), {
-      origem: log.safeUrl(sourceId || "-"), linha: line,
+  // O que o app registra como warn/error sobe junto com a origem e a linha.
+  // Exceção única: o iframe do banner publicitário (a tag re-tenta IndexedDB,
+  // negado na origem opaca, ~1x/s) vai para `trace`. Ver window-policy.js.
+  wc.on("console-message", (details) => {
+    let isMainFrame = true;
+    let frameUrl = "";
+    try {
+      if (details.frame) { isMainFrame = details.frame.parent === null; frameUrl = details.frame.url; }
+    } catch { /* frame já destruído: trata como antes */ }
+    const nivel = politica.nivelDoConsole({ level: details.level, isMainFrame, frameUrl, appOrigin: OBAFLIX_ORIGIN });
+    log[nivel]("console", String(details.message || "").slice(0, 500), {
+      origem: log.safeUrl(details.sourceId || "-"), linha: details.lineNumber,
     });
   });
 
@@ -1247,8 +1357,18 @@ function setupWebContents() {
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────────
+// Origem do app E frame principal da janela principal. Subframe (iframe do
+// banner inclusive) ou qualquer outra janela nunca chega aos handlers abaixo.
 function isTrustedIpc(event) {
-  try { return new URL(event.senderFrame.url).origin === OBAFLIX_ORIGIN; } catch { return false; }
+  try {
+    const frame = event.senderFrame;
+    return politica.ipcConfiavel({
+      remetenteEhJanelaPrincipal: !!mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents,
+      ehFramePrincipal: !!frame && frame.parent === null,
+      urlDoFrame: frame ? frame.url : "",
+      appOrigin: OBAFLIX_ORIGIN,
+    });
+  } catch { return false; }
 }
 
 ipcMain.handle("toggle-fullscreen", (event) => {
@@ -1396,7 +1516,14 @@ ipcMain.handle("install-update", (event) => {
 
 ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
   if (!isTrustedIpc(event)) return { opened: false };
-  if (rawUrl !== SPONSORED_LINK_URL) return { opened: false };
+  const decisao = politica.decidirLinkPatrocinado({
+    pedida: rawUrl, homologada: SPONSORED_LINK_URL, gestoRecente: gestoDisponivel(),
+  });
+  if (decisao.acao !== "abrir") {
+    log.info("anuncio", "link patrocinado recusado", { motivo: decisao.motivo });
+    return { opened: false };
+  }
+  consumirGesto();
   const janela = BrowserWindow.fromWebContents(event.sender);
   if (!janela || janela.isDestroyed()) return { opened: false };
   let perdeuFoco = false;
@@ -1408,7 +1535,7 @@ ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
   janela.on("focus", aoRecuperarFoco);
   const timeout = setTimeout(() => resolverRetorno(false), 4 * 60 * 1000);
   try {
-    await shell.openExternal(SPONSORED_LINK_URL);
+    await shell.openExternal(decisao.url);
     const returned = await retorno;
     return { opened: true, returned };
   } catch {
@@ -1417,6 +1544,35 @@ ipcMain.handle("open-sponsored-link", async (event, rawUrl) => {
     clearTimeout(timeout);
     janela.removeListener("blur", aoPerderFoco);
     janela.removeListener("focus", aoRecuperarFoco);
+  }
+});
+
+// ── Anúncio por clique (Direct Link) ─────────────────────────────────────────
+// O site conta os cliques reais elegíveis (src/components/ads/CliqueDesktop.tsx)
+// e, na vez, chama a ponte SEM parâmetro. A URL é esta, fixa: o renderer nunca
+// escolhe destino. Exige frame principal do app, gesto real recente (consumido
+// aqui) e o piso de intervalo da window-policy. Abre só no navegador do sistema.
+const DIRECT_LINK_DO_CLIQUE = SPONSORED_LINK_URL;
+let ultimoAnuncioDeCliqueEm = 0;
+ipcMain.handle("open-click-ad", async (event) => {
+  if (!isTrustedIpc(event)) return { opened: false };
+  const agora = Date.now();
+  const decisao = politica.decidirAnuncioDeClique({
+    url: DIRECT_LINK_DO_CLIQUE, gestoRecente: gestoDisponivel(), agora, ultimaAberturaEm: ultimoAnuncioDeCliqueEm,
+  });
+  if (decisao.acao !== "abrir") {
+    log.debug("anuncio", "anúncio por clique não aberto", { motivo: decisao.motivo });
+    return { opened: false };
+  }
+  consumirGesto();
+  ultimoAnuncioDeCliqueEm = agora;
+  try {
+    await shell.openExternal(decisao.url);
+    log.info("anuncio", "anúncio por clique aberto no navegador do sistema");
+    return { opened: true };
+  } catch (error) {
+    log.warn("anuncio", "falha ao abrir anúncio por clique", error);
+    return { opened: false };
   }
 });
 

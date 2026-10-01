@@ -4,6 +4,7 @@ import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { LazyRow } from "@/components/ui/LazyRow";
 import { ContinuarAssistindo } from "@/components/ui/ContinuarAssistindo";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import { ComBanners } from "@/components/ads/ComBanners";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
@@ -176,8 +177,9 @@ export default async function SeriesPage({
           </Suspense>
         </div>
 
+        <ComBanners>
         {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
-        <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>
+        {epsRecentesItems.length > 0 && <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>}
         {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
         {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}
         {drama.length > 0      && <LazyRow><LandscapeRow titulo="Drama"               items={drama.map(toRow)}      verTodosHref="/genero/18" /></LazyRow>}
@@ -188,6 +190,7 @@ export default async function SeriesPage({
         {terror.length > 0     && <LazyRow><LandscapeRow titulo="Terror"              items={terror.map(toRow)}     verTodosHref="/genero/27" /></LazyRow>}
         {romance.length > 0    && <LazyRow><LandscapeRow titulo="Romance"             items={romance.map(toRow)}    verTodosHref="/genero/10749" /></LazyRow>}
         {acao.length > 0       && <LazyRow><LandscapeRow titulo="Ação & Aventura"     items={acao.map(toRow)}       verTodosHref="/genero/10759" /></LazyRow>}
+        </ComBanners>
       </div>
     </div>
   );

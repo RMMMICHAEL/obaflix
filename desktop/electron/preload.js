@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // Abre somente o Direct Link homologado e confirma que o SO aceitou a abertura.
   openSponsoredLink: (url) => ipcRenderer.invoke("open-sponsored-link", url),
 
+  // Anúncio por clique: sem parâmetro. O main abre o Direct Link fixo dele, só
+  // com gesto real recente. Retorna { opened: boolean }.
+  openClickAd: () => ipcRenderer.invoke("open-click-ad"),
+
   // Toggle tela cheia nativa
   toggleFullscreen: () => ipcRenderer.invoke("toggle-fullscreen"),
 
