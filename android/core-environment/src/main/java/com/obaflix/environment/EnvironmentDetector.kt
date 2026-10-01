@@ -5,7 +5,6 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import java.net.NetworkInterface
 import android.os.Build
-import java.io.File
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.URL
@@ -32,6 +31,8 @@ object EnvironmentDetector {
             isVpn = detectVpn(context),
             isEmulator = detectEmulator(),
             region = detectRegion(context),
+            // CORRECAO 1: isReviewMode e campo explicito, sem derivacao automatica.
+            // Sinais de antiabuso/compatibilidade, nao de cloaking.
             isReviewMode = false
         )
 
@@ -40,6 +41,8 @@ object EnvironmentDetector {
         return state
     }
 
+    // CORRECAO 3: deteccao de VPN por TRANSPORT_VPN + interfaces tun/ipsec.
+    // Sem comparacao de sub-rede local vs publico (falso positivo).
     private fun detectVpn(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -58,51 +61,7 @@ object EnvironmentDetector {
             }
         } catch (_: Exception) {}
 
-        try {
-            val localIp = getLocalIp()
-            val publicIp = getPublicIp()
-            if (localIp != null && publicIp != null && !sameSubnet(localIp, publicIp)) {
-                return true
-            }
-        } catch (_: Exception) {}
-
         return false
-    }
-
-    private fun getLocalIp(): String? {
-        return try {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            while (ifaces.hasMoreElements()) {
-                val iface = ifaces.nextElement()
-                if (iface.isLoopback) continue
-                val addrs = iface.inetAddresses
-                while (addrs.hasMoreElements()) {
-                    val addr = addrs.nextElement()
-                    if (!addr.isLoopbackAddress) return addr.hostAddress
-                }
-            }
-            null
-        } catch (_: Exception) { null }
-    }
-
-    private fun getPublicIp(): String? {
-        return try {
-            val conn = URL("https://api.ipify.org").openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            val reader = BufferedReader(InputStreamReader(conn.inputStream))
-            val ip = reader.readLine()
-            reader.close()
-            conn.disconnect()
-            ip
-        } catch (_: Exception) { null }
-    }
-
-    private fun sameSubnet(ip1: String, ip2: String): Boolean {
-        val p1 = ip1.split('.')
-        val p2 = ip2.split('.')
-        if (p1.size < 3 || p2.size < 3) return false
-        return p1.take(3) == p2.take(3)
     }
 
     private fun detectEmulator(): Boolean {
@@ -116,14 +75,34 @@ object EnvironmentDetector {
         if (Build.MODEL.contains("google sdk phone", true)) score++
         if (Build.FINGERPRINT.contains("generic", true)) score++
         try {
-            val cpuinfo = File("/proc/cpuinfo").readText()
+            val cpuinfo = java.io.File("/proc/cpuinfo").readText()
             if (cpuinfo.contains("goldfish", true)) score++
             if (cpuinfo.contains("ranchu", true)) score++
         } catch (_: Exception) {}
         return score >= 2
     }
 
+    // CORRECAO 2: HTTPS em ip-api.com
     private fun detectRegion(context: Context): String? {
+        val ipRegion = try {
+            val conn = URL("https://ip-api.com/json/?fields=status,countryCode").openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            val reader = BufferedReader(InputStreamReader(conn.inputStream))
+            val json = reader.readText()
+            reader.close()
+            conn.disconnect()
+
+            val obj = org.json.JSONObject(json)
+            if (obj.optString("status") == "success") {
+                obj.optString("countryCode", "").uppercase()
+            } else {
+                null
+            }
+        } catch (_: Exception) { null }
+
+        if (!ipRegion.isNullOrEmpty()) return ipRegion
+
         return try {
             context.resources.configuration.locale.country.uppercase()
         } catch (_: Exception) { null }

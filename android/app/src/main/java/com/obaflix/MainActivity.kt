@@ -88,7 +88,6 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setupEnvironmentDetection() // OBAFLIX_ENV_CALL
         // Habilita inspeção via chrome://inspect/#devices (necessário para diagnosticar erros).
         // DIAG_LOGS permite o mesmo num APK de release, para investigar um bug que
         // só aparece no aparelho de alguém — ver -PdiagLogs em app/build.gradle.
@@ -99,6 +98,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             "diag" to BuildConfig.DIAG_LOGS,
         )
         setContentView(R.layout.activity_main)
+        setupEnvironmentDetection() // OBAFLIX_ENV_CALL
 
         webView = findViewById(R.id.webView)
         webView.isVerticalScrollBarEnabled = false

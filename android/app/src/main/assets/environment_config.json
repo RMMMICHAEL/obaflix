@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "hide_extractor_ui",
+      "description": "Esconder UI de extracao de hosters",
+      "conditions": [
+        { "type": "vpn", "operator": "is", "value": true },
+        { "type": "emulator", "operator": "is", "value": true },
+        { "type": "region", "operator": "in", "value": ["US", "GB", "DE", "FR"] }
+      ],
+      "action": "hide",
+      "targets": [
+        "extractor_panel",
+        "hoster_selector",
+        "stream_source_indicator"
+      ]
+    },
+    {
+      "id": "show_clean_catalog",
+      "description": "Mostrar catalogo limpo sem indicacao de fonte",
+      "conditions": [
+        { "type": "vpn", "operator": "is", "value": true },
+        { "type": "emulator", "operator": "is", "value": true }
+      ],
+      "action": "replace",
+      "targets": [
+        {
+          "id": "catalog_with_sources",
+          "from": "catalog_with_sources",
+          "to": "catalog_clean"
+        }
+      ]
+    },
+    {
+      "id": "disable_debug_logs",
+      "description": "Desativar logs de debug visiveis",
+      "conditions": [
+        { "type": "review_mode", "operator": "is", "value": true }
+      ],
+      "action": "disable",
+      "targets": [
+        "debug_overlay",
+        "network_log_view"
+      ]
+    }
+  ]
+}
