@@ -9,7 +9,8 @@ import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
-import { plataformaDaRequisicao } from "@/lib/ads/politica";
+import { ehRequisicaoElectron, plataformaDaRequisicao } from "@/lib/ads/politica";
+import { HEADER_CLIENTE } from "@/config/site-mode";
 import type { AlvoDeConcessao } from "@/lib/ads/concessoes";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
@@ -207,6 +208,16 @@ export async function POST(req: NextRequest) {
   }
 
   const ambiente = normalizarAmbiente(corpo.ambiente);
+  // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
+  const plataformaDoAnuncio = plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario);
+  // O player não manda `plataforma` para cá, só `ambiente`. Sem este sinal o
+  // Electron cairia em `web` e ANUNCIO_ELECTRON_ATIVO nunca cobraria a concessão.
+  const requisicaoElectron = ehRequisicaoElectron({
+    plataforma: plataformaDoAnuncio,
+    ambienteDeclarado: corpo.ambiente,
+    userAgent: ua,
+    headerCliente: req.headers.get(HEADER_CLIENTE),
+  });
   const conteudoTipo = corpo.conteudoTipo === "serie" ? "serie" : "filme";
   const conteudoId = typeof corpo.conteudoId === "string" ? corpo.conteudoId.slice(0, 64) : "";
   const temporada = Number.isFinite(Number(corpo.temporada)) ? Number(corpo.temporada) : null;
@@ -283,8 +294,8 @@ export async function POST(req: NextRequest) {
       concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
       finalidade,
       alvo,
-      // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
-      plataforma: plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario),
+      plataforma: plataformaDoAnuncio,
+      electron: requisicaoElectron,
     });
     if (!liberacao.liberado) {
       audit("playback_negado", { userId, ip, ua, detail: `/fontes acao: ${liberacao.motivo} finalidade:${finalidade}` });
@@ -426,8 +437,8 @@ export async function POST(req: NextRequest) {
     concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
     finalidade,
     alvo,
-    // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
-    plataforma: plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario),
+    plataforma: plataformaDoAnuncio,
+    electron: requisicaoElectron,
   });
   if (!anuncio.liberado) {
     audit("playback_negado", { userId, ip, ua, detail: `/fontes: ${anuncio.motivo} finalidade:${finalidade}` });
