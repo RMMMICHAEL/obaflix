@@ -32,6 +32,7 @@ import { liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acao
 import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara } from "@/lib/recorte";
 import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
 import { encontrarMidiaCompativel, controlarMidia } from "@/lib/prepararDownload";
+import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
@@ -568,6 +569,10 @@ export function CustomPlayer({
   // src/lib/fontes.ts.
   const ambiente: "web" | "electron" | "android" =
     isAndroid ? "android" : isDesktop ? "electron" : "web";
+
+  useEffect(() => {
+    if (ambiente === "electron") instalarDiagnosticoNavegacao();
+  }, [ambiente]);
 
   // Fluxo de anuncio. A sequencia vive em `src/lib/ads/fluxoDoCliente.ts` e e
   // testada la; o hook traz so o que precisa de DOM — abrir o Direct Link,
@@ -2169,18 +2174,27 @@ export function CustomPlayer({
   navegarEpisodioRef.current = (url) => {
     if (ambiente === "electron") {
       if (!montadoRef.current) return;
+      registrarFaseNavegacao("nav:start");
       montadoRef.current = false;
       setNavegandoEpisodio(true);
       unmountedRef.current = true;
-      sessaoAbortRef.current?.abort();
-      prepararAbortRef.current?.abort();
-      controlarMidia(() => jwRef.current?.pause());
-      controlarMidia(() => videoRef.current?.pause());
-      extractAbortRef.current?.abort();
+      observarFaseNavegacao("abort-session", () => sessaoAbortRef.current?.abort());
+      observarFaseNavegacao("abort-download-prep", () => prepararAbortRef.current?.abort());
+      controlarMidia(() => observarFaseNavegacao("pause-jw", () => jwRef.current?.pause()));
+      controlarMidia(() => observarFaseNavegacao("pause-video", () => videoRef.current?.pause()));
+      observarFaseNavegacao("abort-extract", () => extractAbortRef.current?.abort());
       recuperacaoPlaybackRef.current = null;
       retryDownloadRef.current = null;
     }
-    void saveProgressRef.current().catch(() => {}).then(() => router.push(url)).catch(() => {});
+    if (ambiente === "electron") {
+      void observarFaseNavegacao("save-progress:start", () => saveProgressRef.current()).catch(() => {}).then(() => {
+        registrarFaseNavegacao("save-progress:finish");
+        observarFaseNavegacao("router-push:start", () => router.push(url));
+        registrarFaseNavegacao("router-push:finish");
+      }).catch(() => {});
+    } else {
+      void saveProgressRef.current().catch(() => {}).then(() => router.push(url)).catch(() => {});
+    }
   };
 
   // Carregamento inicial: a cada mudança de estado, decide se a primeira mídia
@@ -2240,7 +2254,8 @@ export function CustomPlayer({
     // Ensure container div exists and is empty
     const container = document.getElementById("jw-player-container");
     if (!container) return;
-    container.innerHTML = "";
+    if (ambiente === "electron") observarFaseNavegacao("setup:clear-dom", () => { container.innerHTML = ""; });
+    else container.innerHTML = "";
 
     // streamUrl já é /api/player/proxy?t=<token> (stream token opaco) ou URL do Electron
     const fileType = streamTipo === "mp4" ? "mp4" : "hls";
@@ -3216,7 +3231,7 @@ export function CustomPlayer({
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
-      if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
+      if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => anterior.remove())); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, streamTipo, subtitleTracks]);

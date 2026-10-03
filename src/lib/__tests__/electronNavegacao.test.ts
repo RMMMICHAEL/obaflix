@@ -55,6 +55,7 @@ function montar() {
   let agora = 2000;
   const contexto: any = {
     useCallback: (fn: unknown) => fn, executarFluxoDeAnuncio, controlarMidia,
+    observarFaseNavegacao: (_nome: string, acao: () => unknown) => acao(), registrarFaseNavegacao: () => {},
     conteudoId: "serie", conteudoTipo: "serie", temporada: 1, numeroEp: 2, ambiente: "electron",
     montadoRef: { current: true }, unmountedRef: { current: false }, instanciaPlaybackRef: { current: "ep2" },
     recuperacaoPlaybackRef: { current: null }, entradaEmRef: { current: 2000 }, retryDownloadRef: { current: null },
