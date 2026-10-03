@@ -192,6 +192,9 @@ export function useAnuncio() {
           const abertura: { opened?: boolean; returned?: boolean } = await ponte
             .openSponsoredLink(entrada.directLink)
             .catch(() => ({ opened: false }));
+          // O retorno do navegador pode chegar depois de cancelar/sair ou de
+          // abrir outro convite. Ele só pode concluir a promessa que o abriu.
+          if (resolverRef.current !== resolve) return;
           if (abertura?.opened !== true || abertura?.returned !== true) {
             encerrar(false);
             return;

@@ -3619,7 +3619,10 @@ export function CustomPlayer({
                         Fechar
                       </button>
                       {downloadResultado.erro && retryDownloadRef.current && (
-                        <button className="mt-2 text-xs text-white" onClick={() => iniciarDownload(retryDownloadRef.current!.operacao.modo, true)}>
+                        <button className="mt-2 text-xs text-white" onClick={() => {
+                          const retry = retryDownloadRef.current;
+                          if (retry) iniciarDownload(retry.operacao.modo, true);
+                        }}>
                           Tentar novamente
                         </button>
                       )}

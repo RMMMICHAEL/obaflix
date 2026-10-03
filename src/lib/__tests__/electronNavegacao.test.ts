@@ -31,4 +31,6 @@ test("mídia só abre depois do fluxo; recuperação permanece em memória", () 
   assert.ok(trecho.includes('instanciaDaChamada !== instanciaPlaybackRef.current'));
   assert.ok(player.includes('recuperacaoPlaybackRef.current = null'));
   assert.ok(!/localStorage[^\n]*(recuperacao|instancia)/.test(player));
+  assert.ok(player.includes('if (retry) iniciarDownload(retry.operacao.modo, true)'));
+  assert.ok(ler("src/components/player/useAnuncio.tsx").includes('if (resolverRef.current !== resolve) return'));
 });
