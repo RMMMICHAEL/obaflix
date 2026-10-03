@@ -526,7 +526,8 @@ export function CustomPlayer({
    * minuto, e uma falha de sessão nunca vira troca de servidor.
    */
   const ultimaReaberturaRef = useRef(0);
-  const abrirSessaoRef = useRef<((signal?: AbortSignal) => Promise<Fonte[]>) | null>(null);
+  const abrirSessaoRef = useRef<((signal?: AbortSignal) => Promise<Fonte[] | null>) | null>(null);
+  const sessaoAbortRef = useRef<AbortController | null>(null);
   const instanciaPlaybackRef = useRef("");
   const recuperacaoPlaybackRef = useRef<string | null>(null);
   const montadoRef = useRef(true);
@@ -1061,7 +1062,7 @@ export function CustomPlayer({
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
     if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
-    if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+    if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
     streamExpiresAtRef.current = null;
     // Guarda a fonte por URL, não por índice: a lista cresce quando as
     // alternativas do Player 1 chegam, e aí o índice passa a apontar para outra.
@@ -1604,12 +1605,15 @@ export function CustomPlayer({
         }
         console.warn(`[diag/sessao] sessao_invalida (motivo=${e.motivo}) — reabrindo uma vez`);
         try {
-          const nova = await abrirSessaoRef.current?.() ?? [];
+          const nova = await abrirSessaoRef.current?.();
+          if (nova === null || ctrl.signal.aborted || unmountedRef.current) return;
+          if (!nova) throw new Error("sem sessão após reabrir");
           const equivalente = nova[fonteIdx] ?? nova[0];
           if (!equivalente) throw new Error("sem fontes após reabrir");
           extractRef.current(equivalente.id);
           return;
         } catch {
+          if (ctrl.signal.aborted || unmountedRef.current) return;
           setErroTerminal(true);
           setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
           setStatus("error");
@@ -1904,9 +1908,14 @@ export function CustomPlayer({
    * tanto para a montagem quanto para a reabertura depois de o servidor
    * responder `sessao_invalida`.
    */
-  const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[]> => {
+  const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[] | null> => {
     const instanciaDaChamada = instanciaPlaybackRef.current;
     const portasDaChamada = portasDeAnuncioRef.current;
+    const atual = () => montadoRef.current && !unmountedRef.current &&
+      instanciaDaChamada === instanciaPlaybackRef.current && !signal?.aborted;
+    // null distingue cancelamento/resposta obsoleta de uma sessão válida sem fontes.
+    if (!atual()) return null;
+    try {
     // ── Anúncio, antes de abrir a sessão ────────────────────────────────────
     //
     // Pergunta ao servidor se esta reprodução precisa de anúncio e, se precisar,
@@ -1937,10 +1946,11 @@ export function CustomPlayer({
           const restante = Math.max(0, 1000 - (Date.now() - entradaEmRef.current));
           if (restante) await new Promise((resolve) => setTimeout(resolve, restante));
         }
-        if (signal?.aborted) return { concluido: false };
+        if (!atual()) return { concluido: false };
         return portasDaChamada.exibirAnuncio(entrada);
       } },
     );
+    if (!atual()) return null;
 
     // Desistir de ver anúncio não é erro, e não deve virar tela vermelha.
     if (fluxo.situacao === "cancelado") throw new AnuncioRecusado();
@@ -1949,9 +1959,6 @@ export function CustomPlayer({
     // os servidores" em vez da razão real.
     if (fluxo.situacao === "indisponivel") throw new AnuncioIndisponivel();
     if (fluxo.situacao === "falhou") throw erroComercial("liberacao_falhou");
-    if (!montadoRef.current || instanciaDaChamada !== instanciaPlaybackRef.current || signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
-    }
 
     // A concessão — ou o passe de cota, para o episódio que a política deixou
     // passar — é consumida por `/fontes` na criação da sessão, para esta
@@ -1971,8 +1978,10 @@ export function CustomPlayer({
       }),
       signal,
     });
+    if (!atual()) return null;
     if (!res.ok) {
       const recusa = await res.json().catch(() => null);
+      if (!atual()) return null;
       if (res.status === 403 && recusa?.codigo === "anuncio_necessario") throw erroComercial("anuncio_necessario");
       if (res.status === 403 && recusa?.codigo === "conteudo_indisponivel_no_plano") {
         throw erroComercial("conteudo_indisponivel_no_plano");
@@ -1980,7 +1989,7 @@ export function CustomPlayer({
       throw new Error("Não foi possível carregar os servidores");
     }
     const data = await res.json();
-    if (!montadoRef.current || instanciaDaChamada !== instanciaPlaybackRef.current || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (!atual()) return null;
     if (typeof data?.recuperacao === "string") recuperacaoPlaybackRef.current = data.recuperacao;
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
     // Direito de download, decidido no servidor. Comparação estrita com `true`:
@@ -1996,6 +2005,12 @@ export function CustomPlayer({
     setSessaoFontes(data?.sessao ?? null);
     setAllFontes(lista);
     return lista;
+    } catch (erro) {
+      // Fetch/json abortado da instância antiga também termina normalmente.
+      // Erros de uma chamada ainda ativa (inclusive comerciais) continuam reais.
+      if (!atual()) return null;
+      throw erro;
+    }
   }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
 
   abrirSessaoRef.current = abrirSessao;
@@ -2039,6 +2054,7 @@ export function CustomPlayer({
     }
 
     const ctrl = new AbortController();
+    sessaoAbortRef.current = ctrl;
     // Falha que nenhuma outra fonte resolveria: aparece na hora, sem esperar.
     const falhaTerminal = (mensagem: string) => {
       setError(mensagem);
@@ -2049,7 +2065,7 @@ export function CustomPlayer({
     (async () => {
       try {
         const lista = await abrirSessao(ctrl.signal);
-        if (ctrl.signal.aborted) return;
+        if (lista === null || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         setSessaoPendente(false);
         if (!lista.length) {
           falhaTerminal("Nenhum servidor disponível para este título.");
@@ -2076,13 +2092,14 @@ export function CustomPlayer({
         });
         if (!res2.ok) return;
         const data2 = await res2.json();
+        if (ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         const lista2: Fonte[] = Array.isArray(data2?.fontes) ? data2.fontes : [];
         if (lista2.length > lista.length) {
           console.log(`[diag/server] alternativas=${lista2.length - lista.length} total=${lista2.length}`);
           setAllFontes(lista2);
         }
       } catch (e: any) {
-        if (e?.name === "AbortError" || ctrl.signal.aborted) return;
+        if (e?.name === "AbortError" || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         setSessaoPendente(false);
         // Fechar o convite no X, ou ir escolher um plano, não é erro: a
         // reprodução simplesmente não começa. No X volta para a página do título
@@ -2116,12 +2133,13 @@ export function CustomPlayer({
         }
       } finally {
         // Fase 2 respondeu, falhou ou nem começou: a lista não cresce mais.
-        if (!ctrl.signal.aborted) setAlternativasPendentes(false);
+        if (!ctrl.signal.aborted && montadoRef.current && !unmountedRef.current) setAlternativasPendentes(false);
       }
     })();
 
     return () => {
       ctrl.abort();
+      if (sessaoAbortRef.current === ctrl) sessaoAbortRef.current = null;
       montadoRef.current = false;
       prepararAbortRef.current?.abort();
       recuperacaoPlaybackRef.current = null;
@@ -2150,9 +2168,11 @@ export function CustomPlayer({
 
   navegarEpisodioRef.current = (url) => {
     if (ambiente === "electron") {
+      if (!montadoRef.current) return;
       montadoRef.current = false;
       setNavegandoEpisodio(true);
       unmountedRef.current = true;
+      sessaoAbortRef.current?.abort();
       prepararAbortRef.current?.abort();
       controlarMidia(() => jwRef.current?.pause());
       controlarMidia(() => videoRef.current?.pause());
@@ -2215,7 +2235,7 @@ export function CustomPlayer({
     if (!streamUrl || streamTipo === "iframe" || streamTipo === "native") return;
 
     // Destroy previous player if any
-    if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+    if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
 
     // Ensure container div exists and is empty
     const container = document.getElementById("jw-player-container");
@@ -2298,6 +2318,7 @@ export function CustomPlayer({
       // firstFrame: sinal definitivo de que um frame válido foi exibido.
       // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
       player.on("firstFrame", () => {
+        if (unmountedRef.current) return;
         initialLoadRef.current = false;
         // Fecha a sequência no console. Só aqui: primeiro frame é a única prova
         // de reprodução — "extract respondeu 200" não prova nada.
@@ -2323,6 +2344,7 @@ export function CustomPlayer({
       });
 
       player.on("play", () => {
+        if (unmountedRef.current) return;
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         setShowRetry(false);
         setStatus("playing");
@@ -2332,12 +2354,13 @@ export function CustomPlayer({
         resetControlsTimerRef.current();
       });
       player.on("pause", () => {
+        if (unmountedRef.current) return;
         setPlaying(false);
         setControlsVisible(true);
         if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
         saveProgressRef.current();
       });
-      player.on("complete", () => { saveProgressRef.current(); });
+      player.on("complete", () => { if (!unmountedRef.current) void saveProgressRef.current().catch(() => {}); });
 
       player.on("time", ({ position, duration }: any) => {
         if (unmountedRef.current) return;
@@ -2621,6 +2644,7 @@ export function CustomPlayer({
             setSubtitleTracks(renewedTracks);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
+                if (unmountedRef.current) return;
                 if (!jwRef.current) return;
                 // Alguns provedores retornam duração levemente diferente após renovar o token;
                 // seek além da duração real gera comportamento inesperado no hls.js.
@@ -3192,7 +3216,7 @@ export function CustomPlayer({
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
-      if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+      if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, streamTipo, subtitleTracks]);
