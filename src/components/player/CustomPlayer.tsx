@@ -351,6 +351,7 @@ export function CustomPlayer({
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);   // native tipo only (rola4/Safari)
   const jwRef = useRef<any>(null);                   // JW Player instance
+  const jwHostRef = useRef<HTMLDivElement>(null);     // React owns host; JW owns its child
   const progressoRef = useRef(0);
   const durationRef = useRef(duracaoSeg ?? 0);
   const autoSkipDoneRef = useRef(false);
@@ -573,6 +574,13 @@ export function CustomPlayer({
   useEffect(() => {
     if (ambiente === "electron") instalarDiagnosticoNavegacao();
   }, [ambiente]);
+
+  const removerJWElectron = useCallback((player = jwRef.current) => {
+    if (!player || jwRef.current !== player) return;
+    // Retira a propriedade antes de remove(): callbacks/cleanup não removem duas vezes.
+    jwRef.current = null;
+    controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => player.remove()));
+  }, []);
 
   // Fluxo de anuncio. A sequencia vive em `src/lib/ads/fluxoDoCliente.ts` e e
   // testada la; o hook traz so o que precisa de DOM — abrir o Direct Link,
@@ -1067,7 +1075,8 @@ export function CustomPlayer({
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
     if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
-    if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
+    if (ambiente === "electron") removerJWElectron();
+    else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     streamExpiresAtRef.current = null;
     // Guarda a fonte por URL, não por índice: a lista cresce quando as
     // alternativas do Player 1 chegam, e aí o índice passa a apontar para outra.
@@ -2249,10 +2258,20 @@ export function CustomPlayer({
     if (!streamUrl || streamTipo === "iframe" || streamTipo === "native") return;
 
     // Destroy previous player if any
-    if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => anterior.remove()); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
+    if (ambiente === "electron") removerJWElectron();
+    else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
 
     // Ensure container div exists and is empty
-    const container = document.getElementById("jw-player-container");
+    let container = document.getElementById("jw-player-container");
+    if (ambiente === "electron") {
+      const host = jwHostRef.current;
+      if (!host) return;
+      if (!container || !host.contains(container)) {
+        container = document.createElement("div");
+        container.id = "jw-player-container";
+        host.appendChild(container);
+      }
+    }
     if (!container) return;
     if (ambiente === "electron") observarFaseNavegacao("setup:clear-dom", () => { container.innerHTML = ""; });
     else container.innerHTML = "";
@@ -2269,9 +2288,11 @@ export function CustomPlayer({
       default: track.default ?? index === 0,
     }));
 
+    let cancelado = false;
+    let playerDoEfeito: any = null;
     loadJW(() => {
       // Componente pode ter desmontado enquanto o script JW carregava
-      if (unmountedRef.current) return;
+      if (unmountedRef.current || (ambiente === "electron" && cancelado)) return;
       const jw = (window as any).jwplayer;
       if (!jw) return;
       jw.key = JW_KEY;
@@ -2298,6 +2319,7 @@ export function CustomPlayer({
         height: "100%",
         stretching: "uniform",
       });
+      playerDoEfeito = player;
 
       jwRef.current = player;
       // Congelada aqui: o handler de erro compara contra sourceEpochRef atual.
@@ -3225,13 +3247,15 @@ export function CustomPlayer({
     });
 
     return () => {
+      cancelado = true;
       if (firstFrameTimerRef.current) { clearTimeout(firstFrameTimerRef.current); firstFrameTimerRef.current = null; }
       if (stallTimerRef.current) { clearInterval(stallTimerRef.current); stallTimerRef.current = null; }
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
-      if (jwRef.current) { const anterior = jwRef.current; if (ambiente === "electron") controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => anterior.remove())); else { try { anterior.remove(); } catch {} } jwRef.current = null; }
+      if (ambiente === "electron") removerJWElectron(playerDoEfeito);
+      else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, streamTipo, subtitleTracks]);
@@ -3507,7 +3531,8 @@ export function CustomPlayer({
       )}
       {/* ── Video elements ── */}
       <div
-        id="jw-player-container"
+        ref={ambiente === "electron" ? jwHostRef : undefined}
+        id={ambiente === "electron" ? undefined : "jw-player-container"}
         className={`absolute inset-0 w-full h-full${
           streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
         }`}

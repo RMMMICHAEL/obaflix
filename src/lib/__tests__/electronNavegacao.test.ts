@@ -151,3 +151,26 @@ test("fetch abortado durante Próximo e JSON de instância substituída retornam
   assert.equal(await antiga, null);
   assert.ok(!substituida.eventos.includes("fontes"));
 });
+
+test("teardown Electron remove uma única vez e cleanup antigo não remove a instância nova", () => {
+  const codigo = ts.transpileModule(player.slice(player.indexOf("  const removerJWElectron = useCallback"), player.indexOf("  // Fluxo de anuncio.")), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let remocoes = 0;
+  const ref: any = { current: null };
+  const contexto: any = { useCallback: (fn: unknown) => fn, jwRef: ref, controlarMidia,
+    observarFaseNavegacao: (_nome: string, acao: () => unknown) => acao() };
+  vm.runInNewContext(`${codigo}\nglobalThis.remover = removerJWElectron;`, contexto);
+  const antigo = { remove: () => { remocoes++; contexto.remover(antigo); } };
+  ref.current = antigo;
+  contexto.remover(antigo);
+  contexto.remover(antigo);
+  assert.equal(remocoes, 1, "remove reentrante e cleanup duplicado são idempotentes");
+  const novo = { remove: () => { remocoes++; } };
+  ref.current = novo;
+  contexto.remover(antigo);
+  assert.equal(ref.current, novo);
+  assert.equal(remocoes, 1);
+  contexto.remover(novo);
+  assert.equal(remocoes, 2);
+});
