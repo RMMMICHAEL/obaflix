@@ -1,4 +1,4 @@
-// Diagnóstico temporário da homologação Electron. Nunca serializar o erro bruto.
+// Diagnóstico reduzido: só falhas, nunca o erro bruto ou logs por fase.
 let fase = "idle";
 let instalado = false;
 
@@ -8,6 +8,7 @@ export function sanitizarDiagnosticoNavegacao(texto: string): string {
     .replace(/(?:[a-z]:\\|\/)[^\s)"'<>]+/gi, "[path]")
     .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi, "[host]")
     .replace(/(?:\?|&)?(?:_vercel_share|token|signature|authorization|referer|key|secret)\s*[=:]\s*[^\s,;]+/gi, "[secret]")
+    .replace(/(?:[?&]|\b)[\w-]+=[^\s,;]+/g, "[param]")
     .replace(/[a-zA-Z0-9_=-]{48,}/g, "[opaque]")
     .slice(0, 1200);
 }
@@ -33,7 +34,6 @@ export function registrarErroNavegacao(origem: string, erro: unknown): void {
 
 export function registrarFaseNavegacao(proxima: string): void {
   fase = proxima;
-  console.info(`[diag/nav] ${proxima}`);
 }
 
 /** Observa sem mudar o resultado nem absorver exceções. */
