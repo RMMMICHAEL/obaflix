@@ -7,11 +7,12 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo } from "@/lib/playbackAuthorization";
+import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
 import { ehRequisicaoElectron, plataformaDaRequisicao } from "@/lib/ads/politica";
 import { HEADER_CLIENTE } from "@/config/site-mode";
 import type { AlvoDeConcessao } from "@/lib/ads/concessoes";
+import { emitirRecuperacaoElectron } from "@/lib/ads/concessoes";
 import {
   montarFontes, numerar, criarSessaoFontes, acrescentarFontes, lerFontes,
   diagnosticarSessao, diagFonte,
@@ -156,6 +157,7 @@ async function buscarAlternativasPlayerflix(
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 interface Corpo {
+  instancia?: unknown;
   conteudoId?: unknown;
   conteudoTipo?: unknown;
   temporada?: unknown;
@@ -432,6 +434,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
   const anuncio = await autorizarPorAnuncio({
+    instancia: typeof corpo.instancia === "string" ? corpo.instancia : null,
     userId,
     tipo: conteudoTipo,
     concessao: typeof corpo.concessao === "string" ? corpo.concessao : null,
@@ -563,5 +566,9 @@ export async function POST(req: NextRequest) {
 
   // `fontes` e `fontesDaSessao` diferem só em `coordenadas`, que nenhuma
   // projeção copia: a resposta é a mesma, e as coordenadas ficam no servidor.
-  return NextResponse.json({ sessao, fontes: projetar(fontes), direitos }, { headers: NO_STORE });
+  const instancia = corpo.instancia;
+  const recuperacao = requisicaoElectron && anuncioElectronAtivo() && finalidade === "reproducao" &&
+    anuncio.via === "concessao" && typeof instancia === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(instancia)
+      ? await emitirRecuperacaoElectron({ userId, instancia, alvo, finalidade }) : undefined;
+  return NextResponse.json({ sessao, fontes: projetar(fontes), direitos, ...(recuperacao ? { recuperacao } : {}) }, { headers: NO_STORE });
 }

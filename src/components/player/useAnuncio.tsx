@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
@@ -134,6 +134,13 @@ export function useAnuncio() {
     resolverRef.current = null;
     setModal({ fase: "oculto" });
     resolver?.({ concluido });
+  }, []);
+
+  useEffect(() => () => {
+    limparRef.current?.();
+    resolverRef.current?.({ concluido: false });
+    resolverRef.current = null;
+    aceitarRef.current = null;
   }, []);
 
   const exibirAnuncio = useCallback(

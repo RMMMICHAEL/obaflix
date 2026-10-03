@@ -35,6 +35,9 @@ export interface PedidoDeAutorizacao {
   plataforma: PlataformaDeAnuncio | null;
   /** Reproduzir, baixar ou transmitir. Ausente: reprodução. */
   finalidade?: FinalidadeDoPedido;
+  /** Memória da instância atual, nunca localStorage. */
+  instancia?: string;
+  recuperacao?: string;
 }
 
 /** O que `/api/playback/authorize` devolve, reduzido ao que o cliente usa. */
