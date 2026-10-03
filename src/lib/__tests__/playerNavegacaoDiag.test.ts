@@ -8,7 +8,7 @@ test("diagnóstico conserva NotFoundError/removeChild e frames, sem URL, token o
   console.error = texto => mensagens.push(texto);
   try {
     registrarErroNavegacao("episode:boundary", {
-      name: "NotFoundError", message: "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node. https://private.example/media.mp4?token=SECRET _vercel_share=SHARE referer=https://private.example", 
+      name: "NotFoundError", message: "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node. https://private.example/media.mp4?token=SECRET _vercel_share=SHARE referer=https://private.example",
       stack: "NotFoundError\n    at commitDeletionEffects (https://preview.example/_next/static/chunks/abc-123.js:1:456)\n    at remove (https://private.example/jwplayer.js?token=SECRET:1:7)\n    at file:///C:/private/media.mp4?token=SECRET",
     });
   } finally { console.error = original; }
