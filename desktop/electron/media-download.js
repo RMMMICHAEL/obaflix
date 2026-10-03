@@ -17,6 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { temFfmpeg, suportaOpcao, rodarFfmpeg } = require("./ffmpeg-bin");
 
 const UA =
@@ -197,7 +198,7 @@ function paraTimecode(seg) {
  * Sempre com `-c copy` — nada é recodificado, só remuxado.
  */
 async function baixarComFfmpeg({
-  stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso, sinal,
+  stream, referer, tipo, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso, sinal,
 }) {
   const base = nomeSeguro(titulo);
   const recorta = modo === "trecho" && Number.isFinite(inicioSeg) && Number.isFinite(fimSeg);
@@ -217,19 +218,17 @@ async function baixarComFfmpeg({
     "-user_agent", UA,
     // Estes provedores entregam segmentos disfarçados de .js/.css/.woff; sem
     // liberar as extensões o demuxer HLS do ffmpeg recusa a playlist inteira.
-    "-allowed_extensions", "ALL",
-    "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
   ];
   // Builds recentes do ffmpeg apertaram a validação de extensão e passaram a
   // exigir esta opção além da anterior; builds mais antigos nem a reconhecem e
   // abortam com "Unrecognized option". Por isso ela é condicional.
-  if (suportaOpcao("-extension_picky")) args.push("-extension_picky", "0");
+  args.push(...opcoesEntrada(tipo));
   if (cabecalhosExtra.length) args.push("-headers", cabecalhosExtra.join("\r\n") + "\r\n");
   // -ss antes do -i faz busca na entrada: baixa só o trecho, em vez do arquivo todo.
   if (recorta) args.push("-ss", paraTimecode(inicioSeg), "-to", paraTimecode(fimSeg));
   args.push(
     "-i", stream,
-    "-map", "0", "-c", "copy",
+    "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
     // Necessário para MP4 com trilhas vindas de MPEG-TS.
     "-bsf:a", "aac_adtstoasc",
     // Com -c copy o corte cai no keyframe anterior ao pedido. Sem zerar os
@@ -313,7 +312,7 @@ async function baixarMidia({
         );
       }
       return baixarComFfmpeg({
-        stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
+        stream, referer, tipo: "mp4", titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
       });
     }
     progresso({ etapa: "baixando", atual: 0, total: 1, bytes: 0, pct: 0 });
@@ -343,7 +342,7 @@ async function baixarMidia({
       );
     }
     return baixarComFfmpeg({
-      stream, referer, titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
+      stream, referer, tipo: "hls", titulo, modo, inicioSeg, fimSeg, destinoDir, onProgresso: progresso, sinal,
     });
   }
   if (!playlist.segmentos.length) throw new Error("playlist sem segmentos");
@@ -429,8 +428,56 @@ async function baixarMidia({
   return { caminho: destino, bytes, container, segmentos: total, inicioReal, fimReal };
 }
 
+function opcoesEntrada(tipo) {
+  if (tipo !== "hls") return [];
+  const args = ["-allowed_extensions", "ALL", "-protocol_whitelist", "file,http,https,tcp,tls,crypto"];
+  if (suportaOpcao("-extension_picky")) args.push("-extension_picky", "0");
+  return args;
+}
+
+// Teste limitado de leitura/seek, sem salvar download nem cobrar autorização.
+async function verificarMidia({ stream, referer, tipo, modo, posicao = 0 }) {
+  if (!["hls", "mp4"].includes(tipo)) return false;
+  if (tipo === "mp4" && modo === "completo") {
+    const r = await fetch(stream, { headers: { ...cabecalhos(referer), Range: "bytes=0-1023" }, signal: AbortSignal.timeout(20000) });
+    try {
+      if (!r.ok) return false;
+      const reader = r.body?.getReader();
+      const first = await reader?.read();
+      await reader?.cancel();
+      return !!first?.value && identificarContainer(Buffer.from(first.value)) === "fmp4";
+    } finally { await r.body?.cancel().catch(() => {}); }
+  }
+  if (tipo === "hls") {
+    const p = await resolverPlaylistDeMidia(stream, referer);
+    if (p.criptografada || !p.segmentos.length) return false;
+    if (!p.audiosSeparados?.length) {
+      const segmento = p.segmentos.find(s => s.inicio + s.dur > posicao) || p.segmentos[0];
+      const bytes = await baixarSegmento(segmento.url, referer, AbortSignal.timeout(20000));
+      if (identificarContainer(bytes) === "desconhecido") return false;
+      if (p.mapInit && identificarContainer(await baixarSegmento(p.mapInit, referer, AbortSignal.timeout(20000))) !== "fmp4") return false;
+      return true;
+    }
+  }
+  if (!temFfmpeg()) return false;
+  const args = ["-hide_banner", "-loglevel", "error", "-user_agent", UA, ...opcoesEntrada(tipo)];
+  if (referer) args.push("-headers", `Referer: ${referer}\r\n`);
+  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "obaflix-check-"));
+  const destino = path.join(temp, "check.mp4");
+  args.push("-ss", paraTimecode(posicao), "-i", stream, "-t", "1", "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
+    "-bsf:a", "aac_adtstoasc", "-avoid_negative_ts", "make_zero", "-fflags", "+genpts", "-movflags", "+faststart", "-y", destino);
+  try {
+    await rodarFfmpeg(args, { timeoutMs: 25000 });
+    return (await fs.promises.stat(destino)).size > 1024;
+  } finally {
+    await fs.promises.unlink(destino).catch(() => {});
+    await fs.promises.rmdir(temp).catch(() => {});
+  }
+}
+
 module.exports = {
   baixarMidia,
+  verificarMidia,
   // Exportado para os testes locais; o app usa só baixarMidia.
-  _test: { lerPlaylist, selecionarSegmentos, identificarContainer, nomeSeguro, resolverPlaylistDeMidia },
+  _test: { lerPlaylist, selecionarSegmentos, identificarContainer, nomeSeguro, resolverPlaylistDeMidia, opcoesEntrada },
 };

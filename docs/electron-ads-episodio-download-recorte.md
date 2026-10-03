@@ -91,3 +91,48 @@ consulta nova de catálogo, tráfego de vídeo no servidor ou migration.
 
 Preview deve usar flag específica desta branch. Não ligar MONETIZACAO_ATIVA
 global, não mudar Production, não mergear e não gerar instalador.
+
+## Correções após teste no EXE real
+
+A revisão posterior autorizou mudanças pontuais no processo principal e preload.
+Esta seção substitui a restrição anterior de não editar desktop/electron.
+Nenhum instalador foi gerado: **EXE_REBUILD_NECESSARIO=SIM**. O Preview sozinho
+não entrega o novo handler/preload ao EXE 1.0.12 já instalado.
+
+O recorte de MP4 recebia `-allowed_extensions` e `-extension_picky`, opções do
+demuxer HLS. Agora só HLS recebe essas opções. MP4 permanece candidato a corte
+por FFmpeg. Preparação testa leitura/seek e mux de uma amostra curta em MP4
+temporário; HLS sem áudio separado verifica playlist, proteção, init e segmento
+usados pelo caminho nativo de concatenação. Temporários de verificação são
+removidos tanto no sucesso quanto na falha. Não há transcodificação.
+
+Preparando editor/download verifica a mídia atual e percorre as fontes da mesma
+sessão na ordem do sistema. Falha isolada não encerra a busca. Só uma fonte que
+passou na verificação é publicada no player, mantendo conteúdo, sessão, posição
+atual e pausa. A troca não chama autorização de reprodução. Abrir editor não
+chama autorização de download; a cobrança continua no botão final de baixar.
+Navegação, conta, sessão ou troca manual invalidam respostas tardias.
+
+Download sem candidato retorna somente a mensagem genérica solicitada, sem
+desmontar a reprodução existente. Ausência da nova bridge de verificação no
+EXE antigo também falha fechada. Retry autorizado continua sem nova preparação
+ou anúncio durante sua janela, desde que a operação permaneça idêntica.
+
+O handler de download anteriormente retornava `erro.message.slice(...)`, com
+stderr/URL privada. Agora ele retorna uma mensagem fixa e registra somente
+`download_failed`; o preflight retorna apenas `{ ok }`. O renderer também
+ignora detalhes de erro de versões antigas e usa erro genérico de reprodução
+no Electron. Nenhum stderr ou URL/token é introduzido nos logs desses fluxos.
+
+Próximo desativa callbacks antes da pausa/abort. Chamadas de mídia no Electron
+consomem rejeições assíncronas e teardown síncrono; a cadeia de salvar progresso
+e navegar também termina com catch, evitando rejeição não tratada durante a
+transição. Loading mínimo, modal, auto-next e anterior permanecem centralizados.
+Não houve alteração da política de anúncios, Android/TV ou click-ad.
+
+Validação focada: testes de opções FFmpeg, handler IPC real isolado com erro
+malicioso contendo URL/token/caminho, fallback ordenado, candidato atual válido,
+nenhum candidato, resposta tardia e DOMException/AbortError. Também verificado
+com FFmpeg instalado e MP4 sintético servido localmente: preflight, recorte de
+1 a 3 s e decodificação da saída passaram. Fontes privadas e EXE reais ainda
+dependem da homologação manual do proprietário.

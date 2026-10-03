@@ -20,7 +20,7 @@ test("anterior, próximo, contador e auto-next dos dois players usam a transiç�
   assert.equal((player.match(/navegarEpisodioRef\.current\(url\)/g) ?? []).length, 2, "auto-next JW e vídeo nativo");
   assert.equal((player.match(/navegarEpisodioRef\.current\(nextUrl\)/g) ?? []).length, 3, "próximo cabeçalho, controle e contador");
   assert.ok(player.includes('navegarEpisodioRef.current(prevUrl)'));
-  assert.ok(player.includes('saveProgressRef.current().finally(() => router.push(url))'));
+  assert.ok(player.includes('saveProgressRef.current().catch(() => {}).then(() => router.push(url)).catch(() => {})'));
   assert.ok(player.includes('setNavegandoEpisodio(true)'));
   assert.ok(player.includes('const [carregamentoInicial, setCarregamentoInicial] = useState(true)'));
   assert.ok(player.includes('1000 - (Date.now() - entradaEmRef.current)'));
