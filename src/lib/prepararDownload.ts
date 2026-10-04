@@ -1,22 +1,13 @@
-export const PREPARACAO_DOWNLOAD_TIMEOUT_MS = 12_000;
-
-/** Uma única verificação rápida da mídia selecionada; não resolve nem enumera fontes. */
+/** Uma única verificação da mídia selecionada; os timeouts de rede/FFmpeg pertencem ao IPC. */
 export async function verificarDownloadAtual<T>(
   midia: T | null,
   verificar: (midia: T) => Promise<boolean>,
-  timeoutMs = PREPARACAO_DOWNLOAD_TIMEOUT_MS,
 ): Promise<boolean> {
   if (!midia) return false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      Promise.resolve().then(() => verificar(midia)),
-      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
-    ]);
+    return await verificar(midia);
   } catch {
     return false;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
 

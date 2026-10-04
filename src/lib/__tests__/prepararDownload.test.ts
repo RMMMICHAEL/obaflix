@@ -30,7 +30,7 @@ test("fonte atual válida: um preflight, anúncio e download da mesma operação
   assert.equal(fontes.length, tamanhoInicial, "download não altera a quantidade de fontes");
 });
 
-test("fonte atual inválida ou em timeout mostra caminho de troca sem anúncio", async () => {
+test("fonte atual inválida mostra caminho de troca sem anúncio", async () => {
   const eventos: string[] = [];
   const atual = { stream: operacao.stream, fonteId: operacao.fonteId };
   const compativel = await verificarDownloadAtual(atual, async candidata => {
@@ -39,8 +39,20 @@ test("fonte atual inválida ou em timeout mostra caminho de troca sem anúncio",
   if (!compativel) eventos.push("aviso", "abrir-seletor");
   assert.equal(compativel, false);
   assert.deepEqual(eventos, ["preflight:fonte-tocando", "aviso", "abrir-seletor"]);
-  assert.equal(await verificarDownloadAtual(atual, () => new Promise<boolean>(() => {}), 10), false);
   assert.deepEqual(eventos, ["preflight:fonte-tocando", "aviso", "abrir-seletor"]);
+});
+
+test("preflight válido não é recusado por um timeout duplicado no renderer", async () => {
+  const atual = { stream: operacao.stream, fonteId: operacao.fonteId };
+  const inicio = Date.now();
+  const compativel = await verificarDownloadAtual(atual, async () => {
+    await new Promise(resolve => setTimeout(resolve, 75));
+    return true;
+  });
+  assert.equal(compativel, true);
+  assert.ok(Date.now() - inicio >= 70);
+  const helper = readFileSync(join(process.cwd(), "src/lib/prepararDownload.ts"), "utf8");
+  assert.doesNotMatch(helper, /Promise\.race|PREPARACAO_DOWNLOAD_TIMEOUT_MS/);
 });
 
 test("trecho: preflight sem anúncio, anúncio somente no clique final e download da mesma fonte", async () => {
