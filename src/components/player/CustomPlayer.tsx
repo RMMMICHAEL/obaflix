@@ -1286,7 +1286,7 @@ export function CustomPlayer({
   }, [desktopBridge, resolverUrlNativa]);
 
   const publicarFontesResolvidas = useCallback((descobertas: { fontes: Fonte[]; parentId?: string }[]) => {
-    let lista = [...allFontesRef.current];
+    const lista = [...allFontesRef.current];
     for (const grupo of descobertas) {
       if (grupo.parentId) {
         const idx = lista.findIndex(f => f.id === grupo.parentId);
@@ -1300,13 +1300,13 @@ export function CustomPlayer({
   }, []);
 
   const aplicarMidiaResolvida = useCallback((midia: MidiaElectron<Fonte>, descobertas: { fontes: Fonte[]; parentId?: string }[]) => {
-    let lista = publicarFontesResolvidas(descobertas);
+    const lista = [...publicarFontesResolvidas(descobertas)];
     let idx = lista.findIndex(f => f.id === midia.fonte.id);
     if (idx < 0 && midia.solicitadaId) idx = lista.findIndex(f => f.id === midia.solicitadaId);
     if (idx < 0 && midia.fonte.superflixLocal) idx = lista.findIndex(f =>
       f.superflixLocal?.sessionId === midia.fonte.superflixLocal!.sessionId &&
       f.superflixLocal?.optionKey === midia.fonte.superflixLocal!.optionKey);
-    if (idx < 0) { lista = [...lista, midia.fonte]; idx = lista.length - 1; }
+    if (idx < 0) { idx = lista.length; lista.push(midia.fonte); }
     else lista[idx] = midia.fonte;
     allFontesRef.current = lista;
     setAllFontes(lista);
