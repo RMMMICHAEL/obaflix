@@ -32,6 +32,7 @@ import { liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acao
 import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara } from "@/lib/recorte";
 import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
 import { encontrarMidiaCompativel, controlarMidia } from "@/lib/prepararDownload";
+import { resolverFonteElectron, type MidiaElectron } from "@/lib/resolverFonteElectron";
 import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import {
@@ -541,6 +542,7 @@ export function CustomPlayer({
   const preparandoDownloadRef = useRef(false);
   const prepararAbortRef = useRef<AbortController | null>(null);
   const [preparandoDownload, setPreparandoDownload] = useState<"completo" | "trecho" | null>(null);
+  const [preparoCandidata, setPreparoCandidata] = useState(0);
   // Servidores que já falharam de forma fatal, por id de fonte, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
@@ -606,6 +608,8 @@ export function CustomPlayer({
   const [carregamentoInicial, setCarregamentoInicial] = useState(true);
   const [sessaoPendente, setSessaoPendente] = useState(true);
   const [alternativasPendentes, setAlternativasPendentes] = useState(false);
+  const alternativasPendentesRef = useRef(false);
+  alternativasPendentesRef.current = alternativasPendentes;
   const [erroTerminal, setErroTerminal] = useState(false);
   // Failovers antes do primeiro frame já contados quando este título abriu: o
   // teto do carregamento inicial é o mesmo do failover, medido a partir daqui.
@@ -1264,6 +1268,63 @@ export function CustomPlayer({
   }, []);
 
   // ── Extract ──────────────────────────────────────────────────────────────────
+  // Uma resolução Electron para seleção manual e probe. Nenhum estado do player aqui.
+  const resolverFonteDireta = useCallback((alvo: Fonte, signal: AbortSignal,
+    descobrir: (fontes: Fonte[], parentId?: string) => void,
+    aceitar?: (midia: MidiaElectron<Fonte>) => Promise<boolean>) => {
+    const sessao = sessaoFontesRef.current;
+    if (!sessao) return Promise.reject(new ErroSessao());
+    return resolverFonteElectron(alvo, {
+      sessao, signal, bridge: desktopBridge, coordenada: resolverUrlNativa,
+      preferida: id => tentativaNativaRef.current.get(id) ?? 0,
+      total: id => totalTentativasRef.current.get(id) ?? 1,
+      fetch: (...args) => fetch(...args),
+      parametroTentativa: id => parametroTentativaRef.current(id),
+      lembrarTentativa: (id, dados) => lembrarTentativaRef.current(id, dados),
+      erroSessao: motivo => new ErroSessao(motivo), descobrir, aceitar,
+    });
+  }, [desktopBridge, resolverUrlNativa]);
+
+  const publicarFontesResolvidas = useCallback((descobertas: { fontes: Fonte[]; parentId?: string }[]) => {
+    let lista = [...allFontesRef.current];
+    for (const grupo of descobertas) {
+      if (grupo.parentId) {
+        const idx = lista.findIndex(f => f.id === grupo.parentId);
+        if (idx >= 0) lista.splice(idx, 1, ...grupo.fontes);
+        else for (const f of grupo.fontes) if (!lista.some(atual => atual.id === f.id)) lista.push(f);
+      } else for (const f of grupo.fontes) if (!lista.some(atual => atual.id === f.id)) lista.push(f);
+    }
+    allFontesRef.current = lista;
+    setAllFontes(lista);
+    return lista;
+  }, []);
+
+  const aplicarMidiaResolvida = useCallback((midia: MidiaElectron<Fonte>, descobertas: { fontes: Fonte[]; parentId?: string }[]) => {
+    let lista = publicarFontesResolvidas(descobertas);
+    let idx = lista.findIndex(f => f.id === midia.fonte.id);
+    if (idx < 0 && midia.solicitadaId) idx = lista.findIndex(f => f.id === midia.solicitadaId);
+    if (idx < 0 && midia.fonte.superflixLocal) idx = lista.findIndex(f =>
+      f.superflixLocal?.sessionId === midia.fonte.superflixLocal!.sessionId &&
+      f.superflixLocal?.optionKey === midia.fonte.superflixLocal!.optionKey);
+    if (idx < 0) { lista = [...lista, midia.fonte]; idx = lista.length - 1; }
+    else lista[idx] = midia.fonte;
+    allFontesRef.current = lista;
+    setAllFontes(lista);
+    setFonteIdx(idx);
+    fonteSelecionadaRef.current = midia.fonte.id;
+    ultimoExtraidoRef.current = midia.fonte.id;
+    sourceIdRef.current = sourceIdDe(midia.fonte.id);
+    if (midia.tentativa !== undefined) tentativaNativaRef.current.set(midia.fonte.superflixLocal?.parentId ?? midia.fonte.id, midia.tentativa);
+    streamExpiresAtRef.current = midia.expiresAt ?? null;
+    streamRefererRef.current = midia.referer ?? null;
+    directStreamRef.current = midia.stream;
+    streamTipoRef.current = midia.tipo;
+    setStreamTipo(midia.tipo);
+    setSubtitleTracks((midia.subtitles ?? []).map(t => ({ ...t, file: buildElectronProxyUrl(t.file, t.referer || midia.referer), kind: "captions" })));
+    setStreamUrl(midia.tipo === "iframe" ? midia.stream : buildElectronProxyUrl(midia.stream, midia.referer));
+    setStatus(midia.tipo === "iframe" ? "playing" : "loading");
+  }, [publicarFontesResolvidas]);
+
   const extract = useCallback(async (fonteId: string) => {
     extractAbortRef.current?.abort();
     stopMediaSession();
@@ -1281,6 +1342,18 @@ export function CustomPlayer({
       if (!alvo) throw new Error("Servidor compatível não encontrado");
       const sessao = sessaoFontesRef.current;
       if (!sessao) throw new Error("Sessão de reprodução indisponível");
+
+      if (ambiente === "electron") {
+        const descobertas: { fontes: Fonte[]; parentId?: string }[] = [];
+        try {
+          const midia = await resolverFonteDireta(alvo, ctrl.signal, (fontes, parentId) => descobertas.push({ fontes, parentId }));
+          if (midia && !ctrl.signal.aborted && !unmountedRef.current) aplicarMidiaResolvida(midia, descobertas);
+        } catch (erro) {
+          if (!ctrl.signal.aborted && !unmountedRef.current && descobertas.length) publicarFontesResolvidas(descobertas);
+          throw erro;
+        }
+        return;
+      }
 
       const desktop = typeof window !== "undefined" && (window as any).obaflixDesktop;
       const mediaApi = desktop?.startLocalMedia
@@ -1643,7 +1716,7 @@ export function CustomPlayer({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa, tentarCoordenadasNativas, applyEffectiveSuperflixOption]);
+  }, [fonteIdx, allFontes.length, switchFonte, isAndroid, resolverUrlNativa, tentarCoordenadasNativas, applyEffectiveSuperflixOption, ambiente, resolverFonteDireta, aplicarMidiaResolvida, publicarFontesResolvidas]);
 
   extractRef.current = extract;
 
@@ -1686,65 +1759,32 @@ export function CustomPlayer({
     prepararAbortRef.current = ctrl;
     const ativa = () => !ctrl.signal.aborted && sourceEpochRef.current === epoch && montadoRef.current && instancia === instanciaPlaybackRef.current &&
       sessao === sessaoFontesRef.current && usuario === operacaoAtualRef.current(modo).usuario;
-    type Midia = { stream: string; tipo: "hls" | "mp4"; referer?: string; expiresAt?: number; subtitles?: SubtitleTrack[]; fonte: Fonte };
+    type Midia = MidiaElectron<Fonte>;
+    const descobertas: { fontes: Fonte[]; parentId?: string }[] = [];
     const verificadas = new Map<string, Promise<boolean>>();
     const verificar = (midia: Midia): Promise<boolean> => {
+      if (midia.tipo !== "hls" && midia.tipo !== "mp4") return Promise.resolve(false);
       const chave = JSON.stringify([midia.stream, midia.referer, midia.tipo]);
       if (!verificadas.has(chave)) verificadas.set(chave, Promise.resolve(desktopBridge?.checkDownloadMedia?.({
         stream: midia.stream, referer: midia.referer, tipo: midia.tipo, modo, posicao,
       })).then(r => !!r?.ok).catch(() => false));
       return verificadas.get(chave)!;
     };
-    const converter = (data: any, candidata: Fonte): Midia | null => {
-      const tipo = data?.tipo === "mp4_direct" ? "mp4" : data?.tipo === "hls_direct" ? "hls" : data?.tipo;
-      if (candidata.superflixLocal && data?.effectiveOptionKey) candidata = {
-        ...candidata, id: `sf-local:${candidata.superflixLocal.sessionId}:${data.effectiveOptionKey}`,
-        superflixLocal: { ...candidata.superflixLocal, optionKey: data.effectiveOptionKey,
-          isFile: data.effectiveOptionIsFile ?? candidata.superflixLocal.isFile },
-      };
-      return !data?.error && data?.stream && (tipo === "mp4" || tipo === "hls")
-        ? { ...data, tipo, fonte: candidata } : null;
-    };
     try {
       const atual = fonte && directStreamRef.current && (streamTipoRef.current === "hls" || streamTipoRef.current === "mp4")
         ? { stream: directStreamRef.current, tipo: streamTipoRef.current, referer: streamRefererRef.current ?? undefined, fonte } as Midia
         : null;
-      const midia = await encontrarMidiaCompativel(atual, [...allFontesRef.current], {
-        ativa, verificar,
-        resolver: async (candidata): Promise<Midia | null> => {
-          if (candidata.superflixLocal) {
-            return converter(await desktopBridge.resolveSuperflix(candidata.superflixLocal.sessionId, candidata.superflixLocal.optionKey), candidata);
-          }
-          if (candidata.iframeDesafio && desktopBridge.prepareSuperflix) {
-            const data = await tentarCoordenadasNativas<Midia>(candidata.id, ctrl.signal, async (embedUrl) => {
-              const prepared = await desktopBridge.prepareSuperflix(embedUrl);
-              for (const option of prepared.options ?? []) {
-                if (!ativa()) return null;
-                const local = { ...candidata, id: `sf-local:${prepared.sessionId}:${option.key}`, iframeDesafio: false,
-                  superflixLocal: { sessionId: prepared.sessionId, optionKey: option.key, parentId: candidata.id, isFile: !!option.isFile } };
-                const m = converter(await desktopBridge.resolveSuperflix(prepared.sessionId, option.key), local);
-                if (m && await verificar(m)) return { ok: true, valor: m };
-              }
-              return { ok: false, erro: new Error("fonte_incompativel") };
-            });
-            return data;
-          }
-          if (candidata.iframeDireto || candidata.semExtrator) return null;
-          if (candidata.nativo && desktopBridge.extractStream) {
-            return tentarCoordenadasNativas<Midia>(candidata.id, ctrl.signal, async (embedUrl) => {
-              if (!ativa()) return null;
-              const m = converter(await desktopBridge.extractStream(embedUrl), candidata);
-              return m && await verificar(m) ? { ok: true, valor: m } : { ok: false, erro: new Error("fonte_incompativel") };
-            });
-          }
-          const token = await fetchComPrazo("/api/player/token", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessao, fonteId: candidata.id }), signal: ctrl.signal }, PRAZO_FONTES_MS, "fontes");
-          if (!token.ok || !ativa()) return null;
-          const { playToken } = await token.json();
-          const res = await fetchComPrazo(`/api/player/extract?sessao=${encodeURIComponent(sessao ?? "")}&fonteId=${encodeURIComponent(candidata.id)}&playToken=${encodeURIComponent(playToken)}`,
-            { signal: ctrl.signal }, PRAZO_FONTES_MS, "fontes");
-          return res.ok ? converter(await res.json(), candidata) : null;
-        },
+      const midia = await encontrarMidiaCompativel(atual, [...allFontesRef.current].filter(f => f.disponivel), {
+        ativa, verificar, signal: ctrl.signal,
+        id: f => f.id, idAtual: fonte?.id ?? "current",
+        fontesAtuais: () => allFontesRef.current.filter(f => f.disponivel),
+        fontesPendentes: () => alternativasPendentesRef.current,
+        iniciar: numero => { if (ativa()) setPreparoCandidata(numero); },
+        diagnosticar: (id, reason) => console.info("[diag/download] " + JSON.stringify({ sourceId: sourceIdDe(id), reason })),
+        resolver: (candidata, signal, adicionar, preflight) => resolverFonteDireta(candidata, signal, (fontes, parentId) => {
+          descobertas.push({ fontes, parentId });
+          adicionar(fontes);
+        }, preflight),
       });
       if (!ativa()) return false;
       if (!midia) {
@@ -1752,26 +1792,12 @@ export function CustomPlayer({
         return false;
       }
       if (midia.stream !== directStreamRef.current || midia.fonte.id !== fonte?.id) {
-        let lista = allFontesRef.current;
-        let idx = lista.findIndex(f => f.id === midia.fonte.id);
-        if (idx < 0) { lista = [...lista, midia.fonte]; idx = lista.length - 1; allFontesRef.current = lista; setAllFontes(lista); }
         // Reutiliza a sessão de reprodução já autorizada: sem abrirSessao/liberarAcao.
         retomarEmRef.current = progressoRef.current;
         retomarPreparacaoRef.current = true;
         pausarPreparacaoRef.current = jwRef.current?.getState?.() === "paused" || !!videoRef.current?.paused;
         sourceEpochRef.current += 1;
-        ultimoExtraidoRef.current = midia.fonte.id;
-        fonteSelecionadaRef.current = midia.fonte.id;
-        sourceIdRef.current = sourceIdDe(midia.fonte.id);
-        setFonteIdx(idx);
-        directStreamRef.current = midia.stream;
-        streamRefererRef.current = midia.referer ?? null;
-        streamExpiresAtRef.current = midia.expiresAt ?? null;
-        streamTipoRef.current = midia.tipo;
-        setStreamTipo(midia.tipo);
-        setSubtitleTracks((midia.subtitles ?? []).map(t => ({ ...t, file: buildElectronProxyUrl(t.file, t.referer || midia.referer), kind: "captions" })));
-        setStreamUrl(buildElectronProxyUrl(midia.stream, midia.referer));
-        setStatus("loading");
+        aplicarMidiaResolvida(midia, descobertas);
         retryDownloadRef.current = null;
       }
       return true;
@@ -1784,7 +1810,7 @@ export function CustomPlayer({
       if (montadoRef.current) setPreparandoDownload(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ambiente, fonte, usuarioAtual, podeBaixarPeloPlano, tentarCoordenadasNativas]);
+  }, [ambiente, fonte, usuarioAtual, podeBaixarPeloPlano, resolverFonteDireta, aplicarMidiaResolvida]);
 
   useEffect(() => {
     desktopBridge?.onDownloadProgress?.((p: { pct: number; atual: number; total: number; bytes: number; etapa: string }) => {
@@ -3771,6 +3797,7 @@ export function CustomPlayer({
                   {preparandoDownload && (
                     <div role="status" className="absolute right-0 top-full mt-2 bg-zinc-900/95 rounded-xl p-3 text-xs text-white/80">
                       {preparandoDownload === "trecho" ? "Preparando editor…" : "Preparando download…"}
+                      <span className="block text-xs text-white/50 mt-1">{preparoCandidata === 0 ? "Verificando a fonte atual" : `Verificando fonte ${preparoCandidata}`} · até 4 minutos</span>
                     </div>
                   )}
                   {downloadProgresso && (
