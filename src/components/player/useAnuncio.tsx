@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
 import { efeitoDoConvite, type FinalidadeDeAcao } from "@/lib/ads/acaoPatrocinada";
+import { segundosRestantesAnuncio } from "@/lib/ads/tempoAnuncio";
 import {
   executarFluxoDeAnuncio,
   type PlataformaDeAnuncio,
@@ -188,7 +189,23 @@ export function useAnuncio() {
             encerrar(false);
             return;
           }
+          const prazo = Date.now() + ESPERA_ELECTRON_S * 1000;
+          let retornoConfirmado = false;
+          let esperaConcluida = false;
+          const atualizarContagem = () => {
+            if (resolverRef.current !== resolve) return;
+            const restantes = segundosRestantesAnuncio(prazo);
+            setModal({ fase: "aguardando", segundosRestantes: restantes });
+            if (restantes === 0) {
+              esperaConcluida = true;
+              limparRef.current?.();
+              limparRef.current = null;
+              if (retornoConfirmado) encerrar(true);
+            }
+          };
           setModal({ fase: "aguardando", segundosRestantes: ESPERA_ELECTRON_S });
+          const timer = setInterval(atualizarContagem, 250);
+          limparRef.current = () => clearInterval(timer);
           const abertura: { opened?: boolean; returned?: boolean } = await ponte
             .openSponsoredLink(entrada.directLink)
             .catch(() => ({ opened: false }));
@@ -199,19 +216,9 @@ export function useAnuncio() {
             encerrar(false);
             return;
           }
-
-          let restantes = ESPERA_ELECTRON_S;
-          const timer = setInterval(() => {
-            restantes -= 1;
-            if (restantes <= 0) {
-              clearInterval(timer);
-              limparRef.current = null;
-              encerrar(true);
-              return;
-            }
-            setModal({ fase: "aguardando", segundosRestantes: restantes });
-          }, 1000);
-          limparRef.current = () => clearInterval(timer);
+          retornoConfirmado = true;
+          atualizarContagem();
+          if (esperaConcluida && resolverRef.current === resolve) encerrar(true);
         };
       }),
     [encerrar],

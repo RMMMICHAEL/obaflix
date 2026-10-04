@@ -1,118 +1,122 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { encontrarMidiaCompativel } from "../prepararDownload";
-import { resolverFonteElectron, type FonteElectron, type MidiaElectron, type PortasResolucaoElectron } from "../resolverFonteElectron";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "../downloadElectron";
+import { verificarDownloadAtual } from "../prepararDownload";
+import { segundosRestantesAnuncio } from "../ads/tempoAnuncio";
 
-type Fonte = FonteElectron & { disponivel: boolean; semExtrator: boolean };
-const fonte = (id: string, extra: Partial<Fonte> = {}): Fonte => ({ id, rotulo: "Opção", nativo: true, iframeDireto: false, iframeDesafio: false, disponivel: true, semExtrator: false, ...extra });
-const boa = "https://fixture.invalid/good.mp4", ruim = "https://fixture.invalid/bad.mp4";
-function portas(extra: Partial<PortasResolucaoElectron<Fonte>> = {}): PortasResolucaoElectron<Fonte> {
-  return { sessao: "mesma-sessao", signal: new AbortController().signal,
-    bridge: { extractStream: async () => ({ stream: boa, streamType: "mp4" }) },
-    coordenada: async id => `https://embed.invalid/${id}`, preferida: () => 0, total: () => 1,
-    fetch: async () => { throw Error("Não deve abrir sessão/token no caso nativo"); },
-    parametroTentativa: () => "", lembrarTentativa: () => {}, erroSessao: () => Error("sessao_invalida"), descobrir: () => {}, ...extra };
-}
-function automatico(lista: Fonte[], p: PortasResolucaoElectron<Fonte>, extra: Record<string, unknown> = {}, idAtual = "current") {
-  const diagnosticos: { id: string; reason: string }[] = [];
-  const busca = encontrarMidiaCompativel<MidiaElectron<Fonte>, Fonte>(null, lista, {
-    ativa: () => true, id: f => f.id, idAtual,
-    verificar: async m => m.tipo === "mp4" && m.stream === boa,
-    diagnosticar: (id, reason) => diagnosticos.push({ id, reason }),
-    resolver: (f, signal, adicionar, aceitar) => resolverFonteElectron(f, { ...p, signal, aceitar,
-      descobrir: (novas, parent) => { p.descobrir(novas, parent); adicionar(novas); } }), ...extra,
+const operacao: OperacaoDownload = { usuario: "conta", instancia: "player", sessao: "sessao", conteudoId: "filme",
+  fonteId: "fonte-tocando", stream: "https://media.invalid/current.m3u8", referer: "https://referer.invalid",
+  tipo: "hls", titulo: "Filme", modo: "completo" };
+
+test("fonte atual válida: um preflight, anúncio e download da mesma operação", async () => {
+  const fontes = ["atual", "alternativa-1", "alternativa-2"];
+  const tamanhoInicial = fontes.length;
+  const eventos: string[] = [];
+  const midia = { stream: operacao.stream, referer: operacao.referer, tipo: operacao.tipo, fonteId: operacao.fonteId };
+  assert.equal(await verificarDownloadAtual(midia, async candidata => {
+    eventos.push(`preflight:${candidata.fonteId}`); return true;
+  }), true);
+  let retry: RetryDownload | null = null;
+  const resultado = await executarTentativaDownload(operacao, false, retry, {
+    autorizar: async () => { eventos.push("anuncio"); return true; },
+    atual: () => operacao,
+    guardarRetry: value => { retry = value; },
+    iniciar: async capturada => { eventos.push(`download:${capturada.fonteId}`); return { ok: true }; },
   });
-  return { busca, diagnosticos };
-}
-
-test("AUTO e manual usam o resolvedor real: nativo prevalece sobre semExtrator, streamType normalizado", async () => {
-  const atual = fonte("opaque-a"), compativel = fonte("opaque-b", { semExtrator: true });
-  const p = portas({ bridge: { extractStream: async url => ({ stream: url.endsWith("opaque-b") ? boa : ruim, streamType: "mp4" }) } });
-  const manual = await resolverFonteElectron(compativel, p);
-  const original = structuredClone([atual, compativel]);
-  const { busca, diagnosticos } = automatico([atual, compativel], p, {}, atual.id);
-  const auto = await busca;
-  assert.deepEqual(auto, manual);
-  assert.equal(auto?.fonte.id, "opaque-b");
-  assert.equal(auto?.tipo, "mp4");
-  assert.deepEqual([atual, compativel], original, "probe não publica/muta fontes");
-  assert.deepEqual(diagnosticos, [{ id: "opaque-a", reason: "current_incompatible" }, { id: "opaque-b", reason: "compatible" }]);
+  assert.equal(resultado.ok, true);
+  assert.deepEqual(eventos, ["preflight:fonte-tocando", "anuncio", "download:fonte-tocando"]);
+  assert.equal(fontes.length, tamanhoInicial, "download não altera a quantidade de fontes");
 });
 
-test("coordenadas, opções locais e chave renovada produzem a mesma mídia da seleção manual", async () => {
-  const outer = fonte("opaque-parent", { iframeDesafio: true }), descobertas: Fonte[] = [], tentativas: number[] = [];
-  const p = portas({ total: () => 2, coordenada: async (_id, _signal, t = 0) => { tentativas.push(t); return `https://embed.invalid/${t}`; },
-    bridge: {
-      prepareSuperflix: async url => url.endsWith("/0") ? { error: "bootstrap_failed" } : { sessionId: "local", options: [{ key: "bad", label: "Opção 1" }, { key: "good", label: "Opção 2" }] },
-      resolveSuperflix: async (_sessao, key) => ({ stream: key === "bad" ? ruim : boa, tipo: "mp4", effectiveOptionKey: key === "good" ? "renewed" : key }),
-    }, descobrir: novas => descobertas.push(...novas) });
-  const auto = await automatico([outer], p).busca;
-  assert.ok(auto);
-  assert.deepEqual(tentativas, [0, 1]);
-  const escolhida = descobertas.find(f => f.superflixLocal?.optionKey === "good")!;
-  const manual = await resolverFonteElectron(escolhida, p);
-  assert.equal(auto.stream, manual?.stream);
-  assert.deepEqual(auto.fonte, manual?.fonte);
-  assert.equal(auto.fonte.id, "sf-local:local:renewed");
-  assert.equal(outer.iframeDesafio, true);
-});
-
-test("tentativa do servidor é preservada e fontes dinâmicas entram na mesma busca", async () => {
-  const base = fonte("opaque-server", { nativo: false }), filha = fonte("opaque-child", { nativo: false }), pedidos: string[] = [];
-  const p = portas({ parametroTentativa: () => "&tentativa=2", fetch: async (url, opts) => {
-    pedidos.push(String(url));
-    if (url === "/api/player/token") {
-      assert.equal(JSON.parse(String(opts?.body)).sessao, "mesma-sessao");
-      return Response.json({ playToken: "opaque-grant" });
-    }
-    return Response.json(String(url).includes("opaque-child") ? { stream: boa, tipo: "mp4_direct" } : { stream: ruim, tipo: "iframe", fontes: [filha] });
-  } });
-  const auto = await automatico([base], p).busca;
-  assert.deepEqual(auto, await resolverFonteElectron(filha, p));
-  assert.equal(auto?.fonte.id, filha.id);
-  assert.ok(pedidos.filter(u => u.startsWith("/api/player/extract")).every(u => u.endsWith("&tentativa=2")));
-  assert.ok(!pedidos.some(u => u.includes("/authorize") || u.includes("/fontes")), "sem nova sessão/anúncio");
-});
-
-test("timeout de IPC avança e cancela candidata; resposta tardia não troca a mídia escolhida", async () => {
-  let responder!: (v: { stream: string; tipo: string }) => void, signalAntigo!: AbortSignal;
-  const lenta = fonte("opaque-stuck"), seguinte = fonte("opaque-next");
-  const p = portas({ coordenada: async (id, signal) => { if (id === lenta.id) signalAntigo = signal; return id; },
-    bridge: { extractStream: async id => id === lenta.id ? new Promise(r => { responder = r; }) : { stream: boa, tipo: "mp4" } } });
-  const { busca, diagnosticos } = automatico([lenta, seguinte], p, { prazos: { candidata: 20, preflight: 15, busca: 200 } });
-  const auto = await busca;
-  assert.equal(auto?.fonte.id, seguinte.id);
-  assert.equal(signalAntigo.aborted, true);
-  responder({ stream: boa, tipo: "mp4" });
-  await new Promise(r => setImmediate(r));
-  assert.equal(auto?.fonte.id, seguinte.id);
-  assert.ok(diagnosticos.some(d => d.id === lenta.id && d.reason === "resolve_timeout"));
-});
-
-test("preflight tem prazo próprio; teto completo termina com IPC pendente", async () => {
-  const p = portas({ bridge: { extractStream: async () => new Promise(() => {}) } });
-  const inicio = performance.now();
-  assert.equal(await automatico([fonte("opaque-stuck")], p, { prazos: { candidata: 1000, preflight: 15, busca: 35 } }).busca, null);
-  assert.ok(performance.now() - inicio < 800);
-  let primeira = true;
-  const auto = encontrarMidiaCompativel<MidiaElectron<Fonte>, Fonte>(null, [fonte("opaque-slow"), fonte("opaque-good")], {
-    ativa: () => true, id: f => f.id, idAtual: "current", prazos: { candidata: 100, preflight: 15, busca: 400 },
-    verificar: () => primeira ? (primeira = false, new Promise(() => {})) : Promise.resolve(true),
-    resolver: (f, signal) => resolverFonteElectron(f, { ...portas(), signal }),
+test("fonte atual inválida ou em timeout mostra caminho de troca sem anúncio", async () => {
+  const eventos: string[] = [];
+  const atual = { stream: operacao.stream, fonteId: operacao.fonteId };
+  const compativel = await verificarDownloadAtual(atual, async candidata => {
+    eventos.push(`preflight:${candidata.fonteId}`); return false;
   });
-  assert.equal((await auto)?.fonte.id, "opaque-good");
+  if (!compativel) eventos.push("aviso", "abrir-seletor");
+  assert.equal(compativel, false);
+  assert.deepEqual(eventos, ["preflight:fonte-tocando", "aviso", "abrir-seletor"]);
+  assert.equal(await verificarDownloadAtual(atual, () => new Promise<boolean>(() => {}), 10), false);
+  assert.deepEqual(eventos, ["preflight:fonte-tocando", "aviso", "abrir-seletor"]);
 });
 
-test("atual válida evita resolução; cancelamento da busca não espera IPC", async () => {
-  const atual = await resolverFonteElectron(fonte("opaque-current"), portas());
-  assert.ok(atual);
-  assert.equal(await encontrarMidiaCompativel(atual, [fonte("opaque-other")], {
-    ativa: () => true, id: f => f.id, idAtual: "current", verificar: async () => true,
-    resolver: async () => { throw Error("não deve resolver"); },
-  }), atual);
-  const ctrl = new AbortController();
-  const busca = automatico([fonte("opaque-cancel")], portas({ bridge: { extractStream: () => new Promise(() => {}) } }), { signal: ctrl.signal }).busca;
-  await new Promise(r => setImmediate(r));
-  ctrl.abort();
-  assert.equal(await busca, null);
+test("trecho: preflight sem anúncio, anúncio somente no clique final e download da mesma fonte", async () => {
+  const eventos: string[] = [];
+  const trecho = { ...operacao, modo: "trecho" as const, inicioSeg: 300, fimSeg: 600 };
+  const ok = await verificarDownloadAtual(trecho, async candidata => {
+    eventos.push(`preflight:${candidata.fonteId}`); return true;
+  });
+  assert.equal(ok, true);
+  eventos.push("abrir-editor");
+  let retry: RetryDownload | null = null;
+  await executarTentativaDownload(trecho, false, retry, {
+    autorizar: async () => { eventos.push("anuncio-final"); return true; },
+    atual: () => trecho,
+    guardarRetry: value => { retry = value; },
+    iniciar: async capturada => { eventos.push(`download:${capturada.fonteId}`); return { ok: true }; },
+  });
+  assert.deepEqual(eventos, ["preflight:fonte-tocando", "abrir-editor", "anuncio-final", "download:fonte-tocando"]);
+});
+
+test("trecho incompatível usa o mesmo aviso/seletor e nunca chama anúncio", async () => {
+  const eventos: string[] = [];
+  const trecho = { ...operacao, modo: "trecho" as const };
+  const ok = await verificarDownloadAtual(trecho, async candidata => {
+    eventos.push(`preflight:${candidata.fonteId}`); return false;
+  });
+  if (!ok) eventos.push("aviso", "abrir-seletor");
+  assert.equal(ok, false);
+  assert.deepEqual(eventos, ["preflight:fonte-tocando", "aviso", "abrir-seletor"]);
+});
+
+test("Direct Link conta tempo real enquanto o navegador externo está aberto", async () => {
+  const inicio = 1_000_000;
+  const prazo = inicio + 9_000;
+  assert.equal(segundosRestantesAnuncio(prazo, inicio), 9);
+  assert.equal(segundosRestantesAnuncio(prazo, inicio + 4_250), 5);
+  assert.equal(segundosRestantesAnuncio(prazo, inicio + 9_000), 0);
+  const hook = readFileSync(join(process.cwd(), "src/components/player/useAnuncio.tsx"), "utf8");
+  assert.ok(hook.indexOf("const prazo = Date.now()") < hook.indexOf("openSponsoredLink(entrada.directLink)"));
+  assert.ok(hook.indexOf("setInterval(atualizarContagem") < hook.indexOf("openSponsoredLink(entrada.directLink)"));
+});
+
+test("preparação do player não enumera nem altera a lista de fontes", () => {
+  const player = readFileSync(join(process.cwd(), "src/components/player/CustomPlayer.tsx"), "utf8");
+  const inicio = player.indexOf("const prepararDownload = useCallback");
+  const fim = player.indexOf("useEffect(() => {\n    desktopBridge?.onDownloadProgress", inicio);
+  assert.ok(inicio >= 0 && fim > inicio);
+  const preparar = player.slice(inicio, fim);
+  for (const proibido of ["allFontes", "setAllFontes", "resolverFonteElectron", "resolverFonteDireta", "encontrarMidiaCompativel"]) {
+    assert.equal(preparar.includes(proibido), false, `preflight não pode usar ${proibido}`);
+  }
+});
+
+test("seleção manual preserva o pipeline Electron nativo e o host JW estável", () => {
+  const player = readFileSync(join(process.cwd(), "src/components/player/CustomPlayer.tsx"), "utf8");
+  const inicio = player.indexOf("const extract = useCallback");
+  const fim = player.indexOf("extractRef.current = extract", inicio);
+  const extract = player.slice(inicio, fim);
+  assert.match(extract, /desktop\.extractStream\(embedUrl\)/);
+  assert.match(extract, /mediaApi\.start\(/);
+  assert.doesNotMatch(extract, /resolverFonteElectron/);
+  assert.match(player, /jwHostRef = useRef<HTMLDivElement>/);
+  assert.match(player, /player\.remove\(\)/);
+});
+
+test("falha técnica após anúncio pode repetir a mesma operação sem cobrar de novo", async () => {
+  let retry: RetryDownload | null = null;
+  let anuncios = 0;
+  let falha = true;
+  const portas = {
+    autorizar: async () => { anuncios++; return true; }, atual: () => operacao,
+    guardarRetry: (value: RetryDownload | null) => { retry = value; },
+    iniciar: async () => { if (falha) throw Error("falha IPC"); return { ok: true }; },
+  };
+  await assert.rejects(executarTentativaDownload(operacao, false, retry, portas));
+  falha = false;
+  await executarTentativaDownload(operacao, true, retry, portas);
+  assert.equal(anuncios, 1);
 });
