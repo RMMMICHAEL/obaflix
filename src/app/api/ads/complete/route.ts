@@ -315,7 +315,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // Na TV é também o que cobre a resposta perdida: se a concessão não chegar ao
   // aparelho, a nova pergunta a `/authorize` encontra o alvo pago e recebe passe
   // — sem segunda promoção e sem segunda concessão deste desafio.
-  if (desafio.finalidade === "reproducao" && desafio.alvo) {
+  if (desafio.finalidade === "reproducao" && desafio.alvo && desafio.plataforma !== "electron") {
     try {
       // A TV marca no escopo do aparelho: a promoção dela não dispensa o anúncio
       // do celular, e o anúncio do celular não dispensa a promoção dela.
@@ -324,7 +324,6 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
         finalidade: desafio.finalidade,
         alvo: desafio.alvo,
         escopo: ehPromocaoTv && desafio.dispositivo ? escopoDaTv(desafio.dispositivo) : undefined,
-        persistente: desafio.plataforma === "electron",
       });
     } catch {
       /* conveniência, não autorização */

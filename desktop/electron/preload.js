@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // pedido: { stream, referer, tipo, titulo, modo: "completo"|"trecho", inicioSeg, fimSeg }
   // Retorna: { ok: true, caminho, bytes, container } | { error: string, cancelado?: true }
   downloadMedia: (pedido) => ipcRenderer.invoke("download-media", pedido),
+  checkDownloadMedia: (pedido) => ipcRenderer.invoke("check-download-media", pedido),
   cancelDownload: () => ipcRenderer.invoke("cancel-download"),
   revealDownload: (caminho) => ipcRenderer.invoke("reveal-download", caminho),
 

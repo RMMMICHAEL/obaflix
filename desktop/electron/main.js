@@ -26,7 +26,7 @@ const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./b
 const politica = require("./window-policy");
 
 const SPONSORED_LINK_URL = "https://omg10.com/4/11767843";
-const { baixarMidia } = require("./media-download");
+const { baixarMidia, verificarMidia } = require("./media-download");
 const {
   DESKTOP_PROTOCOL,
   callbackInternoSeguro,
@@ -1441,6 +1441,20 @@ ipcMain.handle("desktop-open-external", async (event, rawUrl) => {
 // segmentos vêm de dezenas de hosts — no renderer cada um esbarraria em CORS.
 let downloadEmAndamento = null;
 
+ipcMain.handle("check-download-media", async (event, pedido) => {
+  if (!isTrustedIpc(event)) return { ok: false };
+  try {
+    const { stream, referer, tipo, modo, posicao } = pedido || {};
+    if (typeof stream !== "string" || stream.length > 4096 || !["completo", "trecho"].includes(modo)) return { ok: false };
+    await assertPublicHttpsStream(stream);
+    return { ok: await verificarMidia({ stream, referer: typeof referer === "string" ? referer : null, tipo, modo, posicao: Math.max(0, Number(posicao) || 0) }) };
+  } catch {
+    // Não transportar stderr, caminhos ou URLs nem gravar a exceção de rede.
+    log.debug("player.download", "fonte incompatível na verificação");
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("download-media", async (event, pedido) => {
   if (!isTrustedIpc(event)) return { error: "Origem IPC não autorizada" };
   if (downloadEmAndamento) return { error: "Já existe um download em andamento" };
@@ -1481,8 +1495,8 @@ ipcMain.handle("download-media", async (event, pedido) => {
       log.info("player.download", "cancelado pelo usuário");
       return { error: "cancelado", cancelado: true };
     }
-    t.fail(erro);
-    return { error: mensagem.slice(0, 200) };
+    t.fail(new Error("download_failed"));
+    return { error: "Não foi possível concluir o download. Tente novamente." };
   } finally {
     downloadEmAndamento = null;
   }

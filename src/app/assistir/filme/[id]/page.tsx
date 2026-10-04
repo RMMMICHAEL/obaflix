@@ -38,6 +38,7 @@ export default async function AssistirFilmePage({ params }: { params: { id: stri
 
   return (
     <CustomPlayer
+      key={filme.id}
       titulo={filme.titulo}
       thumbUrl={imgUrl(filme.background || filme.poster || null, "original")}
       logoUrl={buildLogoUrl(pickLogo(images))}

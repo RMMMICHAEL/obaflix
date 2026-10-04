@@ -15,6 +15,8 @@ import {
   estaPago,
   normalizarFinalidade,
   registrarEpisodioDistinto,
+  validarRecuperacaoElectron,
+  renovarRecuperacaoElectron,
   type AlvoDeConcessao,
 } from "@/lib/ads/concessoes";
 import {
@@ -111,6 +113,9 @@ interface Corpo {
   numeroEp?: unknown;
   plataforma?: unknown;
   finalidade?: unknown;
+  instancia?: unknown;
+  recuperacao?: unknown;
+  renovar?: unknown;
 }
 
 function identificador(v: unknown): string | null {
@@ -319,6 +324,17 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     }
   }
   const alvo: AlvoDeConcessao = { tipo: conteudoTipo, conteudoId, temporada, episodio: numeroEp };
+  // Electron cobra cada entrada. Só uma prova emitida após o consumo em /fontes
+  // dispensa anúncio durante recuperação desta mesma instância e conteúdo.
+  if (enforcarAnuncioElectron && finalidade === "reproducao" &&
+      typeof corpo.instancia === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(corpo.instancia) &&
+      await validarRecuperacaoElectron(corpo.recuperacao, { userId, instancia: corpo.instancia, alvo, finalidade })) {
+    await renovarRecuperacaoElectron(corpo.recuperacao as string);
+    if (corpo.renovar === true) return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
+    const passe = await criarPasse({ userId, finalidade, alvo, instancia: corpo.instancia });
+    return NextResponse.json({ decisao: "PERMITIDO", passe }, { headers: NO_STORE });
+  }
+  if (corpo.renovar === true) return NextResponse.json({ codigo: "recuperacao_invalida" }, { status: 403, headers: NO_STORE });
 
   /**
    * PERMITIDO com passe. Falhar ao emitir é 503: sem passe, `/fontes` recusaria,
@@ -421,7 +437,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   //
   // Download e transmissão não entram aqui: são liberações pontuais, exigem
   // anúncio por ação e não contam episódio.
-  if (finalidade === "reproducao") {
+  if (finalidade === "reproducao" && !enforcarAnuncioElectron) {
     // Alvo já pago nesta janela — retry, sessão expirada, voltar ao episódio que
     // pagou. Consultar antes de contar é o que evita um segundo anúncio para o
     // mesmo conteúdo. Redis instável cai no caminho normal: custa, no pior caso,

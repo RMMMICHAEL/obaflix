@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
@@ -136,6 +136,13 @@ export function useAnuncio() {
     resolver?.({ concluido });
   }, []);
 
+  useEffect(() => () => {
+    limparRef.current?.();
+    resolverRef.current?.({ concluido: false });
+    resolverRef.current = null;
+    aceitarRef.current = null;
+  }, []);
+
   const exibirAnuncio = useCallback(
     (entrada: {
       plataforma: PlataformaDeAnuncio;
@@ -185,6 +192,9 @@ export function useAnuncio() {
           const abertura: { opened?: boolean; returned?: boolean } = await ponte
             .openSponsoredLink(entrada.directLink)
             .catch(() => ({ opened: false }));
+          // O retorno do navegador pode chegar depois de cancelar/sair ou de
+          // abrir outro convite. Ele só pode concluir a promessa que o abriu.
+          if (resolverRef.current !== resolve) return;
           if (abertura?.opened !== true || abertura?.returned !== true) {
             encerrar(false);
             return;
