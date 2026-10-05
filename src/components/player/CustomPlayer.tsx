@@ -2318,13 +2318,32 @@ export function CustomPlayer({
           total: allFontes.length,
           apos: serverSwitchCountRef.current,
         });
-        // Único ponto que prova reprodução de verdade: o primeiro frame só
-        // aparece depois do init segment e dos primeiros segmentos de mídia.
-        // "extract respondeu 200" não significa nada aqui.
-        logEtapa(rotuloDiag, "OK_PLAYBACK", {
-          url: directStreamRef.current ?? undefined,
+        // O evento JW firstFrame não garante um frame de vídeo apresentado ao
+        // compositor. Separe esse marco do diagnóstico de vídeo visível.
+        logEtapa(rotuloDiag, "JW_FIRST_FRAME", {
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
+        const video = document.querySelector<HTMLVideoElement>("#jw-player-container video");
+        const quadrosDecodificados = () => {
+          try { return Number(video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0); }
+          catch { return 0; }
+        };
+        console.info(`[diag/frame] jw_first_frame video_element=${video ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} ready_state=${video?.readyState ?? 0} decoded_frames=${quadrosDecodificados()}`);
+        if (video?.requestVideoFrameCallback) {
+          let callbackId = 0;
+          const timer = window.setTimeout(() => {
+            if (unmountedRef.current) return;
+            console.info("[diag/frame] compositor_frame=not_observed within_ms=2000");
+            try { video.cancelVideoFrameCallback?.(callbackId); } catch { /* player desmontado */ }
+          }, 2000);
+          callbackId = video.requestVideoFrameCallback(() => {
+            window.clearTimeout(timer);
+            if (unmountedRef.current) return;
+            console.info(`[diag/frame] compositor_frame=presented dimensions=${video.videoWidth}x${video.videoHeight} decoded_frames=${quadrosDecodificados()}`);
+          });
+        } else {
+          console.info("[diag/frame] compositor_frame=unsupported");
+        }
         // Sucesso confirmado: o orçamento desta fonte volta ao início.
         retriesRef.current = 0;
         if (firstFrameTimerRef.current) {

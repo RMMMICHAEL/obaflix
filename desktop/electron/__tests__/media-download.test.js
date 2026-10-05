@@ -49,6 +49,50 @@ test("HLS preserva opções específicas e capacidade MP4 exige tentativa real d
   assert.equal(fs.existsSync(path.dirname(comandos.at(-1).at(-1))), false);
   falhar = false;
 });
+test("MP4 completo: Range rejeitado, GET real aceito; preflight lê só o primeiro chunk", async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  let cancelado = false;
+  const mp4 = Buffer.alloc(32);
+  mp4.write("ftyp", 4, "ascii");
+  global.fetch = async (_url, options = {}) => {
+    calls.push(options);
+    if (options.headers?.Range) return new Response(null, { status: 416 });
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(mp4); },
+      cancel() { cancelado = true; },
+    }), { status: 200, headers: { "content-type": "video/mp4" } });
+  };
+  try {
+    const ok = await verificarMidia({ stream: "https://private.test/film.mp4?token=x", referer: "https://private.test/embed", tipo: "mp4", modo: "completo" });
+    assert.equal(ok, true);
+    assert.equal(calls.length, 1, "não tenta Range e depois baixa novamente");
+    assert.equal(calls[0].headers.Range, undefined);
+    assert.equal(calls[0].headers.Referer, "https://private.test/embed");
+    assert.ok(calls[0].signal instanceof AbortSignal);
+    assert.equal(cancelado, true, "body cancelado após o primeiro chunk");
+  } finally { global.fetch = originalFetch; }
+});
+test("MP4 completo: GET inválido ou não-MP4 é recusado e body cancelado", async () => {
+  const originalFetch = global.fetch;
+  let cancelado = false;
+  global.fetch = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(Buffer.from("resposta inválida")); },
+    cancel() { cancelado = true; },
+  }), { status: 200 });
+  try {
+    const ok = await verificarMidia({ stream: "https://private.test/film.mp4", tipo: "mp4", modo: "completo" });
+    assert.equal(ok, false);
+    assert.equal(cancelado, true);
+  } finally { global.fetch = originalFetch; }
+});
+test("MP4 completo: GET HTTP não-OK é recusado", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(null, { status: 403 });
+  try {
+    assert.equal(await verificarMidia({ stream: "https://private.test/film.mp4", tipo: "mp4", modo: "completo" }), false);
+  } finally { global.fetch = originalFetch; }
+});
 test("IPC não transporta erro bruto e UI não confia em erro do EXE anterior", () => {
   const main = fs.readFileSync(path.join(__dirname, "../main.js"), "utf8");
   const trecho = main.slice(main.indexOf('ipcMain.handle("download-media"'), main.indexOf('ipcMain.handle("cancel-download"'));

@@ -439,14 +439,19 @@ function opcoesEntrada(tipo) {
 async function verificarMidia({ stream, referer, tipo, modo, posicao = 0 }) {
   if (!["hls", "mp4"].includes(tipo)) return false;
   if (tipo === "mp4" && modo === "completo") {
-    const r = await fetch(stream, { headers: { ...cabecalhos(referer), Range: "bytes=0-1023" }, signal: AbortSignal.timeout(20000) });
+    // Use the same GET as the real full download. Some CDNs reject Range (416)
+    // while serving the file normally. Read only enough to identify MP4, then
+    // cancel the body so preflight never downloads the complete media.
+    const r = await fetch(stream, { headers: cabecalhos(referer), signal: AbortSignal.timeout(20000) });
+    const reader = r.body?.getReader();
     try {
       if (!r.ok) return false;
-      const reader = r.body?.getReader();
       const first = await reader?.read();
-      await reader?.cancel();
       return !!first?.value && identificarContainer(Buffer.from(first.value)) === "fmp4";
-    } finally { await r.body?.cancel().catch(() => {}); }
+    } finally {
+      if (reader) await reader.cancel().catch(() => {});
+      else await r.body?.cancel().catch(() => {});
+    }
   }
   if (tipo === "hls") {
     const p = await resolverPlaylistDeMidia(stream, referer);
