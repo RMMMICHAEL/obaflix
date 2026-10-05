@@ -43,4 +43,4 @@ export const INSTALADORES = {
 } satisfies Record<string, Instalador>;
 
 /** Código do app na loja do Downloader (AFTV News), para Android TV / TV Box. */
-export const CODIGO_DOWNLOADER = "2746802";
+export const CODIGO_DOWNLOADER = "9958977";
