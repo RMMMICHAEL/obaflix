@@ -351,7 +351,8 @@ export function CustomPlayer({
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);   // native tipo only (rola4/Safari)
   const jwRef = useRef<any>(null);                   // JW Player instance
-  const jwHostRef = useRef<HTMLDivElement>(null);     // React owns host; JW owns its child
+  const jwHostRef = useRef<HTMLDivElement>(null);     // React owns only this stable host
+  const jwMountRef = useRef<HTMLDivElement | null>(null); // Imperative mount belongs to one JW instance
   const progressoRef = useRef(0);
   const durationRef = useRef(duracaoSeg ?? 0);
   const autoSkipDoneRef = useRef(false);
@@ -393,9 +394,9 @@ export function CustomPlayer({
   const userCaptionRef = useRef<number | null>(null); // null = seleção inicial; 0 = desligada; >0 = faixa escolhida
   const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
   // Representa "nenhum frame válido foi exibido ainda" para esta fonte.
-  // Definido true na montagem e em cada switchFonte; definido false pelo evento firstFrame
-  // (sinal definitivo de frame exibido). O evento play serve apenas como fallback para
-  // provedores que não disparem firstFrame.
+  // No Electron, só sai do estado inicial depois do callback do compositor;
+  // JW firstFrame/play não provam que houve vídeo visível.
+  // Web preserva o critério histórico firstFrame/play.
   // Enquanto true: erros → initial-load-fallback (fonte inválida, não token expirado).
   // Enquanto false: erros → lógica normal de token-renewal.
   const initialLoadRef = useRef(true);
@@ -576,11 +577,16 @@ export function CustomPlayer({
     if (ambiente === "electron") instalarDiagnosticoNavegacao();
   }, [ambiente]);
 
-  const removerJWElectron = useCallback((player = jwRef.current) => {
-    if (!player || jwRef.current !== player) return;
-    // Retira a propriedade antes de remove(): callbacks/cleanup não removem duas vezes.
-    jwRef.current = null;
-    controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => player.remove()));
+  const removerJWElectron = useCallback((player = jwRef.current, mount = jwMountRef.current) => {
+    if (player && jwRef.current !== player) return;
+    if (!player && mount && jwMountRef.current !== mount) return;
+    const mountDestaInstancia = !!mount && jwMountRef.current === mount;
+    // Libera primeiro as refs para reentrância do cleanup, remove só esta instância
+    // JW e, por fim, somente o mount que foi criado para ela.
+    if (player && jwRef.current === player) jwRef.current = null;
+    if (mountDestaInstancia) jwMountRef.current = null;
+    if (player) controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => player.remove()));
+    if (mountDestaInstancia) mount!.remove();
   }, []);
 
   // Fluxo de anuncio. A sequencia vive em `src/lib/ads/fluxoDoCliente.ts` e e
@@ -967,7 +973,8 @@ export function CustomPlayer({
   const getVideoElement = useCallback((): HTMLVideoElement | null => {
     if (streamTipo === "native") return videoRef.current;
     if (streamTipo === "hls" || streamTipo === "mp4") {
-      return document.querySelector<HTMLVideoElement>("#jw-player-container video");
+      return jwMountRef.current?.querySelector<HTMLVideoElement>("video")
+        ?? document.querySelector<HTMLVideoElement>("#jw-player-container video");
     }
     return null;
   }, [streamTipo]);
@@ -2214,20 +2221,22 @@ export function CustomPlayer({
     if (ambiente === "electron") removerJWElectron();
     else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
 
-    // Ensure container div exists and is empty
-    let container = document.getElementById("jw-player-container");
+    // Electron: um mount novo por player. React reconcilia apenas jwHostRef;
+    // toda a árvore criada pelo JW fica sob este nó imperativo dedicado.
+    let container: HTMLElement | null = null;
+    let mountDoEfeito: HTMLDivElement | null = null;
     if (ambiente === "electron") {
       const host = jwHostRef.current;
       if (!host) return;
-      if (!container || !host.contains(container)) {
-        container = document.createElement("div");
-        container.id = "jw-player-container";
-        host.appendChild(container);
-      }
-    }
+      mountDoEfeito = document.createElement("div");
+      mountDoEfeito.id = "jw-player-container";
+      mountDoEfeito.className = "absolute inset-0 w-full h-full";
+      host.appendChild(mountDoEfeito);
+      jwMountRef.current = mountDoEfeito;
+      container = mountDoEfeito;
+    } else container = document.getElementById("jw-player-container");
     if (!container) return;
-    if (ambiente === "electron") observarFaseNavegacao("setup:clear-dom", () => { container.innerHTML = ""; });
-    else container.innerHTML = "";
+    if (ambiente !== "electron") container.innerHTML = "";
 
     // streamUrl já é /api/player/proxy?t=<token> (stream token opaco) ou URL do Electron
     const fileType = streamTipo === "mp4" ? "mp4" : "hls";
@@ -2256,7 +2265,7 @@ export function CustomPlayer({
         total: allFontes.length,
       });
 
-      const player = jw("jw-player-container").setup({
+      const player = jw(container!.id).setup({
         sources,
         tracks,
         image: thumbUrl || undefined,
@@ -2305,30 +2314,64 @@ export function CustomPlayer({
         }
       }, 8000);
 
-      // firstFrame: sinal definitivo de que um frame válido foi exibido.
-      // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
+      // firstFrame é apenas o evento do JW. No Electron, só o callback do
+      // compositor confirma vídeo visível e encerra o estado de carga inicial.
       player.on("firstFrame", () => {
         if (unmountedRef.current) return;
-        initialLoadRef.current = false;
-        // Fecha a sequência no console. Só aqui: primeiro frame é a única prova
-        // de reprodução — "extract respondeu 200" não prova nada.
-        logFonte("fonte_reproduzindo", {
-          servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
-          n: fonteIdx + 1,
-          total: allFontes.length,
-          apos: serverSwitchCountRef.current,
-        });
+        if (ambiente !== "electron") {
+          initialLoadRef.current = false;
+          retriesRef.current = 0;
+          if (firstFrameTimerRef.current) {
+            clearTimeout(firstFrameTimerRef.current);
+            firstFrameTimerRef.current = null;
+          }
+          logFonte("fonte_reproduzindo", {
+            servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+            n: fonteIdx + 1,
+            total: allFontes.length,
+            apos: serverSwitchCountRef.current,
+          });
+          logEtapa(rotuloDiag, "JW_FIRST_FRAME", {
+            ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
+          });
+          return;
+        }
         // O evento JW firstFrame não garante um frame de vídeo apresentado ao
         // compositor. Separe esse marco do diagnóstico de vídeo visível.
         logEtapa(rotuloDiag, "JW_FIRST_FRAME", {
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
-        const video = document.querySelector<HTMLVideoElement>("#jw-player-container video");
+        const host = jwHostRef.current;
+        const mount = ambiente === "electron" ? mountDoEfeito : container;
+        const video = mount?.querySelector<HTMLVideoElement>("video") ?? null;
         const quadrosDecodificados = () => {
           try { return Number(video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0); }
           catch { return 0; }
         };
-        console.info(`[diag/frame] jw_first_frame video_element=${video ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} ready_state=${video?.readyState ?? 0} decoded_frames=${quadrosDecodificados()}`);
+        console.info(`[diag/frame] jw_first_frame mount_connected=${mount?.isConnected ? 1 : 0} host_contains_mount=${host && mount ? Number(host.contains(mount)) : 0} video_element=${video ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} ready_state=${video?.readyState ?? 0} decoded_frames=${quadrosDecodificados()}`);
+        const confirmarFrameVisivel = () => {
+          if (unmountedRef.current || jwRef.current !== player) return;
+          if (!video?.isConnected || (ambiente === "electron" && (!mount?.isConnected || !host?.contains(mount))) || video.videoWidth <= 0 || video.videoHeight <= 0) {
+            console.info(`[diag/frame] compositor_frame=invalid video_connected=${video?.isConnected ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} decoded_frames=${quadrosDecodificados()}`);
+            return;
+          }
+          console.info(`[diag/frame] compositor_frame=presented dimensions=${video.videoWidth}x${video.videoHeight} decoded_frames=${quadrosDecodificados()}`);
+          if (ambiente === "electron") {
+            logFonte("fonte_reproduzindo", {
+              servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+              n: fonteIdx + 1,
+              total: allFontes.length,
+              apos: serverSwitchCountRef.current,
+            });
+            initialLoadRef.current = false;
+            reExtractCountRef.current = 0;
+            retriesRef.current = 0;
+            if (firstFrameTimerRef.current) {
+              clearTimeout(firstFrameTimerRef.current);
+              firstFrameTimerRef.current = null;
+            }
+          }
+        };
         if (video?.requestVideoFrameCallback) {
           let callbackId = 0;
           const timer = window.setTimeout(() => {
@@ -2338,17 +2381,10 @@ export function CustomPlayer({
           }, 2000);
           callbackId = video.requestVideoFrameCallback(() => {
             window.clearTimeout(timer);
-            if (unmountedRef.current) return;
-            console.info(`[diag/frame] compositor_frame=presented dimensions=${video.videoWidth}x${video.videoHeight} decoded_frames=${quadrosDecodificados()}`);
+            confirmarFrameVisivel();
           });
         } else {
           console.info("[diag/frame] compositor_frame=unsupported");
-        }
-        // Sucesso confirmado: o orçamento desta fonte volta ao início.
-        retriesRef.current = 0;
-        if (firstFrameTimerRef.current) {
-          clearTimeout(firstFrameTimerRef.current);
-          firstFrameTimerRef.current = null;
         }
       });
 
@@ -2358,8 +2394,8 @@ export function CustomPlayer({
         setShowRetry(false);
         setStatus("playing");
         setPlaying(true);
-        initialLoadRef.current = false; // fallback: garante transição caso firstFrame não dispare
-        reExtractCountRef.current = 0;
+        if (ambiente !== "electron") initialLoadRef.current = false; // web mantém fallback histórico; Electron espera frame apresentado
+        if (ambiente !== "electron") reExtractCountRef.current = 0;
         resetControlsTimerRef.current();
       });
       player.on("pause", () => {
@@ -2946,7 +2982,7 @@ export function CustomPlayer({
       //
       // Fase de captura: erro de midia nao borbulha, mas e capturavel no
       // ancestral. Assim nao dependemos de quando o JW cria o elemento.
-      const containerJw = document.getElementById("jw-player-container");
+      const containerJw = ambiente === "electron" ? mountDoEfeito : document.getElementById("jw-player-container");
       const aoErroDeMidia = (ev: Event) => {
         const alvo = ev.target;
         if (unmountedRef.current || !(alvo instanceof HTMLMediaElement)) return;
@@ -3226,7 +3262,7 @@ export function CustomPlayer({
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
-      if (ambiente === "electron") removerJWElectron(playerDoEfeito);
+      if (ambiente === "electron") removerJWElectron(playerDoEfeito, mountDoEfeito);
       else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3508,7 +3544,6 @@ export function CustomPlayer({
         className={`absolute inset-0 w-full h-full${
           streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
         }`}
-        dangerouslySetInnerHTML={{ __html: "" }}
       />
 
       {streamTipo === "native" && (
