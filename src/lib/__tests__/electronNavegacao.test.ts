@@ -158,19 +158,31 @@ test("teardown Electron remove uma única vez e cleanup antigo não remove a ins
   }).outputText;
   let remocoes = 0;
   const ref: any = { current: null };
-  const contexto: any = { useCallback: (fn: unknown) => fn, jwRef: ref, controlarMidia,
+  const jwMountRef: any = { current: null };
+  const host: any = { contains: (mount: any) => mount.parentElement === host };
+  const jwHostRef: any = { current: host };
+  const contexto: any = { useCallback: (fn: unknown) => fn, jwRef: ref, jwMountRef, jwHostRef, controlarMidia,
     observarFaseNavegacao: (_nome: string, acao: () => unknown) => acao() };
   vm.runInNewContext(`${codigo}\nglobalThis.remover = removerJWElectron;`, contexto);
-  const antigo = { remove: () => { remocoes++; contexto.remover(antigo); } };
+  const criarMount = () => ({ removed: 0, parentElement: host, remove() { this.removed++; this.parentElement = null; } });
+  const mountAntigo = criarMount();
+  const antigo = { remove: () => { remocoes++; contexto.remover(antigo, mountAntigo); } };
   ref.current = antigo;
-  contexto.remover(antigo);
-  contexto.remover(antigo);
+  jwMountRef.current = mountAntigo;
+  contexto.remover(antigo, mountAntigo);
+  contexto.remover(antigo, mountAntigo);
   assert.equal(remocoes, 1, "remove reentrante e cleanup duplicado são idempotentes");
+  assert.equal(mountAntigo.removed, 1, "cleanup remove seu mount antigo uma única vez");
+  const mountNovo = criarMount();
   const novo = { remove: () => { remocoes++; } };
   ref.current = novo;
-  contexto.remover(antigo);
+  jwMountRef.current = mountNovo;
+  contexto.remover(antigo, mountAntigo);
   assert.equal(ref.current, novo);
+  assert.equal(jwMountRef.current, mountNovo);
+  assert.equal(mountNovo.removed, 0, "cleanup antigo não remove o mount da instância nova");
   assert.equal(remocoes, 1);
-  contexto.remover(novo);
+  contexto.remover(novo, mountNovo);
   assert.equal(remocoes, 2);
+  assert.equal(mountNovo.removed, 1);
 });
