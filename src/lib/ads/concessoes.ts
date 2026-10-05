@@ -469,6 +469,7 @@ export type OrigemDaConcessao =
   | "cota";
 
 export interface Concessao {
+  instancia?: string;
   userId: string;
   finalidade: FinalidadeDeConcessao;
   origem: OrigemDaConcessao;
@@ -518,12 +519,14 @@ export async function emitirConcessao(entrada: {
  * `/fontes` não precisa, e não deve, acreditar num booleano do cliente.
  */
 export async function emitirPasse(entrada: {
+  instancia?: string;
   userId: string;
   finalidade: FinalidadeDeConcessao;
   alvo: AlvoDeConcessao;
 }): Promise<string> {
   const id = novoId();
   const passe: Concessao = {
+    ...(entrada.instancia ? { instancia: entrada.instancia } : {}),
     userId: entrada.userId,
     finalidade: entrada.finalidade,
     origem: "cota",
@@ -575,6 +578,7 @@ export async function consumirConcessao(
   userId: string,
   finalidade: FinalidadeDeConcessao,
   alvo?: AlvoDeConcessao | null,
+  instancia?: string | null,
 ): Promise<boolean> {
   const redis = getRedis();
   const bruto = await redis.get(chaveConcessao(id));
@@ -600,6 +604,7 @@ export async function consumirConcessao(
   // faz a tentativa alheia, ou com o alvo errado, não custar nada a quem tem
   // direito.
   if (c.userId !== userId || c.finalidade !== finalidade) return false;
+  if (c.instancia && c.instancia !== instancia) return false;
   if (c.alvo) {
     if (!alvo || chaveDoAlvo(c.alvo) !== chaveDoAlvo(alvo)) return false;
   }
@@ -622,18 +627,42 @@ export async function marcarPago(entrada: {
   userId: string;
   finalidade: FinalidadeDeConcessao;
   alvo: AlvoDeConcessao;
-  /** Ausente: a marca do celular/Electron, como sempre foi. Ver `escopoDaTv`. */
+  /** Ausente: a marca do celular. Electron usa prova por instância. */
   escopo?: string | null;
-  /** Electron: a liberação do conteúdo sobrevive ao fechamento do aplicativo. */
-  persistente?: boolean;
 }): Promise<void> {
   const hash = hashDoAlvo(entrada.userId, entrada.alvo);
   const chave = chavePagoNoEscopo(entrada.userId, entrada.finalidade, hash, entrada.escopo);
-  if (entrada.persistente) {
-    await getRedis().set(chave, "1");
-  } else {
-    await getRedis().set(chave, "1", { ex: entrada.escopo ? TTL_RECUPERACAO_TV_S : TTL_PAGO_S });
-  }
+  await getRedis().set(chave, "1", { ex: entrada.escopo ? TTL_RECUPERACAO_TV_S : TTL_PAGO_S });
+}
+
+/** Lease da instância aberta. O cliente guarda a prova apenas em memória. */
+export const TTL_RECUPERACAO_ELECTRON_S = 30 * 60;
+export interface EscopoDePlayback {
+  userId: string;
+  instancia: string;
+  alvo: AlvoDeConcessao;
+  finalidade: "reproducao";
+}
+
+export async function emitirRecuperacaoElectron(escopo: EscopoDePlayback): Promise<string> {
+  const id = novoId();
+  await getRedis().set(`ads:playback:${id}`, JSON.stringify(escopo), { ex: TTL_RECUPERACAO_ELECTRON_S });
+  return id;
+}
+
+export async function validarRecuperacaoElectron(id: unknown, escopo: EscopoDePlayback): Promise<boolean> {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(id)) return false;
+  const bruto = await getRedis().get(`ads:playback:${id}`);
+  if (!bruto) return false;
+  try {
+    const prova = JSON.parse(bruto) as EscopoDePlayback;
+    return prova.userId === escopo.userId && prova.instancia === escopo.instancia &&
+      prova.finalidade === escopo.finalidade && chaveDoAlvo(prova.alvo) === chaveDoAlvo(escopo.alvo);
+  } catch { return false; }
+}
+
+export async function renovarRecuperacaoElectron(id: string): Promise<void> {
+  await getRedis().expire(`ads:playback:${id}`, TTL_RECUPERACAO_ELECTRON_S);
 }
 
 /** Este alvo já foi pago por esta conta, para esta finalidade, na janela? */

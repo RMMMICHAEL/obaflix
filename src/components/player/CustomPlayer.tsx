@@ -6,6 +6,7 @@ import { AndroidMediaActions } from "@/components/android/AndroidMediaActions";
 import { pidDeEpisodio, pidDeFilme, rotuloDeEpisodio } from "@/lib/androidMedia";
 import { fetchComPrazo, PRAZO_FONTES_MS } from "@/lib/androidCast";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
 function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
@@ -27,6 +28,11 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
+import { liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
+import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara } from "@/lib/recorte";
+import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
+import { verificarDownloadAtual, controlarMidia } from "@/lib/prepararDownload";
+import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
@@ -215,7 +221,8 @@ function captionTextShadow(edgeStyle: CaptionEdgeStyle) {
   ].join(",");
 }
 
-function friendlyPlayerError(error: unknown, label: string): string {
+function friendlyPlayerError(error: unknown, label: string, privado = false): string {
+  if (privado) return "Não foi possível reproduzir esta fonte. Tente novamente.";
   const raw = error instanceof Error ? error.message : String(error ?? "");
   const detail = raw.trim();
   if (!detail || detail === "null" || /erro desconhecido/i.test(detail)) {
@@ -322,19 +329,6 @@ function recoveryLog(
   else console.log(msg);
 }
 
-/**
- * Inverso de formatTime, para os campos de recorte. Aceita "90", "1:30" e
- * "1:02:03". Devolve null quando o texto ainda está sendo digitado, para o campo
- * não se reescrever no meio da digitação.
- */
-function parseTime(texto: string): number | null {
-  const limpo = texto.trim();
-  if (!/^\d{1,2}(:\d{1,2}){0,2}$/.test(limpo)) return null;
-  const partes = limpo.split(":").map((p) => Number.parseInt(p, 10));
-  if (partes.some((n) => !Number.isFinite(n))) return null;
-  return partes.reduce((total, n) => total * 60 + n, 0);
-}
-
 function formatTime(s: number): string {
   if (!isFinite(s) || s < 0) return "0:00";
   const t = Math.floor(s);
@@ -357,6 +351,8 @@ export function CustomPlayer({
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);   // native tipo only (rola4/Safari)
   const jwRef = useRef<any>(null);                   // JW Player instance
+  const jwHostRef = useRef<HTMLDivElement>(null);     // React owns only this stable host
+  const jwMountRef = useRef<HTMLDivElement | null>(null); // Imperative mount belongs to one JW instance
   const progressoRef = useRef(0);
   const durationRef = useRef(duracaoSeg ?? 0);
   const autoSkipDoneRef = useRef(false);
@@ -378,6 +374,8 @@ export function CustomPlayer({
    * não há direito confirmado, e oferecer o botão antes disso seria mostrar e
    * depois tirar.
    */
+  const { data: sessaoDaConta } = useSession();
+  const usuarioAtual = (sessaoDaConta?.user as { id?: string } | undefined)?.id ?? "";
   const [podeBaixarPeloPlano, setPodeBaixarPeloPlano] = useState(false);
   const directStreamRef = useRef<string | null>(null);
   const streamRefererRef = useRef<string | null>(null);
@@ -396,9 +394,9 @@ export function CustomPlayer({
   const userCaptionRef = useRef<number | null>(null); // null = seleção inicial; 0 = desligada; >0 = faixa escolhida
   const isChangingAudioTrackRef = useRef(false); // impede re-entrada no handler audioTracks: setCurrentAudioTrack() dispara audioTracks de forma síncrona → sem essa flag entra em recursão infinita
   // Representa "nenhum frame válido foi exibido ainda" para esta fonte.
-  // Definido true na montagem e em cada switchFonte; definido false pelo evento firstFrame
-  // (sinal definitivo de frame exibido). O evento play serve apenas como fallback para
-  // provedores que não disparem firstFrame.
+  // No Electron, só sai do estado inicial depois do callback do compositor;
+  // JW firstFrame/play não provam que houve vídeo visível.
+  // Web preserva o critério histórico firstFrame/play.
   // Enquanto true: erros → initial-load-fallback (fonte inválida, não token expirado).
   // Enquanto false: erros → lógica normal de token-renewal.
   const initialLoadRef = useRef(true);
@@ -429,6 +427,8 @@ export function CustomPlayer({
   // montagem: retomar por ela depois que a reprodução avançou rebaixaria
   // dezenas de minutos de vídeo — ~468 MB por episódio.
   const retomarEmRef = useRef(0);
+  const retomarPreparacaoRef = useRef(false);
+  const pausarPreparacaoRef = useRef(false);
   // Lido por ref dentro do switchFonte. Como prop na lista de dependencias,
   // qualquer atualizacao trocava a identidade do switchFonte, que e dependencia
   // do extract, que dispara o efeito de extracao: a fonte tocando era
@@ -529,7 +529,20 @@ export function CustomPlayer({
    * minuto, e uma falha de sessão nunca vira troca de servidor.
    */
   const ultimaReaberturaRef = useRef(0);
-  const abrirSessaoRef = useRef<((signal?: AbortSignal) => Promise<Fonte[]>) | null>(null);
+  const abrirSessaoRef = useRef<((signal?: AbortSignal) => Promise<Fonte[] | null>) | null>(null);
+  const sessaoAbortRef = useRef<AbortController | null>(null);
+  const instanciaPlaybackRef = useRef("");
+  const recuperacaoPlaybackRef = useRef<string | null>(null);
+  const montadoRef = useRef(true);
+  const entradaEmRef = useRef(Date.now());
+  const [navegandoEpisodio, setNavegandoEpisodio] = useState(false);
+  const navegarEpisodioRef = useRef<(url: string) => void>(() => {});
+  const retryDownloadRef = useRef<RetryDownload | null>(null);
+  const recortePreflightRef = useRef<Pick<OperacaoDownload, "fonteId" | "stream" | "referer" | "tipo"> | null>(null);
+  const downloadPendenteRef = useRef(false);
+  const preparandoDownloadRef = useRef(false);
+  const prepararAbortRef = useRef<AbortController | null>(null);
+  const [preparandoDownload, setPreparandoDownload] = useState<"completo" | "trecho" | null>(null);
   // Servidores que já falharam de forma fatal, por id de fonte, com o motivo.
   const [servidoresFalhos, setServidoresFalhos] = useState<Record<string, string>>({});
 
@@ -548,6 +561,8 @@ export function CustomPlayer({
   const [recorteAtivo, setRecorteAtivo] = useState(false);
   const [recorteInicio, setRecorteInicio] = useState(0);
   const [recorteFim, setRecorteFim] = useState(0);
+  const [recorteTextos, setRecorteTextos] = useState({ inicio: "00:00", fim: "00:00" });
+  const formatoManualRef = useRef({ inicio: false, fim: false });
   const [arrastandoAlca, setArrastandoAlca] = useState<"inicio" | "fim" | null>(null);
 
   // A montagem da lista saiu daqui. Ela vivia neste arquivo, e por isso cada
@@ -557,6 +572,22 @@ export function CustomPlayer({
   // src/lib/fontes.ts.
   const ambiente: "web" | "electron" | "android" =
     isAndroid ? "android" : isDesktop ? "electron" : "web";
+
+  useEffect(() => {
+    if (ambiente === "electron") instalarDiagnosticoNavegacao();
+  }, [ambiente]);
+
+  const removerJWElectron = useCallback((player = jwRef.current, mount = jwMountRef.current) => {
+    if (player && jwRef.current !== player) return;
+    if (!player && mount && jwMountRef.current !== mount) return;
+    const mountDestaInstancia = !!mount && jwMountRef.current === mount;
+    // Libera primeiro as refs para reentrância do cleanup, remove só esta instância
+    // JW e, por fim, somente o mount que foi criado para ela.
+    if (player && jwRef.current === player) jwRef.current = null;
+    if (mountDestaInstancia) jwMountRef.current = null;
+    if (player) controlarMidia(() => observarFaseNavegacao("cleanup-jw", () => player.remove()));
+    if (mountDestaInstancia) mount!.remove();
+  }, []);
 
   // Fluxo de anuncio. A sequencia vive em `src/lib/ads/fluxoDoCliente.ts` e e
   // testada la; o hook traz so o que precisa de DOM — abrir o Direct Link,
@@ -569,6 +600,8 @@ export function CustomPlayer({
     aoAssinar: assinarPlano,
     saiuParaPlanos,
   } = useAnuncio();
+  const portasDeAnuncioRef = useRef(portasDeAnuncio);
+  portasDeAnuncioRef.current = portasDeAnuncio;
 
   const [fonteIdx, setFonteIdx] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
@@ -687,6 +720,7 @@ export function CustomPlayer({
             conteudoTipo,
             temporada: temporada ?? null,
             numeroEp: numeroEp ?? null,
+            ambiente,
           }),
         },
         PRAZO_FONTES_MS,
@@ -710,7 +744,7 @@ export function CustomPlayer({
       referer: streamRefererRef.current,
       expiresAt: streamExpiresAtRef.current,
     };
-  }, [conteudoId, conteudoTipo, temporada, numeroEp]);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
@@ -939,7 +973,8 @@ export function CustomPlayer({
   const getVideoElement = useCallback((): HTMLVideoElement | null => {
     if (streamTipo === "native") return videoRef.current;
     if (streamTipo === "hls" || streamTipo === "mp4") {
-      return document.querySelector<HTMLVideoElement>("#jw-player-container video");
+      return jwMountRef.current?.querySelector<HTMLVideoElement>("video")
+        ?? document.querySelector<HTMLVideoElement>("#jw-player-container video");
     }
     return null;
   }, [streamTipo]);
@@ -1023,6 +1058,8 @@ export function CustomPlayer({
 
   // ── switchFonte ──────────────────────────────────────────────────────────────
   const switchFonte = useCallback((idx: number, manual = false) => {
+    prepararAbortRef.current?.abort();
+    retomarPreparacaoRef.current = false;
     extractAbortRef.current?.abort();
     stopMediaSession();
     // REQUISITO: a nova fonte retoma da posição REAL, nunca de initialProgressoSeg,
@@ -1046,7 +1083,8 @@ export function CustomPlayer({
     if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
     if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
-    if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+    if (ambiente === "electron") removerJWElectron();
+    else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     streamExpiresAtRef.current = null;
     // Guarda a fonte por URL, não por índice: a lista cresce quando as
     // alternativas do Player 1 chegam, e aí o índice passa a apontar para outra.
@@ -1589,12 +1627,15 @@ export function CustomPlayer({
         }
         console.warn(`[diag/sessao] sessao_invalida (motivo=${e.motivo}) — reabrindo uma vez`);
         try {
-          const nova = await abrirSessaoRef.current?.() ?? [];
+          const nova = await abrirSessaoRef.current?.();
+          if (nova === null || ctrl.signal.aborted || unmountedRef.current) return;
+          if (!nova) throw new Error("sem sessão após reabrir");
           const equivalente = nova[fonteIdx] ?? nova[0];
           if (!equivalente) throw new Error("sem fontes após reabrir");
           extractRef.current(equivalente.id);
           return;
         } catch {
+          if (ctrl.signal.aborted || unmountedRef.current) return;
           setErroTerminal(true);
           setError("Sua sessão de reprodução expirou. Recarregue a página para continuar.");
           setStatus("error");
@@ -1605,7 +1646,7 @@ export function CustomPlayer({
       if (fonteIdx < allFontes.length - 1) {
         switchFonte(fonteIdx + 1);
       } else {
-        setError(friendlyPlayerError(e, fonte?.rotulo ?? "Servidor"));
+        setError(friendlyPlayerError(e, fonte?.rotulo ?? "Servidor", ambiente === "electron"));
         setStatus("error");
       }
     }
@@ -1634,10 +1675,60 @@ export function CustomPlayer({
   // o download é tecnicamente possível (app desktop, mídia resolvida, tipo
   // suportado); esta diz se a conta tem direito. Sem ela, `Plano.downloads` era
   // coluna sem consumidor.
-  const podeBaixar = podeBaixarPeloPlano &&
-    !!desktopBridge?.downloadMedia &&
-    !!directStreamRef.current &&
-    (streamTipo === "hls" || streamTipo === "mp4");
+  const podeBaixar = podeBaixarPeloPlano && !!desktopBridge?.downloadMedia &&
+    (ambiente === "electron" || (!!directStreamRef.current && (streamTipo === "hls" || streamTipo === "mp4")));
+
+  const prepararDownload = useCallback(async (modo: "completo" | "trecho") => {
+    if (ambiente !== "electron") return !!directStreamRef.current;
+    if (preparandoDownloadRef.current || !podeBaixarPeloPlano) return false;
+    preparandoDownloadRef.current = true;
+    setPreparandoDownload(modo);
+    setShowDownload(false);
+    setDownloadResultado(null);
+    const instancia = instanciaPlaybackRef.current;
+    const usuario = usuarioAtual;
+    const epoch = sourceEpochRef.current;
+    const posicao = progressoRef.current;
+    const ctrl = new AbortController();
+    prepararAbortRef.current = ctrl;
+    const ativa = () => !ctrl.signal.aborted && sourceEpochRef.current === epoch && montadoRef.current && instancia === instanciaPlaybackRef.current &&
+      usuario === operacaoAtualRef.current(modo).usuario && fonteSelecionadaRef.current === operacaoAtualRef.current(modo).fonteId;
+    try {
+      const sourceId = fonteSelecionadaRef.current;
+      const tipo = streamTipoRef.current;
+      const stream = directStreamRef.current;
+      const referer = streamRefererRef.current;
+      const fonteAtual = fonte && fonte.id === sourceId && stream && (tipo === "hls" || tipo === "mp4")
+        ? { stream, tipo, referer: referer ?? undefined, fonteId: sourceId }
+        : null;
+      const compativel = await verificarDownloadAtual(fonteAtual, async (midia) => {
+        const resultado = await desktopBridge?.checkDownloadMedia?.({
+          stream: midia.stream, referer: midia.referer, tipo: midia.tipo, modo, posicao,
+        });
+        return resultado?.ok === true;
+      });
+      if (!ativa()) return false;
+      if (!compativel || directStreamRef.current !== stream || fonteSelecionadaRef.current !== sourceId) {
+        setDownloadResultado({ caminho: "", erro: "Este servidor não permite download. Selecione outro servidor e tente novamente." });
+        setShowDownload(false);
+        setShowSources(true);
+        return false;
+      }
+      return true;
+    } catch {
+      if (ativa()) {
+        setDownloadResultado({ caminho: "", erro: "Este servidor não permite download. Selecione outro servidor e tente novamente." });
+        setShowDownload(false);
+        setShowSources(true);
+      }
+      return false;
+    } finally {
+      preparandoDownloadRef.current = false;
+      if (prepararAbortRef.current === ctrl) prepararAbortRef.current = null;
+      if (montadoRef.current) setPreparandoDownload(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ambiente, fonte, usuarioAtual, podeBaixarPeloPlano, desktopBridge]);
 
   useEffect(() => {
     desktopBridge?.onDownloadProgress?.((p: { pct: number; atual: number; total: number; bytes: number; etapa: string }) => {
@@ -1650,8 +1741,13 @@ export function CustomPlayer({
   // Arrastar a alça pela barra. As duas nunca se cruzam: o mínimo é um segundo.
   const aplicarArrasteAlca = useCallback((frac: number) => {
     const t = Math.max(0, Math.min(duration, frac * duration));
-    if (arrastandoAlca === "inicio") setRecorteInicio(Math.min(t, recorteFim - 1));
-    else if (arrastandoAlca === "fim") setRecorteFim(Math.max(t, recorteInicio + 1));
+    if (!arrastandoAlca) return;
+    const intervalo = ajustarIntervalo(arrastandoAlca, t, recorteInicio, recorteFim, duration);
+    setRecorteInicio(intervalo.inicio);
+    setRecorteFim(intervalo.fim);
+    setRecorteTextos({ inicio: textoDoTempo(intervalo.inicio), fim: textoDoTempo(intervalo.fim) });
+    formatoManualRef.current = { inicio: false, fim: false };
+    retryDownloadRef.current = null;
   }, [arrastandoAlca, duration, recorteInicio, recorteFim]);
 
   useEffect(() => {
@@ -1662,21 +1758,31 @@ export function CustomPlayer({
   }, [arrastandoAlca]);
 
   /** Abre o recorte já centrado em onde o usuário está assistindo. */
-  const abrirRecorte = useCallback(() => {
+  const abrirRecorte = useCallback(async () => {
+    if (!await prepararDownload("trecho") || !montadoRef.current) return;
+    const midiaPreparada = operacaoAtualRef.current("trecho");
+    recortePreflightRef.current = {
+      fonteId: midiaPreparada.fonteId, stream: midiaPreparada.stream,
+      referer: midiaPreparada.referer, tipo: midiaPreparada.tipo,
+    };
     const agora = progressoRef.current;
     const fim = Math.min(duration || agora + 300, agora + 300);
-    setRecorteInicio(Math.max(0, agora));
-    setRecorteFim(Math.max(fim, agora + 5));
+    const intervalo = ajustarIntervalo("inicio", agora, agora, fim, duration || fim);
+    setRecorteInicio(intervalo.inicio);
+    setRecorteFim(intervalo.fim);
+    setRecorteTextos({ inicio: textoDoTempo(intervalo.inicio), fim: textoDoTempo(intervalo.fim) });
+    formatoManualRef.current = { inicio: false, fim: false };
+    retryDownloadRef.current = null;
     setRecorteAtivo(true);
     setShowDownload(false);
-  }, [duration]);
+  }, [duration, prepararDownload]);
 
   /** Pré-visualização: pula para o início do recorte e para no fim. */
   const previsualizarRecorte = useCallback(() => {
     const player = jwRef.current;
-    if (player) { player.seek(recorteInicio); player.play(); }
+    if (player) { player.seek(recorteInicio); controlarMidia(() => player.play(), ambiente === "electron"); }
     else if (videoRef.current) { videoRef.current.currentTime = recorteInicio; videoRef.current.play().catch(() => {}); }
-  }, [recorteInicio]);
+  }, [recorteInicio, ambiente]);
 
   // Durante a pré-visualização, para ao chegar no fim do recorte.
   useEffect(() => {
@@ -1686,42 +1792,76 @@ export function CustomPlayer({
     else videoRef.current?.pause();
   }, [position, recorteAtivo, recorteFim]);
 
-  const iniciarDownload = useCallback(async (modo: "completo" | "trecho", duracaoSeg?: number) => {
-    const stream = directStreamRef.current;
-    if (!stream || !desktopBridge?.downloadMedia) return;
+  const operacaoAtual = useCallback((modo: "completo" | "trecho"): OperacaoDownload => ({
+    usuario: usuarioAtual,
+    instancia: instanciaPlaybackRef.current, sessao: sessaoFontesRef.current,
+    conteudoId, temporada, numeroEp, fonteId: fonteSelecionadaRef.current ?? fonte?.id ?? "",
+    stream: directStreamRef.current ?? "", referer: streamRefererRef.current ?? "",
+    tipo: streamTipoRef.current === "mp4" ? "mp4" : "hls",
+    titulo: [titulo, temporada && numeroEp ? `T${temporada}E${numeroEp}` : null].filter(Boolean).join(" "),
+    modo, inicioSeg: modo === "trecho" ? recorteInicio : undefined,
+    fimSeg: modo === "trecho" ? recorteFim : undefined,
+  }), [usuarioAtual, conteudoId, temporada, numeroEp, fonte?.id, titulo, recorteInicio, recorteFim]);
+  const operacaoAtualRef = useRef(operacaoAtual);
+  operacaoAtualRef.current = operacaoAtual;
+  useEffect(() => { retryDownloadRef.current = null; }, [usuarioAtual, fonte?.id, streamUrl, recorteInicio, recorteFim]);
+
+  const iniciarDownload = useCallback(async (modo: "completo" | "trecho", retentativa = false) => {
+    if (!desktopBridge?.downloadMedia || downloadPendenteRef.current || preparandoDownloadRef.current) return;
+    if (!retentativa && modo === "completo" && !await prepararDownload(modo)) return;
+    if (!directStreamRef.current || !montadoRef.current) return;
+    if (!retentativa && modo === "trecho") {
+      const preparada = recortePreflightRef.current;
+      const atual = operacaoAtualRef.current("trecho");
+      if (!preparada || preparada.fonteId !== atual.fonteId || preparada.stream !== atual.stream ||
+        preparada.referer !== atual.referer || preparada.tipo !== atual.tipo) {
+        setDownloadResultado({ caminho: "", erro: "Este servidor não permite download. Selecione outro servidor e tente novamente." });
+        setShowDownload(false);
+        setShowSources(true);
+        return;
+      }
+    }
     // Segunda checagem do mesmo direito, e não redundância inútil: `podeBaixar`
     // decide se o botão aparece, isto decide se a ação acontece. Uma UI
     // desatualizada — sessão reaberta com plano diferente, painel já montado —
     // não deve conseguir disparar o download.
     if (!podeBaixarPeloPlano) return;
-
+    const operacao = operacaoAtualRef.current(modo);
+    downloadPendenteRef.current = true;
     setShowDownload(false);
     setDownloadResultado(null);
-    setDownloadProgresso({ pct: 0, atual: 0, total: 0, bytes: 0 });
-
-    const nome = [titulo, temporada && numeroEp ? `T${temporada}E${numeroEp}` : null]
-      .filter(Boolean).join(" ");
-
+    let tentativaIpc = false;
     try {
-      const r = await desktopBridge.downloadMedia({
-        stream,
-        referer: streamRefererRef.current,
-        tipo: streamTipo === "mp4" ? "mp4" : "hls",
-        titulo: nome,
-        modo,
-        // O intervalo vem das alças/campos de recorte, não da posição atual.
-        inicioSeg: modo === "trecho" ? recorteInicio : undefined,
-        fimSeg: modo === "trecho" ? recorteFim : undefined,
+      const r = await executarTentativaDownload(operacao, retentativa, retryDownloadRef.current, {
+        autorizar: async () => !!await fonteAtualParaMidia(0, "download", (finalidade) => liberarAcao({
+          conteudoId, conteudoTipo, temporada, numeroEp, plataforma: "electron", finalidade,
+        }, portasDeAnuncio)),
+        atual: () => montadoRef.current ? operacaoAtualRef.current(modo) : null,
+        guardarRetry: (retry) => { retryDownloadRef.current = retry; },
+        iniciar: async (capturada) => {
+          tentativaIpc = true;
+          setDownloadProgresso({ pct: 0, atual: 0, total: 0, bytes: 0 });
+          return desktopBridge.downloadMedia(capturada);
+        },
       });
+      if (!montadoRef.current) return;
       setDownloadProgresso(null);
-      if (r?.ok) setDownloadResultado({ caminho: r.caminho });
-      else if (!r?.cancelado) setDownloadResultado({ caminho: "", erro: r?.error || "Falha no download" });
+      if (r?.ok) { retryDownloadRef.current = null; setDownloadResultado({ caminho: r.caminho ?? "" }); }
+      else if (r?.cancelado) retryDownloadRef.current = null;
+      else if (!r?.cancelado) setDownloadResultado({ caminho: "", erro: "Não foi possível concluir o download. Tente novamente." });
     } catch (e: any) {
+      if (!montadoRef.current) return;
       setDownloadProgresso(null);
-      setDownloadResultado({ caminho: "", erro: e?.message || "Falha no download" });
+      if (!tentativaIpc) retryDownloadRef.current = null;
+      if (ehAcaoCancelada(e)) return;
+      setDownloadResultado({ caminho: "", erro: ehAcaoInterrompida(e)
+        ? "Não foi possível liberar o download. Tente novamente."
+        : "Falha no download. Tente novamente." });
+    } finally {
+      downloadPendenteRef.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamTipo, titulo, temporada, numeroEp, recorteInicio, recorteFim, podeBaixarPeloPlano]);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, fonteAtualParaMidia, portasDeAnuncio]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -1742,7 +1882,14 @@ export function CustomPlayer({
    * tanto para a montagem quanto para a reabertura depois de o servidor
    * responder `sessao_invalida`.
    */
-  const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[]> => {
+  const abrirSessao = useCallback(async (signal?: AbortSignal): Promise<Fonte[] | null> => {
+    const instanciaDaChamada = instanciaPlaybackRef.current;
+    const portasDaChamada = portasDeAnuncioRef.current;
+    const atual = () => montadoRef.current && !unmountedRef.current &&
+      instanciaDaChamada === instanciaPlaybackRef.current && !signal?.aborted;
+    // null distingue cancelamento/resposta obsoleta de uma sessão válida sem fontes.
+    if (!atual()) return null;
+    try {
     // ── Anúncio, antes de abrir a sessão ────────────────────────────────────
     //
     // Pergunta ao servidor se esta reprodução precisa de anúncio e, se precisar,
@@ -1764,9 +1911,20 @@ export function CustomPlayer({
         numeroEp: numeroEp ?? null,
         plataforma: ambiente === "android" ? "android" : ambiente === "electron" ? "electron" : null,
         finalidade: "reproducao",
+        ...(ambiente === "electron" ? { instancia: instanciaPlaybackRef.current,
+          ...(recuperacaoPlaybackRef.current ? { recuperacao: recuperacaoPlaybackRef.current } : {}) } : {}),
       },
-      portasDeAnuncio,
+      { ...portasDaChamada, exibirAnuncio: async (entrada) => {
+        // O mínimo é só visual e só precede o convite; a API responde sem atraso.
+        if (ambiente === "electron") {
+          const restante = Math.max(0, 1000 - (Date.now() - entradaEmRef.current));
+          if (restante) await new Promise((resolve) => setTimeout(resolve, restante));
+        }
+        if (!atual()) return { concluido: false };
+        return portasDaChamada.exibirAnuncio(entrada);
+      } },
     );
+    if (!atual()) return null;
 
     // Desistir de ver anúncio não é erro, e não deve virar tela vermelha.
     if (fluxo.situacao === "cancelado") throw new AnuncioRecusado();
@@ -1789,12 +1947,15 @@ export function CustomPlayer({
         numeroEp: numeroEp ?? null,
         ambiente,
         finalidade: "reproducao",
+        ...(ambiente === "electron" ? { instancia: instanciaPlaybackRef.current } : {}),
         ...(fluxo.concessao ? { concessao: fluxo.concessao } : {}),
       }),
       signal,
     });
+    if (!atual()) return null;
     if (!res.ok) {
       const recusa = await res.json().catch(() => null);
+      if (!atual()) return null;
       if (res.status === 403 && recusa?.codigo === "anuncio_necessario") throw erroComercial("anuncio_necessario");
       if (res.status === 403 && recusa?.codigo === "conteudo_indisponivel_no_plano") {
         throw erroComercial("conteudo_indisponivel_no_plano");
@@ -1802,6 +1963,8 @@ export function CustomPlayer({
       throw new Error("Não foi possível carregar os servidores");
     }
     const data = await res.json();
+    if (!atual()) return null;
+    if (typeof data?.recuperacao === "string") recuperacaoPlaybackRef.current = data.recuperacao;
     const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
     // Direito de download, decidido no servidor. Comparação estrita com `true`:
     // resposta sem o campo, `undefined` ou qualquer outro valor deixa o botão
@@ -1816,6 +1979,12 @@ export function CustomPlayer({
     setSessaoFontes(data?.sessao ?? null);
     setAllFontes(lista);
     return lista;
+    } catch (erro) {
+      // Fetch/json abortado da instância antiga também termina normalmente.
+      // Erros de uma chamada ainda ativa (inclusive comerciais) continuam reais.
+      if (!atual()) return null;
+      throw erro;
+    }
   }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
 
   abrirSessaoRef.current = abrirSessao;
@@ -1828,6 +1997,12 @@ export function CustomPlayer({
   // montagem no cliente — agora as duas rodam no servidor e o navegador recebe
   // só ids opacos.
   useEffect(() => {
+    montadoRef.current = true;
+    instanciaPlaybackRef.current = crypto.randomUUID();
+    recuperacaoPlaybackRef.current = null;
+    retryDownloadRef.current = null;
+    entradaEmRef.current = Date.now();
+    setNavegandoEpisodio(false);
     setServidoresFalhos({});
     setAllFontes([]);
     setSessaoFontes(null);
@@ -1853,6 +2028,7 @@ export function CustomPlayer({
     }
 
     const ctrl = new AbortController();
+    sessaoAbortRef.current = ctrl;
     // Falha que nenhuma outra fonte resolveria: aparece na hora, sem esperar.
     const falhaTerminal = (mensagem: string) => {
       setError(mensagem);
@@ -1863,7 +2039,7 @@ export function CustomPlayer({
     (async () => {
       try {
         const lista = await abrirSessao(ctrl.signal);
-        if (ctrl.signal.aborted) return;
+        if (lista === null || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         setSessaoPendente(false);
         if (!lista.length) {
           falhaTerminal("Nenhum servidor disponível para este título.");
@@ -1890,13 +2066,14 @@ export function CustomPlayer({
         });
         if (!res2.ok) return;
         const data2 = await res2.json();
+        if (ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         const lista2: Fonte[] = Array.isArray(data2?.fontes) ? data2.fontes : [];
         if (lista2.length > lista.length) {
           console.log(`[diag/server] alternativas=${lista2.length - lista.length} total=${lista2.length}`);
           setAllFontes(lista2);
         }
       } catch (e: any) {
-        if (e?.name === "AbortError" || ctrl.signal.aborted) return;
+        if (e?.name === "AbortError" || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
         setSessaoPendente(false);
         // Fechar o convite no X, ou ir escolher um plano, não é erro: a
         // reprodução simplesmente não começa. No X volta para a página do título
@@ -1930,13 +2107,64 @@ export function CustomPlayer({
         }
       } finally {
         // Fase 2 respondeu, falhou ou nem começou: a lista não cresce mais.
-        if (!ctrl.signal.aborted) setAlternativasPendentes(false);
+        if (!ctrl.signal.aborted && montadoRef.current && !unmountedRef.current) setAlternativasPendentes(false);
       }
     })();
 
-    return () => ctrl.abort();
+    return () => {
+      ctrl.abort();
+      if (sessaoAbortRef.current === ctrl) sessaoAbortRef.current = null;
+      montadoRef.current = false;
+      prepararAbortRef.current?.abort();
+      recuperacaoPlaybackRef.current = null;
+      retryDownloadRef.current = null;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente, abrirSessao]);
+
+  // Renova só a lease já existente enquanto esta instância está aberta.
+  // Não exibe anúncio nem cria passe no heartbeat. Expiração/falha é fail-closed.
+  useEffect(() => {
+    if (ambiente !== "electron") return;
+    const timer = setInterval(() => {
+      const recuperacao = recuperacaoPlaybackRef.current;
+      if (!recuperacao || !montadoRef.current) return;
+      fetch("/api/playback/authorize", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conteudoId, conteudoTipo, temporada, numeroEp,
+          plataforma: "electron", finalidade: "reproducao", instancia: instanciaPlaybackRef.current,
+          recuperacao, renovar: true }),
+      }).catch(() => {});
+    }, 10 * 60_000);
+    return () => clearInterval(timer);
+  }, [ambiente, conteudoId, conteudoTipo, temporada, numeroEp]);
+  useEffect(() => { recuperacaoPlaybackRef.current = null; retryDownloadRef.current = null; }, [usuarioAtual]);
+
+  navegarEpisodioRef.current = (url) => {
+    if (ambiente === "electron") {
+      if (!montadoRef.current) return;
+      registrarFaseNavegacao("nav:start");
+      montadoRef.current = false;
+      setNavegandoEpisodio(true);
+      unmountedRef.current = true;
+      observarFaseNavegacao("abort-session", () => sessaoAbortRef.current?.abort());
+      observarFaseNavegacao("abort-download-prep", () => prepararAbortRef.current?.abort());
+      controlarMidia(() => observarFaseNavegacao("pause-jw", () => jwRef.current?.pause()));
+      controlarMidia(() => observarFaseNavegacao("pause-video", () => videoRef.current?.pause()));
+      observarFaseNavegacao("abort-extract", () => extractAbortRef.current?.abort());
+      recuperacaoPlaybackRef.current = null;
+      retryDownloadRef.current = null;
+    }
+    if (ambiente === "electron") {
+      void observarFaseNavegacao("save-progress:start", () => saveProgressRef.current()).catch(() => {}).then(() => {
+        registrarFaseNavegacao("save-progress:finish");
+        observarFaseNavegacao("router-push:start", () => router.push(url));
+        registrarFaseNavegacao("router-push:finish");
+      }).catch(() => {});
+    } else {
+      void saveProgressRef.current().catch(() => {}).then(() => router.push(url)).catch(() => {});
+    }
+  };
 
   // Carregamento inicial: a cada mudança de estado, decide se a primeira mídia
   // ficou pronta, se a falha que chegou tem outra tentativa (trocar de fonte ou
@@ -1990,12 +2218,25 @@ export function CustomPlayer({
     if (!streamUrl || streamTipo === "iframe" || streamTipo === "native") return;
 
     // Destroy previous player if any
-    if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+    if (ambiente === "electron") removerJWElectron();
+    else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
 
-    // Ensure container div exists and is empty
-    const container = document.getElementById("jw-player-container");
+    // Electron: um mount novo por player. React reconcilia apenas jwHostRef;
+    // toda a árvore criada pelo JW fica sob este nó imperativo dedicado.
+    let container: HTMLElement | null = null;
+    let mountDoEfeito: HTMLDivElement | null = null;
+    if (ambiente === "electron") {
+      const host = jwHostRef.current;
+      if (!host) return;
+      mountDoEfeito = document.createElement("div");
+      mountDoEfeito.id = "jw-player-container";
+      mountDoEfeito.className = "absolute inset-0 w-full h-full";
+      host.appendChild(mountDoEfeito);
+      jwMountRef.current = mountDoEfeito;
+      container = mountDoEfeito;
+    } else container = document.getElementById("jw-player-container");
     if (!container) return;
-    container.innerHTML = "";
+    if (ambiente !== "electron") container.innerHTML = "";
 
     // streamUrl já é /api/player/proxy?t=<token> (stream token opaco) ou URL do Electron
     const fileType = streamTipo === "mp4" ? "mp4" : "hls";
@@ -2009,9 +2250,11 @@ export function CustomPlayer({
       default: track.default ?? index === 0,
     }));
 
+    let cancelado = false;
+    let playerDoEfeito: any = null;
     loadJW(() => {
       // Componente pode ter desmontado enquanto o script JW carregava
-      if (unmountedRef.current) return;
+      if (unmountedRef.current || (ambiente === "electron" && cancelado)) return;
       const jw = (window as any).jwplayer;
       if (!jw) return;
       jw.key = JW_KEY;
@@ -2022,7 +2265,7 @@ export function CustomPlayer({
         total: allFontes.length,
       });
 
-      const player = jw("jw-player-container").setup({
+      const player = jw(container!.id).setup({
         sources,
         tracks,
         image: thumbUrl || undefined,
@@ -2038,6 +2281,7 @@ export function CustomPlayer({
         height: "100%",
         stretching: "uniform",
       });
+      playerDoEfeito = player;
 
       jwRef.current = player;
       // Congelada aqui: o handler de erro compara contra sourceEpochRef atual.
@@ -2045,9 +2289,13 @@ export function CustomPlayer({
 
       // Retomada: posição real preservada pelo switchFonte (failover ou troca
       // manual), caindo para o progresso salvo apenas na primeira carga.
-      const retomarEm = Math.max(retomarEmRef.current, initialProgressoSeg);
-      if (retomarEm > 5) {
-        player.once("firstFrame", () => { player.seek(retomarEm); });
+      const retomarEm = retomarPreparacaoRef.current ? retomarEmRef.current : Math.max(retomarEmRef.current, initialProgressoSeg);
+      if (retomarEm > 5 || retomarPreparacaoRef.current) {
+        player.once("firstFrame", () => {
+          if (unmountedRef.current) return;
+          controlarMidia(() => player.seek(retomarEm));
+          if (retomarPreparacaoRef.current && pausarPreparacaoRef.current) controlarMidia(() => player.pause());
+        });
       }
 
       // Retry automático: 8s sem play → 1 re-extração silenciosa; se ainda travar → mostra botão
@@ -2066,49 +2314,98 @@ export function CustomPlayer({
         }
       }, 8000);
 
-      // firstFrame: sinal definitivo de que um frame válido foi exibido.
-      // A partir daqui erros podem indicar token expirado e passam pela lógica de renovação.
+      // firstFrame é apenas o evento do JW. No Electron, só o callback do
+      // compositor confirma vídeo visível e encerra o estado de carga inicial.
       player.on("firstFrame", () => {
-        initialLoadRef.current = false;
-        // Fecha a sequência no console. Só aqui: primeiro frame é a única prova
-        // de reprodução — "extract respondeu 200" não prova nada.
-        logFonte("fonte_reproduzindo", {
-          servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
-          n: fonteIdx + 1,
-          total: allFontes.length,
-          apos: serverSwitchCountRef.current,
-        });
-        // Único ponto que prova reprodução de verdade: o primeiro frame só
-        // aparece depois do init segment e dos primeiros segmentos de mídia.
-        // "extract respondeu 200" não significa nada aqui.
-        logEtapa(rotuloDiag, "OK_PLAYBACK", {
-          url: directStreamRef.current ?? undefined,
+        if (unmountedRef.current) return;
+        if (ambiente !== "electron") {
+          initialLoadRef.current = false;
+          retriesRef.current = 0;
+          if (firstFrameTimerRef.current) {
+            clearTimeout(firstFrameTimerRef.current);
+            firstFrameTimerRef.current = null;
+          }
+          logFonte("fonte_reproduzindo", {
+            servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+            n: fonteIdx + 1,
+            total: allFontes.length,
+            apos: serverSwitchCountRef.current,
+          });
+          logEtapa(rotuloDiag, "JW_FIRST_FRAME", {
+            ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
+          });
+          return;
+        }
+        // O evento JW firstFrame não garante um frame de vídeo apresentado ao
+        // compositor. Separe esse marco do diagnóstico de vídeo visível.
+        logEtapa(rotuloDiag, "JW_FIRST_FRAME", {
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
-        // Sucesso confirmado: o orçamento desta fonte volta ao início.
-        retriesRef.current = 0;
-        if (firstFrameTimerRef.current) {
-          clearTimeout(firstFrameTimerRef.current);
-          firstFrameTimerRef.current = null;
+        const host = jwHostRef.current;
+        const mount = ambiente === "electron" ? mountDoEfeito : container;
+        const video = mount?.querySelector<HTMLVideoElement>("video") ?? null;
+        const quadrosDecodificados = () => {
+          try { return Number(video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0); }
+          catch { return 0; }
+        };
+        console.info(`[diag/frame] jw_first_frame mount_connected=${mount?.isConnected ? 1 : 0} host_contains_mount=${host && mount ? Number(host.contains(mount)) : 0} video_element=${video ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} ready_state=${video?.readyState ?? 0} decoded_frames=${quadrosDecodificados()}`);
+        const confirmarFrameVisivel = () => {
+          if (unmountedRef.current || jwRef.current !== player) return;
+          if (!video?.isConnected || (ambiente === "electron" && (!mount?.isConnected || !host?.contains(mount))) || video.videoWidth <= 0 || video.videoHeight <= 0) {
+            console.info(`[diag/frame] compositor_frame=invalid video_connected=${video?.isConnected ? 1 : 0} dimensions=${video?.videoWidth ?? 0}x${video?.videoHeight ?? 0} decoded_frames=${quadrosDecodificados()}`);
+            return;
+          }
+          console.info(`[diag/frame] compositor_frame=presented dimensions=${video.videoWidth}x${video.videoHeight} decoded_frames=${quadrosDecodificados()}`);
+          if (ambiente === "electron") {
+            logFonte("fonte_reproduzindo", {
+              servidor: fonte?.servidor ?? fonte?.rotulo ?? "?",
+              n: fonteIdx + 1,
+              total: allFontes.length,
+              apos: serverSwitchCountRef.current,
+            });
+            initialLoadRef.current = false;
+            reExtractCountRef.current = 0;
+            retriesRef.current = 0;
+            if (firstFrameTimerRef.current) {
+              clearTimeout(firstFrameTimerRef.current);
+              firstFrameTimerRef.current = null;
+            }
+          }
+        };
+        if (video?.requestVideoFrameCallback) {
+          let callbackId = 0;
+          const timer = window.setTimeout(() => {
+            if (unmountedRef.current) return;
+            console.info("[diag/frame] compositor_frame=not_observed within_ms=2000");
+            try { video.cancelVideoFrameCallback?.(callbackId); } catch { /* player desmontado */ }
+          }, 2000);
+          callbackId = video.requestVideoFrameCallback(() => {
+            window.clearTimeout(timer);
+            confirmarFrameVisivel();
+          });
+        } else {
+          console.info("[diag/frame] compositor_frame=unsupported");
         }
       });
 
       player.on("play", () => {
+        if (unmountedRef.current) return;
         if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
         setShowRetry(false);
         setStatus("playing");
         setPlaying(true);
-        initialLoadRef.current = false; // fallback: garante transição caso firstFrame não dispare
-        reExtractCountRef.current = 0;
+        if (ambiente !== "electron") initialLoadRef.current = false; // web mantém fallback histórico; Electron espera frame apresentado
+        if (ambiente !== "electron") reExtractCountRef.current = 0;
         resetControlsTimerRef.current();
       });
       player.on("pause", () => {
+        if (unmountedRef.current) return;
         setPlaying(false);
         setControlsVisible(true);
         if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
         saveProgressRef.current();
       });
-      player.on("complete", () => { saveProgressRef.current(); });
+      player.on("complete", () => { if (!unmountedRef.current) void saveProgressRef.current().catch(() => {}); });
 
       player.on("time", ({ position, duration }: any) => {
         if (unmountedRef.current) return;
@@ -2131,7 +2428,7 @@ export function CustomPlayer({
             autoSkipDoneRef.current = true;
             setNextEpCountdown(null);
             nextEpCountdownActiveRef.current = false;
-            saveProgressRef.current().then(() => router.push(url));
+            navegarEpisodioRef.current(url);
           }
         } else if (nextEpCountdownActiveRef.current) {
           setNextEpCountdown(null);
@@ -2392,6 +2689,7 @@ export function CustomPlayer({
             setSubtitleTracks(renewedTracks);
             if (pos > 5) {
               jwRef.current.once("firstFrame", () => {
+                if (unmountedRef.current) return;
                 if (!jwRef.current) return;
                 // Alguns provedores retornam duração levemente diferente após renovar o token;
                 // seek além da duração real gera comportamento inesperado no hls.js.
@@ -2405,7 +2703,7 @@ export function CustomPlayer({
                 }
               });
             }
-            jwRef.current.play();
+            controlarMidia(() => jwRef.current?.play(), ambiente === "electron");
           })
           .catch((err: any) => {
             if (settled) return;
@@ -2550,7 +2848,7 @@ export function CustomPlayer({
               return false;
             }
             if (escalado.acao === "erro") {
-              setError(friendlyPlayerError(new Error(`${motivo} - ${escalado.detalhe}`), fonte?.rotulo ?? "Servidor"));
+              setError(friendlyPlayerError(new Error(`${motivo} - ${escalado.detalhe}`), fonte?.rotulo ?? "Servidor", ambiente === "electron"));
               setStatus("error");
               return false;
             }
@@ -2579,7 +2877,7 @@ export function CustomPlayer({
               playerAtual.load([{ file: alvo, type: streamTipo === "mp4" ? "mp4" : "hls" }]);
               suppressErrorUntilRef.current = Date.now() + 2000;
               if (retomar > 5) playerAtual.once("firstFrame", () => { playerAtual.seek(retomar); });
-              playerAtual.play();
+              controlarMidia(() => playerAtual.play(), ambiente === "electron");
             } catch { /* o proximo erro reentra aqui */ }
           }, espera);
           console.warn(`[diag/failover] retry em ${espera}ms - ${detalhe}`);
@@ -2595,7 +2893,7 @@ export function CustomPlayer({
         }
 
         if (acao === "erro") {
-          setError(friendlyPlayerError(new Error(`${motivo} - ${detalhe}`), fonte?.rotulo ?? "Servidor"));
+          setError(friendlyPlayerError(new Error(`${motivo} - ${detalhe}`), fonte?.rotulo ?? "Servidor", ambiente === "electron"));
           setStatus("error");
           return false;
         }
@@ -2684,7 +2982,7 @@ export function CustomPlayer({
       //
       // Fase de captura: erro de midia nao borbulha, mas e capturavel no
       // ancestral. Assim nao dependemos de quando o JW cria o elemento.
-      const containerJw = document.getElementById("jw-player-container");
+      const containerJw = ambiente === "electron" ? mountDoEfeito : document.getElementById("jw-player-container");
       const aoErroDeMidia = (ev: Event) => {
         const alvo = ev.target;
         if (unmountedRef.current || !(alvo instanceof HTMLMediaElement)) return;
@@ -2901,7 +3199,7 @@ export function CustomPlayer({
                   if (!validDuration || pos < dur) jwRef.current.seek(pos);
                 });
               }
-              jwRef.current!.play();
+              controlarMidia(() => jwRef.current?.play(), ambiente === "electron");
             } catch (err: any) {
               clearTimeout(safetyTimer);
               reExtractingRef.current = false;
@@ -2957,13 +3255,15 @@ export function CustomPlayer({
     });
 
     return () => {
+      cancelado = true;
       if (firstFrameTimerRef.current) { clearTimeout(firstFrameTimerRef.current); firstFrameTimerRef.current = null; }
       if (stallTimerRef.current) { clearInterval(stallTimerRef.current); stallTimerRef.current = null; }
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       if (reExtractDebounceRef.current) { clearTimeout(reExtractDebounceRef.current); reExtractDebounceRef.current = null; }
       if (expiryTimerRef.current) { clearTimeout(expiryTimerRef.current); expiryTimerRef.current = null; }
       if (soltarErroMidiaRef.current) { soltarErroMidiaRef.current(); soltarErroMidiaRef.current = null; }
-      if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
+      if (ambiente === "electron") removerJWElectron(playerDoEfeito, mountDoEfeito);
+      else if (jwRef.current) { try { jwRef.current.remove(); } catch {} jwRef.current = null; }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, streamTipo, subtitleTracks]);
@@ -3087,7 +3387,7 @@ export function CustomPlayer({
           autoSkipDoneRef.current = true;
           setNextEpCountdown(null);
           nextEpCountdownActiveRef.current = false;
-          saveProgress().then(() => router.push(url));
+          navegarEpisodioRef.current(url);
         }
       } else if (nextEpCountdownActiveRef.current) {
         setNextEpCountdown(null);
@@ -3232,13 +3532,18 @@ export function CustomPlayer({
       onMouseMove={() => { if (playing && status === "playing") resetControlsTimerRef.current(); }}
     >
       <style>{captionCss}</style>
+      {navegandoEpisodio && (
+        <div className="absolute inset-0 z-[9998] bg-black flex items-center justify-center" role="status" aria-label="Carregando próximo episódio">
+          <BouncingDots />
+        </div>
+      )}
       {/* ── Video elements ── */}
       <div
-        id="jw-player-container"
+        ref={ambiente === "electron" ? jwHostRef : undefined}
+        id={ambiente === "electron" ? undefined : "jw-player-container"}
         className={`absolute inset-0 w-full h-full${
           streamTipo === "native" || (streamTipo === "iframe" && !!streamUrl) ? " hidden" : ""
         }`}
-        dangerouslySetInnerHTML={{ __html: "" }}
       />
 
       {streamTipo === "native" && (
@@ -3438,6 +3743,7 @@ export function CustomPlayer({
                 <div className="relative">
                   <button
                     title="Baixar mídia"
+                    disabled={!!preparandoDownload}
                     className={`h-10 md:h-12 px-3 md:px-4 rounded-full flex items-center gap-1.5 flex-shrink-0 transition-all duration-200 bg-white/10 text-white text-xs md:text-sm font-medium hover:bg-white hover:text-black active:bg-white active:text-black${showDownload ? " !bg-white !text-black" : ""}`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3459,9 +3765,7 @@ export function CustomPlayer({
                         Baixar conteúdo completo
                       </button>
                       <div className="border-t border-white/10" />
-                      {/* Com ffmpeg o recorte vale para qualquer fonte, inclusive
-                          MP4 e as que trazem o áudio em faixa separada. Sem ele, o
-                          próprio download explica o motivo ao falhar. */}
+                      {/* Verifica somente a fonte que está tocando antes de abrir o editor. */}
                       <button
                         onClick={abrirRecorte}
                         className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
@@ -3471,6 +3775,12 @@ export function CustomPlayer({
                     </div>
                   )}
 
+                  {preparandoDownload && (
+                    <div role="status" className="absolute right-0 top-full mt-2 bg-zinc-900/95 rounded-xl p-3 text-xs text-white/80">
+                      {preparandoDownload === "trecho" ? "Preparando editor…" : "Preparando download…"}
+                      <span className="block text-xs text-white/50 mt-1">Verificando a fonte atual…</span>
+                    </div>
+                  )}
                   {downloadProgresso && (
                     <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl p-3 min-w-[220px] shadow-2xl">
                       <div className="flex items-center justify-between text-[11px] text-white/70 mb-2">
@@ -3512,11 +3822,19 @@ export function CustomPlayer({
                         </>
                       )}
                       <button
-                        onClick={() => setDownloadResultado(null)}
+                        onClick={() => { retryDownloadRef.current = null; setDownloadResultado(null); }}
                         className="mt-2 w-full text-center text-[11px] text-white/40 hover:text-white/70 transition-colors"
                       >
                         Fechar
                       </button>
+                      {downloadResultado.erro && retryDownloadRef.current && (
+                        <button className="mt-2 text-xs text-white" onClick={() => {
+                          const retry = retryDownloadRef.current;
+                          if (retry) iniciarDownload(retry.operacao.modo, true);
+                        }}>
+                          Tentar novamente
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -3538,7 +3856,7 @@ export function CustomPlayer({
                 <button
                   title="Episódio anterior"
                   className={btnCls}
-                  onClick={() => { saveProgress(); router.push(prevUrl); }}
+                  onClick={() => navegarEpisodioRef.current(prevUrl)}
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
@@ -3549,7 +3867,7 @@ export function CustomPlayer({
                 <button
                   title="Próximo episódio"
                   className={`${btnCls} !w-auto px-3 md:px-5 gap-1`}
-                  onClick={() => { saveProgress(); router.push(nextUrl); }}
+                  onClick={() => navegarEpisodioRef.current(nextUrl)}
                 >
                   <span className="hidden sm:inline text-xs md:text-sm font-medium">Próximo</span>
                   <ChevronRight className="w-5 h-5" />
@@ -3609,14 +3927,44 @@ export function CustomPlayer({
                     </span>
                     <input
                       type="text"
-                      value={formatTime(qual === "inicio" ? recorteInicio : recorteFim)}
-                      onChange={(e) => {
-                        const seg = parseTime(e.target.value);
-                        if (seg === null) return;
-                        const limitado = Math.max(0, Math.min(duration || seg, seg));
-                        if (qual === "inicio") setRecorteInicio(Math.min(limitado, recorteFim - 1));
-                        else setRecorteFim(Math.max(limitado, recorteInicio + 1));
+                      inputMode="numeric"
+                      onFocus={(e) => e.currentTarget.select()}
+                      value={recorteTextos[qual]}
+                      onBeforeInput={(e) => {
+                        const input = e.currentTarget;
+                        if (input.selectionStart === 0 && input.selectionEnd === input.value.length) formatoManualRef.current[qual] = false;
                       }}
+                      onKeyDown={(e) => {
+                        if (formatoManualRef.current[qual]) return;
+                        const input = e.currentTarget;
+                        const pos = input.selectionStart ?? 0;
+                        if (pos !== input.selectionEnd) return;
+                        if (e.key === "Backspace" && input.value[pos - 1] === ":") input.setSelectionRange(pos - 2, pos);
+                        if (e.key === "Delete" && input.value[pos] === ":") input.setSelectionRange(pos, pos + 2);
+                      }}
+                      onChange={(e) => {
+                        const input = e.currentTarget;
+                        const bruto = input.value;
+                        const evento = e.nativeEvent as InputEvent;
+                        if (evento.data === ":" || evento.inputType === "insertFromPaste") formatoManualRef.current[qual] = bruto.includes(":");
+                        if (!bruto) formatoManualRef.current[qual] = false;
+                        const texto = formatoManualRef.current[qual] ? bruto.replace(/[^\d:]/g, "").slice(0, 8) : mascararTempo(bruto);
+                        const cursor = formatoManualRef.current[qual] ? input.selectionStart ?? texto.length
+                          : cursorDaMascara(bruto, input.selectionStart ?? bruto.length, texto);
+                        setRecorteTextos((atual) => ({ ...atual, [qual]: texto }));
+                        requestAnimationFrame(() => { if (document.activeElement === input) input.setSelectionRange(cursor, cursor); });
+                        retryDownloadRef.current = null;
+                        const seg = segundosDoTexto(texto);
+                        if (seg === null || duration < 1) return;
+                        const intervalo = ajustarIntervalo(qual, seg, recorteInicio, recorteFim, duration);
+                        setRecorteInicio(intervalo.inicio);
+                        setRecorteFim(intervalo.fim);
+                        const outro = qual === "inicio" ? "fim" : "inicio";
+                        setRecorteTextos((atual) => ({ ...atual, [outro]: textoDoTempo(intervalo[outro]) }));
+                        if (jwRef.current) jwRef.current.seek(intervalo[qual]);
+                        else if (videoRef.current) videoRef.current.currentTime = intervalo[qual];
+                      }}
+                      onBlur={() => setRecorteTextos((atual) => ({ ...atual, [qual]: textoDoTempo(qual === "inicio" ? recorteInicio : recorteFim) }))}
                       className="w-[74px] bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
                       placeholder="00:00"
                     />
@@ -4023,7 +4371,7 @@ export function CustomPlayer({
                       autoSkipDoneRef.current = true;
                       setNextEpCountdown(null);
                       nextEpCountdownActiveRef.current = false;
-                      saveProgress().then(() => router.push(nextUrl));
+                      navegarEpisodioRef.current(nextUrl);
                     }}
                   >
                     <span className="hidden sm:inline text-xs font-medium">Próximo</span>
@@ -4233,7 +4581,7 @@ export function CustomPlayer({
                     autoSkipDoneRef.current = true;
                     setNextEpCountdown(null);
                     nextEpCountdownActiveRef.current = false;
-                    saveProgress().then(() => router.push(nextUrl));
+                    navegarEpisodioRef.current(nextUrl);
                   }}
                   className="flex items-center gap-1 bg-[#E50914] hover:bg-[#f00] text-white text-xs font-semibold px-3 py-1.5 rounded-full transition-all"
                 >

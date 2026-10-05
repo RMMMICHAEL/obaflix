@@ -24,10 +24,10 @@ import { PLANO_GRATUITO } from "../planos";
 import { getRedis } from "../redis";
 import type { DireitosDoPlano, PlanoSemeado } from "../planos";
 
-test("marca persistente do Electron sobrevive sem TTL e é ligada ao alvo", async () => {
+test("marca temporária permanece ligada ao alvo", async () => {
   const userId = `electron-persistente-${Date.now()}-${Math.random()}`;
   const alvo = { tipo: "canal" as const, conteudoId: "canal-canonico", temporada: null, episodio: null };
-  await marcarPago({ userId, finalidade: "reproducao", alvo, persistente: true });
+  await marcarPago({ userId, finalidade: "reproducao", alvo });
   assert.equal(await estaPago({ userId, finalidade: "reproducao", alvo }), true);
   assert.equal(await estaPago({
     userId,

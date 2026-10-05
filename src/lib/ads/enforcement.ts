@@ -84,6 +84,7 @@ export async function autorizarPorAnuncio(
     userId: string;
     tipo: ConteudoDeAnuncio;
     concessao: string | null;
+    instancia?: string | null;
     /** Para que a fonte vai servir. Ausente: reprodução. */
     finalidade?: FinalidadeDeConcessao;
     /** O conteúdo pedido. Concessão com alvo só é aceita para o mesmo alvo. */
@@ -135,7 +136,7 @@ export async function autorizarPorAnuncio(
   const finalidade = entrada.finalidade ?? "reproducao";
   const consumir =
     opcoes.consumir ??
-    ((id, userId) => consumirConcessao(id, userId, finalidade, entrada.alvo ?? null));
+    ((id, userId) => consumirConcessao(id, userId, finalidade, entrada.alvo ?? null, entrada.instancia));
 
   let ok = false;
   try {

@@ -21,7 +21,7 @@ export type EtapaPlayer =
   | "TLS_FAILED"
   | "PLAYER_DECODE_FAILED"
   | "TIMEOUT"
-  | "OK_PLAYBACK";
+  | "JW_FIRST_FRAME";
 
 /** Estágio numerado, para ordenar a matriz Player → etapa. */
 export const ORDEM_ETAPA: Record<EtapaPlayer, number> = {
@@ -33,7 +33,7 @@ export const ORDEM_ETAPA: Record<EtapaPlayer, number> = {
   PLAYER_DECODE_FAILED: 6,
   TLS_FAILED: 0,
   TIMEOUT: 0,
-  OK_PLAYBACK: 7,
+  JW_FIRST_FRAME: 7,
 };
 
 export function hostDe(url: string): string {
@@ -119,6 +119,6 @@ export function logEtapa(
   ].filter(Boolean);
 
   const linha = `[diag/etapa] ${partes.join(" ")}`;
-  if (etapa === "OK_PLAYBACK") console.log(linha);
+  if (etapa === "JW_FIRST_FRAME") console.log(linha);
   else console.warn(linha);
 }
