@@ -10,9 +10,9 @@ name: release-electron
 #   publish_release=true  → job `promote`: NÃO faz checkout do app, NÃO instala Node,
 #     NÃO roda electron-builder. Baixa o artifact do candidate_run_id informado, confere
 #     commit/SHA256 esperados, recalcula hashes, revalida Authenticode/latest.yml/feed e
-#     publica ESSES MESMOS BYTES em v1.0.12.
+#     publica ESSES MESMOS BYTES em v1.0.13.
 #
-# ASSINATURA_POLICY=UNSIGNED_ACCEPTED (decisão do dono para a 1.0.12): o build não usa
+# ASSINATURA_POLICY=UNSIGNED_ACCEPTED (decisão do dono para a 1.0.13): o build não usa
 # certificado e o estado esperado é Authenticode = NotSigned. O validador também aceita
 # Valid, mas recusa qualquer outro estado (HashMismatch, NotTrusted, UnknownError...).
 #
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "false = gerar candidato | true = promover um candidato já homologado para v1.0.12"
+        description: "false = gerar candidato | true = promover um candidato já homologado para v1.0.13"
         required: true
         default: false
         type: boolean
@@ -57,8 +57,8 @@ permissions:
   contents: read
 
 env:
-  VERSAO: "1.0.12"
-  ARTIFACT_NAME: obaflix-electron-1.0.12-candidate
+  VERSAO: "1.0.13"
+  ARTIFACT_NAME: obaflix-electron-1.0.13-candidate
 
 jobs:
   candidate:
@@ -211,7 +211,7 @@ jobs:
       contents: write
       actions: read
     concurrency:
-      group: release-electron-v1.0.12
+      group: release-electron-v1.0.13
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -314,7 +314,7 @@ jobs:
 
           Write-Host "Commit homologado está na main ($status)."
 
-      - name: Impedir sobrescrita de v1.0.12
+      - name: Impedir sobrescrita de v1.0.13
         shell: pwsh
         run: |
           gh release view "v$env:VERSAO" --repo $env:GITHUB_REPOSITORY *> $null
@@ -325,7 +325,7 @@ jobs:
 
           $global:LASTEXITCODE = 0
 
-      - name: Publicar os mesmos bytes em v1.0.12
+      - name: Publicar os mesmos bytes em v1.0.13
         shell: pwsh
         env:
           EXE_SHA256: ${{ steps.verificado.outputs.sha256 }}
