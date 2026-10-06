@@ -7,6 +7,7 @@ import { Check, ChevronDown, Play, Star } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
 import { useEstadoPessoal } from "@/components/ui/EstadoPessoal";
 import { AndroidEpisodeActions } from "@/components/android/AndroidEpisodeActions";
+import { useAquisicaoApp } from "@/components/catalog/AcquisitionProvider";
 
 interface Ep {
   id: string;
@@ -55,6 +56,9 @@ export function EpisodeGrid({
   // de retomada chegam depois, sem segurar a pintura.
   const { continuar, progressoEpisodios } = useEstadoPessoal();
   const progresso: Record<string, EpProgress> = progressoEpisodios;
+  // Navegador comum com streaming fechado: o episódio abre o modal de download
+  // em vez de ir ao player. Electron, Android e site reaberto seguem pelo <Link>.
+  const { deveInterceptar, abrir } = useAquisicaoApp();
 
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
   const usuarioEscolheu = useRef(false);
@@ -148,6 +152,15 @@ export function EpisodeGrid({
             <li key={ep.id}>
               <Link
                 href={`/assistir/serie/${serieId}/t${ep.temporada}/ep${ep.numeroEp}`}
+                onClick={(e) => {
+                  if (!deveInterceptar) return;
+                  e.preventDefault();
+                  abrir({
+                    titulo: serieTitulo,
+                    contexto: `Temporada ${ep.temporada}, Episódio ${ep.numeroEp}`,
+                    poster: thumbnail ? imgUrl(thumbnail, "w500") : null,
+                  });
+                }}
                 className="group/card flex items-start gap-3 rounded-xl py-3 transition-colors duration-200 hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70 sm:gap-4 sm:px-2"
               >
                 <div className="relative aspect-video w-[9.5rem] shrink-0 overflow-hidden rounded-xl bg-zinc-900 ring-1 ring-white/[0.07] transition-all duration-200 group-hover/card:ring-white/25 sm:w-[13rem] md:w-[15rem]">

@@ -73,6 +73,14 @@ export function detectarAmbiente(
  * Esquecer de liberar é visível e reversível; esquecer de fechar não seria.
  */
 const PUBLICO = [
+  // Fichas de catálogo. Públicas e indexáveis mesmo com o streaming web fechado:
+  // são páginas de informação (sinopse, elenco, temporadas, episódios), não de
+  // reprodução. Quem clica em Assistir num navegador comum recebe o modal de
+  // download do aplicativo — o player (`/assistir`, `/player`) continua fechado
+  // e esses prefixos NÃO entram aqui. O limite é de prefixo (`dentroDe`): libera
+  // `/filme` e `/filme/<id>`, mas nunca `/filmes` (listagem) nem `/filme-falso`.
+  "/filme",
+  "/serie",
   "/tiktok",
   "/parear",
   "/login",

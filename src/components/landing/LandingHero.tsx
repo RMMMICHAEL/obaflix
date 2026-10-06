@@ -43,7 +43,7 @@ export function LandingHero({ fundos }: { fundos: (string | null)[] }) {
           </span>
 
           <h1 className="mt-5 text-4xl font-black leading-[1.03] tracking-tight text-white sm:text-6xl lg:text-7xl">
-            Filmes, séries e animes
+            Obaflix: filmes, séries e animes
             <span className="block bg-gradient-to-r from-red-500 via-red-400 to-orange-300 bg-clip-text text-transparent">
               na sua TV e no seu bolso
             </span>

@@ -13,11 +13,13 @@ import { VitrineBackdrops, VitrinePosters, type ItemVitrine } from "./Vitrine";
  *
  * Custo por render: cinco `findMany` de 12 linhas com projeção mínima, e a
  * página inteira é estática por uma hora (`revalidate` na rota). Na prática o
- * Supabase vê ~120 linhas por hora, não por visita. As vitrines mostram o
- * catálogo mas não dão acesso a ele — não existe link em nenhum card.
+ * Supabase vê ~120 linhas por hora, não por visita. Os cards levam às fichas
+ * (públicas) reaproveitando exatamente estas linhas — o `id` é a única coluna a
+ * mais na projeção, sem nenhuma query nova só para SEO.
  */
 
 const CAMPOS = {
+  id: true,
   titulo: true,
   poster: true,
   background: true,
@@ -28,6 +30,7 @@ const CAMPOS = {
 const POR_VITRINE = 12;
 
 type Linha = {
+  id: string;
   titulo: string;
   poster: string | null;
   background: string | null;
@@ -35,7 +38,9 @@ type Linha = {
   nota: number | null;
 };
 
-const paraItem = (r: Linha): ItemVitrine => ({
+const paraItem = (r: Linha, tipo: ItemVitrine["tipo"]): ItemVitrine => ({
+  id: r.id,
+  tipo,
   titulo: r.titulo,
   poster: r.poster,
   background: r.background,
@@ -88,11 +93,12 @@ async function carregarCatalogo() {
   ]);
 
   return {
-    filmesAlta: filmesAlta.map(paraItem),
-    filmesTop: filmesTop.map(paraItem),
-    seriesAlta: seriesAlta.map(paraItem),
-    seriesTop: seriesTop.map(paraItem),
-    animesAlta: animesAlta.map(paraItem),
+    // Anime e desenho moram na tabela `serie` e a ficha deles é `/serie/<id>`.
+    filmesAlta: filmesAlta.map((r) => paraItem(r, "filme")),
+    filmesTop: filmesTop.map((r) => paraItem(r, "filme")),
+    seriesAlta: seriesAlta.map((r) => paraItem(r, "serie")),
+    seriesTop: seriesTop.map((r) => paraItem(r, "serie")),
+    animesAlta: animesAlta.map((r) => paraItem(r, "serie")),
   };
 }
 

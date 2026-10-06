@@ -1,13 +1,19 @@
+import Link from "next/link";
 import { imgUrl } from "@/lib/tmdb";
 
 /**
  * Item de vitrine da landing.
  *
- * Repare no que NÃO existe aqui: `id`, rota, link. A vitrine é apresentação do
- * catálogo, não navegação — nada nela leva ao player ou às páginas de streaming
- * fechadas. O card é um `<figure>` inerte de propósito.
+ * O card leva à ficha do título (`/filme/<id>` ou `/serie/<id>`) — agora
+ * páginas públicas e indexáveis. É o caminho de descoberta do Google
+ * (home → ficha → modal → download) e a navegação natural do visitante. Não
+ * leva ao player: a ficha é só informação, e o Assistir de lá abre o convite
+ * para baixar o aplicativo.
  */
 export type ItemVitrine = {
+  id: string;
+  /** Rota da ficha. Anime e desenho moram em `/serie/<id>`. */
+  tipo: "filme" | "serie";
   titulo: string;
   poster: string | null;
   background: string | null;
@@ -63,9 +69,10 @@ export function VitrinePosters({
       <Cabecalho titulo={titulo} sub={sub} />
       <Trilho>
         {itens.map((item, i) => (
-          <figure
+          <Link
             key={`${titulo}-${i}`}
-            className="group relative w-[122px] shrink-0 snap-start sm:w-[150px] lg:w-[172px]"
+            href={`/${item.tipo}/${item.id}`}
+            className="group relative w-[122px] shrink-0 snap-start rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 sm:w-[150px] lg:w-[172px]"
           >
             <div className="relative overflow-hidden rounded-xl bg-white/5 ring-1 ring-white/10 transition duration-300 group-hover:ring-white/25 sm:rounded-2xl">
               <img
@@ -79,14 +86,14 @@ export function VitrinePosters({
               />
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 to-transparent opacity-0 transition duration-300 group-hover:opacity-100" />
             </div>
-            <figcaption className="mt-2 px-0.5">
+            <div className="mt-2 px-0.5">
               <p className="truncate text-[13px] font-semibold text-white/85">{item.titulo}</p>
               <p className="flex items-center gap-2 text-[11px] text-white/40">
                 {item.ano ?? ""}
                 <Nota nota={item.nota} />
               </p>
-            </figcaption>
-          </figure>
+            </div>
+          </Link>
         ))}
       </Trilho>
     </section>
@@ -109,9 +116,10 @@ export function VitrineBackdrops({
       <Cabecalho titulo={titulo} sub={sub} />
       <Trilho>
         {itens.map((item, i) => (
-          <figure
+          <Link
             key={`${titulo}-${i}`}
-            className="group relative w-[248px] shrink-0 snap-start sm:w-[320px] lg:w-[392px]"
+            href={`/${item.tipo}/${item.id}`}
+            className="group relative w-[248px] shrink-0 snap-start rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 sm:w-[320px] lg:w-[392px]"
           >
             <div className="relative overflow-hidden rounded-xl ring-1 ring-white/10 transition duration-300 group-hover:ring-red-500/40 sm:rounded-2xl">
               <img
@@ -124,7 +132,7 @@ export function VitrineBackdrops({
                 className="aspect-video w-full object-cover transition duration-500 group-hover:scale-[1.05]"
               />
               <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent" />
-              <figcaption className="absolute inset-x-0 bottom-0 p-3 sm:p-4">
+              <div className="absolute inset-x-0 bottom-0 p-3 sm:p-4">
                 <p className="truncate text-sm font-bold text-white drop-shadow sm:text-base">
                   {item.titulo}
                 </p>
@@ -132,9 +140,9 @@ export function VitrineBackdrops({
                   {item.ano ?? ""}
                   <Nota nota={item.nota} />
                 </p>
-              </figcaption>
+              </div>
             </div>
-          </figure>
+          </Link>
         ))}
       </Trilho>
     </section>

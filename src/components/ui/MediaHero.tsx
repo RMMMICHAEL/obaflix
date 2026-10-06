@@ -9,6 +9,7 @@ import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
 import { AndroidHeroActions } from "@/components/android/AndroidHeroActions";
+import { useAquisicaoApp } from "@/components/catalog/AcquisitionProvider";
 
 export interface MediaHeroProps {
   conteudoId: string;
@@ -97,6 +98,9 @@ export function MediaHero({
   // quem esta deslogado e para o crawler, e um placeholder pulsante deixaria o
   // botao sem texto para eles. Melhor o rotulo neutro e uma troca so.
   const { continuar } = useEstadoPessoal();
+  // Navegador comum com streaming fechado: Assistir abre o modal de download em
+  // vez de ir ao player. Electron, Android e site reaberto seguem pelo <Link>.
+  const { deveInterceptar, abrir } = useAquisicaoApp();
   const retomandoEpisodio = continuar?.temporada != null && continuar?.numeroEp != null;
   const rotuloFinal = retomandoEpisodio
     ? `Continuar T${continuar!.temporada} E${continuar!.numeroEp}`
@@ -336,6 +340,19 @@ export function MediaHero({
           {hrefFinal && (
             <Link
               href={hrefFinal}
+              onClick={(e) => {
+                if (!deveInterceptar) return;
+                e.preventDefault();
+                abrir({
+                  titulo,
+                  contexto: retomandoEpisodio
+                    ? `Temporada ${continuar!.temporada}, Episódio ${continuar!.numeroEp}`
+                    : tipo === "filme"
+                      ? "Filme"
+                      : null,
+                  poster: backdrop ? imgUrl(backdrop, "w780") : null,
+                });
+              }}
               className="flex h-12 items-center justify-center gap-2.5 rounded-xl bg-white px-8 text-[15px] font-bold text-black shadow-[0_8px_30px_rgba(0,0,0,0.45)] transition-colors hover:bg-zinc-200 md:h-[3.25rem] md:text-base"
             >
               <Play size={19} fill="black" strokeWidth={0} /> {rotuloFinal}

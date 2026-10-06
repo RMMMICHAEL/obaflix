@@ -22,6 +22,8 @@ import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
+import { AcquisitionProvider } from "@/components/catalog/AcquisitionProvider";
+import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
 
 /**
  * Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
@@ -48,7 +50,10 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   });
   if (!serie) return { title: "Série não encontrada", robots: { index: false, follow: false } };
 
-  const title = serie.ano ? `${serie.titulo} (${serie.ano})` : serie.titulo;
+  // "temporadas, episódios e onde assistir" cobre o intento de busca da série; o
+  // template do layout acrescenta " | Obaflix". A description segue a sinopse
+  // real (única por título), sem texto repetido entre páginas.
+  const title = `${serie.titulo} — temporadas, episódios e onde assistir`;
   const image = serie.background ?? serie.poster;
   return mediaMetadata({
     title,
@@ -171,8 +176,6 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
 
-  const sectionLabel = serie.tipo === "anime" ? "Animes" : serie.tipo === "desenho" ? "Desenhos" : "Séries";
-  const sectionHref = serie.tipo === "anime" ? "/animes" : serie.tipo === "desenho" ? "/desenhos" : "/series";
   const genres = serie.generos.map((item: any) => item.genero.nome);
   const seriesSchema = {
     "@context": "https://schema.org",
@@ -198,18 +201,21 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     identifier: serie.imdbId || serie.tmdbId || serie.id,
     inLanguage: "pt-BR",
   };
+  // Só Início › Título: a listagem (/series, /animes, /desenhos) não é pública
+  // para o navegador comum (cai na landing), então não vira degrau de breadcrumb
+  // — visual e JSON-LD concordam, sem levar ninguém a um destino inútil.
   const breadcrumbSchema = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
-      { "@type": "ListItem", position: 2, name: sectionLabel, item: absoluteUrl(sectionHref) },
-      { "@type": "ListItem", position: 3, name: serie.titulo, item: absoluteUrl(`/serie/${serie.id}`) },
+      { "@type": "ListItem", position: 2, name: serie.titulo, item: absoluteUrl(`/serie/${serie.id}`) },
     ],
   };
 
   return (
     <EstadoPessoalProvider conteudoId={serie.id} tipo="serie">
+    <AcquisitionProvider streamingAberto={WEB_STREAMING_ENABLED}>
     <div className="min-h-screen">
       <JsonLd data={[seriesSchema, breadcrumbSchema]} />
 
@@ -271,7 +277,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       )}
 
       <div className="px-4 pb-4 pt-8 md:px-14">
-        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: sectionLabel, href: sectionHref }, { label: serie.titulo }]} />
+        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: serie.titulo }]} />
 
         <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
         <PeopleRow
@@ -290,6 +296,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         </div>
       )}
     </div>
+    </AcquisitionProvider>
     </EstadoPessoalProvider>
   );
 }
