@@ -10,6 +10,7 @@ import styles from "@/app/tiktok/tiktok.module.css";
 export function TikTokTrending() {
   const [selected, setSelected] = useState<TikTokContent | null>(null);
   const [query, setQuery] = useState("");
+  const [failedLogo, setFailedLogo] = useState<string | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const downloadLink = useRef<HTMLAnchorElement>(null);
@@ -88,11 +89,14 @@ export function TikTokTrending() {
         {selected ? (
           <div className={styles.modalContent}>
             <div className={styles.modalBackdrop} aria-hidden="true">
-              <Image src={selected.poster} alt="" fill unoptimized sizes="720px" referrerPolicy="no-referrer" />
+              <Image src={selected.backdrop} alt="" fill unoptimized sizes="720px" referrerPolicy="no-referrer" />
             </div>
             <button ref={closeButton} type="button" className={styles.close} onClick={close} aria-label="Fechar detalhes"><X size={24} /></button>
             <div className={styles.modalDetails}>
               <p className={styles.eyebrow}>Conheça no Obaflix</p>
+              {selected.logo && selected.logo !== failedLogo ? (
+                <Image key={selected.logo} className={styles.contentLogo} src={selected.logo} alt="" aria-hidden="true" width={500} height={200} unoptimized referrerPolicy="no-referrer" onError={() => setFailedLogo(selected.logo ?? null)} />
+              ) : null}
               <h2 id="conteudo-titulo">{selected.titulo}</h2>
               <p className={styles.metadata}>{selected.ano}<span title="Classificação original do título">{selected.classificacao}</span>{selected.tipo}</p>
               <p className={styles.secondary}>{selected.generos}</p>
