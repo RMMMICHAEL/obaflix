@@ -3,16 +3,19 @@ import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
 import { getObaflixSurface } from "@/config/obaflix-surface";
 
 /**
- * Enquanto CONTENT_INDEXING_ENABLED estiver desligado, as fichas ja respondem
- * `noindex` e o sitemap nao anuncia nenhuma delas — mas nada impedia o crawler
- * de chegar nelas pelos links das listagens. Cada visita dessas custa um render
- * e uma escrita de ISR para produzir uma pagina que o buscador vai descartar.
+ * Enquanto CONTENT_INDEXING_ENABLED estiver desligado, todo o catalogo publico
+ * ja responde `noindex` e o sitemap nao anuncia nada dele — mas nada impedia o
+ * crawler de chegar la pelos links internos (home -> /filmes/-series -> genero
+ * -> ficha). Cada visita dessas custa um render e, nas fichas, uma escrita de
+ * ISR para produzir uma pagina que o buscador vai descartar.
  *
- * O Disallow sai sozinho quando a flag for ligada: e a mesma variavel que
- * controla o `noindex` e o sitemap, entao nao ha como esquecer de reverter e
- * bloquear a indexacao sem querer.
+ * Fecham-se as cinco familias publicas da Fase 2: as fichas (`/filme/`,
+ * `/serie/`), as listagens (`/filmes`, `/series`) e os generos (`/genero/`). O
+ * Disallow sai sozinho quando a flag for ligada: e a mesma variavel que controla
+ * o `noindex` e o sitemap, entao nao ha como esquecer de reverter e bloquear a
+ * indexacao sem querer.
  */
-const CATALOGO_FECHADO = ["/filme/", "/serie/"];
+const CATALOGO_FECHADO = ["/filme/", "/serie/", "/filmes", "/series", "/genero/"];
 
 export default function robots(): MetadataRoute.Robots {
   // Superfície administrativa: nada ali é conteúdo público.

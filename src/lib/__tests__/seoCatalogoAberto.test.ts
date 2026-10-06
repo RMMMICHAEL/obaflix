@@ -20,13 +20,17 @@ test("fichas passam a index, follow", () => {
   assert.equal((r as { follow?: boolean }).follow, true);
 });
 
-test("robots libera o catálogo e mantém o player bloqueado", () => {
+test("robots libera TODO o catálogo público e mantém o player bloqueado", () => {
   const saida = robots();
   const regra = saida.rules;
   const disallow = Array.isArray(regra) ? [] : (regra?.disallow as string[]);
-  assert.ok(!disallow.includes("/filme/"), "não deveria bloquear /filme/");
-  assert.ok(!disallow.includes("/serie/"), "não deveria bloquear /serie/");
+  // Nenhuma das cinco famílias de catálogo pode permanecer no Disallow.
+  for (const rota of ["/filme/", "/serie/", "/filmes", "/series", "/genero/"]) {
+    assert.ok(!disallow.includes(rota), `não deveria bloquear ${rota}`);
+  }
+  // Player e reprodução continuam bloqueados mesmo com a flag ligada.
   assert.ok(disallow.includes("/assistir/"), "player continua bloqueado");
+  assert.ok(disallow.includes("/player/"), "player continua bloqueado");
   // O sitemap continua anunciado.
   assert.equal(typeof saida.sitemap, "string");
   assert.ok(String(saida.sitemap).endsWith("/sitemap.xml"));
