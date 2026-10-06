@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import { prisma } from "@/lib/prisma";
 import { imgUrl } from "@/lib/tmdb";
 import { MelhoresClient, type ChartItem } from "./MelhoresClient";
@@ -69,33 +70,31 @@ function serieToChart(s: any, rankField: "top250" | "popularRank"): ChartItem {
 
 export default async function MelhoresPage() {
   const [topFilmes, topSeries, popFilmes, popSeries, oscarRaw, emmyRaw] = await Promise.all([
-    prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selFilme }),
-    prisma.serie.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selSerie }),
-    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selFilme }),
-    prisma.serie.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel({ top250: { not: null } }), orderBy: { top250: "asc" }, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ top250: { not: null } }), orderBy: { top250: "asc" }, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel({ popularRank: { not: null } }), orderBy: { popularRank: "asc" }, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ popularRank: { not: null } }), orderBy: { popularRank: "asc" }, select: selSerie }),
     prisma.filme.findMany({
-      where: {
+      where: filmeDisponivel({
         AND: [
           { OR: [
             { titulo: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
             { tituloOriginal: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
           ] },
-          { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
         ],
-      },
+      }),
       select: awardSelect,
     }),
     prisma.serie.findMany({
-      where: {
+      where: serieDisponivel({
         tipo: "serie",
         AND: [
           { OR: [
             { titulo: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
             { tituloOriginal: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
           ] },
-          { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
         ],
-      },
+      }),
       select: awardSelect,
     }),
   ]);

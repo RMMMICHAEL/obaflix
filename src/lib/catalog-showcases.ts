@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import { unstable_cache } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -30,24 +31,20 @@ export const getImdbTop250Showcases = unstable_cache(
   async () => {
     const [filmesRaw, series] = await Promise.all([
       prisma.filme.findMany({
-        where: {
+        where: filmeDisponivel({
           top250Fonte: "imdb",
           top250: { not: null },
-          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
-        },
+        }),
         orderBy: [{ top250: "asc" }, { id: "asc" }],
         take: CATALOG_SHOWCASE_LIMIT,
         select: { ...catalogItemSelect, urlDub: true, urlLeg: true },
       }),
       prisma.serie.findMany({
-        where: {
+        where: serieDisponivel({
           tipo: "serie",
           top250Fonte: "imdb",
           top250: { not: null },
-          episodios: {
-            some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-          },
-        },
+        }),
         orderBy: [{ top250: "asc" }, { id: "asc" }],
         take: CATALOG_SHOWCASE_LIMIT,
         select: { ...catalogItemSelect, tipo: true },

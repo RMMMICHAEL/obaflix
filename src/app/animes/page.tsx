@@ -1,3 +1,4 @@
+import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -66,11 +67,11 @@ export default async function AnimesPage({
 
   const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "anime" } } } },
+      where: { series: { some: { serie: serieDisponivel({ tipo: "anime" }) } } },
       orderBy: { nome: "asc" },
     }),
     prisma.serie.findMany({
-      where: { ...animeCatalogWhere, ano: { not: null } },
+      where: serieDisponivel({ ...animeCatalogWhere, ano: { not: null } }),
       select: { ano: true },
       distinct: ["ano"],
       orderBy: { ano: "desc" },
@@ -94,8 +95,8 @@ export default async function AnimesPage({
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
-      prisma.serie.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
-      prisma.serie.count({ where }),
+      prisma.serie.findMany({ where: serieDisponivel(where), orderBy, skip, take: limit, select: selGrid }),
+      prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
     const pages = Math.ceil(total / limit);
 
@@ -122,13 +123,13 @@ export default async function AnimesPage({
     heroRaw, populares, avaliados, recentes, lancamentos, epsRecentesRaw, tmdbTrendingTV,
     acao, aventura, comedia, drama, misterio, romance,
   ] = await Promise.all([
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
-    prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: animeCatalogWhere, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: animeCatalogWhere, orderBy: [{ ano: "desc" }, { createdAt: "desc" }], take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, background: { not: null } }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+    prisma.serie.findMany({ where: serieDisponivel(animeCatalogWhere), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel(animeCatalogWhere), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel(animeCatalogWhere), orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel(animeCatalogWhere), orderBy: [{ ano: "desc" }, { createdAt: "desc" }], take: 24, select: selBrowse }),
     prisma.episodio.findMany({
-      where: { serie: animeCatalogWhere },
+      where: { serie: animeCatalogWhere, ...FONTE_REPRODUZIVEL },
       orderBy: { createdAt: "desc" },
       take: 24,
       select: {
@@ -138,12 +139,12 @@ export default async function AnimesPage({
       },
     }),
     getTrendingTV("week"),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 9648 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-    prisma.serie.findMany({ where: { ...animeCatalogWhere, generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 28 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 12 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 35 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 18 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 9648 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, generos: { some: { generoId: 10749 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
   ]);
 
   // Em Alta: trending real do TMDB cruzado com o catálogo local de anime; se
@@ -151,7 +152,7 @@ export default async function AnimesPage({
   // de popularidade local — nunca fica vazio/esparso.
   const trendingIds = ((tmdbTrendingTV?.results ?? []) as TmdbItem[]).map((i) => String(i.id));
   const trendingMatches = trendingIds.length
-    ? await prisma.serie.findMany({ where: { ...animeCatalogWhere, tmdbId: { in: trendingIds } }, select: selBrowse })
+    ? await prisma.serie.findMany({ where: serieDisponivel({ ...animeCatalogWhere, tmdbId: { in: trendingIds } }), select: selBrowse })
     : [];
   const trendingMap = new Map(trendingMatches.map((s) => [s.tmdbId!, s]));
   const emAltaOrdered = trendingIds.map((id) => trendingMap.get(id)).filter(Boolean) as typeof trendingMatches;

@@ -20,7 +20,7 @@ const RETRY_DELAY_MS = 600;
 export interface PopularItem {
   tmdbId: string;
   rank: number;
-  // Metadados incluídos na resposta da API popular — usados para criar stubs
+  // Metadados da API popular para diagnóstico; não criam registros de catálogo.
   titulo?: string;
   tituloOriginal?: string;
   poster?: string;

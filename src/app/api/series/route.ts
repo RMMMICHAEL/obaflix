@@ -1,3 +1,4 @@
+import { serieDisponivel } from "@/lib/catalog-availability";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
 
     const [series, total] = await Promise.all([
       prisma.serie.findMany({
-        where,
+        where: serieDisponivel(where),
         orderBy,
         skip,
         take: limit,
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest) {
           generos: { select: { genero: { select: { id: true, nome: true } } } },
         },
       }),
-      prisma.serie.count({ where }),
+      prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
 
     return NextResponse.json({ series, total, page, pages: Math.ceil(total / limit) });

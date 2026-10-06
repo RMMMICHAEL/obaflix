@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getImdbTop250Showcases } from "@/lib/catalog-showcases";
@@ -66,9 +67,9 @@ function intercalar<T>(a: T[], b: T[], limite: number): T[] {
 
 export async function GET() {
   const filme = (extra: object, orderBy: object, take: number) =>
-    prisma.filme.findMany({ where: extra as never, orderBy: orderBy as never, take, select: selFilme });
+    prisma.filme.findMany({ where: filmeDisponivel(extra as never), orderBy: orderBy as never, take, select: selFilme });
   const serie = (tipo: string, extra: object, orderBy: object, take: number) =>
-    prisma.serie.findMany({ where: { tipo, ...extra } as never, orderBy: orderBy as never, take, select: sel });
+    prisma.serie.findMany({ where: serieDisponivel({ tipo, ...extra } as never), orderBy: orderBy as never, take, select: sel });
 
   const [
     popFilmes,
@@ -101,8 +102,8 @@ export async function GET() {
     CATEGORIAS.map(async ({ titulo, termo }) => {
       const filtro = { generos: { some: { genero: { nome: { contains: termo, mode: "insensitive" as const } } } } };
       const [f, s] = await Promise.all([
-        prisma.filme.findMany({ where: filtro, orderBy: POR_POPULARIDADE, take: 10, select: selFilme }),
-        prisma.serie.findMany({ where: { tipo: "serie", ...filtro }, orderBy: POR_POPULARIDADE, take: 10, select: sel }),
+        prisma.filme.findMany({ where: filmeDisponivel(filtro), orderBy: POR_POPULARIDADE, take: 10, select: selFilme }),
+        prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", ...filtro }), orderBy: POR_POPULARIDADE, take: 10, select: sel }),
       ]);
       return { titulo, itens: intercalar(f.map((x) => ({ ...x, tipo: "filme" })), s, 16) };
     }),

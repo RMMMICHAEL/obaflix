@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
 import Image from "next/image";
@@ -69,15 +70,15 @@ const getCatalogoAndroid = unstable_cache(
   async () => {
     const [destaques, recentes, series, animes, desenhos, imdbTop250, episodios] = await Promise.all([
       prisma.filme.findMany({
-        where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
+        where: filmeDisponivel(),
         orderBy: ORDEM_POPULARIDADE,
         take: 8,
         select: filmSelect,
       }),
-      prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: BUSCA, select: filmSelect }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
-      prisma.serie.findMany({ where: { tipo: "anime" }, orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { createdAt: "desc" }, take: BUSCA, select: filmSelect }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "anime" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
       getImdbTop250Showcases(),
       getRecentSeriesEpisodes(),
     ]);
@@ -104,9 +105,8 @@ const getCatalogoAndroid = unstable_cache(
       episodeItems,
     };
   },
-  // v2: o formato mudou (dub/leg em vez de urlDub/urlLeg). Sem trocar a chave, o
-  // cache continuaria servindo objetos antigos com a URL do provedor dentro.
-  ["android-catalogo-v3"],
+  // Nova chave impede reutilizar vitrines anteriores sem filtro de player.
+  ["android-catalogo-v4-playable"],
   { revalidate: 300, tags: ["android-catalogo"] },
 );
 

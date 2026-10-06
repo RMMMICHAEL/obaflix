@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { publicMedia } from "@/lib/publicMedia";
@@ -17,17 +18,17 @@ export async function GET() {
 
   const [lancamentosFilmes, lancamentosSeries, destaquesFilmes, destaquesSeries, animes, desenhos] =
     await Promise.all([
-      prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
-      prisma.filme.findMany({ orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { createdAt: "desc" }, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
       prisma.serie.findMany({
-        where: { tipo: "anime" },
+        where: serieDisponivel({ tipo: "anime" }),
         orderBy: porPopularidade,
         take: 20,
         include: { generos: { include: { genero: true } } },
       }),
-      prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: porPopularidade, take: 20, include: { generos: { include: { genero: true } } } }),
     ]);
 
   const hero = [...lancamentosFilmes, ...lancamentosSeries]

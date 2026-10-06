@@ -1,3 +1,4 @@
+import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -59,11 +60,11 @@ export default async function SeriesPage({
 
   const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "serie" } } } },
+      where: { series: { some: { serie: serieDisponivel({ tipo: "serie" }) } } },
       orderBy: { nome: "asc" },
     }),
     prisma.serie.findMany({
-      where: { tipo: "serie", ano: { not: null } },
+      where: serieDisponivel({ tipo: "serie", ano: { not: null } }),
       select: { ano: true },
       distinct: ["ano"],
       orderBy: { ano: "desc" },
@@ -87,8 +88,8 @@ export default async function SeriesPage({
       : { createdAt: "desc" };
 
     const [series, total] = await Promise.all([
-      prisma.serie.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
-      prisma.serie.count({ where }),
+      prisma.serie.findMany({ where: serieDisponivel(where), orderBy, skip, take: limit, select: selGrid }),
+      prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
     const pages = Math.ceil(total / limit);
 
@@ -116,14 +117,14 @@ export default async function SeriesPage({
   // essa pessoa tinha acabado de assistir, não popularidade de verdade).
   const [heroRaw, recentes, avaliadas, populares, epsRecentesRaw, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", background: { not: null } }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
       prisma.episodio.findMany({
         where: {
           serie: { tipo: "serie" },
-          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+          ...FONTE_REPRODUZIVEL,
         },
         orderBy: { createdAt: "desc" },
         take: 24,
@@ -133,14 +134,14 @@ export default async function SeriesPage({
           serie: { select: { titulo: true, poster: true } },
         },
       }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 9648 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10765 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 27 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10759 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 18 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 80 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 35 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 9648 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10765 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 27 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10749 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10759 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
     ]);
 
   const epsRecentesItems: EpisodioRecenteItem[] = epsRecentesRaw.map((episode) => ({

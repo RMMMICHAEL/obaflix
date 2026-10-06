@@ -1,3 +1,4 @@
+import { filmeDisponivel } from "@/lib/catalog-availability";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -64,11 +65,11 @@ export default async function FilmesPage({
   // Always fetch generos and anos for the FilterBar
   const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
-      where: { filmes: { some: {} } },
+      where: { filmes: { some: { filme: filmeDisponivel() } } },
       orderBy: { nome: "asc" },
     }),
     prisma.filme.findMany({
-      where: { ano: { not: null } },
+      where: filmeDisponivel({ ano: { not: null } }),
       select: { ano: true },
       distinct: ["ano"],
       orderBy: { ano: "desc" },
@@ -92,8 +93,8 @@ export default async function FilmesPage({
       : { createdAt: "desc" };
 
     const [filmes, total] = await Promise.all([
-      prisma.filme.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
-      prisma.filme.count({ where }),
+      prisma.filme.findMany({ where: filmeDisponivel(where), orderBy, skip, take: limit, select: selGrid }),
+      prisma.filme.count({ where: filmeDisponivel(where) }),
     ]);
     const pages = Math.ceil(total / limit);
 
@@ -121,18 +122,18 @@ export default async function FilmesPage({
   // Browse mode — hero + genre rows
   const [heroRaw, populares, recentes, avaliados, acao, comedia, terror, ficcao, drama, crime, thriller, aventura] =
     await Promise.all([
-      prisma.filme.findMany({ where: { background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
-      prisma.filme.findMany({ orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 28 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 27 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 878 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 53 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.filme.findMany({ where: { generos: { some: { generoId: 12 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ background: { not: null } }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 28 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 35 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 27 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 878 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 18 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 80 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 53 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.filme.findMany({ where: filmeDisponivel({ generos: { some: { generoId: 12 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
     ]);
 
   const heroItems = heroRaw.map((f) => ({

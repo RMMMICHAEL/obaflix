@@ -1,3 +1,4 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import { unstable_cache } from "next/cache";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -141,21 +142,21 @@ const carregarHome = unstable_cache(
   ] = await Promise.all([
     getTrending("week"),
     // Novos do banco (últimos adicionados)
-    prisma.filme.findMany({ orderBy: { createdAt: "desc" }, take: 24, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { createdAt: "desc" }, take: 24, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { createdAt: "desc" }, take: 24, select: selSerie }),
     prisma.serie.findMany({
-      where: { tipo: "anime", titulo: { notIn: [...ANIME_HOME_EXCLUSIONS] } },
+      where: serieDisponivel({ tipo: "anime", titulo: { notIn: [...ANIME_HOME_EXCLUSIONS] } }),
       orderBy: ORDEM_POPULARIDADE,
       take: LIMITE_VITRINE,
       select: selSerie,
     }),
-    prisma.filme.findMany({ orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel(), orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selSerie }),
     // Top 10 — mesma fonte de "Filmes/Séries Populares" de /melhores:
     // o popularRank que os scripts de sync gravam no catálogo. Antes vinha do
     // top250 (curadoria fixa do IMDb), que é outra lista e outra intenção.
-    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selFilme }),
-    prisma.serie.findMany({ where: { tipo: "serie", popularRank: { not: null } }, orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel({ popularRank: { not: null } }), orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", popularRank: { not: null } }), orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selSerie }),
     // Fonte local compartilhada com Android e Android TV. Nenhuma chamada ao
     // TMDB/IMDb acontece para montar estas vitrines.
     getImdbTop250Showcases(),
@@ -168,8 +169,8 @@ const carregarHome = unstable_cache(
     ].map((i) => String(i.id));
 
     const [dbFilmesMap_raw, dbSeriesMap_raw] = await Promise.all([
-      prisma.filme.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selFilme }),
-      prisma.serie.findMany({ where: { tmdbId: { in: allTmdbIds } }, select: selSerie }),
+      prisma.filme.findMany({ where: filmeDisponivel({ tmdbId: { in: allTmdbIds } }), select: selFilme }),
+      prisma.serie.findMany({ where: serieDisponivel({ tmdbId: { in: allTmdbIds } }), select: selSerie }),
     ]);
 
     return {
@@ -181,7 +182,7 @@ const carregarHome = unstable_cache(
       dbFilmesMap_raw, dbSeriesMap_raw,
     };
   },
-  ["home-streaming"],
+  ["home-streaming-playable-v1"],
   { revalidate: 300 },
 );
 
