@@ -1,3 +1,5 @@
+import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
+import { BRAZIL_SERIES_BROWSE_LIMIT, getBrazilSeriesRanking, orderBrazilSeriesRows, paginateBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -59,11 +61,11 @@ export default async function SeriesPage({
 
   const [generosRaw, anosRaw] = await Promise.all([
     prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "serie" } } } },
+      where: { series: { some: { serie: serieDisponivel({ tipo: "serie" }) } } },
       orderBy: { nome: "asc" },
     }),
     prisma.serie.findMany({
-      where: { tipo: "serie", ano: { not: null } },
+      where: serieDisponivel({ tipo: "serie", ano: { not: null } }),
       select: { ano: true },
       distinct: ["ano"],
       orderBy: { ano: "desc" },
@@ -80,16 +82,23 @@ export default async function SeriesPage({
 
     const orderBy: any =
       ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
-      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
       : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
       : ordem === "az"        ? { titulo: "asc" }
       : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
-    const [series, total] = await Promise.all([
-      prisma.serie.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
-      prisma.serie.count({ where }),
+    const brazilIds = ordem === "popular" ? await getBrazilSeriesRanking("week", BRAZIL_SERIES_BROWSE_LIMIT) : null;
+    const [rawSeries, rawTotal] = await Promise.all([
+      prisma.serie.findMany({
+        where: serieDisponivel({ ...where, ...(brazilIds ? { id: { in: brazilIds } } : {}) }),
+        orderBy: brazilIds ? undefined : orderBy,
+        skip: brazilIds ? undefined : skip, take: brazilIds ? undefined : limit, select: selGrid,
+      }),
+      brazilIds ? Promise.resolve(0) : prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
+    const { series, total } = brazilIds
+      ? paginateBrazilSeriesRows(brazilIds, rawSeries, page, limit)
+      : { series: rawSeries, total: rawTotal };
     const pages = Math.ceil(total / limit);
 
     return (
@@ -111,19 +120,18 @@ export default async function SeriesPage({
   }
 
   // Browse mode
-  // "Mais Populares" usa popularidade real do TMDB (não histórico de
-  // visualização interno — com um usuário só na base, isso só refletia o que
-  // essa pessoa tinha acabado de assistir, não popularidade de verdade).
+  // "Em Alta": Brasil 7d. Hero e filtros gerais preservam as regras existentes.
+  const brWeekIds = await getBrazilSeriesRanking("week", 24);
   const [heroRaw, recentes, avaliadas, populares, epsRecentesRaw, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
-      prisma.serie.findMany({ where: { tipo: "serie", background: { not: null } }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", background: { not: null } }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: selBrowse }),
       prisma.episodio.findMany({
         where: {
           serie: { tipo: "serie" },
-          OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+          ...FONTE_REPRODUZIVEL,
         },
         orderBy: { createdAt: "desc" },
         take: 24,
@@ -133,14 +141,14 @@ export default async function SeriesPage({
           serie: { select: { titulo: true, poster: true } },
         },
       }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 18 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 80 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 35 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 9648 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10765 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 27 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10749 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: { tipo: "serie", generos: { some: { generoId: 10759 } } }, orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 18 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 80 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 35 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 9648 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10765 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 27 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10749 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", generos: { some: { generoId: 10759 } } }), orderBy: { nota: "desc" }, take: 24, select: selBrowse }),
     ]);
 
   const epsRecentesItems: EpisodioRecenteItem[] = epsRecentesRaw.map((episode) => ({
@@ -178,7 +186,7 @@ export default async function SeriesPage({
         </div>
 
         <ComBanners>
-        {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
+        {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={orderBrazilSeriesRows(brWeekIds, populares).map(toRow)} verTodosHref="/melhores" />}
         {epsRecentesItems.length > 0 && <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>}
         {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
         {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}

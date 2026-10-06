@@ -1,3 +1,4 @@
+import { filmeDisponivel } from "@/lib/catalog-availability";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { publicMedia } from "@/lib/publicMedia";
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
 
     const [filmes, total] = await Promise.all([
       prisma.filme.findMany({
-        where,
+        where: filmeDisponivel(where),
         orderBy,
         skip,
         take: limit,
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
           generos: { select: { genero: { select: { id: true, nome: true } } } },
         },
       }),
-      prisma.filme.count({ where }),
+      prisma.filme.count({ where: filmeDisponivel(where) }),
     ]);
 
     return NextResponse.json({ filmes: filmes.map(publicMedia), total, page, pages: Math.ceil(total / limit) });

@@ -1,3 +1,4 @@
+import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
 import { Suspense } from "react";
 import { unstable_cache } from "next/cache";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -54,22 +55,22 @@ function toGrid(s: any) {
 const getBrowseData = unstable_cache(
   async () => Promise.all([
     prisma.genero.findMany({
-      where: { series: { some: { serie: { tipo: "desenho" } } } },
+      where: { series: { some: { serie: serieDisponivel({ tipo: "desenho" }) } } },
       orderBy: { nome: "asc" },
     }),
     prisma.serie.findMany({
-      where: { tipo: "desenho", ano: { not: null } },
+      where: serieDisponivel({ tipo: "desenho", ano: { not: null } }),
       select: { ano: true },
       distinct: ["ano"],
       orderBy: { ano: "desc" },
     }),
-    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 72, select: selBrowseWithGenres }),
-    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { createdAt: "desc" }, take: 18, select: selBrowse }),
-    prisma.serie.findMany({ where: { tipo: "desenho" }, orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 18, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 72, select: selBrowseWithGenres }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: { createdAt: "desc" }, take: 18, select: selBrowse }),
+    prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 18, select: selBrowse }),
     prisma.episodio.findMany({
       where: {
         serie: { tipo: "desenho" },
-        OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }],
+        ...FONTE_REPRODUZIVEL,
       },
       orderBy: { createdAt: "desc" },
       take: 12,
@@ -115,17 +116,17 @@ export default async function DesenhoPage({
 
     const [generosRaw, anosRaw, series, total] = await Promise.all([
       prisma.genero.findMany({
-        where: { series: { some: { serie: { tipo: "desenho" } } } },
+        where: { series: { some: { serie: serieDisponivel({ tipo: "desenho" }) } } },
         orderBy: { nome: "asc" },
       }),
       prisma.serie.findMany({
-        where: { tipo: "desenho", ano: { not: null } },
+        where: serieDisponivel({ tipo: "desenho", ano: { not: null } }),
         select: { ano: true },
         distinct: ["ano"],
         orderBy: { ano: "desc" },
       }),
-      prisma.serie.findMany({ where, orderBy, skip, take: limit, select: selGrid }),
-      prisma.serie.count({ where }),
+      prisma.serie.findMany({ where: serieDisponivel(where), orderBy, skip, take: limit, select: selGrid }),
+      prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
     const generos = groupGenres(generosRaw);
     const anos = anosRaw.map((item) => item.ano!).filter(Boolean) as number[];

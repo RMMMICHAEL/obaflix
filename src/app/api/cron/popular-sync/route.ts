@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withCronTelemetry } from "@/lib/sync-telemetry";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { cleanupCatalogStubs } from "@/lib/catalog-stub-cleanup";
 import { getRedis } from "@/lib/redis";
 import { tmdbPopularSource, validatePopularBatch, type PopularItem } from "@/lib/popular-source";
 
@@ -48,7 +49,7 @@ function computeDiff(current: RankRow[], incoming: Map<string, number>): RankDif
 
   for (const [tmdbId, rank] of incoming) {
     const row = currentByTmdb.get(tmdbId);
-    if (!row) continue; // título ausente do catálogo — stub ainda não foi criado
+    if (!row) continue; // Top TMDB só ranqueia o catálogo existente.
     stillPresent.add(row.id);
     if (row.popularRank == null) {
       // Entrando no ranking: prevRank = null (nunca esteve rankeado)
@@ -117,92 +118,6 @@ async function applyDiff(tipo: "filme" | "serie", diff: RankDiff, db: any = pris
   }
 }
 
-// Remove stubs (id=tmdb_*) que saíram do ranking E não têm player.
-// Evita acúmulo indefinido de registros sem valor. Executado fora da tx principal.
-async function cleanupStubs(): Promise<{ filmes: number; series: number }> {
-  try {
-    const [f, s] = await Promise.all([
-      prisma.filme.deleteMany({
-        where: {
-          id: { startsWith: "tmdb_" },
-          popularRank: null,
-          urlDub: null,
-          urlLeg: null,
-        },
-      }),
-      prisma.serie.deleteMany({
-        where: {
-          id: { startsWith: "tmdb_" },
-          popularRank: null,
-          episodios: { none: {} },
-        },
-      }),
-    ]);
-    return { filmes: f.count, series: s.count };
-  } catch {
-    return { filmes: 0, series: 0 };
-  }
-}
-
-// Cria registros "stub" para títulos populares ausentes do catálogo.
-// Stubs têm urlDub=null (sem player) mas participam de rankings e buscas.
-async function createStubs(
-  tipo: "filme" | "serie",
-  missing: PopularItem[],
-  dryRun: boolean,
-): Promise<{ created: number; skipped: number }> {
-  const withMeta = missing.filter((i) => i.titulo);
-  if (withMeta.length === 0) return { created: 0, skipped: missing.length };
-  if (dryRun) return { created: 0, skipped: withMeta.length };
-
-  // Dupla verificação por tmdbId para não criar duplicata se título migrou de id
-  const tmdbIds = withMeta.map((i) => i.tmdbId);
-  const existsByTmdb =
-    tipo === "filme"
-      ? new Set((await prisma.filme.findMany({ where: { tmdbId: { in: tmdbIds } }, select: { tmdbId: true } })).map((r) => r.tmdbId!))
-      : new Set((await prisma.serie.findMany({ where: { tmdbId: { in: tmdbIds } }, select: { tmdbId: true } })).map((r) => r.tmdbId!));
-
-  const toCreate = withMeta.filter((i) => !existsByTmdb.has(i.tmdbId));
-  if (toCreate.length === 0) return { created: 0, skipped: withMeta.length };
-
-  if (tipo === "filme") {
-    await prisma.filme.createMany({
-      skipDuplicates: true,
-      data: toCreate.map((i) => ({
-        id: `tmdb_${i.tmdbId}`,
-        tmdbId: i.tmdbId,
-        titulo: i.titulo!,
-        tituloOriginal: i.tituloOriginal ?? null,
-        poster: i.poster ?? null,
-        background: i.backdrop ?? null,
-        ano: i.ano ?? null,
-        nota: i.nota ?? null,
-        voteCount: i.voteCount ?? null,
-        popularidade: i.popularidade ?? null,
-      })),
-    });
-  } else {
-    await prisma.serie.createMany({
-      skipDuplicates: true,
-      data: toCreate.map((i) => ({
-        id: `tmdb_${i.tmdbId}`,
-        tmdbId: i.tmdbId,
-        titulo: i.titulo!,
-        tituloOriginal: i.tituloOriginal ?? null,
-        poster: i.poster ?? null,
-        background: i.backdrop ?? null,
-        ano: i.ano ?? null,
-        nota: i.nota ?? null,
-        voteCount: i.voteCount ?? null,
-        popularidade: i.popularidade ?? null,
-        tipo: "serie",
-      })),
-    });
-  }
-
-  return { created: toCreate.length, skipped: withMeta.length - toCreate.length };
-}
-
 async function handleGET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
@@ -223,7 +138,7 @@ async function handleGET(req: NextRequest) {
 
   let errorMessage: string | null = null;
   let found = 0, added = 0, removed = 0, repositioned = 0, bytesTransferred = 0;
-  let stubsCreated = 0;
+  const stubsCreated = 0; // Compatibilidade: o sync não cria catálogo.
   let duplicatesIgnored = 0;
   let stubsDeleted = { filmes: 0, series: 0 };
 
@@ -259,28 +174,12 @@ async function handleGET(req: NextRequest) {
       }),
     ]);
 
-    // ── 4. Stubs: criar títulos populares ausentes do catálogo ─────────────────
+    // ── 4. Ausentes: somente telemetria, nunca criação de catálogo ────────────
     const existingFilmeTmdb = new Set(currentFilmes.map((f) => f.tmdbId).filter(Boolean) as string[]);
     const existingSerieTmdb = new Set(currentSeries.map((s) => s.tmdbId).filter(Boolean) as string[]);
 
     const missingFilmes = moviesDedup.items.filter((i) => !existingFilmeTmdb.has(i.tmdbId));
     const missingSeries = seriesDedup.items.filter((i) => !existingSerieTmdb.has(i.tmdbId));
-
-    const [filmeStubs, serieStubs] = await Promise.all([
-      createStubs("filme", missingFilmes, dryRun),
-      createStubs("serie", missingSeries, dryRun),
-    ]);
-    stubsCreated = filmeStubs.created + serieStubs.created;
-
-    // Inclui stubs recém-criados no diff desta execução (sem re-fetch ao banco)
-    if (!dryRun) {
-      for (const s of missingFilmes.filter((i) => i.titulo)) {
-        currentFilmes.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
-      }
-      for (const s of missingSeries.filter((i) => i.titulo)) {
-        currentSeries.push({ id: `tmdb_${s.tmdbId}`, tmdbId: s.tmdbId, popularRank: null });
-      }
-    }
 
     // ── 5. Diff ───────────────────────────────────────────────────────────────
     const filmeDiff = computeDiff(currentFilmes as RankRow[], movieRankMap);
@@ -297,8 +196,8 @@ async function handleGET(req: NextRequest) {
         await applyDiff("serie", serieDiff, tx);
       });
 
-      // ── 7. Cleanup de stubs fora do ranking (fora da tx — operação independente)
-      stubsDeleted = await cleanupStubs();
+      // ── 7. Remove stubs sem player, mesmo com rank; conteúdo real é protegido.
+      stubsDeleted = await cleanupCatalogStubs(prisma);
 
       // /melhores é force-dynamic e lê o banco em cada requisição; não há cache
       // de página da Vercel para invalidar após uma execução local.
@@ -326,8 +225,8 @@ async function handleGET(req: NextRequest) {
         series: { added: serieDiff.added, removed: serieDiff.removed, repositioned: serieDiff.repositioned },
       },
       stubs: {
-        filmes: { created: filmeStubs.created, missing: missingFilmes.length },
-        series: { created: serieStubs.created, missing: missingSeries.length },
+        filmes: { created: 0, missing: missingFilmes.length },
+        series: { created: 0, missing: missingSeries.length },
       },
     });
   } catch (err: any) {

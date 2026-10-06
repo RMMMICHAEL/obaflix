@@ -1,10 +1,11 @@
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { prisma } from "@/lib/prisma";
 import { imgUrl } from "@/lib/tmdb";
 import { MelhoresClient, type ChartItem } from "./MelhoresClient";
 import { editorialAliases, EMMY_SERIES, matchEditorialEntries, OSCAR_FILMS } from "@/lib/editorialCatalog";
 
-// Lido do banco (top250/popularRank), não mais buscado ao vivo do TMDB — os
-// Os scripts locais que mantêm esses campos são os únicos que escrevem aqui.
+// IMDb Top 250 e filmes mantêm os campos locais. Séries populares usam Brasil 7d.
 export const dynamic = "force-dynamic";
 
 const selFilme = {
@@ -15,7 +16,7 @@ const selFilme = {
 
 const selSerie = {
   id: true, titulo: true, poster: true, background: true, logo: true, sinopse: true, temporadas: true, ano: true, nota: true,
-  top250: true, popularRank: true,
+  top250: true,
   generos: { select: { genero: { select: { nome: true } } } },
   _count: { select: { episodios: true } },
 } as const;
@@ -50,7 +51,7 @@ function filmeToChart(f: any, rankField: "top250" | "popularRank"): ChartItem {
   };
 }
 
-function serieToChart(s: any, rankField: "top250" | "popularRank"): ChartItem {
+function serieToChart(s: any, rankField: "top250" | number): ChartItem {
   return {
     id: s.id,
     titulo: s.titulo,
@@ -62,40 +63,39 @@ function serieToChart(s: any, rankField: "top250" | "popularRank"): ChartItem {
     sinopse: s.sinopse,
     detalhe: s.temporadas ? `${s.temporadas} temporada${s.temporadas === 1 ? "" : "s"}` : null,
     generos: uniqueGenres(s.generos),
-    rank: s[rankField],
+    rank: typeof rankField === "number" ? rankField : s[rankField],
     disponivel: s._count.episodios > 0,
   };
 }
 
 export default async function MelhoresPage() {
+  const brWeekIds = await getBrazilSeriesRanking("week", 250);
   const [topFilmes, topSeries, popFilmes, popSeries, oscarRaw, emmyRaw] = await Promise.all([
-    prisma.filme.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selFilme }),
-    prisma.serie.findMany({ where: { top250: { not: null } }, orderBy: { top250: "asc" }, select: selSerie }),
-    prisma.filme.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selFilme }),
-    prisma.serie.findMany({ where: { popularRank: { not: null } }, orderBy: { popularRank: "asc" }, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel({ top250: { not: null } }), orderBy: { top250: "asc" }, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ top250: { not: null } }), orderBy: { top250: "asc" }, select: selSerie }),
+    prisma.filme.findMany({ where: filmeDisponivel({ popularRank: { not: null } }), orderBy: { popularRank: "asc" }, select: selFilme }),
+    prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: selSerie }),
     prisma.filme.findMany({
-      where: {
+      where: filmeDisponivel({
         AND: [
           { OR: [
             { titulo: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
             { tituloOriginal: { in: editorialAliases(OSCAR_FILMS), mode: "insensitive" } },
           ] },
-          { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
         ],
-      },
+      }),
       select: awardSelect,
     }),
     prisma.serie.findMany({
-      where: {
+      where: serieDisponivel({
         tipo: "serie",
         AND: [
           { OR: [
             { titulo: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
             { tituloOriginal: { in: editorialAliases(EMMY_SERIES), mode: "insensitive" } },
           ] },
-          { episodios: { some: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] } } },
         ],
-      },
+      }),
       select: awardSelect,
     }),
   ]);
@@ -116,7 +116,7 @@ export default async function MelhoresPage() {
       topFilmes={topFilmes.map((f) => filmeToChart(f, "top250"))}
       topSeries={topSeries.map((s) => serieToChart(s, "top250"))}
       popFilmes={popFilmes.map((f) => filmeToChart(f, "popularRank"))}
-      popSeries={popSeries.map((s) => serieToChart(s, "popularRank"))}
+      popSeries={orderBrazilSeriesRows(brWeekIds, popSeries).map((s, index) => serieToChart(s, index + 1))}
       oscarItems={oscarItems}
       emmyItems={emmyItems}
     />
