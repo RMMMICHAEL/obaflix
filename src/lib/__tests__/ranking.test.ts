@@ -140,7 +140,7 @@ test("nenhuma superfície redeclara a ordenação de popularidade", () => {
   }
 });
 
-test("todas as superfícies importam a ordenação canônica", () => {
+test("todas as superfícies preservam a ordenação canônica dos filmes", () => {
   for (const arquivo of CONSUMIDORES) {
     const src = readFileSync(arquivo, "utf8");
     assert.ok(src.includes('from "@/lib/ranking"'), `${arquivo} não importa @/lib/ranking`);
@@ -148,7 +148,7 @@ test("todas as superfícies importam a ordenação canônica", () => {
   }
 });
 
-test("o Top 10 do site e o da TV saem da mesma constante", () => {
+test("o Top 10 de filmes do site e o da TV saem da mesma constante", () => {
   for (const arquivo of ["src/components/home/HomeStreaming.tsx", "src/app/api/tv/home/route.ts"]) {
     const src = readFileSync(arquivo, "utf8");
     const semComentarios = src.replace(/\/\*[\s\S]*?\*\//g, " ");

@@ -1,4 +1,5 @@
 import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getImdbTop250Showcases } from "@/lib/catalog-showcases";
@@ -10,8 +11,8 @@ export const dynamic = "force-dynamic";
  * Home do aplicativo de TV, montada numa requisição só.
  *
  * Reaproveita EXATAMENTE as regras que a home do site (src/app/page.tsx) já usa
- * — popularidade do TMDB para "em alta/populares", popularRank do sync para o
- * Top 10, IMDb Top 250 local para "mais bem avaliados", createdAt para "novos". Nada de
+ * — TMDB para filmes; Brasil 7d/24h para séries populares/Top 10;
+ * IMDb Top 250 local para "mais bem avaliados", createdAt para "novos". Nada de
  * lógica nova nem de ordenar destaque por nota alta (que trazia clássico, não
  * tendência). É um endpoint separado do /api/home para não mexer no que o app
  * móvel já consome; a TV guarda o resultado em memória e só o pede uma vez por
@@ -66,6 +67,10 @@ function intercalar<T>(a: T[], b: T[], limite: number): T[] {
 }
 
 export async function GET() {
+  const [brWeekIds, brDayIds] = await Promise.all([
+    getBrazilSeriesRanking("week", LIMITE_VITRINE),
+    getBrazilSeriesRanking("day", LIMITE_TOP10),
+  ]);
   const filme = (extra: object, orderBy: object, take: number) =>
     prisma.filme.findMany({ where: filmeDisponivel(extra as never), orderBy: orderBy as never, take, select: selFilme });
   const serie = (tipo: string, extra: object, orderBy: object, take: number) =>
@@ -73,21 +78,23 @@ export async function GET() {
 
   const [
     popFilmes,
-    popSeries,
+    popSeriesRaw,
     top10Filmes,
-    top10Series,
+    top10SeriesRaw,
     imdbTop250,
     novosFilmes,
     novasSeries,
   ] = await Promise.all([
     filme({}, POR_POPULARIDADE, LIMITE_VITRINE),
-    serie("serie", {}, POR_POPULARIDADE, LIMITE_VITRINE),
+    prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: sel }),
     filme({ popularRank: { not: null } }, ORDEM_TOP10, LIMITE_TOP10),
-    serie("serie", { popularRank: { not: null } }, ORDEM_TOP10, LIMITE_TOP10),
+    prisma.serie.findMany({ where: serieDisponivel({ id: { in: brDayIds } }), select: sel }),
     getImdbTop250Showcases(),
     filme({}, { createdAt: "desc" }, LIMITE_VITRINE),
     serie("serie", {}, { createdAt: "desc" }, LIMITE_VITRINE),
   ]);
+  const popSeries = orderBrazilSeriesRows(brWeekIds, popSeriesRaw);
+  const top10Series = orderBrazilSeriesRows(brDayIds, top10SeriesRaw);
 
   // "Em alta": mistura os mais populares de filmes e séries. É o que o site
   // trata como tendência, sem depender de cruzar com a lista ao vivo do TMDB.

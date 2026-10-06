@@ -1,4 +1,5 @@
 import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
 import Image from "next/image";
@@ -46,10 +47,7 @@ const seriesSelect = {
   logo: true, ano: true, nota: true, tipo: true, createdAt: true,
 } as const;
 
-// A ordenação vive em @/lib/ranking: era esta cópia, mais três iguais, que
-// deixavam site, aplicativo e TV com listas diferentes. O `take` continua menor
-// aqui de propósito — a ordem canônica é total, então pedir menos devolve um
-// prefixo da MESMA lista, não outra lista.
+// Filmes/animes/desenhos usam @/lib/ranking; séries usam o ranking Brasil 7d.
 
 /**
  * Catalogo da /android: identico para todo usuario, entao vive em cache
@@ -68,6 +66,7 @@ const seriesSelect = {
  */
 const getCatalogoAndroid = unstable_cache(
   async () => {
+    const brWeekIds = await getBrazilSeriesRanking("week", BUSCA);
     const [destaques, recentes, series, animes, desenhos, imdbTop250, episodios] = await Promise.all([
       prisma.filme.findMany({
         where: filmeDisponivel(),
@@ -76,7 +75,7 @@ const getCatalogoAndroid = unstable_cache(
         select: filmSelect,
       }),
       prisma.filme.findMany({ where: filmeDisponivel(), orderBy: { createdAt: "desc" }, take: BUSCA, select: filmSelect }),
-      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
+      prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: seriesSelect }),
       prisma.serie.findMany({ where: serieDisponivel({ tipo: "anime" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
       prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: ORDEM_POPULARIDADE, take: BUSCA, select: seriesSelect }),
       getImdbTop250Showcases(),
@@ -98,7 +97,7 @@ const getCatalogoAndroid = unstable_cache(
     const heroItems = paraHero(dedupeAndroid(destaques));
 
     return {
-      heroItems, movies: trilha(recentes, "filme"), series: trilha(series, "serie"),
+      heroItems, movies: trilha(recentes, "filme"), series: trilha(orderBrazilSeriesRows(brWeekIds, series), "serie"),
       topMovies: imdbTop250.filmes.map((item) => paraTrilha(item, "filme")),
       topSeries: imdbTop250.series.map((item) => paraTrilha(item, "serie")),
       animeItems: trilha(animes, "anime"), cartoonItems: trilha(desenhos, "desenho"),
@@ -106,7 +105,7 @@ const getCatalogoAndroid = unstable_cache(
     };
   },
   // Nova chave impede reutilizar vitrines anteriores sem filtro de player.
-  ["android-catalogo-v4-playable"],
+  ["android-catalogo-v5-br-series"],
   { revalidate: 300, tags: ["android-catalogo"] },
 );
 

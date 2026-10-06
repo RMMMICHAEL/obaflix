@@ -1,4 +1,5 @@
 import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
+import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -112,15 +113,14 @@ export default async function SeriesPage({
   }
 
   // Browse mode
-  // "Mais Populares" usa popularidade real do TMDB (não histórico de
-  // visualização interno — com um usuário só na base, isso só refletia o que
-  // essa pessoa tinha acabado de assistir, não popularidade de verdade).
+  // "Em Alta": Brasil 7d. Hero e filtros gerais preservam as regras existentes.
+  const brWeekIds = await getBrazilSeriesRanking("week", 24);
   const [heroRaw, recentes, avaliadas, populares, epsRecentesRaw, drama, crime, comedia, misterio, ficcao, terror, romance, acao] =
     await Promise.all([
       prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", background: { not: null } }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 8, select: selHero }),
       prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { createdAt: "desc" }, take: 24, select: selBrowse }),
       prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { scoreDestaque: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
-      prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 24, select: selBrowse }),
+      prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: selBrowse }),
       prisma.episodio.findMany({
         where: {
           serie: { tipo: "serie" },
@@ -179,7 +179,7 @@ export default async function SeriesPage({
         </div>
 
         <ComBanners>
-        {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={populares.map(toRow)} verTodosHref="/series?ordem=popular" />}
+        {populares.length > 0  && <LandscapeRow titulo="Em Alta" items={orderBrazilSeriesRows(brWeekIds, populares).map(toRow)} verTodosHref="/melhores" />}
         {epsRecentesItems.length > 0 && <LazyRow><EpisodioRecenteRow titulo="Novos Episódios" items={epsRecentesItems} /></LazyRow>}
         {recentes.length > 0   && <LandscapeRow titulo="Adicionadas Recentemente" items={recentes.map(toRow)}  verTodosHref="/series?ordem=recente" />}
         {avaliadas.length > 0  && <LazyRow><LandscapeRow titulo="Mais Bem Avaliadas"  items={avaliadas.map(toRow)}  verTodosHref="/series?ordem=nota" /></LazyRow>}

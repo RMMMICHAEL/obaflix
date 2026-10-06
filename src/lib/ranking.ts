@@ -1,5 +1,6 @@
 /**
- * A ordenação canônica de "Em alta" e "Populares".
+ * Ordenação TMDB para filmes e demais usos globais existentes.
+ * Séries Populares/Top 10 Séries usam brazil-series-ranking (Brasil 7d/24h).
  *
  * ## Por que existe
  *
@@ -40,7 +41,7 @@ export const ORDEM_POPULARIDADE = [
 ];
 
 /**
- * A ordenação canônica do Top 10.
+ * Ordenação do Top 10 de filmes. Não é a fonte do Top 10 Séries brasileiro.
  *
  * `popularRank` é a posição que o cron `popular-sync` grava — lista ordinal do
  * TMDB, não nota. O desempate por `id` existe pelo mesmo motivo acima: dois

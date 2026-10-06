@@ -1,4 +1,5 @@
 import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { unstable_cache } from "next/cache";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -124,15 +125,16 @@ const selSerie  = { ...selDB, tipo: true } as const;
  */
 const carregarHome = unstable_cache(
   async () => {
+    const [brWeekIds, brDayIds] = await Promise.all([
+      getBrazilSeriesRanking("week", LIMITE_VITRINE),
+      getBrazilSeriesRanking("day", LIMITE_TOP10),
+    ]);
     const [
     tmdbTrending,
     dbRecFilmes,
     dbRecSeries,
     dbAnimes,
-    // Populares (Top 10 + linhas "Populares") — direto do catálogo local
-    // ordenado por popularidade real do TMDB, sem depender de cruzar com
-    // listas ao vivo do TMDB (que descartavam a maioria dos itens por falta
-    // de correspondência no banco).
+    // Filmes mantêm TMDB; séries usam demanda brasileira cruzada com o catálogo.
     dbPopFilmes,
     dbPopSeries,
     dbRankFilmes,
@@ -151,12 +153,10 @@ const carregarHome = unstable_cache(
       select: selSerie,
     }),
     prisma.filme.findMany({ where: filmeDisponivel(), orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selFilme }),
-    prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie" }), orderBy: ORDEM_POPULARIDADE, take: LIMITE_VITRINE, select: selSerie }),
-    // Top 10 — mesma fonte de "Filmes/Séries Populares" de /melhores:
-    // o popularRank que os scripts de sync gravam no catálogo. Antes vinha do
-    // top250 (curadoria fixa do IMDb), que é outra lista e outra intenção.
+    prisma.serie.findMany({ where: serieDisponivel({ id: { in: brWeekIds } }), select: selSerie }),
+    // Filmes: popularRank do sync. Séries: Brasil 24h, completado por Brasil 7d.
     prisma.filme.findMany({ where: filmeDisponivel({ popularRank: { not: null } }), orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selFilme }),
-    prisma.serie.findMany({ where: serieDisponivel({ tipo: "serie", popularRank: { not: null } }), orderBy: ORDEM_TOP10, take: LIMITE_TOP10, select: selSerie }),
+    prisma.serie.findMany({ where: serieDisponivel({ id: { in: brDayIds } }), select: selSerie }),
     // Fonte local compartilhada com Android e Android TV. Nenhuma chamada ao
     // TMDB/IMDb acontece para montar estas vitrines.
     getImdbTop250Showcases(),
@@ -175,14 +175,15 @@ const carregarHome = unstable_cache(
 
     return {
       tmdbTrending, dbRecFilmes, dbRecSeries, dbAnimes,
-      dbPopFilmes, dbPopSeries, dbRankFilmes, dbRankSeries,
+      dbPopFilmes, dbPopSeries: orderBrazilSeriesRows(brWeekIds, dbPopSeries),
+      dbRankFilmes, dbRankSeries: orderBrazilSeriesRows(brDayIds, dbRankSeries),
       dbTopRatedFilmes: imdbTop250.filmes,
       dbTopRatedSeries: imdbTop250.series,
       dbEpsRecentes: episodiosRecentes,
       dbFilmesMap_raw, dbSeriesMap_raw,
     };
   },
-  ["home-streaming-playable-v1"],
+  ["home-streaming-br-series-v1"],
   { revalidate: 300 },
 );
 
@@ -208,13 +209,11 @@ export async function HomeStreaming() {
 
   const trending    = tmdbList(tmdbTrending?.results ?? [], "filme").slice(0, 20);
 
-  // Populares e Top 10 vêm direto do catálogo local ordenado por popularidade
-  // real do TMDB — mesma lógica para filmes e séries, sem itens descartados
-  // por falta de correspondência com listas ao vivo do TMDB.
+  // Séries já estão na ordem brasileira; filmes preservam a ordenação TMDB.
   const popMovies = dbPopFilmes.map((f) => dbToCard(f, "filme"));
   const popTV     = dbPopSeries.map((s) => dbToCard(s, "serie"));
   const top10FilmesCards = (dbRankFilmes.length ? dbRankFilmes : dbPopFilmes.slice(0, 10)).map((item) => dbToCard(item, "filme"));
-  const top10SeriesCards = (dbRankSeries.length ? dbRankSeries : dbPopSeries.slice(0, 10)).map((item) => dbToCard(item, "serie"));
+  const top10SeriesCards = dbRankSeries.map((item) => dbToCard(item, "serie"));
   const animeCards = dbAnimes.map((anime) => dbToCard(anime, "anime"));
 
   const tmdbHeroItems = heroRaw.map((item: any) => {
