@@ -222,15 +222,20 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     identifier: serie.imdbId || serie.tmdbId || serie.id,
     inLanguage: "pt-BR",
   };
-  // Só Início › Título: a listagem (/series, /animes, /desenhos) não é pública
-  // para o navegador comum (cai na landing), então não vira degrau de breadcrumb
-  // — visual e JSON-LD concordam, sem levar ninguém a um destino inútil.
+  // Série "pura" ganha o degrau Séries (/series já é página pública, Fase 2).
+  // Anime e desenho seguem Início › Título por enquanto: /animes e /desenhos
+  // ainda não têm versão pública para navegador comum. Visual e JSON-LD
+  // concordam.
+  const ehSeriePura = serie.tipo === "serie";
   const breadcrumbSchema = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
-      { "@type": "ListItem", position: 2, name: serie.titulo, item: canonicalUrl },
+      ...(ehSeriePura
+        ? [{ "@type": "ListItem", position: 2, name: "Séries", item: absoluteUrl("/series") }]
+        : []),
+      { "@type": "ListItem", position: ehSeriePura ? 3 : 2, name: serie.titulo, item: canonicalUrl },
     ],
   };
 
@@ -308,7 +313,13 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       )}
 
       <div className="px-4 pb-4 pt-8 md:px-14">
-        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: serie.titulo }]} />
+        <Breadcrumbs
+          items={[
+            { label: "Início", href: "/" },
+            ...(ehSeriePura ? [{ label: "Séries", href: "/series" }] : []),
+            { label: serie.titulo },
+          ]}
+        />
 
         <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
         <PeopleRow

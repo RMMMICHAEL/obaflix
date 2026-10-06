@@ -11,10 +11,27 @@ import { CollectionsRow } from "@/components/ui/CollectionsRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
 import { headers } from "next/headers";
+import type { Metadata } from "next";
 import { detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
 import { CatalogoPublico } from "@/components/catalog/CatalogoPublico";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * A versão pública ignora filtros/ordem/busca/página — o conteúdo é sempre o
+ * mesmo. Então qualquer variante com search param aponta o canonical para
+ * `/filmes` e responde `noindex, follow`, para não criar páginas SEO duplicadas.
+ * Sem params, herda a metadata indexável do layout. Isto é só metadata: os
+ * filtros de Android/Electron continuam intactos.
+ */
+export function generateMetadata({
+  searchParams,
+}: {
+  searchParams: Record<string, string | string[] | undefined>;
+}): Metadata {
+  if (Object.keys(searchParams ?? {}).length === 0) return {};
+  return { alternates: { canonical: "/filmes" }, robots: { index: false, follow: true } };
+}
 
 const NEW_MS = 3 * 24 * 60 * 60 * 1000;
 

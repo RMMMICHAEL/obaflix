@@ -43,13 +43,21 @@ function Trilho({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Cabecalho({ titulo, sub }: { titulo: string; sub?: string }) {
+function Cabecalho({ titulo, sub, verTodosHref }: { titulo: string; sub?: string; verTodosHref?: string }) {
   return (
     <div className="mb-3 flex items-baseline gap-3 px-4 sm:px-6 lg:px-10">
       <h2 className="text-lg font-extrabold tracking-tight text-white sm:text-xl lg:text-2xl">
         {titulo}
       </h2>
       {sub ? <p className="hidden text-sm text-white/40 sm:block">{sub}</p> : null}
+      {verTodosHref ? (
+        <Link
+          href={verTodosHref}
+          className="ml-auto shrink-0 whitespace-nowrap rounded text-sm font-semibold text-white/50 transition-colors hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+        >
+          Ver todos →
+        </Link>
+      ) : null}
     </div>
   );
 }
@@ -59,15 +67,18 @@ export function VitrinePosters({
   titulo,
   sub,
   itens,
+  verTodosHref,
 }: {
   titulo: string;
   sub?: string;
   itens: ItemVitrine[];
+  /** Quando presente, mostra um "Ver todos →" apontando para a listagem pública. */
+  verTodosHref?: string;
 }) {
   if (!itens.length) return null;
   return (
     <section className="obaflix-reveal py-5 sm:py-7">
-      <Cabecalho titulo={titulo} sub={sub} />
+      <Cabecalho titulo={titulo} sub={sub} verTodosHref={verTodosHref} />
       <Trilho>
         {itens.map((item, i) => (
           <Link

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
 import { catalogPath, genrePath } from "@/lib/catalog-url";
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
 import {
   CatalogoTipo,
   linhasDoShard,
@@ -23,16 +24,25 @@ async function paginasFixas() {
   // no sitemap e contradicao que o Search Console reporta como erro.
   if (!catalogIndexingEnabled) return urls;
 
-  urls.push(
-    absoluteUrl("/filmes"),
-    absoluteUrl("/series"),
-    absoluteUrl("/animes"),
-    absoluteUrl("/desenhos"),
-    absoluteUrl("/melhores"),
-  );
+  // So as paginas publicas reais. /animes, /desenhos e /melhores ainda nao tem
+  // versao publica para navegador comum (caem na landing), entao nao entram no
+  // sitemap enquanto continuarem fechadas — anunciar rota que redireciona e
+  // desperdicio de crawl e contradicao para o Search Console.
+  urls.push(absoluteUrl("/filmes"), absoluteUrl("/series"));
 
   try {
-    const generos = await prisma.genero.findMany({ select: { id: true, nome: true } });
+    // Somente generos com conteudo disponivel (um filme OU uma serie/anime/
+    // desenho reproduzivel). Uma consulta so, sem N+1: a disponibilidade e um
+    // filtro de relacao resolvido no banco.
+    const generos = await prisma.genero.findMany({
+      where: {
+        OR: [
+          { filmes: { some: { filme: filmeDisponivel() } } },
+          { series: { some: { serie: serieDisponivel() } } },
+        ],
+      },
+      select: { id: true, nome: true },
+    });
     urls.push(...generos.map((genero) => absoluteUrl(genrePath(genero.id, genero.nome))));
   } catch (error) {
     console.error("[sitemap] Generos indisponiveis; paginas fixas seguem sem eles.", error);

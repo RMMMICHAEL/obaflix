@@ -101,6 +101,11 @@ export default async function GeneroPage({
     }
   }
 
+  // Gênero existe no banco mas sem conteúdo disponível nesta página → 404 em vez
+  // de um 200 vazio. Vale para a base (gênero sem nada reproduzível) e para
+  // páginas além do fim (`?page=N` grande): nada a mostrar, nada a indexar.
+  if (itens.length === 0) notFound();
+
   const temProxima = filmes.length === POR_PAGINA || series.length === POR_PAGINA;
 
   const breadcrumbSchema = {
@@ -124,26 +129,22 @@ export default async function GeneroPage({
         Explore filmes e séries de {genero.nome} disponíveis no catálogo Obaflix.
       </p>
 
-      {itens.length === 0 ? (
-        <p className="mt-8 text-sm text-zinc-500">Nenhum conteúdo encontrado para este gênero.</p>
-      ) : (
-        <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {itens.map((item) => (
-            <LandscapeCard
-              key={`${item.tipo}-${item.id}`}
-              layout="grid"
-              id={item.id}
-              tipo={item.tipo}
-              titulo={item.titulo}
-              poster={item.poster}
-              background={item.background}
-              logo={item.logo}
-              ano={item.ano}
-              nota={item.nota}
-            />
-          ))}
-        </div>
-      )}
+      <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {itens.map((item) => (
+          <LandscapeCard
+            key={`${item.tipo}-${item.id}`}
+            layout="grid"
+            id={item.id}
+            tipo={item.tipo}
+            titulo={item.titulo}
+            poster={item.poster}
+            background={item.background}
+            logo={item.logo}
+            ano={item.ano}
+            nota={item.nota}
+          />
+        ))}
+      </div>
 
       {(page > 1 || temProxima) && (
         <nav aria-label="Paginação" className="mt-10 flex items-center justify-center gap-3">

@@ -154,7 +154,7 @@ export async function LandingPage() {
             sub="O que mais estão assistindo esta semana"
             itens={emAlta.slice(0, 10)}
           />
-          <VitrinePosters titulo="Filmes em alta" itens={catalogo.filmesAlta} />
+          <VitrinePosters titulo="Filmes em alta" itens={catalogo.filmesAlta} verTodosHref="/filmes" />
           <VitrinePosters
             titulo="Top filmes"
             sub="Os mais bem avaliados"
@@ -185,7 +185,7 @@ export async function LandingPage() {
       </section>
 
       <div className="mx-auto max-w-[1800px]">
-        <VitrinePosters titulo="Séries em alta" itens={catalogo.seriesAlta} />
+        <VitrinePosters titulo="Séries em alta" itens={catalogo.seriesAlta} verTodosHref="/series" />
         <VitrinePosters titulo="Top séries" sub="As mais bem avaliadas" itens={catalogo.seriesTop} />
         <VitrineBackdrops titulo="Animes em alta" itens={catalogo.animesAlta.slice(0, 10)} />
       </div>

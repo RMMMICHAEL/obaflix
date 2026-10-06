@@ -183,15 +183,15 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     identifier: filme.imdbId || filme.tmdbId || filme.id,
     inLanguage: "pt-BR",
   };
-  // Só Início › Título: a listagem /filmes não é pública para o navegador comum
-  // (cai na landing), então não vira degrau de breadcrumb — visual e JSON-LD
-  // concordam, sem levar ninguém a um destino inútil.
+  // Início › Filmes › Título: /filmes agora é página pública (Fase 2), então
+  // vira degrau real. Visual e JSON-LD concordam.
   const breadcrumbSchema = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
-      { "@type": "ListItem", position: 2, name: filme.titulo, item: canonicalUrl },
+      { "@type": "ListItem", position: 2, name: "Filmes", item: absoluteUrl("/filmes") },
+      { "@type": "ListItem", position: 3, name: filme.titulo, item: canonicalUrl },
     ],
   };
 
@@ -228,7 +228,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
       <BannerDesktop posicao="detalhe" />
 
       <div className="px-4 pb-4 md:px-14">
-        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: filme.titulo }]} />
+        <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: "Filmes", href: "/filmes" }, { label: filme.titulo }]} />
 
         <PeopleRow
           title="Direção"
