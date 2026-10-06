@@ -1,5 +1,5 @@
 import { serieDisponivel, FONTE_REPRODUZIVEL } from "@/lib/catalog-availability";
-import { getBrazilSeriesRanking, orderBrazilSeriesRows } from "@/lib/brazil-series-ranking";
+import { BRAZIL_SERIES_BROWSE_LIMIT, getBrazilSeriesRanking, orderBrazilSeriesRows, paginateBrazilSeriesRows } from "@/lib/brazil-series-ranking";
 import { Suspense } from "react";
 import { HeroSlider } from "@/components/ui/HeroSlider";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
@@ -82,16 +82,23 @@ export default async function SeriesPage({
 
     const orderBy: any =
       ordem === "nota"       ? { scoreDestaque: { sort: "desc", nulls: "last" } }
-      : ordem === "popular"   ? { popularidade: { sort: "desc", nulls: "last" } }
       : ordem === "lancamento" ? [{ ano: "desc" }, { createdAt: "desc" }]
       : ordem === "az"        ? { titulo: "asc" }
       : ordem === "antigo"    ? { createdAt: "asc" }
       : { createdAt: "desc" };
 
-    const [series, total] = await Promise.all([
-      prisma.serie.findMany({ where: serieDisponivel(where), orderBy, skip, take: limit, select: selGrid }),
-      prisma.serie.count({ where: serieDisponivel(where) }),
+    const brazilIds = ordem === "popular" ? await getBrazilSeriesRanking("week", BRAZIL_SERIES_BROWSE_LIMIT) : null;
+    const [rawSeries, rawTotal] = await Promise.all([
+      prisma.serie.findMany({
+        where: serieDisponivel({ ...where, ...(brazilIds ? { id: { in: brazilIds } } : {}) }),
+        orderBy: brazilIds ? undefined : orderBy,
+        skip: brazilIds ? undefined : skip, take: brazilIds ? undefined : limit, select: selGrid,
+      }),
+      brazilIds ? Promise.resolve(0) : prisma.serie.count({ where: serieDisponivel(where) }),
     ]);
+    const { series, total } = brazilIds
+      ? paginateBrazilSeriesRows(brazilIds, rawSeries, page, limit)
+      : { series: rawSeries, total: rawTotal };
     const pages = Math.ceil(total / limit);
 
     return (

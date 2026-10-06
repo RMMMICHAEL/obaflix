@@ -17,6 +17,12 @@ export async function cleanupCatalogStubs(db: PrismaClient): Promise<{ filmes: n
     await tx.filmeGenero.deleteMany({ where: { filmeId: { in: filmeIds } } });
     await tx.serieGenero.deleteMany({ where: { serieId: { in: serieIds } } });
     await tx.episodio.deleteMany({ where: { serieId: { in: serieIds } } });
+    // PopularHistory não tem FK: remover somente histórico de ranking dos
+    // candidatos exatos, incluindo o tipo para não atingir outro conteúdo.
+    await tx.popularHistory.deleteMany({ where: { OR: [
+      { conteudoTipo: "filme", conteudoId: { in: filmeIds } },
+      { conteudoTipo: "serie", conteudoId: { in: serieIds } },
+    ] } });
     const f = await tx.filme.deleteMany({ where: { AND: [FILME_STUB_SEM_PLAYER, { id: { in: filmeIds } }] } });
     const s = await tx.serie.deleteMany({ where: { AND: [SERIE_STUB_SEM_PLAYER, { id: { in: serieIds } }] } });
     return { filmes: f.count, series: s.count };

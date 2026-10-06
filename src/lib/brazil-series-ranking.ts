@@ -13,6 +13,9 @@ export const BRAZIL_SERIES_ENDPOINT = "https://apis.justwatch.com/graphql";
 export const BRAZIL_SERIES_EXCLUDED_GENRES = [10763, 10764, 10767];
 export const BRAZIL_SERIES_FRESH_TTL = 3600;
 export const BRAZIL_SERIES_LAST_GOOD_TTL = 30 * 24 * 60 * 60;
+// Duas janelas de até 500 entradas; filtrar antes de paginar esse universo.
+export const BRAZIL_SERIES_BROWSE_LIMIT = 1000;
+export const BRAZIL_SERIES_MIN_IMDB_IDS = 25;
 
 export function brazilSeriesQuery(window: Window): string {
   return `query { streamingCharts(country: BR, first: 500,
@@ -39,7 +42,18 @@ export function parseBrazilSeriesRanking(payload: unknown): string[] {
       entries.push({ imdbId, rank: edge.streamingChartInfo.rank });
     }
   }
+  if (!entries.length) throw new Error("Streaming Charts BR sem IMDb IDs válidos");
   return [...new Set(entries.sort((a, b) => a.rank - b.rank).map((entry) => entry.imdbId))];
+}
+
+/** Não deixar HTTP 200 com contrato degradado destruir o último snapshot bom. */
+export function parseBrazilSeriesLiveSnapshot(payload: unknown): string[] {
+  const ids = parseBrazilSeriesRanking(payload);
+  const count = (payload as { data: { streamingCharts: { edges: unknown[] } } }).data.streamingCharts.edges.length;
+  if (count > 500 || ids.length < BRAZIL_SERIES_MIN_IMDB_IDS || ids.length < Math.ceil(count / 2)) {
+    throw new Error("Cobertura IMDb insuficiente em Streaming Charts BR");
+  }
+  return ids;
 }
 
 /** IN não ordena linhas. Também omite itens removidos entre as duas consultas. */
@@ -49,6 +63,12 @@ export function orderBrazilSeriesRows<T extends { id: string }>(ids: string[], r
     const row = byId.get(id);
     return row ? [row] : [];
   });
+}
+
+/** As linhas já foram filtradas no banco: total e páginas refletem esses filtros. */
+export function paginateBrazilSeriesRows<T extends { id: string }>(ids: string[], rows: T[], page: number, limit: number) {
+  const ordered = orderBrazilSeriesRows(ids, rows);
+  return { series: ordered.slice((page - 1) * limit, page * limit), total: ordered.length };
 }
 
 type Dependencies = {
@@ -61,7 +81,7 @@ function readSnapshot(raw: string | null): string[] | null {
   if (!raw) return null;
   try {
     const ids: unknown = JSON.parse(raw);
-    return Array.isArray(ids) && ids.length <= 500 && ids.every((id) => typeof id === "string" && /^tt\d+$/.test(id))
+    return Array.isArray(ids) && ids.length > 0 && ids.length <= 500 && ids.every((id) => typeof id === "string" && /^tt\d+$/.test(id))
       ? [...new Set(ids)] : null;
   } catch { return null; }
 }
@@ -84,7 +104,7 @@ export function createBrazilSeriesRanking(deps: Dependencies) {
           signal: AbortSignal.timeout(8000), cache: "no-store", redirect: "error",
         });
         if (!response.ok) throw new Error("Streaming Charts BR indisponível");
-        const ids = parseBrazilSeriesRanking(await response.json());
+        const ids = parseBrazilSeriesLiveSnapshot(await response.json());
         const value = JSON.stringify(ids);
         await Promise.all([
           cache.set(`${prefix}:fresh:v1`, value, { ex: BRAZIL_SERIES_FRESH_TTL }),

@@ -100,12 +100,37 @@ test("cleanup apaga só tmdb_* indisponível com/sem rank; preserva real e catá
   });
   const dependentes: any[] = [];
   const child = { deleteMany: async (args: any) => { dependentes.push(args.where); return { count: 0 }; } };
-  const tx = { filme: model(filmes, "filmes"), serie: model(series, "series"), filmeGenero: child, serieGenero: child, episodio: child };
+  const history = [
+    { id: "h1", conteudoId: "tmdb_vazio", conteudoTipo: "filme" },
+    { id: "h2", conteudoId: "tmdb_sem_rank", conteudoTipo: "filme" },
+    { id: "h3", conteudoId: "tmdb_vazia", conteudoTipo: "serie" },
+    { id: "h4", conteudoId: "tmdb_metadata", conteudoTipo: "serie" },
+    { id: "preservar-real", conteudoId: "tmdb_real", conteudoTipo: "filme" },
+    { id: "preservar-original", conteudoId: "original", conteudoTipo: "serie" },
+    { id: "preservar-prefixo", conteudoId: "tmdbXnao_stub", conteudoTipo: "filme" },
+    { id: "preservar-outro-tipo", conteudoId: "tmdb_vazio", conteudoTipo: "serie" },
+  ];
+  const tx = { filme: model(filmes, "filmes"), serie: model(series, "series"), filmeGenero: child, serieGenero: child, episodio: child,
+    popularHistory: model(history, "popularHistory"),
+    watchHistory: { deleteMany: () => { throw Error("Não alterar histórico de usuário"); } },
+    watchlist: { deleteMany: () => { throw Error("Não alterar watchlist"); } },
+  };
   const db = { $transaction: async (run: any, opts: any) => { assert.equal(opts.isolationLevel, "Serializable"); return run(tx); } };
   assert.deepEqual(await cleanupCatalogStubs(db as any), { filmes: 2, series: 2 });
   assert.deepEqual(deleted.filmes, ["tmdb_vazio", "tmdb_sem_rank"]);
   assert.deepEqual(deleted.series, ["tmdb_vazia", "tmdb_metadata"]);
+  assert.deepEqual(deleted.popularHistory, ["h1", "h2", "h3", "h4"]);
   assert.ok(dependentes.every(f => !JSON.stringify(f).includes("tmdb_real") && !JSON.stringify(f).includes("tmdbXnao_stub")));
+});
+test("falha no PopularHistory aborta cleanup antes de apagar filmes/séries", async () => {
+  let deleted = false;
+  const model = { findMany: async () => [{ id: "tmdb_stub" }], deleteMany: async () => { deleted = true; } };
+  const child = { deleteMany: async () => ({ count: 0 }) };
+  const tx = { filme: model, serie: model, filmeGenero: child, serieGenero: child, episodio: child,
+    popularHistory: { deleteMany: async () => { throw Error("PopularHistory fixture"); } } };
+  const db = { $transaction: async (run: any, opts: any) => { assert.equal(opts.isolationLevel, "Serializable"); return run(tx); } };
+  await assert.rejects(cleanupCatalogStubs(db as any), /PopularHistory fixture/);
+  assert.equal(deleted, false);
 });
 
 test("falha na limpeza de relações não é escondida nem continua apagando catálogo", async () => {

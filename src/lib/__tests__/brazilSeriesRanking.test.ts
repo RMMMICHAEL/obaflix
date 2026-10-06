@@ -5,6 +5,7 @@ import ts from "typescript";
 import {
   BRAZIL_SERIES_CATEGORIES, BRAZIL_SERIES_ENDPOINT,
   createBrazilSeriesRanking, orderBrazilSeriesRows, parseBrazilSeriesRanking,
+  parseBrazilSeriesLiveSnapshot, paginateBrazilSeriesRows,
 } from "../brazil-series-ranking";
 
 function payload(ids: (string | null)[]) {
@@ -46,7 +47,9 @@ function fixture(sources: Partial<Record<"day" | "week" | "month", (string | nul
         .find((key) => query.includes(BRAZIL_SERIES_CATEGORIES[key]))!;
       calls.push(window);
       if (!sources[window]) throw Error("Fonte fora do ar");
-      return new Response(JSON.stringify(payload(sources[window]!)), { status: 200 });
+      // Fonte saudável realista; esses IDs adicionais não existem no catálogo.
+      const padding = Array.from({ length: 50 }, (_, index) => `tt${9000000 + index}`);
+      return new Response(JSON.stringify(payload([...sources[window]!, ...padding])), { status: 200 });
     },
     findSeries: async (where) => rows.filter((item) => matches(item, where)).reverse(),
   });
@@ -156,6 +159,63 @@ test("chamadas concorrentes compartilham fetch da mesma janela", async () => {
   assert.deepEqual(await Promise.all([f.ranking("week", 1), f.ranking("week", 1)]), [["1"], ["1"]]);
   assert.deepEqual(f.calls, ["week"]);
 });
+test("HTTP 200 sem IMDb ou com cobertura degradada preserva fresh/last-good", async () => {
+  for (const valid of [0, 1, 24, 249]) {
+    const source = payload(Array.from({ length: 500 }, (_, index) => index < valid ? `tt${1000000 + index}` : null));
+    const cache = new Map([["catalog:br:series:week:last-good:v1", '["tt1"]']]);
+    let writes = 0;
+    const ranking = createBrazilSeriesRanking({
+      fetch: async () => new Response(JSON.stringify(source), { status: 200 }),
+      cache: () => ({ get: async (key) => cache.get(key) ?? null, set: async () => { writes++; return "OK"; } }),
+      findSeries: async () => [{ id: "1", imdbId: "tt1" }],
+    });
+    assert.deepEqual(await ranking("week", 1), ["1"]);
+    assert.equal(writes, 0);
+    assert.equal(cache.get("catalog:br:series:week:last-good:v1"), '["tt1"]');
+    assert.equal(cache.has("catalog:br:series:week:fresh:v1"), false);
+  }
+});
+test("sanidade aceita 250 IMDb únicos em 500; rejeita lista curta ou só duplicatas", () => {
+  assert.equal(parseBrazilSeriesLiveSnapshot(payload(Array.from({ length: 500 }, (_, index) => index < 250 ? `tt${1000000 + index}` : null))).length, 250);
+  assert.throws(() => parseBrazilSeriesLiveSnapshot(payload(["tt1"])));
+  assert.throws(() => parseBrazilSeriesLiveSnapshot(payload(Array(500).fill("tt1"))));
+});
+test("fresh vazio preexistente não impede recuperar last-good", async () => {
+  const f = fixture({}, [row("1")]);
+  f.cache.set("catalog:br:series:week:fresh:v1", "[]");
+  f.cache.set("catalog:br:series:week:last-good:v1", '["tt1"]');
+  assert.deepEqual(await f.ranking("week", 1), ["1"]);
+});
+test("pagina só depois de filtrar gênero/ano/busca; total exclui ausentes", () => {
+  const rows = Array.from({ length: 70 }, (_, i) => ({ id: String(i), genero: i % 2, ano: 2026, titulo: `Série ${i}` }));
+  const ids = rows.map((item) => item.id);
+  const filtered = rows.filter((item) => item.genero === 1 && item.ano === 2026 && item.titulo.includes("Série")).reverse();
+  const first = paginateBrazilSeriesRows(ids, filtered, 1, 24);
+  const second = paginateBrazilSeriesRows(ids, filtered, 2, 24);
+  assert.equal(first.total, 35); assert.equal(second.total, 35);
+  assert.deepEqual(first.series.map((item) => item.id), ids.filter((_, i) => i % 2 === 1).slice(0, 24));
+  assert.deepEqual(second.series.map((item) => item.id), ids.filter((_, i) => i % 2 === 1).slice(24));
+  assert.deepEqual(paginateBrazilSeriesRows(ids, filtered, 3, 24).series, []);
+  assert.deepEqual(paginateBrazilSeriesRows([], filtered, 1, 24), { series: [], total: 0 });
+});
+for (const file of ["src/app/series/page.tsx", "src/app/api/series/route.ts"]) {
+  test(`${file}: popular filtra todo ranking Brasil antes de total/paginação`, () => {
+    const source = readFileSync(file, "utf8");
+    assert.match(source, /getBrazilSeriesRanking\("week", BRAZIL_SERIES_BROWSE_LIMIT\)/);
+    assert.match(source, /paginateBrazilSeriesRows\(brazilIds, rawSeries, page, limit\)/);
+    assert.match(source, /orderBy: brazilIds \? undefined : orderBy/);
+    assert.match(source, /skip: brazilIds \? undefined : skip/);
+    assert.match(source, /take: brazilIds \? undefined : limit/);
+    assert.match(source, /where\.generos/); assert.match(source, /where\.ano/); assert.match(source, /where\.titulo/);
+    if (file.includes("api/")) {
+      assert.match(source, /!tipo \|\| tipo === "serie"/);
+      assert.match(source, /where\.id = \{ in: brazilIds \}/);
+    } else {
+      assert.doesNotMatch(source, /ordem === "popular"\s+\? \{ popularidade/);
+      assert.match(source, /id: \{ in: brazilIds \}/);
+    }
+  });
+}
 
 // Lê a AST: identifica as queries por IDs Brasil e proíbe ordenação global nelas.
 for (const file of ["src/components/home/HomeStreaming.tsx", "src/app/api/tv/home/route.ts",
