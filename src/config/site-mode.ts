@@ -73,6 +73,7 @@ export function detectarAmbiente(
  * Esquecer de liberar é visível e reversível; esquecer de fechar não seria.
  */
 const PUBLICO = [
+  "/tiktok",
   "/parear",
   "/login",
   "/cadastro",
