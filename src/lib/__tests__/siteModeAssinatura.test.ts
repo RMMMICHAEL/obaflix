@@ -18,7 +18,10 @@ test("navegador comum: planos, checkout e conta abertos", () => {
 });
 
 test("navegador comum: streaming continua fechado", () => {
-  for (const rota of ["/filmes", "/series", "/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil"]) {
+  // /filmes e /series passaram a ser páginas agregadoras públicas (Fase 2 do
+  // SEO); o streaming em si (player, canais, busca, entradas dos apps) segue
+  // fechado para o navegador comum.
+  for (const rota of ["/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "landing" }, rota);
   }
 });

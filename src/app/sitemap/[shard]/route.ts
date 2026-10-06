@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
+import { catalogPath, genrePath } from "@/lib/catalog-url";
 import {
   CatalogoTipo,
-  idsDoShard,
+  linhasDoShard,
   respostaXml,
   shardNaoEncontrado,
   urlset,
@@ -31,8 +32,8 @@ async function paginasFixas() {
   );
 
   try {
-    const generos = await prisma.genero.findMany({ select: { id: true } });
-    urls.push(...generos.map((genero) => absoluteUrl(`/genero/${genero.id}`)));
+    const generos = await prisma.genero.findMany({ select: { id: true, nome: true } });
+    urls.push(...generos.map((genero) => absoluteUrl(genrePath(genero.id, genero.nome))));
   } catch (error) {
     console.error("[sitemap] Generos indisponiveis; paginas fixas seguem sem eles.", error);
   }
@@ -52,14 +53,14 @@ export async function GET(_req: Request, { params }: { params: { shard: string }
   const shard = Number(match[2]);
 
   try {
-    const ids = await idsDoShard(tipo, shard);
+    const linhas = await linhasDoShard(tipo, shard);
     // Shard vazio responde 404 de proposito: sem isso qualquer numero vira uma
     // URL valida e o crawler ganha um espaco infinito de arquivos vazios.
-    if (ids.length === 0) return shardNaoEncontrado();
+    if (linhas.length === 0) return shardNaoEncontrado();
 
-    const caminho = tipo === "filmes" ? "filme" : "serie";
+    const tipoFicha = tipo === "filmes" ? "filme" : "serie";
     return respostaXml(
-      urlset(ids.map((id) => absoluteUrl(`/${caminho}/${encodeURIComponent(id)}`))),
+      urlset(linhas.map((l) => absoluteUrl(catalogPath(tipoFicha, l.id, l.titulo)))),
     );
   } catch (error) {
     console.error(`[sitemap] Falha ao montar o shard ${params.shard}.`, error);

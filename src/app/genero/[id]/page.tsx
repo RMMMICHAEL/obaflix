@@ -1,125 +1,172 @@
-"use client";
-
-import { Suspense, useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
+import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
+import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { genrePath } from "@/lib/catalog-url";
+import { buscarGeneroPorParam } from "./genero-data";
 
-const ORDENS = [
-  { value: "recente", label: "Mais Recente" },
-  { value: "popular", label: "Mais Populares" },
-  { value: "nota", label: "Melhor Nota" },
-  { value: "az", label: "A-Z" },
-];
+/**
+ * Página de gênero, agora server-rendered: a primeira resposta já traz conteúdo
+ * útil e indexável (antes dependia de JS + fetch nas APIs após a hidratação).
+ *
+ * - URL canônica `/genero/<slug>--<id>`; o id puro legado (`/genero/80`) e
+ *   qualquer slug divergente redirecionam 308 para a canônica.
+ * - Paginação controlada: `?page=N` (N>1) responde `noindex, follow` e aponta o
+ *   canonical para a base, para parâmetros não gerarem milhares de páginas SEO.
+ * - 2 consultas por render (filmes + séries do gênero, com teto). Sem count: o
+ *   "próxima página" é inferido pelo tamanho da página cheia.
+ */
+export const dynamic = "force-dynamic";
 
-function GeneroConteudo() {
-  const params = useParams();
-  const generoId = params.id as string;
+const POR_PAGINA = 30;
+const SEL = { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true } as const;
+const porPopularidade = { popularidade: { sort: "desc", nulls: "last" } } as const;
 
-  const [nomeGenero, setNomeGenero] = useState<string>("");
-  const [items, setItems] = useState<any[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [ordem, setOrdem] = useState("recente");
-
-  const load = useCallback(async (p: number, reset: boolean, ord: string) => {
-    setLoading(true);
-    const [filmesRes, seriesRes] = await Promise.all([
-      fetch(`/api/filmes?page=${p}&genero=${generoId}&ordem=${ord}`),
-      fetch(`/api/series?page=${p}&genero=${generoId}&ordem=${ord}`),
-    ]);
-    const filmesData = await filmesRes.json();
-    const seriesData = await seriesRes.json();
-
-    if (filmesData.filmes?.[0]) {
-      const g = filmesData.filmes[0].generos?.find((g: any) => String(g.genero.id) === generoId);
-      if (g) setNomeGenero(g.genero.nome);
-    }
-    if (!nomeGenero && seriesData.series?.[0]) {
-      const g = seriesData.series[0].generos?.find((g: any) => String(g.genero.id) === generoId);
-      if (g) setNomeGenero(g.genero.nome);
-    }
-
-    const filmes = (filmesData.filmes ?? []).map((f: any) => ({ ...f, tipo: "filme" as const }));
-    const series = (seriesData.series ?? []).map((s: any) => ({ ...s, tipo: s.tipo ?? "serie" }));
-
-    // Interleave filmes and series for variety
-    const merged: any[] = [];
-    let fi = 0, si = 0;
-    while (fi < filmes.length || si < series.length) {
-      if (fi < filmes.length) merged.push(filmes[fi++]);
-      if (si < series.length) merged.push(series[si++]);
-    }
-
-    setItems((prev) => reset ? merged : [...prev, ...merged]);
-    setTotal((filmesData.total ?? 0) + (seriesData.total ?? 0));
-    setLoading(false);
-  }, [generoId]);
-
-  useEffect(() => {
-    setPage(1);
-    load(1, true, ordem);
-  }, [generoId, ordem]);
-
-  return (
-    <div className="pt-20 px-4 md:px-8 pb-16">
-      <div className="flex flex-wrap items-center gap-3 mb-6">
-        <h1 className="text-2xl font-bold text-white mr-4">
-          {nomeGenero ? nomeGenero : "Gênero"}
-        </h1>
-        <span className="text-zinc-500 text-sm">{total.toLocaleString()} resultados</span>
-        <div className="flex gap-2 ml-auto flex-wrap">
-          {ORDENS.map((o) => (
-            <button
-              key={o.value}
-              onClick={() => setOrdem(o.value)}
-              className={`text-xs px-3 py-1.5 rounded transition ${ordem === o.value ? "bg-red-600 text-white" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"}`}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {items.length === 0 && !loading && (
-        <p className="text-zinc-500 text-sm">Nenhum conteúdo encontrado para este gênero.</p>
-      )}
-
-      <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-        {items.map((item) => (
-          <LandscapeCard
-            key={`${item.tipo}-${item.id}`}
-            layout="grid"
-            id={item.id}
-            tipo={item.tipo}
-            titulo={item.titulo}
-            poster={item.poster}
-            background={item.background}
-            ano={item.ano}
-            nota={item.nota}
-          />
-        ))}
-      </div>
-
-      {items.length < total && (
-        <div className="flex justify-center mt-8">
-          <button
-            onClick={() => { const p = page + 1; setPage(p); load(p, false, ordem); }}
-            disabled={loading}
-            className="bg-zinc-800 text-white px-8 py-2.5 rounded hover:bg-zinc-700 transition disabled:opacity-50"
-          >
-            {loading ? "Carregando..." : "Carregar mais"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
+function lerPagina(searchParams?: { page?: string }) {
+  const n = Number(searchParams?.page ?? 1);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 
-export default function GeneroPage() {
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: { page?: string };
+}) {
+  const genero = await buscarGeneroPorParam(params.id);
+  if (!genero) return { title: "Gênero não encontrado", robots: { index: false, follow: false } };
+
+  const md = mediaMetadata({
+    title: `Filmes e séries de ${genero.nome}`,
+    description: `Explore filmes e séries de ${genero.nome} disponíveis no catálogo Obaflix. Para assistir, baixe o aplicativo para Android, Android TV e Windows.`,
+    path: genrePath(genero.id, genero.nome),
+  });
+  // Página paginada não disputa indexação com a base; canonical segue na base.
+  if (lerPagina(searchParams) > 1) md.robots = { index: false, follow: true };
+  return md;
+}
+
+export default async function GeneroPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: { page?: string };
+}) {
+  const genero = await buscarGeneroPorParam(params.id);
+  if (!genero) notFound();
+
+  // Uma URL canônica por gênero: slug divergente ou id puro legado → 308.
+  const canonico = genrePath(genero.id, genero.nome);
+  if (`/genero/${params.id}` !== canonico) permanentRedirect(canonico);
+
+  const page = lerPagina(searchParams);
+  const skip = (page - 1) * POR_PAGINA;
+
+  const [filmes, series] = await Promise.all([
+    prisma.filme.findMany({
+      where: filmeDisponivel({ generos: { some: { generoId: genero.id } } }),
+      orderBy: porPopularidade,
+      skip,
+      take: POR_PAGINA,
+      select: SEL,
+    }),
+    prisma.serie.findMany({
+      where: serieDisponivel({ generos: { some: { generoId: genero.id } } }),
+      orderBy: porPopularidade,
+      skip,
+      take: POR_PAGINA,
+      select: { ...SEL, tipo: true },
+    }),
+  ]);
+
+  // Intercala filmes e séries para variedade, como na versão anterior.
+  const itens: any[] = [];
+  let fi = 0;
+  let si = 0;
+  while (fi < filmes.length || si < series.length) {
+    if (fi < filmes.length) {
+      itens.push({ ...filmes[fi], tipo: "filme" as const });
+      fi++;
+    }
+    if (si < series.length) {
+      const s = series[si] as any;
+      itens.push({ ...s, tipo: s.tipo ?? "serie" });
+      si++;
+    }
+  }
+
+  const temProxima = filmes.length === POR_PAGINA || series.length === POR_PAGINA;
+
+  const breadcrumbSchema = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
+      { "@type": "ListItem", position: 2, name: `Filmes e séries de ${genero.nome}`, item: absoluteUrl(canonico) },
+    ],
+  };
+
   return (
-    <Suspense fallback={<div className="pt-20 px-8 text-zinc-500 text-sm">Carregando...</div>}>
-      <GeneroConteudo />
-    </Suspense>
+    <div className="min-h-screen px-4 pb-16 pt-20 md:px-8">
+      <JsonLd data={breadcrumbSchema} />
+      <Breadcrumbs items={[{ label: "Início", href: "/" }, { label: genero.nome }]} />
+
+      <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">
+        Filmes e séries de {genero.nome}
+      </h1>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-[15px]">
+        Explore filmes e séries de {genero.nome} disponíveis no catálogo Obaflix.
+      </p>
+
+      {itens.length === 0 ? (
+        <p className="mt-8 text-sm text-zinc-500">Nenhum conteúdo encontrado para este gênero.</p>
+      ) : (
+        <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {itens.map((item) => (
+            <LandscapeCard
+              key={`${item.tipo}-${item.id}`}
+              layout="grid"
+              id={item.id}
+              tipo={item.tipo}
+              titulo={item.titulo}
+              poster={item.poster}
+              background={item.background}
+              logo={item.logo}
+              ano={item.ano}
+              nota={item.nota}
+            />
+          ))}
+        </div>
+      )}
+
+      {(page > 1 || temProxima) && (
+        <nav aria-label="Paginação" className="mt-10 flex items-center justify-center gap-3">
+          {page > 1 ? (
+            <Link
+              href={page === 2 ? canonico : `${canonico}?page=${page - 1}`}
+              rel="prev"
+              className="rounded-lg bg-zinc-800 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-zinc-700"
+            >
+              ← Anterior
+            </Link>
+          ) : null}
+          {temProxima ? (
+            <Link
+              href={`${canonico}?page=${page + 1}`}
+              rel="next"
+              className="rounded-lg bg-zinc-800 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-zinc-700"
+            >
+              Próxima →
+            </Link>
+          ) : null}
+        </nav>
+      )}
+    </div>
   );
 }

@@ -1,8 +1,8 @@
 import { catalogPageMetadata } from "@/lib/seo";
 
 export const metadata = catalogPageMetadata(
-  "Filmes",
-  "Descubra filmes no catálogo Obaflix, com sinopses, ano, duração, gêneros e informações atualizadas.",
+  "Filmes — lançamentos, populares e onde assistir",
+  "Descubra filmes no catálogo Obaflix: lançamentos, populares, gêneros e informações. Para assistir, baixe o aplicativo para Android, Android TV e Windows.",
   "/filmes",
 );
 

@@ -23,7 +23,10 @@ import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 import { AcquisitionProvider } from "@/components/catalog/AcquisitionProvider";
+import { FichaSeoExtra } from "@/components/catalog/FichaSeoExtra";
 import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
+import { catalogPath, catalogSlugId, parseSeoParam } from "@/lib/catalog-url";
+import { permanentRedirect } from "next/navigation";
 
 /**
  * Publica e igual para todo mundo; progresso e continuar assistindo chegam pelo
@@ -44,33 +47,41 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
+  const id = parseSeoParam(params.id);
   const serie = await prisma.serie.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { titulo: true, sinopse: true, background: true, poster: true, ano: true, tipo: true },
   });
   if (!serie) return { title: "Série não encontrada", robots: { index: false, follow: false } };
 
   // "temporadas, episódios e onde assistir" cobre o intento de busca da série; o
   // template do layout acrescenta " | Obaflix". A description segue a sinopse
-  // real (única por título), sem texto repetido entre páginas.
+  // real (única por título), sem texto repetido entre páginas. Canonical slug--id.
   const title = `${serie.titulo} — temporadas, episódios e onde assistir`;
   const image = serie.background ?? serie.poster;
   return mediaMetadata({
     title,
     description: serie.sinopse,
-    path: `/serie/${params.id}`,
+    path: catalogPath("serie", id, serie.titulo),
     image: image ? imgUrl(image, "original") : null,
     type: "video.tv_show",
   });
 }
 
 export default async function SeriePage({ params }: { params: { id: string } }) {
+  const id = parseSeoParam(params.id);
   const serie = await prisma.serie.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { generos: { include: { genero: true } } },
   });
 
   if (!serie) notFound();
+
+  // Uma URL canônica por série: slug divergente ou ID puro legado → 308 para
+  // `<slug>--<id>`. anime/desenho também vivem em `/serie/<...>`.
+  if (params.id !== catalogSlugId(serie.titulo, serie.id)) {
+    permanentRedirect(catalogPath("serie", serie.id, serie.titulo));
+  }
 
   const [episodios, videos, credits, tmdbDetails, tmdbRecs, images, certificacao] =
     await Promise.all([
@@ -176,7 +187,17 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
   }
 
+  const canonicalUrl = absoluteUrl(catalogPath("serie", serie.id, serie.titulo));
+  const generosLinks = serie.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }));
   const genres = serie.generos.map((item: any) => item.genero.nome);
+
+  // Frase derivada SÓ de dados reais: contagem de temporadas e episódios.
+  const nTemporadas = temporadas.length || serie.temporadas || 0;
+  const nEpisodios = episodios.length;
+  const descricaoTemporadas =
+    nEpisodios > 0
+      ? `${serie.titulo} possui ${nTemporadas} ${nTemporadas === 1 ? "temporada" : "temporadas"} e ${nEpisodios} ${nEpisodios === 1 ? "episódio" : "episódios"} disponíveis no catálogo.`
+      : null;
   const seriesSchema = {
     "@context": "https://schema.org",
     "@type": "TVSeries",
@@ -197,7 +218,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
       worstRating: 0,
       ratingCount: serie.voteCount,
     } : undefined,
-    url: absoluteUrl(`/serie/${serie.id}`),
+    url: canonicalUrl,
     identifier: serie.imdbId || serie.tmdbId || serie.id,
     inLanguage: "pt-BR",
   };
@@ -209,7 +230,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
-      { "@type": "ListItem", position: 2, name: serie.titulo, item: absoluteUrl(`/serie/${serie.id}`) },
+      { "@type": "ListItem", position: 2, name: serie.titulo, item: canonicalUrl },
     ],
   };
 
@@ -250,7 +271,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
             : null
         }
         trailerKey={trailer?.key}
-        shareUrl={absoluteUrl(`/serie/${serie.id}`)}
+        shareUrl={canonicalUrl}
       />
 
       {/* Abaixo do hero, no fluxo: não cobre Assistir/Trailer nem as informações.
@@ -264,6 +285,16 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         // leva até aqui. `scroll-mt` desconta o cabeçalho fixo, senão o topo da
         // lista para debaixo dele e a pessoa não vê o que foi destacado.
         <div id="episodios" className="scroll-mt-24 px-4 pt-2 md:px-14 md:pt-4">
+          <h2 className="text-lg font-bold text-white md:text-xl">
+            Temporadas e episódios de {serie.titulo}
+          </h2>
+          {descricaoTemporadas ? (
+            <p className="mb-4 mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-[15px]">
+              {descricaoTemporadas}
+            </p>
+          ) : (
+            <div className="mb-2" />
+          )}
           <EpisodeGrid
             serieId={serie.id}
             serieTitulo={serie.titulo}
@@ -289,12 +320,14 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         />
       </div>
 
-      {/* Recomendações */}
+      {/* Conteúdos parecidos: cards são links HTML reais para as fichas. */}
       {recCards.length > 0 && (
-        <div className="pb-16 pt-4">
-          <LandscapeRow titulo="Você Também Pode Gostar" items={recCards} />
+        <div className="pt-4">
+          <LandscapeRow titulo={`Conteúdos parecidos com ${serie.titulo}`} items={recCards} />
         </div>
       )}
+
+      <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} />
     </div>
     </AcquisitionProvider>
     </EstadoPessoalProvider>

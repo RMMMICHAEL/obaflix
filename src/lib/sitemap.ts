@@ -55,15 +55,20 @@ export async function contarCatalogo(tipo: CatalogoTipo) {
  *
  * Segue sem `lastmod`: `updatedAt` muda a cada escrita do sync e nao serve.
  */
-export async function idsDoShard(tipo: CatalogoTipo, shard: number): Promise<string[]> {
+export async function linhasDoShard(
+  tipo: CatalogoTipo,
+  shard: number,
+): Promise<{ id: string; titulo: string }[]> {
   const skip = (shard - 1) * SHARD_SIZE;
   const restante = limiteCatalogo() - skip;
   if (restante <= 0) return [];
   const take = Math.min(SHARD_SIZE, restante);
 
+  // `titulo` entra de graca: mesma linha ja lida, so mais uma coluna no SELECT —
+  // nenhuma consulta a mais por item. E dele que sai o slug da URL canonica.
   const consulta = {
     where: COM_CONTEUDO,
-    select: { id: true },
+    select: { id: true, titulo: true },
     orderBy: [{ popularidade: "desc" as const }, { id: "asc" as const }],
     skip,
     take,
@@ -73,7 +78,7 @@ export async function idsDoShard(tipo: CatalogoTipo, shard: number): Promise<str
     ? await prisma.filme.findMany(consulta)
     : await prisma.serie.findMany(consulta);
 
-  return linhas.map((linha) => linha.id);
+  return linhas.map((linha) => ({ id: linha.id, titulo: linha.titulo }));
 }
 
 function escaparXml(valor: string) {

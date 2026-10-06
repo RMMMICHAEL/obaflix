@@ -11,6 +11,9 @@ import { FilterBar } from "@/components/ui/FilterBar";
 import { EpisodioRecenteRow, type EpisodioRecenteItem } from "@/components/ui/EpisodioRecenteRow";
 import { prisma } from "@/lib/prisma";
 import { groupGenres, parseGenreIds } from "@/lib/genres";
+import { headers } from "next/headers";
+import { detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
+import { CatalogoPublico } from "@/components/catalog/CatalogoPublico";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +53,11 @@ export default async function SeriesPage({
 }: {
   searchParams: { genero?: string; ano?: string; ordem?: string; q?: string; page?: string };
 }) {
+  // Navegador comum (e Googlebot) recebem a versão pública de catálogo/aquisição.
+  // Android e Electron seguem com a experiência de streaming homologada abaixo.
+  const ambiente = detectarAmbiente(headers().get("user-agent"), headers().get(HEADER_CLIENTE));
+  if (ambiente === "navegador") return <CatalogoPublico tipo="serie" />;
+
   const generoIds = parseGenreIds(searchParams.genero);
   const ano = searchParams.ano ? Number(searchParams.ano) : null;
   const ordem = searchParams.ordem ?? null;

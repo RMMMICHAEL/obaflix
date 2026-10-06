@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
+import { catalogPath } from "@/lib/catalog-url";
 
 function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
   (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
@@ -63,7 +64,7 @@ export function LandscapeCard({
   layout = "row", hideTitle = false,
 }: Props) {
   const isGrid = layout === "grid";
-  const href = tipo === "filme" ? `/filme/${id}` : `/serie/${id}`;
+  const href = catalogPath(tipo, id, titulo);
 
   // O backdrop e a imagem certa para 16:9. O poster so entra como ultimo
   // recurso: recortado no meio, ele perde justamente o enquadramento que

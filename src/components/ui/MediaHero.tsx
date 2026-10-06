@@ -10,6 +10,7 @@ import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
 import { AndroidHeroActions } from "@/components/android/AndroidHeroActions";
 import { useAquisicaoApp } from "@/components/catalog/AcquisitionProvider";
+import { genrePath } from "@/lib/catalog-url";
 
 export interface MediaHeroProps {
   conteudoId: string;
@@ -327,7 +328,7 @@ export function MediaHero({
             {generos.map((g) => (
               <Link
                 key={g.id}
-                href={`/genero/${g.id}`}
+                href={genrePath(g.id, g.nome)}
                 className="rounded-full border border-white/10 bg-white/[0.07] px-3 py-1.5 text-xs text-zinc-300 backdrop-blur-sm transition-colors hover:border-white/30 hover:bg-white/15 hover:text-white"
               >
                 {g.nome}

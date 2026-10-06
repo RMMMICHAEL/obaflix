@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { Play, Info, ChevronLeft, ChevronRight } from "lucide-react";
 import { imgUrl } from "@/lib/tmdb";
+import { catalogPath } from "@/lib/catalog-url";
 
 interface HeroItem {
   id: string;
@@ -70,7 +71,7 @@ export function HeroSlider({ items }: { items: HeroItem[] }) {
 
   if (!items.length) return null;
   const item = items[idx];
-  const href = item.tipo === "filme" ? `/filme/${item.id}` : `/serie/${item.id}`;
+  const href = catalogPath(item.tipo, item.id, item.titulo);
   const bgSrc = item.background
     ? item.background.startsWith("http") ? item.background : imgUrl(item.background, "w1280")
     : "/placeholder-bg.jpg";

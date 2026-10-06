@@ -20,7 +20,9 @@ test("navegador comum: fichas de filme e série seguem", () => {
 });
 
 test("navegador comum: prefixo parecido não herda a abertura", () => {
-  for (const rota of ["/filme-falso", "/serie-falsa", "/filmes", "/series", "/filmez", "/seriex"]) {
+  // /filmes e /series são páginas agregadoras públicas (ver Fase 2) — não entram
+  // aqui. O que continua fechado são os prefixos que apenas se parecem.
+  for (const rota of ["/filme-falso", "/serie-falsa", "/filmez", "/seriex"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "landing" }, rota);
   }
 });

@@ -20,7 +20,10 @@ import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata } from "@/lib/seo";
 import { AcquisitionProvider } from "@/components/catalog/AcquisitionProvider";
+import { FichaSeoExtra } from "@/components/catalog/FichaSeoExtra";
 import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
+import { catalogPath, catalogSlugId, parseSeoParam } from "@/lib/catalog-url";
+import { permanentRedirect } from "next/navigation";
 
 /**
  * Pagina publica e igual para todo mundo: nada de sessao entra no render. O
@@ -55,34 +58,41 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
+  const id = parseSeoParam(params.id);
   const filme = await prisma.filme.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { titulo: true, sinopse: true, background: true, poster: true, ano: true },
   });
   if (!filme) return { title: "Filme não encontrado", robots: { index: false, follow: false } };
 
   // "— onde assistir" dá o intento de busca; o template do layout acrescenta
   // " | Obaflix". A description continua sendo a sinopse real (única por título),
-  // não um texto repetido de "onde assistir online".
+  // não um texto repetido de "onde assistir online". Canonical na URL slug--id.
   const base = filme.ano ? `${filme.titulo} (${filme.ano})` : filme.titulo;
   const title = `${base} — onde assistir`;
   const image = filme.background ?? filme.poster;
   return mediaMetadata({
     title,
     description: filme.sinopse,
-    path: `/filme/${params.id}`,
+    path: catalogPath("filme", id, filme.titulo),
     image: image ? imgUrl(image, "original") : null,
     type: "video.movie",
   });
 }
 
 export default async function FilmePage({ params }: { params: { id: string } }) {
+  const id = parseSeoParam(params.id);
   const filme = await prisma.filme.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { generos: { include: { genero: true } } },
   });
 
   if (!filme) notFound();
+
+  // Uma URL canônica por filme: qualquer slug divergente (ou o ID puro legado)
+  // redireciona 308 para `<slug>--<id>`. O ID real continua sendo a identidade.
+  const canonico = catalogSlugId(filme.titulo, filme.id);
+  if (params.id !== canonico) permanentRedirect(catalogPath("filme", filme.id, filme.titulo));
 
   const generoIds = filme.generos.map((g: any) => g.generoId);
 
@@ -130,7 +140,26 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     tipo: "filme" as const,
   }));
 
+  const canonicalUrl = absoluteUrl(catalogPath("filme", filme.id, filme.titulo));
+  const generosLinks = filme.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }));
   const genres = filme.generos.map((item: any) => item.genero.nome);
+
+  // Frase derivada SÓ de dados reais (ano, duração, gêneros). Sem inventar nada:
+  // se não houver dado, a frase não aparece.
+  const duracaoTxt = filme.duracao
+    ? filme.duracao >= 60
+      ? `${Math.floor(filme.duracao / 60)}h ${filme.duracao % 60}min`
+      : `${filme.duracao}min`
+    : null;
+  const partesDescricao = [
+    filme.ano ? `de ${filme.ano}` : null,
+    duracaoTxt ? `com ${duracaoTxt}` : null,
+    genres.length ? `dos gêneros ${genres.slice(0, 3).join(", ")}` : null,
+  ].filter(Boolean);
+  const descricaoFilme = partesDescricao.length
+    ? `${filme.titulo} é um filme ${partesDescricao.join(", ")}.`
+    : null;
+
   const movieSchema = {
     "@context": "https://schema.org",
     "@type": "Movie",
@@ -150,7 +179,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
       worstRating: 0,
       ratingCount: filme.voteCount,
     } : undefined,
-    url: absoluteUrl(`/filme/${filme.id}`),
+    url: canonicalUrl,
     identifier: filme.imdbId || filme.tmdbId || filme.id,
     inLanguage: "pt-BR",
   };
@@ -162,7 +191,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
     "@type": "BreadcrumbList",
     itemListElement: [
       { "@type": "ListItem", position: 1, name: "Início", item: absoluteUrl("/") },
-      { "@type": "ListItem", position: 2, name: filme.titulo, item: absoluteUrl(`/filme/${filme.id}`) },
+      { "@type": "ListItem", position: 2, name: filme.titulo, item: canonicalUrl },
     ],
   };
 
@@ -191,7 +220,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         trailerKey={trailer?.key}
         dub={!!filme.urlDub}
         leg={!!filme.urlLeg}
-        shareUrl={absoluteUrl(`/filme/${filme.id}`)}
+        shareUrl={canonicalUrl}
       />
 
       {/* Abaixo do hero, no fluxo: não cobre Assistir/Trailer nem as informações.
@@ -211,12 +240,19 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         />
       </div>
 
-      {/* Recommendations */}
+      {/* Conteúdos parecidos: cards são links HTML reais para as fichas. */}
       {similares.length > 0 && (
-        <div className="pb-16 pt-4">
-          <LandscapeRow titulo="Você Também Pode Gostar" items={similares} />
+        <div className="pt-4">
+          <LandscapeRow titulo={`Conteúdos parecidos com ${filme.titulo}`} items={similares} />
         </div>
       )}
+
+      <FichaSeoExtra
+        titulo={filme.titulo}
+        tipo="filme"
+        generos={generosLinks}
+        extra={descricaoFilme}
+      />
     </div>
     </AcquisitionProvider>
     </EstadoPessoalProvider>

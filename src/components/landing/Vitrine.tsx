@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { imgUrl } from "@/lib/tmdb";
+import { catalogPath } from "@/lib/catalog-url";
 
 /**
  * Item de vitrine da landing.
@@ -71,7 +72,7 @@ export function VitrinePosters({
         {itens.map((item, i) => (
           <Link
             key={`${titulo}-${i}`}
-            href={`/${item.tipo}/${item.id}`}
+            href={catalogPath(item.tipo, item.id, item.titulo)}
             className="group relative w-[122px] shrink-0 snap-start rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 sm:w-[150px] lg:w-[172px]"
           >
             <div className="relative overflow-hidden rounded-xl bg-white/5 ring-1 ring-white/10 transition duration-300 group-hover:ring-white/25 sm:rounded-2xl">
@@ -118,7 +119,7 @@ export function VitrineBackdrops({
         {itens.map((item, i) => (
           <Link
             key={`${titulo}-${i}`}
-            href={`/${item.tipo}/${item.id}`}
+            href={catalogPath(item.tipo, item.id, item.titulo)}
             className="group relative w-[248px] shrink-0 snap-start rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 sm:w-[320px] lg:w-[392px]"
           >
             <div className="relative overflow-hidden rounded-xl ring-1 ring-white/10 transition duration-300 group-hover:ring-red-500/40 sm:rounded-2xl">

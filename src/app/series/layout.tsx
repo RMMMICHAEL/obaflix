@@ -1,8 +1,8 @@
 import { catalogPageMetadata } from "@/lib/seo";
 
 export const metadata = catalogPageMetadata(
-  "Séries",
-  "Explore séries no catálogo Obaflix, com temporadas, episódios, sinopses e informações para escolher o que acompanhar.",
+  "Séries — temporadas, episódios e onde assistir",
+  "Explore séries no catálogo Obaflix: temporadas, episódios, gêneros e informações. Para assistir, baixe o aplicativo para Android, Android TV e Windows.",
   "/series",
 );
 

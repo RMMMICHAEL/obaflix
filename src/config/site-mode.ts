@@ -81,6 +81,15 @@ const PUBLICO = [
   // `/filme` e `/filme/<id>`, mas nunca `/filmes` (listagem) nem `/filme-falso`.
   "/filme",
   "/serie",
+  // Páginas agregadoras públicas (SEO): listagem de filmes/séries e as páginas
+  // de gênero. Para o navegador comum elas renderizam uma versão pública de
+  // catálogo/aquisição (sem player, sem /assistir direto); Android e Electron
+  // continuam recebendo a experiência de streaming homologada na MESMA rota. O
+  // limite é de prefixo: `/filmes` e `/genero/<slug>--<id>` abrem, mas
+  // `/filmes-falso` e `/genero-falso` continuam fechados.
+  "/filmes",
+  "/series",
+  "/genero",
   "/tiktok",
   "/parear",
   "/login",
