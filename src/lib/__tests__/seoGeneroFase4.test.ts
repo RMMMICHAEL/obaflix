@@ -87,7 +87,20 @@ test("buscarGeneroPorParam agrupa e devolve ids do grupo (sem findUnique por id)
 test("página redireciona 308 do membro não canônico para o canônico do grupo", () => {
   const src = ler("src/app/genero/[id]/page.tsx");
   assert.match(src, /const canonico = genrePath\(genero\.id, genero\.nome\)/);
-  assert.match(src, /permanentRedirect\(canonico\)/);
+  assert.match(src, /permanentRedirect\(/);
+});
+
+test("redirect canônico preserva a paginação: page>1 mantém ?page=N, page=1 fica limpo", () => {
+  const src = ler("src/app/genero/[id]/page.tsx");
+  // `page` é calculado ANTES de montar o destino do redirect.
+  const idxPage = src.indexOf("const page = lerPagina(searchParams)");
+  const idxRedirect = src.indexOf("permanentRedirect(");
+  assert.ok(idxPage >= 0 && idxRedirect > idxPage, "lerPagina deve vir antes do redirect");
+  // Destino: page>1 → `?page=N`; page=1 → URL canônica limpa.
+  assert.match(
+    src,
+    /permanentRedirect\(page > 1 \? `\$\{canonico\}\?page=\$\{page\}` : canonico\)/,
+  );
 });
 
 // ── Consulta consolidada + ordenação determinística ──────────────────────────

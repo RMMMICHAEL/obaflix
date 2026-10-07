@@ -78,11 +78,16 @@ export default async function GeneroPage({
   const genero = await buscarGeneroPorParam(params.id);
   if (!genero) notFound();
 
-  // Uma URL canônica por gênero: slug divergente ou id puro legado → 308.
-  const canonico = genrePath(genero.id, genero.nome);
-  if (`/genero/${params.id}` !== canonico) permanentRedirect(canonico);
-
   const page = lerPagina(searchParams);
+
+  // Uma URL canônica por gênero: slug divergente ou id puro legado → 308. A
+  // paginação é preservada no destino — page>1 mantém ?page=N (page=1 fica limpo),
+  // para `terror--27?page=2` não cair na página 1 ao canonizar para `terror--5`.
+  const canonico = genrePath(genero.id, genero.nome);
+  if (`/genero/${params.id}` !== canonico) {
+    permanentRedirect(page > 1 ? `${canonico}?page=${page}` : canonico);
+  }
+
   const skip = (page - 1) * POR_PAGINA;
 
   // `generoId in ids`: consulta o grupo semântico inteiro (ex. [5, 27]). O `some`
