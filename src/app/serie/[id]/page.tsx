@@ -82,10 +82,11 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   // ── Caminho crítico: só o necessário para a ficha ficar utilizável ──────────
   // Série + episódios (Prisma), trailer e classificação do hero, e imagens do
-  // TMDB APENAS quando faltar arte local. Elenco, direção e recomendações são
-  // buscados no cliente (endpoints públicos), fora do ISR — ver blocos abaixo.
+  // TMDB APENAS quando faltar arte local. Elenco/direção e a MELHORIA TMDB das
+  // recomendações são buscados no cliente (endpoints públicos), fora do ISR.
   const precisaImagens = !serie.background || !serie.logo;
-  const [episodios, videos, certificacao, images] = await Promise.all([
+  const generoIds = serie.generos.map((g: any) => g.generoId);
+  const [episodios, videos, certificacao, images, recomendacoesLocais] = await Promise.all([
     prisma.episodio.findMany({
       where: { serieId: serie.id },
       orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
@@ -102,7 +103,16 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     // Só busca imagens se faltar backdrop OU logo local — senão a arte do banco
     // basta e a chamada ao TMDB é evitada.
     precisaImagens && serie.tmdbId ? getTVImages(serie.tmdbId) : null,
+    // Baseline de "conteúdos parecidos" por gênero, LOCAL (sem TMDB), em paralelo:
+    // garante os <a>/<Link> de internal linking no HTML inicial (ISR). O cliente
+    // só MELHORA essa seleção com o TMDB depois da hidratação. Sem COUNT.
+    prisma.serie.findMany({
+      where: { id: { not: serie.id }, generos: { some: { generoId: { in: generoIds } } } },
+      take: 20,
+      select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, tipo: true },
+    }),
   ]);
+  const recomendacoesIniciais = recomendacoesLocais.map((s) => ({ ...s, tipo: s.tipo as any }));
 
   // EpisodeGrid e client component: o que atravessa vira payload publico, entao
   // a URL da fonte fica aqui e so a disponibilidade segue adiante.
@@ -293,9 +303,13 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         <SerieCreditosClient serieId={serie.id} />
       </div>
 
-      {/* Conteúdos parecidos: também buscados no cliente, fora do ISR. Cards são
-          links HTML reais; aparecem quando os dados chegarem. */}
-      <SerieRecomendacoesClient serieId={serie.id} serieTitulo={serie.titulo} />
+      {/* Conteúdos parecidos: baseline LOCAL por gênero já no HTML inicial (links
+          internos de SEO), melhorada pelo TMDB no cliente após a hidratação. */}
+      <SerieRecomendacoesClient
+        serieId={serie.id}
+        serieTitulo={serie.titulo}
+        initialItems={recomendacoesIniciais}
+      />
 
       <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} dub={temDub} leg={temLeg} />
     </div>

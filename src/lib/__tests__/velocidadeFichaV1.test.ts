@@ -107,7 +107,7 @@ test("fallback de thumbnail do episódio continua (local → metadata TMDB)", ()
 test("elenco e recomendações são buscados no cliente, fora do ISR (sem <Suspense>)", () => {
   const src = page();
   assert.match(src, /<SerieCreditosClient serieId=\{serie\.id\} \/>/);
-  assert.match(src, /<SerieRecomendacoesClient serieId=\{serie\.id\} serieTitulo=\{serie\.titulo\} \/>/);
+  assert.match(src, /<SerieRecomendacoesClient[\s\S]*?serieId=\{serie\.id\}[\s\S]*?\/>/);
   // Não há mais Suspense server segurando o secundário.
   assert.doesNotMatch(src, /<Suspense/);
 });

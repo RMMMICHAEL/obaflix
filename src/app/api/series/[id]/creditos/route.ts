@@ -35,10 +35,11 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     getSerie(serie.tmdbId),
   ]);
 
-  // credits null = timeout/erro transitório do TMDB. Como há tmdbId, não pode
-  // virar elenco vazio cacheado por 24h: 503 sem cache para o cliente tentar de
-  // novo (padrão da 1A.1). O corpo não revela nada da origem.
-  if (!credits) {
+  // credits OU details null = timeout/erro transitório do TMDB. Os dois montam o
+  // resultado completo (details traz created_by), então uma resposta parcial não
+  // pode ser cacheada por 24h: 503 sem cache para o cliente tentar de novo
+  // (padrão da 1A.1). O corpo não revela nada da origem.
+  if (!credits || !details) {
     return NextResponse.json(
       { error: "Créditos temporariamente indisponíveis" },
       { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "60" } },

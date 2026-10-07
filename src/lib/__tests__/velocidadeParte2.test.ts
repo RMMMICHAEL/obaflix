@@ -67,12 +67,13 @@ test("créditos: valida id, só lê tmdbId, 404 se ausente", () => {
   assert.match(src, /if \(!serie\) return NextResponse\.json\(\{ error: "Não encontrado" \}, \{ status: 404 \}\)/);
 });
 
-test("créditos: sem tmdbId ⇒ 200 vazio cacheável; TMDB null ⇒ 503 no-store", () => {
+test("créditos: sem tmdbId ⇒ 200 vazio cacheável; credits OU details null ⇒ 503 no-store", () => {
   const src = creditosEndpoint();
   assert.match(src, /if \(!serie\.tmdbId\)/);
   assert.match(src, /criacaoDirecao: \[\], elenco: \[\]/);
-  // Bloco do 503 transitório.
-  const m = src.match(/if \(!credits\) \{[\s\S]*?\n  \}/);
+  // Resposta parcial (credits OU details ausente) não pode ser cacheada 24h.
+  assert.match(src, /if \(!credits \|\| !details\)/);
+  const m = src.match(/if \(!credits \|\| !details\) \{[\s\S]*?\n  \}/);
   assert.ok(m, "bloco 503 não encontrado");
   assert.match(m![0], /status: 503/);
   assert.match(m![0], /"Cache-Control": "no-store"/);
@@ -106,7 +107,7 @@ test("clientes são 'use client', buscam endpoints e tratam resposta não-OK com
     assert.match(src, /^"use client";/);
     assert.match(src, /useEffect\(/);
     assert.match(src, /if \(!r\.ok\) throw new Error/);
-    assert.match(src, /\.catch\(\(\) => \{\}\)/);
+    assert.match(src, /\.catch\(\(\) =>/);
   }
 });
 

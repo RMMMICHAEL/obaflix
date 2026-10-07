@@ -4,18 +4,27 @@ import { useEffect, useState } from "react";
 import { LandscapeRow } from "@/components/ui/LandscapeRow";
 
 /**
- * "Conteúdos parecidos" buscados pelo navegador, depois da ficha utilizável —
- * fora da geração ISR, igual aos créditos. Sem itens (ou em falha), não renderiza
- * nada: o bloco fica abaixo da dobra, então não há layout shift relevante.
+ * "Conteúdos parecidos".
+ *
+ * Nasce com `initialItems` — a baseline LOCAL por gênero renderizada no servidor
+ * (ISR), então os LandscapeCard → Link já estão no HTML inicial (internal linking
+ * de SEO). Depois da hidratação, busca o endpoint público para MELHORAR a seleção
+ * com o TMDB; só substitui se vier uma lista válida e não vazia. Falha de
+ * rede/TMDB nunca apaga as recomendações locais já exibidas.
+ *
+ * getTVRecommendations continua fora do ISR (roda no endpoint, não aqui nem na
+ * página).
  */
 export function SerieRecomendacoesClient({
   serieId,
   serieTitulo,
+  initialItems = [],
 }: {
   serieId: string;
   serieTitulo: string;
+  initialItems?: any[];
 }) {
-  const [items, setItems] = useState<any[] | null>(null);
+  const [items, setItems] = useState<any[]>(initialItems);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -24,12 +33,17 @@ export function SerieRecomendacoesClient({
         if (!r.ok) throw new Error("recomendacoes");
         return r.json();
       })
-      .then((d: { items?: any[] }) => setItems(d.items ?? []))
-      .catch(() => {});
+      .then((d: { items?: any[] }) => {
+        // Só melhora: lista válida e não vazia substitui a baseline local.
+        if (Array.isArray(d.items) && d.items.length) setItems(d.items);
+      })
+      .catch(() => {
+        // Mantém a baseline local — nunca apaga por falha de rede/TMDB.
+      });
     return () => ac.abort();
   }, [serieId]);
 
-  if (!items || !items.length) return null;
+  if (!items.length) return null;
 
   return (
     <div className="pt-4">
