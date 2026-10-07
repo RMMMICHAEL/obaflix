@@ -17,7 +17,8 @@ Para produção: configurar no painel do Vercel (Settings → Environment Variab
 | `DATABASE_URL` | PostgreSQL via pooler (Supabase PgBouncer) | `postgresql://user:pass@db.supabase.co:6543/postgres?pgbouncer=true` |
 | `DIRECT_URL` | PostgreSQL direto, sem pooler (para migrations) | `postgresql://user:pass@db.supabase.co:5432/postgres` |
 | `NEXTAUTH_SECRET` | Chave mestra: JWT + tokens criptográficos do player | `openssl rand -base64 32` |
-| `NEXTAUTH_URL` | URL base do site (callbacks OAuth) | `https://obaflix.vercel.app` |
+| `NEXTAUTH_URL` | URL base do site (callbacks OAuth) | `https://obaflixbr.com` |
+| `NEXT_PUBLIC_SITE_URL` | Origem pública de canonical, OpenGraph, JSON-LD e sitemap | `https://obaflixbr.com` |
 
 **Cuidado com `NEXTAUTH_SECRET`:** alterar esse valor invalida instantaneamente todos os StreamTokens, PlayTokens e SegmentSigs em uso. Em produção, só rotacionar durante manutenção planejada.
 
