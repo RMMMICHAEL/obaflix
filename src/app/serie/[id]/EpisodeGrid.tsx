@@ -63,6 +63,15 @@ export function EpisodeGrid({
   const [temp, setTemp] = useState(initialSeason ?? temporadas[0] ?? 1);
   const usuarioEscolheu = useRef(false);
 
+  // A ficha entrega os metadados só da PRIMEIRA temporada no HTML; as demais
+  // chegam sob demanda ao trocar de temporada, mescladas aqui. Sem isto a ficha
+  // precisaria buscar os detalhes de TODAS as temporadas antes de aparecer.
+  const [ratings, setRatings] = useState<Record<string, number>>(ratingMap);
+  const [metas, setMetas] = useState<Record<string, EpMetadata>>(metadataMap);
+  const temporadasCarregadas = useRef<Set<number>>(
+    new Set([initialSeason ?? temporadas[0] ?? 1]),
+  );
+
   useEffect(() => {
     // Pula para a temporada de onde o usuario parou — mas nunca por cima de uma
     // escolha manual, senao o select se mexeria embaixo do dedo dele.
@@ -70,6 +79,26 @@ export function EpisodeGrid({
     const alvo = continuar?.temporada;
     if (alvo != null && temporadas.includes(alvo)) setTemp(alvo);
   }, [continuar, temporadas]);
+
+  useEffect(() => {
+    // Metadata pública da temporada selecionada, só quando ainda não carregada.
+    // O endpoint devolve overview/runtime/thumbnail/nota — nunca URL/fonte.
+    if (temporadasCarregadas.current.has(temp)) return;
+    temporadasCarregadas.current.add(temp);
+    const ac = new AbortController();
+    fetch(`/api/series/${serieId}/temporada/${temp}`, { signal: ac.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        if (data.ratingMap) setRatings((prev) => ({ ...prev, ...data.ratingMap }));
+        if (data.metadataMap) setMetas((prev) => ({ ...prev, ...data.metadataMap }));
+      })
+      .catch(() => {
+        // Falha ou abort: libera para tentar de novo numa próxima seleção.
+        temporadasCarregadas.current.delete(temp);
+      });
+    return () => ac.abort();
+  }, [temp, serieId]);
 
   const eps = episodios.filter((e) => e.temporada === temp);
 
@@ -144,8 +173,8 @@ export function EpisodeGrid({
           const isWatching = !isWatched && !!p && p.progressoSeg > 30;
           const watchPct =
             isWatching && p.duracaoSeg ? Math.min(100, (p.progressoSeg / p.duracaoSeg) * 100) : 0;
-          const metadata = metadataMap[`${ep.temporada}_${ep.numeroEp}`];
-          const epRating = ratingMap[`${ep.temporada}_${ep.numeroEp}`];
+          const metadata = metas[`${ep.temporada}_${ep.numeroEp}`];
+          const epRating = ratings[`${ep.temporada}_${ep.numeroEp}`];
           const thumbnail = ep.thumbnail ?? metadata?.thumbnail;
 
           return (

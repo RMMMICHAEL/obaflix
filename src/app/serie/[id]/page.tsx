@@ -1,10 +1,8 @@
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import {
   imgUrl,
-  getSerie,
   getTVVideos,
-  getTVCredits,
-  getTVRecommendations,
   getTVSeasonDetails,
   getTVImages,
   getTVCertification,
@@ -12,13 +10,13 @@ import {
   pickLogo,
   pickHeroBackdrop,
 } from "@/lib/tmdb";
+import { extrairMetadataEpisodios } from "@/lib/tmdbEpisodios";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
+import { SerieCreditos, SerieRecomendacoes } from "./SerieSecundario";
 import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
-import { LandscapeRow } from "@/components/ui/LandscapeRow";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { MediaHero } from "@/components/ui/MediaHero";
-import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, mediaMetadata, tituloFicha, descricaoFicha } from "@/lib/seo";
@@ -82,26 +80,29 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     permanentRedirect(catalogPath("serie", serie.id, serie.titulo));
   }
 
-  const [episodios, videos, credits, tmdbDetails, tmdbRecs, images, certificacao] =
-    await Promise.all([
-      prisma.episodio.findMany({
-        where: { serieId: serie.id },
-        orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
-        // Select explicito: sem ele a linha inteira vinha do Postgres e ia
-        // parar no client component, urlDub/urlLeg incluidos.
-        select: {
-          id: true, serieId: true, temporada: true, numeroEp: true,
-          titulo: true, thumbnail: true, createdAt: true,
-          urlDub: true, urlLeg: true,
-        },
-      }),
-      serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
-      serie.tmdbId ? getTVCredits(serie.tmdbId) : null,
-      serie.tmdbId ? getSerie(serie.tmdbId) : null,
-      serie.tmdbId ? getTVRecommendations(serie.tmdbId) : null,
-      serie.tmdbId ? getTVImages(serie.tmdbId) : null,
-      serie.tmdbId ? getTVCertification(serie.tmdbId) : null,
-    ]);
+  // ── Caminho crítico: só o necessário para a ficha ficar utilizável ──────────
+  // Série + episódios (Prisma), trailer e classificação do hero, e imagens do
+  // TMDB APENAS quando faltar arte local. Elenco, direção, recomendações e o
+  // JSON-LD da série (que depende do elenco) saem daqui para <Suspense> abaixo.
+  const precisaImagens = !serie.background || !serie.logo;
+  const [episodios, videos, certificacao, images] = await Promise.all([
+    prisma.episodio.findMany({
+      where: { serieId: serie.id },
+      orderBy: [{ temporada: "asc" }, { numeroEp: "asc" }],
+      // Select explicito: sem ele a linha inteira vinha do Postgres e ia
+      // parar no client component, urlDub/urlLeg incluidos.
+      select: {
+        id: true, serieId: true, temporada: true, numeroEp: true,
+        titulo: true, thumbnail: true, createdAt: true,
+        urlDub: true, urlLeg: true,
+      },
+    }),
+    serie.tmdbId ? getTVVideos(serie.tmdbId) : null,
+    serie.tmdbId ? getTVCertification(serie.tmdbId) : null,
+    // Só busca imagens se faltar backdrop OU logo local — senão a arte do banco
+    // basta e a chamada ao TMDB é evitada.
+    precisaImagens && serie.tmdbId ? getTVImages(serie.tmdbId) : null,
+  ]);
 
   // EpisodeGrid e client component: o que atravessa vira payload publico, entao
   // a URL da fonte fica aqui e so a disponibilidade segue adiante.
@@ -118,44 +119,19 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
 
-  // Notas por episódio via TMDB (uma chamada por temporada, cacheadas 1h)
-  const seasonDetailsArr = serie.tmdbId
-    ? await Promise.all(temporadas.map((t) => getTVSeasonDetails(serie.tmdbId!, t)))
-    : [];
-
-  const epRatingMap: Record<string, number> = {};
-  const epMetadataMap: Record<string, { overview: string | null; runtime: number | null; thumbnail: string | null }> = {};
-  for (const season of seasonDetailsArr) {
-    if (!season?.episodes) continue;
-    for (const ep of season.episodes) {
-      if (ep.vote_average > 0) {
-        epRatingMap[`${ep.season_number}_${ep.episode_number}`] = ep.vote_average;
-      }
-      epMetadataMap[`${ep.season_number}_${ep.episode_number}`] = {
-        overview: ep.overview?.trim() || null,
-        runtime: ep.runtime ?? null,
-        thumbnail: ep.still_path ?? null,
-      };
-    }
-  }
+  // Só a PRIMEIRA temporada entra no caminho crítico (uma chamada, não mais o
+  // Promise.all sobre TODAS as temporadas). As outras temporadas buscam seus
+  // metadados sob demanda pelo EpisodeGrid, quando selecionadas.
+  const initialSeason = temporadas[0];
+  const initialSeasonDetails =
+    serie.tmdbId && initialSeason != null
+      ? await getTVSeasonDetails(serie.tmdbId, initialSeason)
+      : null;
+  const { ratingMap: epRatingMap, metadataMap: epMetadataMap } = extrairMetadataEpisodios([
+    initialSeasonDetails,
+  ]);
 
   const trailer = pickTrailer(videos?.results);
-  const cast = (credits?.cast ?? []).slice(0, 16);
-  const creativePeople = new Map<number, PeopleRowItem>();
-  for (const person of tmdbDetails?.created_by ?? []) {
-    creativePeople.set(person.id, { ...person, role: "Criação" });
-  }
-  for (const person of credits?.crew ?? []) {
-    const directed = person.job === "Director" || person.jobs?.some((job) => job.job === "Director");
-    if (!directed) continue;
-    const current = creativePeople.get(person.id);
-    creativePeople.set(person.id, {
-      id: person.id,
-      name: person.name,
-      profile_path: person.profile_path,
-      role: current ? "Criação e direção" : "Direção",
-    });
-  }
 
   // Logo transparente e backdrop sem texto queimado para o hero.
   const heroLogo = serie.logo ?? pickLogo(images);
@@ -169,31 +145,10 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     : null;
   const watchLabel = primeiroEp ? `Assistir T${primeiroEp.temporada} E${primeiroEp.numeroEp}` : "Assistir";
 
-  // TMDB recommendations → match with DB
-  let recCards: any[] = [];
-  if (tmdbRecs?.results?.length) {
-    const tmdbIds = tmdbRecs.results.map((r: any) => String(r.id));
-    const dbRecs = await prisma.serie.findMany({
-      where: { tmdbId: { in: tmdbIds } },
-      select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, tipo: true },
-    });
-    recCards = dbRecs.map((s) => ({ ...s, tipo: s.tipo as any }));
-  }
-
-  // Fallback: series do mesmo gênero
-  if (!recCards.length) {
-    const generoIds = serie.generos.map((g: any) => g.generoId);
-    const fallback = await prisma.serie.findMany({
-      where: { id: { not: serie.id }, generos: { some: { generoId: { in: generoIds } } } },
-      take: 20,
-      select: { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true, tipo: true },
-    });
-    recCards = fallback.map((s) => ({ ...s, tipo: s.tipo as any }));
-  }
-
   const canonicalUrl = absoluteUrl(catalogPath("serie", serie.id, serie.titulo));
   const generosLinks = serie.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }));
   const genres = serie.generos.map((item: any) => item.genero.nome);
+  const generoIds = serie.generos.map((g: any) => g.generoId);
 
   // Frase derivada SÓ de dados reais: contagem de temporadas e episódios.
   const nTemporadas = temporadas.length || serie.temporadas || 0;
@@ -202,30 +157,12 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     nEpisodios > 0
       ? `${serie.titulo} possui ${nTemporadas} ${nTemporadas === 1 ? "temporada" : "temporadas"} e ${nEpisodios} ${nEpisodios === 1 ? "episódio" : "episódios"} disponíveis no catálogo.`
       : null;
-  const seriesSchema = {
-    "@context": "https://schema.org",
-    "@type": "TVSeries",
-    name: serie.titulo,
-    alternateName: serie.tituloOriginal || undefined,
-    description: serie.sinopse || undefined,
-    image: serie.poster ? imgUrl(serie.poster, "w500") : undefined,
-    dateCreated: serie.ano ? String(serie.ano) : undefined,
-    numberOfSeasons: serie.temporadas || temporadas.length || undefined,
-    numberOfEpisodes: episodios.length || undefined,
-    genre: genres,
-    contentRating: certificacao || undefined,
-    actor: cast.map((person: any) => ({ "@type": "Person", name: person.name })),
-    aggregateRating: serie.nota && serie.voteCount && serie.voteCount > 0 ? {
-      "@type": "AggregateRating",
-      ratingValue: serie.nota,
-      bestRating: 10,
-      worstRating: 0,
-      ratingCount: serie.voteCount,
-    } : undefined,
-    url: canonicalUrl,
-    identifier: serie.imdbId || serie.tmdbId || serie.id,
-    inLanguage: "pt-BR",
-  };
+  // O JSON-LD da série (TVSeries, com `actor` do elenco) é emitido pelo
+  // SerieCreditos no <Suspense> — o conteúdo é idêntico, só sai do caminho
+  // crítico porque depende do elenco. O breadcrumb, que não depende do TMDB,
+  // continua crítico.
+  const numberOfSeasons = serie.temporadas || temporadas.length;
+
   // Série "pura" ganha o degrau Séries (/series já é página pública, Fase 2).
   // Anime e desenho seguem Início › Título por enquanto: /animes e /desenhos
   // ainda não têm versão pública para navegador comum. Visual e JSON-LD
@@ -247,7 +184,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     <EstadoPessoalProvider conteudoId={serie.id} tipo="serie">
     <AcquisitionProvider streamingAberto={WEB_STREAMING_ENABLED}>
     <div className="min-h-screen">
-      <JsonLd data={[seriesSchema, breadcrumbSchema]} />
+      <JsonLd data={breadcrumbSchema} />
 
       <MediaHero
         conteudoId={serie.id}
@@ -326,22 +263,30 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
           ]}
         />
 
-        <PeopleRow title="Criação e direção" people={[...creativePeople.values()]} />
-        <PeopleRow
-          title="Elenco principal"
-          people={cast.map((person) => ({
-            ...person,
-            role: person.character ?? person.roles?.[0]?.character,
-          }))}
-        />
+        {/* Elenco/direção + JSON-LD da série: fora do caminho crítico. Chegam
+            abaixo do hero/episódios, sem segurar a parte principal. */}
+        <Suspense fallback={null}>
+          <SerieCreditos
+            serie={serie}
+            genres={genres}
+            certificacao={certificacao}
+            canonicalUrl={canonicalUrl}
+            numberOfSeasons={numberOfSeasons}
+            numberOfEpisodes={nEpisodios}
+          />
+        </Suspense>
       </div>
 
-      {/* Conteúdos parecidos: cards são links HTML reais para as fichas. */}
-      {recCards.length > 0 && (
-        <div className="pt-4">
-          <LandscapeRow titulo={`Conteúdos parecidos com ${serie.titulo}`} items={recCards} />
-        </div>
-      )}
+      {/* Conteúdos parecidos: cards são links HTML reais. Também fora do
+          caminho crítico — aparecem quando os dados chegarem. */}
+      <Suspense fallback={null}>
+        <SerieRecomendacoes
+          serieId={serie.id}
+          tmdbId={serie.tmdbId}
+          serieTitulo={serie.titulo}
+          generoIds={generoIds}
+        />
+      </Suspense>
 
       <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} dub={temDub} leg={temLeg} />
     </div>
