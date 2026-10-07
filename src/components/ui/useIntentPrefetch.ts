@@ -50,25 +50,39 @@ export function useIntentPrefetch(href: string, imagemRelevante?: string | null)
     }
   }, []);
 
+  // Prepara o destino de imediato. Reaproveitado pela janela de intenção (no fim
+  // do timer) e pelo toque (onde a navegação é iminente e não há o que esperar).
+  const disparar = useCallback(() => {
+    if (jaPreparados.has(href)) return; // destino já preparado
+    if (!shouldPrefetchOnIntent(readConnection())) return;
+    jaPreparados.add(href);
+    router.prefetch(href);
+    prepararImagem(imagemRelevante);
+  }, [href, imagemRelevante, router]);
+
   const iniciar = useCallback(() => {
     if (jaPreparados.has(href)) return; // destino já preparado
     if (timer.current) return; // já agendado neste card
     if (!shouldPrefetchOnIntent(readConnection())) return;
     timer.current = setTimeout(() => {
       timer.current = null;
-      jaPreparados.add(href);
-      router.prefetch(href);
-      prepararImagem(imagemRelevante);
+      disparar();
     }, INTENT_PREFETCH_DELAY_MS);
-  }, [href, imagemRelevante, router]);
+  }, [href, disparar]);
 
   // Timer pendente não pode sobreviver ao card: ao desmontar, cancela.
   useEffect(() => cancelar, [cancelar]);
 
   return {
+    // Mouse e teclado: espera a janela de intenção (~180ms) antes de preparar.
     onMouseEnter: iniciar,
     onMouseLeave: cancelar,
     onFocus: iniciar,
     onBlur: cancelar,
+    // Toque: não há hover no celular. Em vez de reativar o prefetch por viewport
+    // (que prepararia o catálogo inteiro), prepara só ESTE destino no primeiro
+    // contato do dedo — a folga até o clique real já adianta o RSC. Dedupe e
+    // saveData/2g continuam valendo via disparar().
+    onTouchStart: disparar,
   };
 }

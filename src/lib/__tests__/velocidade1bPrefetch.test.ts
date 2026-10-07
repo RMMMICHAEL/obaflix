@@ -57,6 +57,21 @@ test("o hook dispara por timer, cancela em leave/blur e aquece a imagem sem bloq
   assert.match(src, /shouldPrefetchOnIntent\(readConnection\(\)\)/);
 });
 
+test("toque (mobile) prepara o destino imediatamente, sem reativar prefetch por viewport", () => {
+  const src = ler("src/components/ui/useIntentPrefetch.ts");
+  // Toque dispara a preparação imediata (não a janela de 180ms de hover).
+  assert.match(src, /onTouchStart: disparar/);
+  // disparar() respeita dedupe e saveData/2g — não é um prefetch cego.
+  const disparar = src.slice(src.indexOf("const disparar"));
+  assert.match(disparar, /jaPreparados\.has\(href\)/);
+  assert.match(disparar, /shouldPrefetchOnIntent\(readConnection\(\)\)/);
+  assert.match(disparar, /router\.prefetch\(href\)/);
+  // Nada de voltar ao prefetch por viewport do Link.
+  const card = ler("src/components/ui/LandscapeCard.tsx");
+  assert.doesNotMatch(card, /prefetch=\{true\}/);
+  assert.match(card, /prefetch=\{false\}/);
+});
+
 test("LandscapeCard desliga o prefetch por viewport e usa o prefetch por intenção", () => {
   const card = ler("src/components/ui/LandscapeCard.tsx");
   // Nada de prefetch indiscriminado do catálogo: o <Link> vem com prefetch={false}.

@@ -1,45 +1,51 @@
 /**
  * Fase Velocidade 1B — backdrop responsivo do hero.
  *
- * `images.unoptimized: true` no next.config desliga o optimizer da Vercel:
- * o next/image passa a servir o `src` cru, SEM gerar srcset. Com isso, um
- * `imgUrl(backdrop, "original")` manda o backdrop em tamanho cheio (~3840px,
- * vários MB) para todo viewport, inclusive celular — e ainda o preloada.
+ * `images.unoptimized: true` no next.config desliga o optimizer da Vercel. E
+ * essa flag é GLOBAL e vence qualquer `unoptimized={false}` por imagem: em
+ * get-img-props o Next faz `if (config.unoptimized) unoptimized = true` depois
+ * de ler o prop, e quando `unoptimized` é true o next/image devolve o `src` cru
+ * SEM chamar o loader e SEM srcset. Ou seja: loader custom + unoptimized={false}
+ * no <Image> não produz srcset nenhum aqui — mediríamos isso tarde.
  *
- * O loader abaixo devolve o srcset ao hero sem reativar o optimizer: mapeia a
- * largura que o browser pede (já com o DPR aplicado) para o token nativo do
- * TMDB. O TMDB vira o "optimizer" — e ele já está no CSP/remotePatterns. Assim
- * mobile recebe w780, desktop w1280 e tela grande/4K/Retina recebe `original`,
- * preservando a qualidade onde ela aparece.
+ * Então o hero monta o srcset à mão, num <img> normal (o mesmo padrão que o
+ * logo do hero já usa), fora do alcance da flag global. Cada candidato aponta
+ * para um token nativo do TMDB (que já está no CSP/remotePatterns), com o
+ * descritor de largura real. Com `sizes="100vw"` o browser escolhe por
+ * viewport × DPR: telefone recebe w780/w1280 e NUNCA original; notebook grande,
+ * 4K e Retina recebem original, preservando a arte.
  */
 
-import type { ImageLoaderProps } from "next/image";
 import { IMG } from "./tmdb";
 
-/** Degraus de backdrop do TMDB: largura máxima coberta → token nativo. */
-const BACKDROP_STEPS: { max: number; token: string }[] = [
-  { max: 300, token: "w300" },
-  { max: 780, token: "w780" },
-  { max: 1280, token: "w1280" },
+/** Candidatos de backdrop: token nativo do TMDB + largura real em px. */
+const HERO_BACKDROP_CANDIDATES: { token: string; width: number }[] = [
+  { token: "w780", width: 780 },
+  { token: "w1280", width: 1280 },
+  // `original` não tem largura fixa; o descritor alto garante que só telas que
+  // realmente precisam de >1280px (grandes/4K/Retina) o escolham.
+  { token: "original", width: 3840 },
 ];
 
+const isFullUrl = (path: string) => /^https?:\/\//.test(path);
+const withSlash = (path: string) => (path.startsWith("/") ? path : `/${path}`);
+
 /**
- * Menor token de backdrop que cobre `width`. Acima de 1280 (monitores grandes,
- * 4K, Retina de notebook) cai em `original` para não degradar a arte.
+ * `srcSet` do backdrop do hero. URL completa não tem variantes de token, então
+ * devolve `undefined` (o `src` já basta). Caminho do TMDB vira a lista de
+ * candidatos com descritores `w`.
  */
-export function backdropToken(width: number): string {
-  for (const step of BACKDROP_STEPS) {
-    if (width <= step.max) return step.token;
-  }
-  return "original";
+export function heroBackdropSrcSet(path: string): string | undefined {
+  if (isFullUrl(path)) return undefined;
+  const p = withSlash(path);
+  return HERO_BACKDROP_CANDIDATES.map(({ token, width }) => `${IMG}/${token}${p} ${width}w`).join(", ");
 }
 
 /**
- * Loader de backdrop para o next/image do hero. URL completa passa direto (já
- * é final); caminho do TMDB (`/abc.jpg`) ganha o token adequado à largura.
+ * `src` de fallback do backdrop (navegadores que ignoram `srcSet`). w1280 é um
+ * meio-termo seguro — nem o `original` pesado, nem o w780 pequeno em desktop.
  */
-export function tmdbBackdropLoader({ src, width }: ImageLoaderProps): string {
-  if (/^https?:\/\//.test(src)) return src;
-  const path = src.startsWith("/") ? src : `/${src}`;
-  return `${IMG}/${backdropToken(width)}${path}`;
+export function heroBackdropSrc(path: string): string {
+  if (isFullUrl(path)) return path;
+  return `${IMG}/w1280${withSlash(path)}`;
 }

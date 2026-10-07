@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
-import { tmdbBackdropLoader } from "@/lib/tmdb-image";
+import { heroBackdropSrc, heroBackdropSrcSet } from "@/lib/tmdb-image";
 import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
@@ -225,31 +224,30 @@ export function MediaHero({
       */}
       <div className="pointer-events-none absolute inset-x-0 top-0 aspect-[3/2] sm:aspect-video md:inset-0 md:aspect-auto">
         {backdrop ? (
-          // Backdrop responsivo: o loader mapeia a largura pedida (DPR incluso)
-          // para o token do TMDB, então o srcset volta a existir mesmo com o
-          // optimizer da Vercel desligado. unoptimized={false} é o que reativa a
-          // geração de srcset SÓ para esta imagem — o loader aponta direto para o
-          // TMDB, sem custo de optimizer. priority emite o preload já responsivo.
-          <Image
-            src={backdrop}
-            loader={tmdbBackdropLoader}
-            unoptimized={false}
+          // Backdrop responsivo num <img> normal (não next/image): com
+          // images.unoptimized global, o next/image serviria o src cru sem
+          // srcset e sem chamar loader. O srcset manual aponta direto para os
+          // tokens do TMDB; com sizes=100vw o browser escolhe por viewport×DPR —
+          // telefone pega w780/w1280, tela grande/4K pega original. fetchPriority
+          // high mantém o backdrop como LCP sem o preload automático do next.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={heroBackdropSrc(backdrop)}
+            srcSet={heroBackdropSrcSet(backdrop)}
+            sizes="100vw"
             alt=""
             aria-hidden="true"
-            fill
-            sizes="100vw"
-            priority
-            className="object-cover object-top md:object-center"
+            fetchPriority="high"
+            decoding="async"
+            className="absolute inset-0 h-full w-full object-cover object-top md:object-center"
           />
         ) : (
-          <Image
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
             src="/placeholder-bg.jpg"
             alt=""
             aria-hidden="true"
-            fill
-            sizes="100vw"
-            priority
-            className="object-cover object-top md:object-center"
+            className="absolute inset-0 h-full w-full object-cover object-top md:object-center"
           />
         )}
 

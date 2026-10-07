@@ -2,55 +2,66 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { backdropToken, tmdbBackdropLoader } from "../tmdb-image";
+import { heroBackdropSrc, heroBackdropSrcSet } from "../tmdb-image";
 
 /**
  * Fase Velocidade 1B — backdrop responsivo do hero.
- * Com images.unoptimized ligado, o next/image não gera srcset sozinho; o loader
- * devolve essa responsividade mapeando a largura pedida para o token do TMDB.
+ *
+ * images.unoptimized é GLOBAL e vence unoptimized={false} por imagem (o Next
+ * força unoptimized = true e serve o src cru sem srcset). Por isso o hero monta
+ * o srcset à mão num <img>, fora do alcance da flag. Estes testes travam a forma
+ * do srcset; a prova de currentSrc real em navegador vai no relatório da PR.
  */
 
 const ler = (p: string) => readFileSync(p, "utf8");
 
-test("backdropToken escolhe o menor token que cobre a largura", () => {
-  assert.equal(backdropToken(300), "w300");
-  assert.equal(backdropToken(640), "w780");
-  assert.equal(backdropToken(780), "w780");
-  assert.equal(backdropToken(1080), "w1280");
-  assert.equal(backdropToken(1280), "w1280");
-});
+const BASE = "https://image.tmdb.org/t/p";
 
-test("telas grandes / 4K / Retina preservam a arte cheia (original)", () => {
-  assert.equal(backdropToken(1281), "original");
-  assert.equal(backdropToken(1920), "original");
-  assert.equal(backdropToken(3840), "original");
-});
-
-test("tmdbBackdropLoader monta a URL do TMDB no token da largura", () => {
+test("heroBackdropSrcSet lista w780, w1280 e original com descritores de largura reais", () => {
   assert.equal(
-    tmdbBackdropLoader({ src: "/abc.jpg", width: 640, quality: 75 }),
-    "https://image.tmdb.org/t/p/w780/abc.jpg",
-  );
-  assert.equal(
-    tmdbBackdropLoader({ src: "/abc.jpg", width: 3840, quality: 75 }),
-    "https://image.tmdb.org/t/p/original/abc.jpg",
+    heroBackdropSrcSet("/abc.jpg"),
+    `${BASE}/w780/abc.jpg 780w, ${BASE}/w1280/abc.jpg 1280w, ${BASE}/original/abc.jpg 3840w`,
   );
   // Caminho sem barra inicial ainda resolve.
   assert.equal(
-    tmdbBackdropLoader({ src: "abc.jpg", width: 1280, quality: 75 }),
-    "https://image.tmdb.org/t/p/w1280/abc.jpg",
+    heroBackdropSrcSet("abc.jpg"),
+    `${BASE}/w780/abc.jpg 780w, ${BASE}/w1280/abc.jpg 1280w, ${BASE}/original/abc.jpg 3840w`,
   );
 });
 
-test("URL completa passa direto pelo loader (já é final)", () => {
-  const url = "https://cdn.exemplo.com/ja-pronto.jpg";
-  assert.equal(tmdbBackdropLoader({ src: url, width: 1920, quality: 75 }), url);
+test("mobile nunca escolhe 'original': só o candidato de 3840w carrega original", () => {
+  const srcset = heroBackdropSrcSet("/abc.jpg")!;
+  const entries = srcset.split(", ").map((e) => {
+    const [url, desc] = e.split(" ");
+    return { url, width: Number(desc.replace("w", "")) };
+  });
+  // Todo candidato com descritor <= 1280 (o teto que um telefone pede, mesmo a
+  // 390px DPR3 ≈ 1170px) aponta para w780/w1280, jamais original.
+  for (const e of entries) {
+    if (e.width <= 1280) assert.doesNotMatch(e.url, /\/original\//);
+  }
+  // original existe apenas no topo (3840w), para telas grandes/4K/Retina.
+  const original = entries.find((e) => /\/original\//.test(e.url));
+  assert.ok(original && original.width === 3840);
 });
 
-test("MediaHero usa o loader responsivo e não serve mais o backdrop em 'original'", () => {
+test("heroBackdropSrc cai em w1280 como fallback seguro; URL completa passa direto", () => {
+  assert.equal(heroBackdropSrc("/abc.jpg"), `${BASE}/w1280/abc.jpg`);
+  const url = "https://cdn.exemplo.com/ja-pronto.jpg";
+  assert.equal(heroBackdropSrc(url), url);
+  // URL completa não tem variantes de token → sem srcSet.
+  assert.equal(heroBackdropSrcSet(url), undefined);
+});
+
+test("MediaHero usa <img> responsivo e não serve mais o backdrop em 'original'", () => {
   const hero = ler("src/components/ui/MediaHero.tsx");
-  assert.match(hero, /loader=\{tmdbBackdropLoader\}/);
-  assert.match(hero, /unoptimized=\{false\}/);
+  assert.match(hero, /srcSet=\{heroBackdropSrcSet\(backdrop\)\}/);
+  assert.match(hero, /src=\{heroBackdropSrc\(backdrop\)\}/);
+  assert.match(hero, /sizes="100vw"/);
+  assert.match(hero, /fetchPriority="high"/);
   // A regressão que 1B corrige: backdrop cru em "original" para todo viewport.
   assert.doesNotMatch(hero, /imgUrl\(backdrop, "original"\)/);
+  // E não voltou a depender do next/image para o backdrop (a flag global o
+  // tornaria src cru sem srcset).
+  assert.doesNotMatch(hero, /loader=\{tmdbBackdropLoader\}/);
 });
