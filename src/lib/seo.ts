@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
+import { publicSiteUrl } from "@/config/public-domain";
 
-const configuredUrl = process.env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+const configuredUrl = process.env.NEXT_PUBLIC_SITE_URL ?? process.env.NEXTAUTH_URL;
 
-export const SITE_URL = configuredUrl.replace(/\/$/, "");
+export const SITE_URL = publicSiteUrl(configuredUrl);
 export const SITE_NAME = "Obaflix";
 export const DEFAULT_DESCRIPTION =
   "Explore o catálogo Obaflix com informações sobre filmes, séries, animes e desenhos, incluindo sinopses, temporadas e novidades.";
