@@ -26,23 +26,43 @@ export function FichaSeoExtra({
   tipo,
   generos,
   extra,
+  dub = false,
+  leg = false,
 }: {
   titulo: string;
   tipo: "filme" | "serie";
   generos: { id: number; nome: string }[];
   extra?: string | null;
+  /** Disponibilidade de áudio — só os booleanos chegam aqui, nunca a URL. */
+  dub?: boolean;
+  leg?: boolean;
 }) {
   const copy =
     tipo === "filme"
-      ? `Para assistir ${titulo}, use o aplicativo Obaflix disponível para Android, Android TV e Windows.`
-      : `Para assistir ${titulo} e seus episódios, baixe o aplicativo Obaflix para Android, Android TV ou Windows.`;
+      ? `Para assistir ${titulo} online, use o aplicativo Obaflix disponível para Android, Android TV e Windows. Nesta página você encontra sinopse, elenco, gêneros e informações do título.`
+      : `Para assistir ${titulo} online e acompanhar seus episódios, use o aplicativo Obaflix para Android, Android TV ou Windows. Nesta página você encontra temporadas, episódios, elenco e gêneros.`;
+
+  // Frase de disponibilidade: derivada só de booleanos, visível, sem URL.
+  const disponibilidade =
+    dub && leg
+      ? "Disponível no aplicativo com opções dublada e legendada."
+      : dub
+        ? "Disponível no aplicativo com opção dublada."
+        : leg
+          ? "Disponível no aplicativo com opção legendada."
+          : null;
 
   return (
     <section aria-labelledby="onde-assistir" className="px-4 pb-16 pt-4 md:px-14">
       <h2 id="onde-assistir" className="text-lg font-bold text-white md:text-xl">
-        Onde assistir {titulo}
+        Onde assistir {titulo} online
       </h2>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-300 md:text-[15px]">{copy}</p>
+      {disponibilidade ? (
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-300 md:text-[15px]">
+          {disponibilidade}
+        </p>
+      ) : null}
       {extra ? (
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-[15px]">{extra}</p>
       ) : null}

@@ -67,3 +67,42 @@ export function mediaMetadata({
 export function catalogPageMetadata(title: string, description: string, path: string): Metadata {
   return mediaMetadata({ title, description, path });
 }
+
+/**
+ * Título da ficha orientado à intenção "assistir <título> online". O template do
+ * layout acrescenta " | Obaflix", então a marca não é repetida aqui.
+ *
+ *   filme com ano: Assistir Oppenheimer online (2023) — onde assistir
+ *   filme sem ano: Assistir Oppenheimer online — onde assistir
+ *   série:         Assistir Dexter online — temporadas e episódios
+ */
+export function tituloFicha(
+  tipo: "filme" | "serie",
+  titulo: string,
+  ano?: number | null,
+): string {
+  if (tipo === "filme") {
+    const base = ano ? `Assistir ${titulo} online (${ano})` : `Assistir ${titulo} online`;
+    return `${base} — onde assistir`;
+  }
+  return `Assistir ${titulo} online — temporadas e episódios`;
+}
+
+/**
+ * Description orientada à intenção + conteúdo único. A sinopse real entra quando
+ * existe (mantém a página específica); sem sinopse, fica só a parte de intenção,
+ * sem inventar conteúdo. A compressão/limite fica por conta de `cleanDescription`
+ * em `mediaMetadata`.
+ */
+export function descricaoFicha(
+  tipo: "filme" | "serie",
+  titulo: string,
+  sinopse?: string | null,
+): string {
+  const intro =
+    tipo === "filme"
+      ? `Quer assistir ${titulo} online? Confira sinopse, elenco, gêneros e como assistir pelo aplicativo Obaflix.`
+      : `Quer assistir ${titulo} online? Veja temporadas, episódios, elenco, gêneros e como assistir pelo aplicativo Obaflix.`;
+  const s = sinopse?.trim();
+  return s ? `${intro} ${s}` : intro;
+}

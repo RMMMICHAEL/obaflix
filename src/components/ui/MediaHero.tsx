@@ -16,6 +16,12 @@ export interface MediaHeroProps {
   conteudoId: string;
   tipo: "filme" | "serie" | "anime" | "desenho";
   titulo: string;
+  /**
+   * Título visível do H1 orientado à intenção ("Assistir <Título> online").
+   * Quando ausente, cai no `titulo`. É sempre texto real e legível — nunca
+   * sr-only — e o H1 continua único.
+   */
+  heading?: string;
   tituloOriginal?: string | null;
   /** Caminho do TMDB (/abc.jpg) ou URL completa. */
   backdrop?: string | null;
@@ -68,6 +74,7 @@ export function MediaHero({
   conteudoId,
   tipo,
   titulo,
+  heading,
   tituloOriginal,
   backdrop,
   logo,
@@ -255,13 +262,15 @@ export function MediaHero({
         bloco desce pro rodape, que e onde a referencia ancora tudo.
       */}
       <div className="relative z-10 flex flex-col px-4 pb-10 pt-[40vw] sm:pt-[36vw] md:min-h-[min(86vh,860px)] md:justify-end md:px-14 md:pb-16 md:pt-40">
-        {/* Logo oficial em PNG transparente — ou o titulo estilizado no lugar. */}
+        {/* H1 único. O texto visível é o `heading` ("Assistir <Título> online");
+            quando ausente, cai no título puro. Nunca sr-only: a palavra-chave
+            fica legível para o usuário, não escondida para o crawler. */}
         <h1 className="mb-4 md:mb-5">
           {logoSrc ? (
-            <>
-              {/* O logo carrega a marca do titulo em imagem. O texto vai no span
-                  para o h1 existir como texto na pagina, e nao so como alt — por
-                  isso a imagem fica decorativa e o titulo nao e lido duas vezes. */}
+            <span className="flex flex-col gap-2">
+              {/* A logo carrega a marca em imagem e é decorativa (aria-hidden):
+                  quem dá o texto do H1 é a linha visível abaixo, então o nome não
+                  é lido duas vezes. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={logoSrc}
@@ -269,14 +278,16 @@ export function MediaHero({
                 aria-hidden="true"
                 className="h-auto max-h-[clamp(4.5rem,15vw,9.5rem)] w-auto max-w-[min(26rem,78vw)] object-contain object-left drop-shadow-[0_6px_28px_rgba(0,0,0,0.75)]"
               />
-              <span className="sr-only">{titulo}</span>
-            </>
+              <span className="text-sm font-semibold text-zinc-200 md:text-base">
+                {heading ?? titulo}
+              </span>
+            </span>
           ) : (
             <span
               className="block max-w-[18ch] bg-gradient-to-b from-white via-white to-zinc-400 bg-clip-text text-[clamp(2.25rem,6.5vw,4.5rem)] font-normal uppercase leading-[0.9] tracking-[0.01em] text-transparent"
               style={{ fontFamily: "var(--font-bebas), Inter, system-ui, sans-serif" }}
             >
-              {titulo}
+              {heading ?? titulo}
             </span>
           )}
         </h1>

@@ -21,7 +21,7 @@ import { MediaHero } from "@/components/ui/MediaHero";
 import { PeopleRow, type PeopleRowItem } from "@/components/ui/PeopleRow";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { absoluteUrl, mediaMetadata } from "@/lib/seo";
+import { absoluteUrl, mediaMetadata, tituloFicha, descricaoFicha } from "@/lib/seo";
 import { AcquisitionProvider } from "@/components/catalog/AcquisitionProvider";
 import { FichaSeoExtra } from "@/components/catalog/FichaSeoExtra";
 import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
@@ -54,14 +54,13 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   });
   if (!serie) return { title: "Série não encontrada", robots: { index: false, follow: false } };
 
-  // "temporadas, episódios e onde assistir" cobre o intento de busca da série; o
-  // template do layout acrescenta " | Obaflix". A description segue a sinopse
-  // real (única por título), sem texto repetido entre páginas. Canonical slug--id.
-  const title = `${serie.titulo} — temporadas, episódios e onde assistir`;
+  // Intenção "assistir <título> online"; o template do layout acrescenta
+  // " | Obaflix". A description combina a chamada de intenção com a sinopse real
+  // — mesma string vai para OG/Twitter via mediaMetadata. Canonical slug--id.
   const image = serie.background ?? serie.poster;
   return mediaMetadata({
-    title,
-    description: serie.sinopse,
+    title: tituloFicha("serie", serie.titulo),
+    description: descricaoFicha("serie", serie.titulo, serie.sinopse),
     path: catalogPath("serie", id, serie.titulo),
     image: image ? imgUrl(image, "original") : null,
     type: "video.tv_show",
@@ -111,6 +110,11 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     dub: Boolean(urlDub),
     leg: Boolean(urlLeg),
   }));
+
+  // Disponibilidade de áudio da série: só os booleanos derivados — a URL nunca
+  // sai do servidor. Alimenta a frase visível do bloco SEO.
+  const temDub = episodiosPublicos.some((e) => e.dub);
+  const temLeg = episodiosPublicos.some((e) => e.leg);
 
   const temporadas = Array.from(new Set(episodios.map((e) => e.temporada))).sort((a, b) => a - b);
 
@@ -249,6 +253,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         conteudoId={serie.id}
         tipo={serie.tipo as any}
         titulo={serie.titulo}
+        heading={`Assistir ${serie.titulo} online`}
         tituloOriginal={serie.tituloOriginal}
         backdrop={heroBackdrop}
         logo={heroLogo}
@@ -338,7 +343,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
         </div>
       )}
 
-      <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} />
+      <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} dub={temDub} leg={temLeg} />
     </div>
     </AcquisitionProvider>
     </EstadoPessoalProvider>

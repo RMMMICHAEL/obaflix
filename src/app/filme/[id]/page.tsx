@@ -18,7 +18,7 @@ import { PeopleRow } from "@/components/ui/PeopleRow";
 import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { absoluteUrl, mediaMetadata } from "@/lib/seo";
+import { absoluteUrl, mediaMetadata, tituloFicha, descricaoFicha } from "@/lib/seo";
 import { AcquisitionProvider } from "@/components/catalog/AcquisitionProvider";
 import { FichaSeoExtra } from "@/components/catalog/FichaSeoExtra";
 import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
@@ -65,15 +65,13 @@ export async function generateMetadata({ params }: { params: { id: string } }) {
   });
   if (!filme) return { title: "Filme não encontrado", robots: { index: false, follow: false } };
 
-  // "— onde assistir" dá o intento de busca; o template do layout acrescenta
-  // " | Obaflix". A description continua sendo a sinopse real (única por título),
-  // não um texto repetido de "onde assistir online". Canonical na URL slug--id.
-  const base = filme.ano ? `${filme.titulo} (${filme.ano})` : filme.titulo;
-  const title = `${base} — onde assistir`;
+  // Intenção "assistir <título> online"; o template do layout acrescenta
+  // " | Obaflix". A description combina a chamada de intenção com a sinopse real
+  // (conteúdo único) — mesma string vai para OG/Twitter via mediaMetadata.
   const image = filme.background ?? filme.poster;
   return mediaMetadata({
-    title,
-    description: filme.sinopse,
+    title: tituloFicha("filme", filme.titulo, filme.ano),
+    description: descricaoFicha("filme", filme.titulo, filme.sinopse),
     path: catalogPath("filme", id, filme.titulo),
     image: image ? imgUrl(image, "original") : null,
     type: "video.movie",
@@ -205,6 +203,7 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         conteudoId={filme.id}
         tipo="filme"
         titulo={filme.titulo}
+        heading={`Assistir ${filme.titulo} online`}
         tituloOriginal={filme.tituloOriginal}
         backdrop={heroBackdrop}
         logo={heroLogo}
@@ -252,6 +251,8 @@ export default async function FilmePage({ params }: { params: { id: string } }) 
         tipo="filme"
         generos={generosLinks}
         extra={descricaoFilme}
+        dub={!!filme.urlDub}
+        leg={!!filme.urlLeg}
       />
     </div>
     </AcquisitionProvider>
