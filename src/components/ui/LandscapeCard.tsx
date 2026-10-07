@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
 import { catalogPath } from "@/lib/catalog-url";
+import { useIntentPrefetch } from "./useIntentPrefetch";
 
 function imgFallback(e: React.SyntheticEvent<HTMLImageElement>) {
   (e.currentTarget as HTMLImageElement).src = "/placeholder.jpg";
@@ -66,6 +67,13 @@ export function LandscapeCard({
   const isGrid = layout === "grid";
   const href = catalogPath(tipo, id, titulo);
 
+  // Prefetch por intenção: prepara ESTE destino quando o card recebe hover/foco,
+  // em vez do prefetch por viewport do <Link> (desligado abaixo com
+  // prefetch={false}), que preparava o catálogo inteiro ao rolar. A imagem
+  // relevante é o backdrop do destino em w1280 — o hero da página de detalhe
+  // reaproveita essa mesma arte, então decodificá-la antes adianta o LCP de lá.
+  const intentHandlers = useIntentPrefetch(href, background ? imgUrl(background, "w1280") : null);
+
   // O backdrop e a imagem certa para 16:9. O poster so entra como ultimo
   // recurso: recortado no meio, ele perde justamente o enquadramento que
   // identifica o titulo.
@@ -85,8 +93,9 @@ export function LandscapeCard({
       className={`relative group/card ${
         isGrid ? "w-full min-w-0" : "shrink-0 w-[clamp(230px,21vw,320px)]"
       }`}
+      {...intentHandlers}
     >
-      <Link href={href} title={titulo}>
+      <Link href={href} title={titulo} prefetch={false}>
         <div className="relative aspect-video rounded-lg overflow-hidden bg-zinc-900 cursor-pointer transition-transform duration-200 ease-out group-hover/card:scale-[1.03]">
 
           <Image
