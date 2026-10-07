@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
+import { tmdbBackdropLoader } from "@/lib/tmdb-image";
 import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
@@ -119,7 +120,6 @@ export function MediaHero({
     ? `/assistir/serie/${conteudoId}/t${continuar!.temporada}/ep${continuar!.numeroEp}`
     : watchHref;
 
-  const bgSrc = backdrop ? imgUrl(backdrop, "original") : "/placeholder-bg.jpg";
   const logoSrc = logoUrl(logo, "w500");
   const podeExpandir = (sinopse?.length ?? 0) > SINOPSE_LONGA;
 
@@ -224,15 +224,34 @@ export function MediaHero({
         ela preenche o hero inteiro.
       */}
       <div className="pointer-events-none absolute inset-x-0 top-0 aspect-[3/2] sm:aspect-video md:inset-0 md:aspect-auto">
-        <Image
-          src={bgSrc}
-          alt=""
-          aria-hidden="true"
-          fill
-          sizes="100vw"
-          priority
-          className="object-cover object-top md:object-center"
-        />
+        {backdrop ? (
+          // Backdrop responsivo: o loader mapeia a largura pedida (DPR incluso)
+          // para o token do TMDB, então o srcset volta a existir mesmo com o
+          // optimizer da Vercel desligado. unoptimized={false} é o que reativa a
+          // geração de srcset SÓ para esta imagem — o loader aponta direto para o
+          // TMDB, sem custo de optimizer. priority emite o preload já responsivo.
+          <Image
+            src={backdrop}
+            loader={tmdbBackdropLoader}
+            unoptimized={false}
+            alt=""
+            aria-hidden="true"
+            fill
+            sizes="100vw"
+            priority
+            className="object-cover object-top md:object-center"
+          />
+        ) : (
+          <Image
+            src="/placeholder-bg.jpg"
+            alt=""
+            aria-hidden="true"
+            fill
+            sizes="100vw"
+            priority
+            className="object-cover object-top md:object-center"
+          />
+        )}
 
         {/* Degrade inferior: e ele que funde a imagem com o resto da pagina. */}
         <div
