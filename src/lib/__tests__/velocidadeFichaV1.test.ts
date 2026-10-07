@@ -18,7 +18,8 @@ const ler = (p: string) => readFileSync(p, "utf8");
 const semBloco = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "");
 const page = () => ler("src/app/serie/[id]/page.tsx");
 const grid = () => ler("src/app/serie/[id]/EpisodeGrid.tsx");
-const secundario = () => ler("src/app/serie/[id]/SerieSecundario.tsx");
+const creditosClient = () => ler("src/app/serie/[id]/SerieCreditosClient.tsx");
+const recsClient = () => ler("src/app/serie/[id]/SerieRecomendacoesClient.tsx");
 const endpoint = () => ler("src/app/api/series/[id]/temporada/[temporada]/route.ts");
 
 // ── 4. Temporadas: nada de all-seasons no render inicial ─────────────────────
@@ -68,9 +69,10 @@ test("a página descarta urlDub/urlLeg antes do payload público dos episódios"
   assert.match(page(), /episodios\.map\(\(\{ urlDub, urlLeg, \.\.\.ep \}\)/);
 });
 
-test("nem a grade, nem os componentes secundários, nem o endpoint conhecem URL de mídia", () => {
+test("nem a grade, nem os componentes clientes, nem o endpoint conhecem URL de mídia", () => {
   assert.doesNotMatch(semBloco(grid()), /urlDub|urlLeg/);
-  assert.doesNotMatch(semBloco(secundario()), /urlDub|urlLeg/);
+  assert.doesNotMatch(semBloco(creditosClient()), /urlDub|urlLeg/);
+  assert.doesNotMatch(semBloco(recsClient()), /urlDub|urlLeg/);
   assert.doesNotMatch(semBloco(endpoint()), /urlDub|urlLeg/);
 });
 
@@ -100,36 +102,51 @@ test("fallback de thumbnail do episódio continua (local → metadata TMDB)", ()
   assert.match(grid(), /ep\.thumbnail \?\? metadata\?\.thumbnail/);
 });
 
-// ── 3/5/6. Secundário deferido via Suspense, mas presente ────────────────────
+// ── 3/5/6. Secundário fora do ISR: client components (Fase 1A.2) ─────────────
 
-test("elenco, recomendações e JSON-LD da série ficam em <Suspense>, sem bloquear", () => {
+test("elenco e recomendações são buscados no cliente, fora do ISR (sem <Suspense>)", () => {
   const src = page();
-  assert.match(src, /import \{ Suspense \} from "react"/);
-  assert.match(src, /<Suspense fallback=\{null\}>\s*<SerieCreditos/);
-  assert.match(src, /<Suspense fallback=\{null\}>\s*<SerieRecomendacoes/);
+  assert.match(src, /<SerieCreditosClient serieId=\{serie\.id\} \/>/);
+  assert.match(src, /<SerieRecomendacoesClient serieId=\{serie\.id\} serieTitulo=\{serie\.titulo\} \/>/);
+  // Não há mais Suspense server segurando o secundário.
+  assert.doesNotMatch(src, /<Suspense/);
 });
 
-test("PeopleRow (elenco/direção) continua existindo no bloco secundário", () => {
-  const src = secundario();
+test("PeopleRow (elenco/direção) continua existindo, agora no client component", () => {
+  const src = creditosClient();
+  assert.match(src, /"use client"/);
   assert.match(src, /title="Criação e direção"/);
   assert.match(src, /title="Elenco principal"/);
   const peopleRows = src.match(/<PeopleRow/g) ?? [];
   assert.equal(peopleRows.length, 2);
+  // Busca o endpoint público de créditos.
+  assert.match(src, /fetch\(`\/api\/series\/\$\{serieId\}\/creditos`/);
 });
 
-test("'Conteúdos parecidos' continua existindo no bloco secundário", () => {
-  const src = secundario();
+test("'Conteúdos parecidos' continua existindo, agora no client component", () => {
+  const src = recsClient();
+  assert.match(src, /"use client"/);
   assert.match(src, /Conteúdos parecidos com \$\{serieTitulo\}/);
   assert.match(src, /<LandscapeRow/);
+  assert.match(src, /fetch\(`\/api\/series\/\$\{serieId\}\/recomendacoes`/);
 });
 
-// ── 9. SEO existente não regride ─────────────────────────────────────────────
+// ── 9. SEO: JSON-LD TVSeries volta ao HTML inicial, sem `actor` ──────────────
 
-test("JSON-LD preservado: breadcrumb crítico + TVSeries (com actor) no secundário", () => {
-  assert.match(page(), /<JsonLd data=\{breadcrumbSchema\} \/>/);
-  const src = secundario();
+test("JSON-LD no HTML inicial: breadcrumb + TVSeries (campos sem créditos), actor fora", () => {
+  const src = page();
+  assert.match(src, /<JsonLd data=\{\[seriesSchema, breadcrumbSchema\]\} \/>/);
   assert.match(src, /"@type": "TVSeries"/);
-  assert.match(src, /actor: cast\.map\(\(person\) => \(\{ "@type": "Person", name: person\.name \}\)\)/);
+  // Todos os campos que não dependem de créditos ficam no HTML inicial.
+  for (const campo of [
+    "name:", "alternateName:", "description:", "image:", "dateCreated:",
+    "numberOfSeasons:", "numberOfEpisodes:", "genre:", "contentRating:",
+    "aggregateRating:", "url:", "identifier:", "inLanguage:",
+  ]) {
+    assert.ok(src.includes(campo), `seriesSchema deve manter ${campo}`);
+  }
+  // `actor` depende do elenco (TMDB secundário) e NÃO entra no JSON-LD do servidor.
+  assert.doesNotMatch(src, /actor:/);
 });
 
 test("metadata/canonical/H1/FichaSeoExtra da série preservados", () => {

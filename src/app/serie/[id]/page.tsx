@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import {
   imgUrl,
@@ -13,7 +12,8 @@ import {
 import { extrairMetadataEpisodios } from "@/lib/tmdbEpisodios";
 import { prisma } from "@/lib/prisma";
 import { EpisodeGrid } from "./EpisodeGrid";
-import { SerieCreditos, SerieRecomendacoes } from "./SerieSecundario";
+import { SerieCreditosClient } from "./SerieCreditosClient";
+import { SerieRecomendacoesClient } from "./SerieRecomendacoesClient";
 import { EstadoPessoalProvider } from "@/components/ui/EstadoPessoal";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
 import { MediaHero } from "@/components/ui/MediaHero";
@@ -82,8 +82,8 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
 
   // ── Caminho crítico: só o necessário para a ficha ficar utilizável ──────────
   // Série + episódios (Prisma), trailer e classificação do hero, e imagens do
-  // TMDB APENAS quando faltar arte local. Elenco, direção, recomendações e o
-  // JSON-LD da série (que depende do elenco) saem daqui para <Suspense> abaixo.
+  // TMDB APENAS quando faltar arte local. Elenco, direção e recomendações são
+  // buscados no cliente (endpoints públicos), fora do ISR — ver blocos abaixo.
   const precisaImagens = !serie.background || !serie.logo;
   const [episodios, videos, certificacao, images] = await Promise.all([
     prisma.episodio.findMany({
@@ -148,7 +148,6 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
   const canonicalUrl = absoluteUrl(catalogPath("serie", serie.id, serie.titulo));
   const generosLinks = serie.generos.map((g: any) => ({ id: g.generoId, nome: g.genero.nome }));
   const genres = serie.generos.map((item: any) => item.genero.nome);
-  const generoIds = serie.generos.map((g: any) => g.generoId);
 
   // Frase derivada SÓ de dados reais: contagem de temporadas e episódios.
   const nTemporadas = temporadas.length || serie.temporadas || 0;
@@ -157,11 +156,37 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     nEpisodios > 0
       ? `${serie.titulo} possui ${nTemporadas} ${nTemporadas === 1 ? "temporada" : "temporadas"} e ${nEpisodios} ${nEpisodios === 1 ? "episódio" : "episódios"} disponíveis no catálogo.`
       : null;
-  // O JSON-LD da série (TVSeries, com `actor` do elenco) é emitido pelo
-  // SerieCreditos no <Suspense> — o conteúdo é idêntico, só sai do caminho
-  // crítico porque depende do elenco. O breadcrumb, que não depende do TMDB,
-  // continua crítico.
+  // JSON-LD da série no HTML inicial (ISR), com TODOS os campos que não dependem
+  // de créditos. Só `actor` ficou de fora: depende do elenco (TMDB secundário,
+  // agora client-side) e é opcional — a página não espera os créditos por ele.
+  // Ver nota de SEO no relatório da Fase 1A.2.
   const numberOfSeasons = serie.temporadas || temporadas.length;
+  const seriesSchema = {
+    "@context": "https://schema.org",
+    "@type": "TVSeries",
+    name: serie.titulo,
+    alternateName: serie.tituloOriginal || undefined,
+    description: serie.sinopse || undefined,
+    image: serie.poster ? imgUrl(serie.poster, "w500") : undefined,
+    dateCreated: serie.ano ? String(serie.ano) : undefined,
+    numberOfSeasons: numberOfSeasons || undefined,
+    numberOfEpisodes: nEpisodios || undefined,
+    genre: genres,
+    contentRating: certificacao || undefined,
+    aggregateRating:
+      serie.nota && serie.voteCount && serie.voteCount > 0
+        ? {
+            "@type": "AggregateRating",
+            ratingValue: serie.nota,
+            bestRating: 10,
+            worstRating: 0,
+            ratingCount: serie.voteCount,
+          }
+        : undefined,
+    url: canonicalUrl,
+    identifier: serie.imdbId || serie.tmdbId || serie.id,
+    inLanguage: "pt-BR",
+  };
 
   // Série "pura" ganha o degrau Séries (/series já é página pública, Fase 2).
   // Anime e desenho seguem Início › Título por enquanto: /animes e /desenhos
@@ -184,7 +209,7 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
     <EstadoPessoalProvider conteudoId={serie.id} tipo="serie">
     <AcquisitionProvider streamingAberto={WEB_STREAMING_ENABLED}>
     <div className="min-h-screen">
-      <JsonLd data={breadcrumbSchema} />
+      <JsonLd data={[seriesSchema, breadcrumbSchema]} />
 
       <MediaHero
         conteudoId={serie.id}
@@ -263,30 +288,14 @@ export default async function SeriePage({ params }: { params: { id: string } }) 
           ]}
         />
 
-        {/* Elenco/direção + JSON-LD da série: fora do caminho crítico. Chegam
-            abaixo do hero/episódios, sem segurar a parte principal. */}
-        <Suspense fallback={null}>
-          <SerieCreditos
-            serie={serie}
-            genres={genres}
-            certificacao={certificacao}
-            canonicalUrl={canonicalUrl}
-            numberOfSeasons={numberOfSeasons}
-            numberOfEpisodes={nEpisodios}
-          />
-        </Suspense>
+        {/* Elenco/direção: buscados no cliente (endpoint público), fora do ISR.
+            O hero/episódios não esperam por eles. */}
+        <SerieCreditosClient serieId={serie.id} />
       </div>
 
-      {/* Conteúdos parecidos: cards são links HTML reais. Também fora do
-          caminho crítico — aparecem quando os dados chegarem. */}
-      <Suspense fallback={null}>
-        <SerieRecomendacoes
-          serieId={serie.id}
-          tmdbId={serie.tmdbId}
-          serieTitulo={serie.titulo}
-          generoIds={generoIds}
-        />
-      </Suspense>
+      {/* Conteúdos parecidos: também buscados no cliente, fora do ISR. Cards são
+          links HTML reais; aparecem quando os dados chegarem. */}
+      <SerieRecomendacoesClient serieId={serie.id} serieTitulo={serie.titulo} />
 
       <FichaSeoExtra titulo={serie.titulo} tipo="serie" generos={generosLinks} dub={temDub} leg={temLeg} />
     </div>
