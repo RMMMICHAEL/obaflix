@@ -6,6 +6,7 @@ import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Breadcrumbs } from "@/components/seo/Breadcrumbs";
 import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { fatiarPagina, takeComSonda } from "@/lib/paginacao";
 import { genrePath } from "@/lib/catalog-url";
 import { buscarGeneroPorParam } from "./genero-data";
 
@@ -13,18 +14,24 @@ import { buscarGeneroPorParam } from "./genero-data";
  * Página de gênero, agora server-rendered: a primeira resposta já traz conteúdo
  * útil e indexável (antes dependia de JS + fetch nas APIs após a hidratação).
  *
- * - URL canônica `/genero/<slug>--<id>`; o id puro legado (`/genero/80`) e
- *   qualquer slug divergente redirecionam 308 para a canônica.
- * - Paginação controlada: `?page=N` (N>1) responde `noindex, follow` e aponta o
- *   canonical para a base, para parâmetros não gerarem milhares de páginas SEO.
- * - 2 consultas por render (filmes + séries do gênero, com teto). Sem count: o
- *   "próxima página" é inferido pelo tamanho da página cheia.
+ * - URL canônica `/genero/<slug>--<id>`; o id puro legado (`/genero/80`), um id
+ *   duplicado (`/genero/terror--27`) e qualquer slug divergente redirecionam 308
+ *   para o canônico do grupo (`/genero/terror--5`, o menor id — ver genero-data).
+ * - Paginação rastreável: cada página é indexável e self-canonical
+ *   (`?page=N` canoniza para si mesma, não para a base), para o catálogo inteiro
+ *   do gênero ser alcançável por `page=1,2,3...`. `page=1` usa a URL limpa.
+ * - 2 consultas por render (filmes + séries do grupo, `generoId in ids`, com
+ *   teto). Sem count: o "próxima página" é inferido pelo tamanho da página cheia.
  */
 export const dynamic = "force-dynamic";
 
 const POR_PAGINA = 30;
 const SEL = { id: true, titulo: true, poster: true, background: true, logo: true, ano: true, nota: true } as const;
+// Popularidade desc (nulls por último) + id asc como desempate determinístico:
+// sem o desempate, títulos com popularidade empatada podem trocar de página
+// entre requisições (sumir/repetir). O `id` fixa a ordem.
 const porPopularidade = { popularidade: { sort: "desc", nulls: "last" } } as const;
+const ordenacao = [porPopularidade, { id: "asc" as const }];
 
 function lerPagina(searchParams?: { page?: string }) {
   const n = Number(searchParams?.page ?? 1);
@@ -41,14 +48,24 @@ export async function generateMetadata({
   const genero = await buscarGeneroPorParam(params.id);
   if (!genero) return { title: "Gênero não encontrado", robots: { index: false, follow: false } };
 
-  const md = mediaMetadata({
-    title: `Filmes e séries de ${genero.nome}`,
+  // Paginação rastreável: cada página é indexável e aponta o canonical para si
+  // mesma (`?page=N`), nunca para a base — assim `page=2,3...` não são tratadas
+  // como duplicatas e o catálogo inteiro do gênero fica alcançável e indexável.
+  // A regra index/noindex continua vindo de catalogRobots() (flag global), igual
+  // à base: quando CONTENT_INDEXING_ENABLED=true, page=2 também é index/follow.
+  const page = lerPagina(searchParams);
+  const base = genrePath(genero.id, genero.nome);
+  const path = page > 1 ? `${base}?page=${page}` : base;
+  const title =
+    page > 1
+      ? `Filmes e séries de ${genero.nome} — página ${page}`
+      : `Filmes e séries de ${genero.nome}`;
+
+  return mediaMetadata({
+    title,
     description: `Explore filmes e séries de ${genero.nome} disponíveis no catálogo Obaflix. Para assistir, baixe o aplicativo para Android, Android TV e Windows.`,
-    path: genrePath(genero.id, genero.nome),
+    path,
   });
-  // Página paginada não disputa indexação com a base; canonical segue na base.
-  if (lerPagina(searchParams) > 1) md.robots = { index: false, follow: true };
-  return md;
 }
 
 export default async function GeneroPage({
@@ -68,34 +85,48 @@ export default async function GeneroPage({
   const page = lerPagina(searchParams);
   const skip = (page - 1) * POR_PAGINA;
 
-  const [filmes, series] = await Promise.all([
+  // `generoId in ids`: consulta o grupo semântico inteiro (ex. [5, 27]). O `some`
+  // garante que um filme/série ligado a mais de um id do grupo apareça UMA vez — a
+  // própria findMany do modelo não multiplica a linha.
+  //
+  // `takeComSonda`: busca POR_PAGINA + 1. A linha extra é a sonda de "próxima
+  // página" sem COUNT — se voltar, há mais conteúdo; é descartada antes de exibir.
+  // O `skip` continua múltiplo de POR_PAGINA (nunca 31) — a sonda não desloca o
+  // início da página seguinte.
+  const [filmesCru, seriesCru] = await Promise.all([
     prisma.filme.findMany({
-      where: filmeDisponivel({ generos: { some: { generoId: genero.id } } }),
-      orderBy: porPopularidade,
+      where: filmeDisponivel({ generos: { some: { generoId: { in: genero.ids } } } }),
+      orderBy: ordenacao,
       skip,
-      take: POR_PAGINA,
+      take: takeComSonda(POR_PAGINA),
       select: SEL,
     }),
     prisma.serie.findMany({
-      where: serieDisponivel({ generos: { some: { generoId: genero.id } } }),
-      orderBy: porPopularidade,
+      where: serieDisponivel({ generos: { some: { generoId: { in: genero.ids } } } }),
+      orderBy: ordenacao,
       skip,
-      take: POR_PAGINA,
+      take: takeComSonda(POR_PAGINA),
       select: { ...SEL, tipo: true },
     }),
   ]);
+
+  const { filmes: filmesPagina, series: seriesPagina, temProxima } = fatiarPagina(
+    filmesCru,
+    seriesCru,
+    POR_PAGINA,
+  );
 
   // Intercala filmes e séries para variedade, como na versão anterior.
   const itens: any[] = [];
   let fi = 0;
   let si = 0;
-  while (fi < filmes.length || si < series.length) {
-    if (fi < filmes.length) {
-      itens.push({ ...filmes[fi], tipo: "filme" as const });
+  while (fi < filmesPagina.length || si < seriesPagina.length) {
+    if (fi < filmesPagina.length) {
+      itens.push({ ...filmesPagina[fi], tipo: "filme" as const });
       fi++;
     }
-    if (si < series.length) {
-      const s = series[si] as any;
+    if (si < seriesPagina.length) {
+      const s = seriesPagina[si] as any;
       itens.push({ ...s, tipo: s.tipo ?? "serie" });
       si++;
     }
@@ -105,8 +136,6 @@ export default async function GeneroPage({
   // de um 200 vazio. Vale para a base (gênero sem nada reproduzível) e para
   // páginas além do fim (`?page=N` grande): nada a mostrar, nada a indexar.
   if (itens.length === 0) notFound();
-
-  const temProxima = filmes.length === POR_PAGINA || series.length === POR_PAGINA;
 
   const breadcrumbSchema = {
     "@context": "https://schema.org",

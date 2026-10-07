@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { absoluteUrl, catalogIndexingEnabled } from "@/lib/seo";
 import { catalogPath, genrePath } from "@/lib/catalog-url";
 import { filmeDisponivel, serieDisponivel } from "@/lib/catalog-availability";
+import { groupGenres } from "@/lib/genres";
 import {
   CatalogoTipo,
   linhasDoShard,
@@ -31,19 +32,34 @@ async function paginasFixas() {
   urls.push(absoluteUrl("/filmes"), absoluteUrl("/series"));
 
   try {
-    // Somente generos com conteudo disponivel (um filme OU uma serie/anime/
-    // desenho reproduzivel). Uma consulta so, sem N+1: a disponibilidade e um
-    // filtro de relacao resolvido no banco.
+    // UMA URL por genero semantico (Fase 4): generos duplicados (ex. terror 5 e
+    // 27) compartilham slug e viram um grupo so, anunciado apenas pelo canonico
+    // (menor id do grupo). Sem isto o sitemap listava terror--5 E terror--27.
+    //
+    // Uma consulta so, sem N+1: cada genero ja traz uma amostra (take: 1) de
+    // filme/serie reproduzivel, entao a disponibilidade sai do mesmo SELECT.
+    // Nao ha where no nivel do genero: precisamos de TODOS os registros para o
+    // canonico ser o menor id do grupo mesmo quando so o outro id tem conteudo
+    // (ex. 5 vazio, 27 com conteudo -> ainda assim terror--5).
     const generos = await prisma.genero.findMany({
-      where: {
-        OR: [
-          { filmes: { some: { filme: filmeDisponivel() } } },
-          { series: { some: { serie: serieDisponivel() } } },
-        ],
+      select: {
+        id: true,
+        nome: true,
+        filmes: { where: { filme: filmeDisponivel() }, take: 1, select: { generoId: true } },
+        series: { where: { serie: serieDisponivel() }, take: 1, select: { generoId: true } },
       },
-      select: { id: true, nome: true },
     });
-    urls.push(...generos.map((genero) => absoluteUrl(genrePath(genero.id, genero.nome))));
+
+    const comConteudo = new Set(
+      generos.filter((g) => g.filmes.length > 0 || g.series.length > 0).map((g) => g.id),
+    );
+
+    for (const grupo of groupGenres(generos.map((g) => ({ id: g.id, nome: g.nome })))) {
+      // Grupo entra quando QUALQUER membro tem conteudo disponivel.
+      if (grupo.ids.some((id) => comConteudo.has(id))) {
+        urls.push(absoluteUrl(genrePath(grupo.id, grupo.nome)));
+      }
+    }
   } catch (error) {
     console.error("[sitemap] Generos indisponiveis; paginas fixas seguem sem eles.", error);
   }
