@@ -87,14 +87,20 @@ export function EpisodeGrid({
     temporadasCarregadas.current.add(temp);
     const ac = new AbortController();
     fetch(`/api/series/${serieId}/temporada/${temp}`, { signal: ac.signal })
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        // 503 (falha transitória do TMDB) e afins entram no caminho de erro,
+        // senão a temporada ficaria marcada como carregada para sempre.
+        if (!r.ok) throw new Error("metadata");
+        return r.json();
+      })
       .then((data) => {
         if (!data) return;
         if (data.ratingMap) setRatings((prev) => ({ ...prev, ...data.ratingMap }));
         if (data.metadataMap) setMetas((prev) => ({ ...prev, ...data.metadataMap }));
       })
       .catch(() => {
-        // Falha ou abort: libera para tentar de novo numa próxima seleção.
+        // Falha, resposta não-OK ou abort: libera a temporada para nova
+        // tentativa numa próxima seleção. Sem log de URL/corpo/erro técnico.
         temporadasCarregadas.current.delete(temp);
       });
     return () => ac.abort();

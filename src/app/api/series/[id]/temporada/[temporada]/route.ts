@@ -14,12 +14,14 @@ import { extrairMetadataEpisodios } from "@/lib/tmdbEpisodios";
  * Devolve apenas overview, runtime, thumbnail (still_path) e nota por episódio —
  * os mesmos campos que a grade já mostrava. NUNCA urlDub/urlLeg, provider, token,
  * URL de mídia ou dado de usuário: é só um recorte do TMDB, igual para todos os
- * visitantes, então pode ser cache público.
+ * visitantes, então o sucesso pode ser cache público.
  *
- * `temporada` é validada como inteiro pequeno e o tmdbId vem do nosso banco (não
- * do cliente), então não há como apontar o fetch para uma URL arbitrária.
+ * `temporada` é validada como inteiro pequeno E precisa existir localmente (há
+ * episódio dessa temporada); o tmdbId vem do nosso banco (não do cliente), então
+ * não há como apontar o fetch para uma URL arbitrária nem disparar chamadas ao
+ * TMDB para temporadas inexistentes.
  */
-export const revalidate = 86400;
+export const dynamic = "force-dynamic";
 
 const TEMPORADA_MAX = 1000;
 
@@ -32,20 +34,38 @@ export async function GET(
     return NextResponse.json({ error: "Temporada inválida" }, { status: 400 });
   }
 
-  const serie = await prisma.serie.findUnique({
-    where: { id: params.id },
+  // UMA consulta: a série existe E tem ao menos um episódio dessa temporada. Sem
+  // isto, um serieId válido permitiria disparar fetches ao TMDB para centenas de
+  // temporadas inexistentes. Sem COUNT, sem segunda consulta.
+  const serie = await prisma.serie.findFirst({
+    where: { id: params.id, episodios: { some: { temporada } } },
     select: { tmdbId: true },
   });
   if (!serie) return NextResponse.json({ error: "Não encontrado" }, { status: 404 });
 
-  // Sem tmdbId não há metadata TMDB — resposta vazia válida (a grade usa os
-  // dados locais do episódio).
-  const details = serie.tmdbId ? await getTVSeasonDetails(serie.tmdbId, temporada) : null;
-  const maps = extrairMetadataEpisodios([details]);
+  // Sem tmdbId não há metadata TMDB — resposta vazia válida e cacheável (a grade
+  // usa os dados locais do episódio). Não é falha, é ausência legítima de dado.
+  if (!serie.tmdbId) {
+    return NextResponse.json(extrairMetadataEpisodios([null]), {
+      headers: { "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=604800" },
+    });
+  }
 
+  const details = await getTVSeasonDetails(serie.tmdbId, temporada);
+
+  // getTVSeasonDetails devolve null também em timeout/erro da origem. Como a
+  // temporada EXISTE localmente, null aqui é falha transitória — não pode virar
+  // `{}` cacheado por 24h. 503 sem cache + Retry-After curto para o cliente
+  // tentar de novo; a resposta não revela nada da origem.
+  if (!details) {
+    return NextResponse.json(
+      { error: "Metadata temporariamente indisponível" },
+      { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "60" } },
+    );
+  }
+
+  const maps = extrairMetadataEpisodios([details]);
   return NextResponse.json(maps, {
-    headers: {
-      "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=604800",
-    },
+    headers: { "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=604800" },
   });
 }
