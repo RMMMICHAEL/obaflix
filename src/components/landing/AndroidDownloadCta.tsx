@@ -3,41 +3,32 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Copy, Check } from "lucide-react";
 import { detectInAppBrowser, type InAppBrowser } from "@/lib/in-app-browser";
-import { PUBLIC_LANDING_URL, androidViewIntentUrl } from "@/config/public-download";
+import { parseUtm, buildLandingExternalUrl, buildLandingIntentUrl, type Utm } from "@/lib/marketing/utm";
+import { sendLandingEvent } from "@/lib/marketing/landing-analytics";
+import type { LandingContext, LandingPlacement } from "@/lib/marketing/landing-event";
 import styles from "@/app/baixar/baixar.module.css";
 
 /**
  * CTA de download que decide o rótulo no cliente — e só ele.
  *
- * Em navegador normal (Chrome, Samsung Internet, Firefox, Edge…) o botão é
- * exatamente o de sempre: "Baixar para Android" apontando para
- * `/download/android`. Nada do fluxo de download homologado muda.
+ * Em navegador normal (Chrome, Samsung Internet, Firefox, Edge…) o botão é o de
+ * sempre: "Baixar para Android" apontando para `/download/android`. Nada do
+ * fluxo de download homologado muda, e NENHUM UTM é anexado a `/download/android`.
  *
- * Dentro de um navegador interno de aplicativo no Android, onde o toque no APK
- * não inicia o download, o CTA vira "Abrir no navegador": tenta mandar a página
- * canônica para o navegador externo do Android via Intent URI. Como esse atalho
- * pode ser bloqueado pelo próprio aplicativo, ao tocar também revelamos uma
- * instrução curta (menu ⋯ → "Abrir no navegador") e um "Copiar link".
+ * Dentro de um navegador interno de aplicativo no Android, o CTA vira "Abrir no
+ * navegador": tenta mandar a URL canônica para o navegador externo via Intent
+ * URI, preservando apenas os UTMs válidos. Como o atalho pode ser bloqueado,
+ * ao tocar revelamos instrução curta (menu ⋯) e "Copiar link".
  *
- * O que ele NÃO faz, de propósito: não dispara download automático, não navega
- * para o APK sozinho, não usa iframe, click simulado nem timer. A única ação é a
- * do usuário. O destino externo é sempre a constante `PUBLIC_LANDING_URL` — nunca
- * o Host da request, preview ou query.
+ * Métrica first-party (fail-open): dispara landing_view (só a hero, uma vez),
+ * open_external_browser_click (ao abrir navegador) e android_download_click (ao
+ * baixar). Sempre antes de navegar e nunca bloqueando a navegação. Sem cookie,
+ * sem identificador. O destino externo é sempre `obaflixbr.com/baixar`.
  */
 
 /** Evento interno para a barra inferior revelar a ajuda que vive na hero. */
 const EVENTO_ABRIR = "obaflix:abrir-navegador";
 
-/** Intent URI fixo, derivado uma única vez da URL canônica. */
-const INTENT_URL = androidViewIntentUrl(PUBLIC_LANDING_URL);
-
-/**
- * - `hero`   — CTA principal. É o único dono da caixa de ajuda/fallback e o único
- *   que escuta o evento; qualquer botão da página a revela por aqui.
- * - `primary` — CTA full-size secundário (seção final). Mesmo botão, sem caixa
- *   própria: ao tocar, revela a caixa da hero.
- * - `bar`    — botão compacto da barra inferior.
- */
 type Variant = "hero" | "primary" | "bar";
 
 /**
@@ -55,16 +46,9 @@ function resolverAmbiente(): InAppBrowser {
   return detectInAppBrowser(typeof navigator !== "undefined" ? navigator.userAgent : "");
 }
 
-function tentarAbrirNavegador() {
-  // Avisa a hero para revelar a ajuda, aconteça o que acontecer com o Intent.
-  window.dispatchEvent(new Event(EVENTO_ABRIR));
-  if (!INTENT_URL) return;
-  try {
-    window.location.href = INTENT_URL;
-  } catch {
-    // Alguns WebViews recusam o esquema intent://. A ajuda já foi revelada acima.
-  }
-}
+const contextoDe = (ambiente: InAppBrowser): LandingContext => (ambiente === "browser" ? "browser" : "in_app");
+const placementDe = (variant: Variant): LandingPlacement => (variant === "hero" ? "hero" : variant === "bar" ? "bar" : "final");
+const utmAtual = (): Utm => parseUtm(typeof window !== "undefined" ? window.location.search : "");
 
 export function AndroidDownloadCta({ downloadPath, variant = "primary" }: { downloadPath: string; variant?: Variant }) {
   // Primeira renderização igual ao HTML estático (browser), para não haver
@@ -73,9 +57,18 @@ export function AndroidDownloadCta({ downloadPath, variant = "primary" }: { down
   const [mostrarAjuda, setMostrarAjuda] = useState(false);
   const [copiado, setCopiado] = useState(false);
   const ajudaRef = useRef<HTMLDivElement>(null);
+  const viewEnviado = useRef(false);
 
   useEffect(() => {
-    setAmbiente(resolverAmbiente());
+    const amb = resolverAmbiente();
+    setAmbiente(amb);
+    // landing_view uma única vez por montagem — só o CTA hero dispara (há três
+    // CTAs na página). O ref evita o duplo disparo do StrictMode em dev.
+    if (variant === "hero" && !viewEnviado.current) {
+      viewEnviado.current = true;
+      sendLandingEvent({ event: "landing_view", context: contextoDe(amb), placement: "page", attribution: utmAtual() });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -89,25 +82,44 @@ export function AndroidDownloadCta({ downloadPath, variant = "primary" }: { down
   }, [variant]);
 
   const compact = variant === "bar";
+  const placement = placementDe(variant);
 
   if (ambiente === "browser") {
+    const aoBaixar = () => {
+      // Clique (não instalação). Segue imediatamente para /download/android.
+      sendLandingEvent({ event: "android_download_click", context: "browser", placement, attribution: utmAtual() });
+    };
     return (
-      <a href={downloadPath} className={styles.primary} aria-label="Baixar APK do Obaflix para Android">
+      <a href={downloadPath} onClick={aoBaixar} className={styles.primary} aria-label="Baixar APK do Obaflix para Android">
         <Download size={compact ? 17 : 21} aria-hidden="true" />
         {compact ? "Baixar" : "Baixar para Android"}
       </a>
     );
   }
 
+  const abrirNoNavegador = () => {
+    const utm = utmAtual();
+    // open_external_browser_click ANTES do Intent (fire-and-forget).
+    sendLandingEvent({ event: "open_external_browser_click", context: "in_app", placement, attribution: utm });
+    window.dispatchEvent(new Event(EVENTO_ABRIR));
+    const intent = buildLandingIntentUrl(utm);
+    try {
+      window.location.href = intent;
+    } catch {
+      // Alguns WebViews recusam o esquema intent://. A ajuda já foi revelada.
+    }
+  };
+
   const copiarLink = async () => {
+    const link = buildLandingExternalUrl(utmAtual());
     let ok = false;
     try {
-      await navigator.clipboard.writeText(PUBLIC_LANDING_URL);
+      await navigator.clipboard.writeText(link);
       ok = true;
     } catch {
       // Fallback para WebViews sem Clipboard API: seleção + execCommand.
       const campo = document.createElement("textarea");
-      campo.value = PUBLIC_LANDING_URL;
+      campo.value = link;
       campo.setAttribute("readonly", "");
       campo.style.position = "fixed";
       campo.style.opacity = "0";
@@ -125,7 +137,7 @@ export function AndroidDownloadCta({ downloadPath, variant = "primary" }: { down
   };
 
   const botao = (
-    <button type="button" onClick={tentarAbrirNavegador} className={styles.primary} aria-label="Abrir esta página no navegador do celular">
+    <button type="button" onClick={abrirNoNavegador} className={styles.primary} aria-label="Abrir esta página no navegador do celular">
       <ExternalLink size={compact ? 17 : 21} aria-hidden="true" />
       {compact ? "Abrir navegador" : "Abrir no navegador"}
     </button>

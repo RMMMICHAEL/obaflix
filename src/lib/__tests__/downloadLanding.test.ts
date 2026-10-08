@@ -152,13 +152,18 @@ test("CTA cliente: fallback para /download/android, sem auto-download e sem nave
   // Estado in-app: a ação é "Abrir no navegador", nunca o APK.
   assert.match(cta, /Abrir no navegador/);
   assert.match(cta, /Copiar link/);
-  // Destino externo e clipboard usam SOMENTE a constante fixa.
-  assert.match(cta, /PUBLIC_LANDING_URL/);
+  // Destino externo e clipboard vêm SÓ dos builders (base fixa obaflixbr.com),
+  // nunca do Host/preview/URL crua.
+  assert.match(cta, /buildLandingIntentUrl\(/);
+  assert.match(cta, /buildLandingExternalUrl\(/);
   assert.doesNotMatch(cta, /obaflix\.online|\.apk|location\.host|request\.url|window\.location\.search\)\.get\("url"/i);
   // Sem download automático: nenhum atalho que baixe sem o toque do usuário.
   assert.doesNotMatch(cta, /download=|\.click\(\)|URL\.createObjectURL|<iframe|<a[^>]+href=\{(?:ANDROID_DOWNLOAD_PATH|["'`]\/download)/);
-  // A única navegação imperativa permitida é para o Intent URI fixo.
-  assert.deepEqual([...cta.matchAll(/window\.location\.href\s*=\s*([A-Za-z_]+)/g)].map((m) => m[1]), ["INTENT_URL"]);
+  // A única navegação imperativa é para o Intent construído a partir dos UTMs.
+  assert.deepEqual([...cta.matchAll(/window\.location\.href\s*=\s*([A-Za-z_]+)/g)].map((m) => m[1]), ["intent"]);
+  // Eventos first-party fluem pelo sender fail-open, não por fetch embutido.
+  assert.match(cta, /sendLandingEvent\(/);
+  assert.doesNotMatch(cta, /fetch\(/);
   // O override de homologação é morto em produção (não é backdoor público).
   assert.match(cta, /process\.env\.NODE_ENV !== "production"/);
 });
