@@ -13,6 +13,21 @@ export function absoluteUrl(path = "/") {
   return new URL(path, `${SITE_URL}/`).toString();
 }
 
+/** Public campaign/legal documents must not inherit the legacy OAuth origin.
+ * Uses the existing public SEO setting; fallback is the verified public domain.
+ */
+export function publicDownloadMetadata(title: string, path: string, description?: string): Metadata {
+  return {
+    title,
+    description,
+    metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://obaflixbr.com"),
+    robots: { index: false, follow: true },
+    alternates: { canonical: path },
+    openGraph: { title, description, url: path, images: [] },
+    twitter: { card: "summary", images: [] },
+  };
+}
+
 export function cleanDescription(value: string | null | undefined, fallback = DEFAULT_DESCRIPTION) {
   const normalized = value?.replace(/\s+/g, " ").trim();
   if (!normalized) return fallback;
