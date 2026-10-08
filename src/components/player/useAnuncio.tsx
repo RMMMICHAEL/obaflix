@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 
 import { efeitoDoConvite, type FinalidadeDeAcao } from "@/lib/ads/acaoPatrocinada";
+import { criarContagemAndroid } from "@/lib/ads/contagemAndroid";
 import { segundosRestantesAnuncio } from "@/lib/ads/tempoAnuncio";
 import {
   executarFluxoDeAnuncio,
@@ -88,8 +89,14 @@ declare global {
 /** O que o modal está pedindo agora. */
 type EstadoDoModal =
   | { fase: "oculto" }
-  /** Antes de exibir: "assista a um anúncio para liberar esta ação". */
-  | { fase: "convite"; finalidade: FinalidadeDeAcao }
+  /**
+   * Antes de exibir: "assista a um anúncio para liberar esta ação".
+   *
+   * `plataforma` decide a interação: no Electron o usuário clica para continuar;
+   * no Android não há clique obrigatório — o convite conta `contagem` segundos e
+   * chama a ponte nativa sozinho.
+   */
+  | { fase: "convite"; plataforma: PlataformaDeAnuncio; finalidade: FinalidadeDeAcao; contagem?: number }
   /** Electron: o link abriu no navegador; a ação continua ao fim da contagem. */
   | { fase: "aguardando"; segundosRestantes: number }
   /** Android: o SDK está exibindo. Quem fecha o anúncio é o próprio anúncio. */
@@ -154,9 +161,10 @@ export function useAnuncio() {
       new Promise<ResultadoDaExibicao>((resolve) => {
         foiAssinarRef.current = false;
         resolverRef.current = resolve;
-        setModal({ fase: "convite", finalidade: entrada.finalidade ?? "reproducao" });
+        const finalidade = entrada.finalidade ?? "reproducao";
 
-        // O convite fica esperando a escolha; quem continua é `aoConfirmar`.
+        // O convite fica esperando: no Electron, a escolha do usuário; no
+        // Android, o fim da contagem. Os dois caminhos chamam `aceitarRef`.
         aceitarRef.current = async () => {
           if (entrada.plataforma === "android") {
             const ponte = window.obaflixAds;
@@ -219,6 +227,56 @@ export function useAnuncio() {
           retornoConfirmado = true;
           atualizarContagem();
           if (esperaConcluida && resolverRef.current === resolve) encerrar(true);
+        };
+
+        if (entrada.plataforma !== "android") {
+          // Electron (e qualquer plataforma que não seja Android): o convite
+          // espera o clique em "Continuar gratuitamente". Fluxo inalterado.
+          setModal({ fase: "convite", plataforma: entrada.plataforma, finalidade });
+          return;
+        }
+
+        // Android: nenhum clique obrigatório. O convite abre contando 3 s e, ao
+        // zerar, chama a ponte nativa sozinho (via `aceitarRef`). A contagem em
+        // si — disparo único, pausa em segundo plano, encerramento — vive em
+        // `contagemAndroid` e é testada lá; aqui só se liga ao relógio real, à
+        // visibilidade da página e ao texto do modal.
+        const temDocumento = typeof document !== "undefined";
+        const contagem = criarContagemAndroid({
+          agora: () => Date.now(),
+          visivel: () => !temDocumento || document.visibilityState === "visible",
+          aoZerar: () => {
+            // Limpa o próprio timer antes de exibir: `aceitarRef` troca a fase
+            // para "exibindo" e não deve concorrer com mais nenhuma passada.
+            limparRef.current?.();
+            limparRef.current = null;
+            // A concessão continua dependendo do callback nativo + servidor; os
+            // 3 s só abrem o anúncio, não liberam nada por si.
+            aceitarRef.current?.();
+          },
+        });
+        setModal({
+          fase: "convite",
+          plataforma: "android",
+          finalidade,
+          contagem: contagem.segundosRestantes(),
+        });
+        const aoMudarVisibilidade = () => {
+          if (document.visibilityState === "visible") contagem.marcarVisivel();
+        };
+        if (temDocumento) document.addEventListener("visibilitychange", aoMudarVisibilidade);
+        const timer = setInterval(() => {
+          contagem.avancar();
+          // `avancar` pode ter disparado e trocado a fase para "exibindo"; só
+          // atualiza o texto enquanto ainda for o convite desta promessa.
+          if (resolverRef.current !== resolve) return;
+          const seg = contagem.segundosRestantes();
+          setModal((m) => (m.fase === "convite" ? { ...m, contagem: seg } : m));
+        }, 200);
+        limparRef.current = () => {
+          clearInterval(timer);
+          if (temDocumento) document.removeEventListener("visibilitychange", aoMudarVisibilidade);
+          contagem.encerrar();
         };
       }),
     [encerrar],
@@ -310,7 +368,21 @@ export function ModalDeAnuncio(props: {
           <X size={18} aria-hidden="true" />
         </button>
 
-        {estado.fase === "convite" && (
+        {estado.fase === "convite" && estado.plataforma === "android" && (
+          // Android: sem clique obrigatório. O convite conta sozinho e o X só
+          // cancela a ação — nunca concede acesso. A concessão continua no
+          // callback nativo + servidor.
+          <>
+            <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
+              Seu conteúdo começa após o anúncio
+            </h2>
+            <p className="mt-3 text-2xl font-bold text-white" role="status" aria-live="polite">
+              Anúncio em {estado.contagem ?? 3}
+            </p>
+          </>
+        )}
+
+        {estado.fase === "convite" && estado.plataforma !== "android" && (
           <>
             <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
               Continue assistindo gratuitamente
