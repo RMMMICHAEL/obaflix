@@ -138,6 +138,7 @@ model User {
   senhaHash    String?
   avatar       String?
   role         String         @default("user")
+  authVersion  Int            @default(0)
   createdAt    DateTime       @default(now())
   historico    WatchHistory[]
   watchlist    Watchlist[]
@@ -151,6 +152,37 @@ model User {
   /// ter dezenas aqui e nenhuma assinatura.
   pedidos      PedidoPagamento[]
   auditoriasAdmin AdminAudit[]
+  oauthIdentities OAuthIdentity[]
+  oauthLinkIntents OAuthLinkIntent[]
+}
+
+model OAuthIdentity {
+  id        String   @id @default(cuid())
+  userId    String
+  issuer    String
+  subject   String
+  linkedAt  DateTime @default(now())
+  revokedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([issuer, subject])
+  @@index([userId])
+  // One active Google identity per user: partial unique index in migration SQL.
+}
+
+model OAuthLinkIntent {
+  id                 String   @id @default(cuid())
+  handleHash         String   @unique
+  userId             String
+  sessionBindingHash String
+  authVersion        Int
+  origin             String
+  reauthenticatedAt  DateTime
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
 }
 
 /// Um aparelho de TV pareado.
