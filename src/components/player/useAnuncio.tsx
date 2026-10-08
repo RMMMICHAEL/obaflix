@@ -379,6 +379,17 @@ export function ModalDeAnuncio(props: {
             <p className="mt-3 text-2xl font-bold text-white" role="status" aria-live="polite">
               Anúncio em {estado.contagem ?? 3}
             </p>
+            {/* Secundário, abaixo da contagem: reaproveita exatamente o mesmo
+                `aoAssinar` do convite Electron — encerra timer/listeners (via
+                `encerrar`), não chama a ponte nem concede acesso, e navega aos
+                planos. Nenhuma rota ou lógica de pagamento nova. */}
+            <button
+              type="button"
+              onClick={aoAssinar}
+              className="mt-5 text-sm font-medium text-gray-400 underline underline-offset-4 hover:text-white"
+            >
+              Remover anúncios
+            </button>
           </>
         )}
 

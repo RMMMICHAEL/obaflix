@@ -102,3 +102,65 @@ describe("Electron mantém o fluxo e o botão atuais", () => {
     assert.match(codigo, /estado\.plataforma === "android"/);
   });
 });
+
+describe('o botão "Remover anúncios" no convite Android', () => {
+  /** O bloco do convite Android, isolado do bloco do Electron. */
+  const inicioAndroid = fonte.indexOf('estado.plataforma === "android" && (');
+  const inicioElectron = fonte.indexOf('estado.plataforma !== "android" && (');
+  const blocoAndroid = fonte.slice(inicioAndroid, inicioElectron);
+
+  /** Teste 1: o botão aparece no modal Android, abaixo da contagem. */
+  test("o botão existe no bloco Android, após a contagem", () => {
+    assert.ok(inicioAndroid > -1 && inicioElectron > inicioAndroid, "os dois blocos de convite existem");
+    assert.match(blocoAndroid, /Remover anúncios/);
+    // Abaixo da contagem: o texto "Anúncio em" vem antes do botão no mesmo bloco.
+    assert.ok(
+      blocoAndroid.indexOf("Anúncio em") < blocoAndroid.indexOf("Remover anúncios"),
+      "o botão fica abaixo da contagem",
+    );
+  });
+
+  /** Teste 2: o clique chama exatamente `aoAssinar` — nada novo. */
+  test("o botão reutiliza aoAssinar (sem rota nem lógica nova)", () => {
+    assert.match(blocoAndroid, /onClick=\{aoAssinar\}/);
+  });
+
+  /**
+   * Testes 3–5: o próprio `aoAssinar` encerra a ação antes de navegar, não
+   * concede acesso e desarma o callback nativo. O encerramento do timer/listener
+   * da contagem está em `encerrar` → `limparRef` (contagem.encerrar()), já
+   * coberto acima — aqui prova-se que `aoAssinar` passa por ele.
+   */
+  test("aoAssinar encerra sem conceder e desarma o anúncio, antes de navegar", () => {
+    const inicio = codigo.indexOf("const aoAssinar = useCallback(");
+    assert.ok(inicio > -1);
+    const corpo = codigo.slice(inicio, codigo.indexOf("}, [", inicio));
+
+    // Teste 4: o callback nativo é anulado — uma conclusão tardia não concede.
+    assert.match(corpo, /window\.__obaflixAnuncioConcluido = undefined/);
+    // Teste 3: encerra a exibição (e, com ela, o timer/listener da contagem).
+    assert.match(corpo, /encerrar\(false\)/);
+    // Teste 5: cancela, nunca concede — `encerrar(true)` seria conceder.
+    assert.equal(corpo.includes("encerrar(true"), false, "assinar nunca concede acesso");
+    // Teste 6: navega para a rota de planos já existente.
+    assert.match(corpo, /router\.push\(efeito\.navegarPara\)/);
+    assert.match(corpo, /efeitoDoConvite\("assinar"\)/);
+
+    // Ordem (defesa contra corrida clique × contagem): anular o callback e
+    // encerrar acontecem ANTES do push. Como o JS é single-thread e
+    // `encerrar`→`contagem.encerrar()` torna qualquer tick pendente um no-op, o
+    // anúncio não dispara depois do clique.
+    const iCallback = corpo.indexOf("__obaflixAnuncioConcluido = undefined");
+    const iEncerrar = corpo.indexOf("encerrar(false)");
+    const iPush = corpo.indexOf("router.push");
+    assert.ok(iCallback < iEncerrar && iEncerrar < iPush, "anula callback e encerra antes de navegar");
+  });
+
+  /** Teste 7: o botão é só do Android; o Electron segue com seus próprios botões. */
+  test("o botão não entra no convite do Electron", () => {
+    const blocoElectron = fonte.slice(inicioElectron);
+    assert.equal(blocoElectron.includes("Remover anúncios"), false, "Android-only");
+    assert.match(blocoElectron, /Continuar gratuitamente/);
+    assert.match(blocoElectron, /Ver planos e remover anúncios/);
+  });
+});
