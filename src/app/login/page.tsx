@@ -24,6 +24,12 @@ function LoginForm() {
   const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (searchParams.get("error") === "GoogleLinkRequired") {
+      setErro("Entre com email e senha e vincule o Google na segurança da sua conta.");
+    }
+  }, [searchParams]);
+
   const handleGoogle = async () => {
     setLoading(true);
     setErro("");

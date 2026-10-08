@@ -25,6 +25,7 @@
 
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { decodeVersionedSession } from "./authVersion";
 
 /** Por onde a credencial chegou. */
 export type OrigemSessao = "cookie" | "bearer";
@@ -110,7 +111,7 @@ export async function getUserFromRequest(
 ): Promise<UsuarioRequisicao | null> {
   // O cookie tem precedência dentro do próprio getToken. Detectamos a origem
   // aqui para saber qual conjunto de regras aplicar na normalização.
-  const temCookie = req.cookies.get(NOME_COOKIE)?.value !== undefined;
+  const temCookie = req.cookies.getAll().some(cookie => cookie.name === NOME_COOKIE || cookie.name.startsWith(NOME_COOKIE + "."));
   const cabecalho = req.headers.get("authorization");
   const temBearer = cabecalho?.startsWith("Bearer ") === true;
 
@@ -120,6 +121,8 @@ export async function getUserFromRequest(
     req: req as unknown as Parameters<typeof getToken>[0]["req"],
     secureCookie: USA_COOKIE_SEGURO,
     cookieName: NOME_COOKIE,
+    // Device Bearer tokens retain the existing TV revocation mechanism.
+    ...(temCookie ? { decode: decodeVersionedSession } : {}),
   })) as Record<string, unknown> | null;
 
   return normalizarToken(token, temCookie ? "cookie" : "bearer");
