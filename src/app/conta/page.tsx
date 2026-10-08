@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import Link from "next/link";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
@@ -35,6 +36,7 @@ export default function ContaPage() {
         <div className="min-w-0">
           <h1 className="text-xl font-bold text-white">{session.user?.name ?? "Usuário"}</h1>
           <p className="text-zinc-400 text-sm">{session.user?.email}</p>
+          <Link href="/conta/seguranca" className="mt-2 block text-sm text-red-400 hover:text-red-300">Segurança e vínculo Google</Link>
           {/*
             Logout do NextAuth, o mesmo da Navbar, voltando para /login. Fica no
             perfil, no topo — não depois da lista. Não apaga nada do aparelho:
