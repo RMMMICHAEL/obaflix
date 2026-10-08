@@ -72,7 +72,7 @@ test("verified metadata disappears if any installer field changes", () => {
   for (const key of ["url", "versao", "tamanho"] as const) assert.equal(verifiedAndroidMetadata({ ...known, [key]: "unverified" }), null);
 });
 
-test("landing has explicit known CTA, legal links and no media, auto download or tracking", () => {
+test("landing has explicit known CTA, legal links and only the approved local product image", () => {
   const page = source("app/baixar/page.tsx");
   const route = source("app/download/android/route.ts");
   const footer = source("components/landing/DownloadFooter.tsx");
@@ -82,7 +82,9 @@ test("landing has explicit known CTA, legal links and no media, auto download or
   assert.match(footer, /href="\/termos"/);
   assert.match(footer, /href="\/privacidade"/);
   assert.match(footer, /Contato/);
-  assert.doesNotMatch(page, /tiktok|reacher|silo|ted lasso|tmdb|prisma|poster|backdrop|<Image|<img|<video|iframe|\/api\/player|fetch\(|window\.|useEffect|<script/i);
+  assert.doesNotMatch(page, /tiktok|reacher|silo|ted lasso|tmdb|prisma|poster|backdrop|<img|<video|iframe|\/api\/player|fetch\(|window\.|useEffect|<script/i);
+  assert.deepEqual([...page.matchAll(/<Image\s+src="([^"]+)"/g)].map(match => match[1]), ["/app-mockup.webp"]);
+  assert.match(page, /alt="Tela inicial do aplicativo Obaflix"/);
   assert.doesNotMatch(route, /fetch\(|arrayBuffer|ReadableStream|\.blob\(/);
   assert.match(page, /dynamic = "force-static"/);
   const metadata = publicDownloadMetadata("Obaflix", "/baixar");

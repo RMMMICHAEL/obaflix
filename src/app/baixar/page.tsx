@@ -1,4 +1,5 @@
 import type { Viewport } from "next";
+import Image from "next/image";
 import { Download, Smartphone, ShieldCheck, ArrowDown, Monitor, Tv } from "lucide-react";
 import { INSTALADORES } from "@/config/downloads";
 import { ANDROID_DOWNLOAD_PATH, validatedDownloadUrl } from "@/config/public-download";
@@ -43,9 +44,10 @@ export default function DownloadPage() {
         <p className={styles.caption}>Download direto do APK · sem download automático</p>
         {androidMetadata && <p className={styles.caption}>{androidMetadata.label} · {androidMetadata.minimumAndroid}</p>}
       </div>
-      <div className={styles.art} aria-hidden="true">
-        <div className={styles.appTile}><span>O</span><span className={styles.play}>▶</span></div>
-        <span className={styles.artLabel}>OBAFLIX<br /><small>NO SEU RITMO.</small></span>
+      <div className={styles.art}>
+        <div className={styles.phone}>
+          <Image src="/app-mockup.webp" alt="Tela inicial do aplicativo Obaflix" width={560} height={1152} className={styles.appScreen} />
+        </div>
       </div>
     </section>
     <section id="como-instalar" className={styles.install} aria-labelledby="install-title">
