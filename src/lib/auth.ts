@@ -6,8 +6,11 @@ import { getServerSession } from "next-auth";
 import { prisma } from "./prisma";
 import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
-import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
+import { encode as encodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
+import { decodeVersionedSession, tokenAuthVersion } from "./authVersion";
+import { newOpaque, validatedGoogleIdentity } from "./oauthGoogle";
+import { findLinkedGoogleUser } from "./oauthGoogleStore";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -15,7 +18,7 @@ export const USE_SECURE_COOKIES = process.env.NODE_ENV === "production" || proce
 export const SESSION_COOKIE_NAME = `${USE_SECURE_COOKIES ? "__Secure-" : ""}next-auth.session-token`;
 
 export const encodeObaflixSession = (params: Parameters<typeof encodeNextAuthJwt>[0]) => encodeNextAuthJwt(params);
-export const decodeObaflixSession = (params: Parameters<typeof decodeNextAuthJwt>[0]) => decodeNextAuthJwt(params);
+export const decodeObaflixSession = decodeVersionedSession;
 
 export const ADMIN_CORS_ORIGIN = "https://admin.megafrixapi.com";
 
@@ -127,6 +130,12 @@ async function requireAdminSessionOnly(origin: string | null, deps: AdminSession
 }
 
 export const authOptions: NextAuthOptions = {
+  debug: false,
+  logger: {
+    error() { console.error("AUTH_ERROR"); },
+    warn() { console.warn("AUTH_WARNING"); },
+    debug() {},
+  },
   session: { strategy: "jwt", maxAge: SESSION_MAX_AGE },
   jwt: {
     maxAge: SESSION_MAX_AGE,
@@ -171,30 +180,35 @@ export const authOptions: NextAuthOptions = {
         senha: { label: "Senha", type: "password" },
       },
       async authorize(credentials: any, request: any) {
-        if (typeof credentials?.email !== "string" || typeof credentials?.senha !== "string") return null;
-        if (credentials.email.length > 254 || credentials.senha.length > 128) return null;
-        const email = credentials.email.toLowerCase().trim();
-        const forwarded = request?.headers?.["x-forwarded-for"];
-        const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() || "unknown";
-        const [ipRate, accountRate] = await Promise.all([
-          checkRateLimit(`login:ip:${ip}`, 40, 15 * 60),
-          checkRateLimit(`login:account:${email}`, 12, 15 * 60),
-        ]);
-        if (!ipRate.allowed || !accountRate.allowed) return null;
-        const user = await prisma.user.findUnique({ where: { email } });
-        if (!user) {
-          await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
+        try {
+          if (typeof credentials?.email !== "string" || typeof credentials?.senha !== "string") return null;
+          if (credentials.email.length > 254 || credentials.senha.length > 128) return null;
+          const email = credentials.email.toLowerCase().trim();
+          const forwarded = request?.headers?.["x-forwarded-for"];
+          const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() || "unknown";
+          const [ipRate, accountRate] = await Promise.all([
+            checkRateLimit(`login:ip:${ip}`, 40, 15 * 60),
+            checkRateLimit(`login:account:${email}`, 12, 15 * 60),
+          ]);
+          if (!ipRate.allowed || !accountRate.allowed) return null;
+          const user = await prisma.user.findUnique({ where: { email } });
+          if (!user) {
+            await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
+            return null;
+          }
+          if (!user.senhaHash) {
+            // Contas sem senha precisam concluir recuperação legítima antes do vínculo.
+            await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
+            return null;
+          }
+          const ok = await bcrypt.compare(credentials.senha, user.senhaHash);
+          if (!ok) return null;
+          if (!canRoleSignInToSurface(user.role, getObaflixSurface())) return null;
+          return { id: user.id, email: user.email, name: user.nome, image: user.avatar, role: user.role, authVersion: user.authVersion };
+        } catch {
+          console.error("AUTH_ERROR");
           return null;
         }
-        if (!user.senhaHash) {
-          // Conta criada via Google — não tem senha, retorna erro específico
-          await bcrypt.compare(credentials.senha, await DUMMY_PASSWORD_HASH);
-          return null;
-        }
-        const ok = await bcrypt.compare(credentials.senha, user.senhaHash);
-        if (!ok) return null;
-        if (!canRoleSignInToSurface(user.role, getObaflixSurface())) return null;
-        return { id: user.id, email: user.email, name: user.nome, role: user.role };
       },
     }),
   ],
@@ -202,18 +216,11 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account, profile }: any) {
       if (account?.provider !== "google") return true;
 
-      const email = typeof user?.email === "string"
-        ? user.email.normalize("NFKC").toLowerCase().trim()
-        : "";
-      if (!email || profile?.email_verified !== true) return false;
-
-      // Sem adapter OAuth, o id que o Google entrega nao e User.id. O Obaflix
-      // vincula apenas a uma conta que ja existe; login nunca cria ou altera linha.
-      const local = await prisma.user.findUnique({
-        where: { email },
-        select: { id: true, email: true, nome: true, avatar: true, role: true },
-      });
-      if (!local) return false;
+      const identity = validatedGoogleIdentity(profile);
+      let local;
+      try { local = identity ? await findLinkedGoogleUser(identity) : null; }
+      catch { console.error("AUTH_ERROR"); return "/login?error=GoogleLinkRequired"; }
+      if (!local) return "/login?error=GoogleLinkRequired";
       if (!canRoleSignInToSurface(local.role, getObaflixSurface())) return false;
 
       user.id = local.id;
@@ -221,33 +228,29 @@ export const authOptions: NextAuthOptions = {
       user.name = local.nome;
       user.image = local.avatar;
       user.role = local.role;
+      user.authVersion = local.authVersion;
       return true;
     },
     async jwt({ token, user, account }: any) {
-      if (account?.provider === "google" && typeof token.email === "string") {
-        const email = token.email.normalize("NFKC").toLowerCase().trim();
-        const local = await prisma.user.findUnique({
-          where: { email },
-          select: { id: true, nome: true, avatar: true, role: true },
-        });
-        if (local) {
-          token.id = local.id;
-          token.sub = local.id;
-          token.role = local.role;
-          token.name = local.nome;
-          token.picture = local.avatar;
-        }
-      } else if (user) {
+      if (user) {
         token.id = user.id;
         token.sub = user.id;
         token.role = user.role ?? "user";
+        token.email = user.email;
+        token.name = user.name;
+        token.picture = user.image;
+        token.authVersion = user.authVersion;
+        token.sid = newOpaque();
+        token.authMethod = account?.provider;
       }
+      // Client session.update payloads cannot change id, version or binding.
       return token;
     },
     async session({ session, token }: any) {
       if (session.user) {
         session.user.id = token.id;
         session.user.role = token.role;
+        session.user.authVersion = tokenAuthVersion(token.authVersion);
       }
       return session;
     },
