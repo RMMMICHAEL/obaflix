@@ -9,7 +9,7 @@
 .hero h1{font-size:clamp(44px,12vw,80px);line-height:1.06;font-weight:800;letter-spacing:-2.2px;margin:0 0 24px}
 .hero h1 span{color:var(--red)}
 .intro{font-size:17px;line-height:1.7;color:var(--muted);max-width:37ch;margin:0 0 30px}
-.primary{min-height:56px;padding:16px 22px;background:var(--red);color:var(--paper);display:flex;align-items:center;justify-content:center;gap:12px;border-radius:12px;text-decoration:none;font-weight:750;font-size:15px;max-width:380px}
+.primary{min-height:56px;padding:16px 22px;background:var(--red);color:var(--paper);display:flex;align-items:center;justify-content:center;gap:12px;border-radius:12px;text-decoration:none;font-weight:750;font-size:15px;max-width:380px;width:100%;box-sizing:border-box;border:0;font-family:inherit;cursor:pointer}
 .primary:hover{background:oklch(51% .20 25)}
 .caption{font-size:11px;line-height:1.7;color:var(--muted);margin:13px 0 0;max-width:380px;text-align:center}
 .art{display:flex;justify-content:center;position:relative;isolation:isolate;min-width:0}
@@ -47,8 +47,15 @@
 .miniIcon{width:38px;height:42px;border-radius:10px;background:var(--red);font-weight:800;font-size:28px;text-align:center;flex-shrink:0}
 .barText{font-size:12px;font-weight:650;flex:1;min-width:0}
 .barText small{display:block;font-size:10px;color:var(--muted);font-weight:400;margin-top:5px}
-.mobileBar .primary{min-height:48px;padding:12px 16px;font-size:13px;border-radius:10px;gap:7px}
+.mobileBar .primary{min-height:48px;padding:12px 16px;font-size:13px;border-radius:10px;gap:7px;max-width:none;width:auto}
 .mobileBar .primary svg{width:17px}
+.ctaOpen{display:flex;flex-direction:column;align-items:flex-start;max-width:380px}
+.fallback{margin-top:16px;border:1px solid oklch(40% .12 25 / .55);border-left:3px solid var(--red);border-radius:12px;padding:18px 20px;background:oklch(17% .006 25);animation:fallbackIn .22s ease}
+.fallback strong{display:block;font-size:14px;font-weight:700;color:var(--paper);margin-bottom:8px}
+.fallback p{font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 14px}
+.copyButton{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:10px 16px;border-radius:10px;border:1px solid oklch(45% .02 25);background:oklch(22% .006 25);color:var(--paper);font-family:inherit;font-size:13px;font-weight:650;cursor:pointer}
+.copyButton:hover{background:oklch(26% .006 25)}
+@keyframes fallbackIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .legal{max-width:780px;margin:35px auto 80px;line-height:1.85}
 .legal h1{font-size:clamp(32px,6vw,52px);font-weight:750;line-height:1.12;letter-spacing:-1px;margin-bottom:20px}
 .legal h2{font-size:23px;margin:38px 0 13px;letter-spacing:-.5px}

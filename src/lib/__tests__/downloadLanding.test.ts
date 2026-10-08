@@ -1,7 +1,7 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isDownloadPublicPath, validatedDownloadUrl, ANDROID_DOWNLOAD_PATH } from "../../config/public-download";
+import { isDownloadPublicPath, validatedDownloadUrl, ANDROID_DOWNLOAD_PATH, PUBLIC_LANDING_URL, androidViewIntentUrl } from "../../config/public-download";
 import { verifiedAndroidMetadata } from "../../config/verified-android";
 import { INSTALADORES } from "../../config/downloads";
 import { publicDownloadMetadata } from "../seo";
@@ -76,7 +76,9 @@ test("landing has explicit known CTA, legal links and only the approved local pr
   const page = source("app/baixar/page.tsx");
   const route = source("app/download/android/route.ts");
   const footer = source("components/landing/DownloadFooter.tsx");
-  assert.match(page, /href=\{ANDROID_DOWNLOAD_PATH\}/);
+  // O CTA de Android é renderizado por um componente cliente mínimo, recebendo o
+  // caminho de download como prop. A página continua servidor/estática.
+  assert.match(page, /<AndroidDownloadCta downloadPath=\{ANDROID_DOWNLOAD_PATH\}/);
   assert.match(page, /INSTALADORES\.androidTv\.url/);
   assert.match(page, /INSTALADORES\.windows\.url/);
   assert.match(footer, /href="\/termos"/);
@@ -122,4 +124,48 @@ test("legal config stays server-side and only reads public fields", () => {
     assert.match(page, /force-static/);
     assert.doesNotMatch(page, /prisma|fetch\(|dangerouslySetInnerHTML|\/api\/player/i);
   }
+});
+
+test("URL canônica externa é fixa e só o host permitido vira intent", () => {
+  assert.equal(PUBLIC_LANDING_URL, "https://obaflixbr.com/baixar");
+  assert.equal(
+    androidViewIntentUrl(PUBLIC_LANDING_URL),
+    "intent://obaflixbr.com/baixar#Intent;scheme=https;action=android.intent.action.VIEW;end",
+  );
+  // Nenhum host, scheme ou query fornecido pelo usuário pode virar destino/intent.
+  for (const hostile of [
+    "https://evil.example/baixar", "http://obaflixbr.com/baixar", "//obaflixbr.com/baixar",
+    "https://obaflixbr.com.evil.example/baixar", "https://obaflixbr.com@evil.example/baixar",
+    "https://evil@obaflixbr.com/baixar", "https://obaflixbr.com:8443/baixar",
+    "https://obaflixbr.com/baixar?next=https://evil.example", "https://obaflixbr.com/baixar#x",
+    "javascript:alert(1)", "intent://evil.example/x#Intent;end", "not a url", "",
+  ]) {
+    assert.equal(androidViewIntentUrl(hostile), null, hostile);
+  }
+});
+
+test("CTA cliente: fallback para /download/android, sem auto-download e sem navegar para o APK", () => {
+  const cta = source("components/landing/AndroidDownloadCta.tsx");
+  // Caso normal: âncora para a rota de download homologada, nada mais.
+  assert.match(cta, /href=\{downloadPath\}/);
+  assert.match(cta, /Baixar para Android/);
+  // Estado in-app: a ação é "Abrir no navegador", nunca o APK.
+  assert.match(cta, /Abrir no navegador/);
+  assert.match(cta, /Copiar link/);
+  // Destino externo e clipboard usam SOMENTE a constante fixa.
+  assert.match(cta, /PUBLIC_LANDING_URL/);
+  assert.doesNotMatch(cta, /obaflix\.online|\.apk|location\.host|request\.url|window\.location\.search\)\.get\("url"/i);
+  // Sem download automático: nenhum atalho que baixe sem o toque do usuário.
+  assert.doesNotMatch(cta, /download=|\.click\(\)|URL\.createObjectURL|<iframe|<a[^>]+href=\{(?:ANDROID_DOWNLOAD_PATH|["'`]\/download)/);
+  // A única navegação imperativa permitida é para o Intent URI fixo.
+  assert.deepEqual([...cta.matchAll(/window\.location\.href\s*=\s*([A-Za-z_]+)/g)].map((m) => m[1]), ["INTENT_URL"]);
+  // O override de homologação é morto em produção (não é backdoor público).
+  assert.match(cta, /process\.env\.NODE_ENV !== "production"/);
+});
+
+test("página /baixar continua servidor-estática e sem lógica de cliente embutida", () => {
+  const page = source("app/baixar/page.tsx");
+  assert.match(page, /dynamic = "force-static"/);
+  assert.doesNotMatch(page, /"use client"/);
+  assert.doesNotMatch(page, /navigator|window\.|useEffect|useState|addEventListener/);
 });

@@ -6,6 +6,7 @@ import { ANDROID_DOWNLOAD_PATH, validatedDownloadUrl } from "@/config/public-dow
 import { verifiedAndroidMetadata } from "@/config/verified-android";
 import { publicDownloadMetadata } from "@/lib/seo";
 import { DownloadFooter } from "@/components/landing/DownloadFooter";
+import { AndroidDownloadCta } from "@/components/landing/AndroidDownloadCta";
 import styles from "./baixar.module.css";
 
 export const dynamic = "force-static";
@@ -23,12 +24,6 @@ const steps = [
   ["Instale e abra o Obaflix.", "Conclua a instalação e encontre o aplicativo no seu celular."],
 ];
 
-function AndroidButton({ compact = false }: { compact?: boolean }) {
-  return <a href={ANDROID_DOWNLOAD_PATH} className={styles.primary} aria-label="Baixar APK do Obaflix para Android">
-    <Download size={21} aria-hidden="true" />{compact ? "Baixar" : "Baixar para Android"}
-  </a>;
-}
-
 export default function DownloadPage() {
   return <div className={styles.page} data-obaflix-landing>
     <header className={styles.header}>
@@ -40,7 +35,7 @@ export default function DownloadPage() {
         <p className={styles.eyebrow}><Smartphone size={17} aria-hidden="true" /> SEU CELULAR. SUA EXPERIÊNCIA.</p>
         <h1 id="download-title">Obaflix no<br />seu <span>Android</span></h1>
         <p className={styles.intro}>Baixe o aplicativo oficial do Obaflix e leve sua experiência para o celular.</p>
-        <AndroidButton />
+        <AndroidDownloadCta downloadPath={ANDROID_DOWNLOAD_PATH} variant="hero" />
         <p className={styles.caption}>Download direto do APK · sem download automático</p>
         {androidMetadata && <p className={styles.caption}>{androidMetadata.label} · {androidMetadata.minimumAndroid}</p>}
       </div>
@@ -70,8 +65,8 @@ export default function DownloadPage() {
         <a href={windowsUrl ?? undefined} aria-disabled={!windowsUrl}><Monitor size={23} aria-hidden="true" /><span>Windows<small>{windowsUrl ? "Baixar aplicativo para computador" : "Download temporariamente indisponível"}</small></span><Download size={19} aria-hidden="true" /></a>
       </div>
     </section>
-    <section className={styles.final} aria-labelledby="final-title"><Smartphone size={26} aria-hidden="true" /><h2 id="final-title">Sua próxima tela<br />já está na sua mão.</h2><AndroidButton /><p className={styles.caption}>Você decide quando baixar.</p></section>
+    <section className={styles.final} aria-labelledby="final-title"><Smartphone size={26} aria-hidden="true" /><h2 id="final-title">Sua próxima tela<br />já está na sua mão.</h2><AndroidDownloadCta downloadPath={ANDROID_DOWNLOAD_PATH} /><p className={styles.caption}>Você decide quando baixar.</p></section>
     <DownloadFooter />
-    <aside className={styles.mobileBar} aria-label="Download para Android"><div className={styles.miniIcon} aria-hidden="true">O</div><div className={styles.barText}>Obaflix para Android<small>{androidMetadata?.label ?? "Download direto do APK"}</small></div><AndroidButton compact /></aside>
+    <aside className={styles.mobileBar} aria-label="Download para Android"><div className={styles.miniIcon} aria-hidden="true">O</div><div className={styles.barText}>Obaflix para Android<small>{androidMetadata?.label ?? "Download direto do APK"}</small></div><AndroidDownloadCta downloadPath={ANDROID_DOWNLOAD_PATH} variant="bar" /></aside>
   </div>;
 }
