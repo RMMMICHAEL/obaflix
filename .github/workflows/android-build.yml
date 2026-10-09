@@ -55,6 +55,11 @@ jobs:
             echo "available=false" >> $GITHUB_OUTPUT
           fi
 
+      # TEMPORÁRIO (apenas na branch fix/android-page-download, para diagnóstico
+      # do download Android): o release normal sai com DIAG_LOGS=false, então
+      # ObaLog e o chrome://inspect ficam desligados. As flags -PdiagLogs e
+      # -PunityAdsTest ligam o log estruturado/inspeção e forçam anúncio de teste
+      # neste APK assinado. REVERTER após capturar os logs. Não mesclar em main.
       - name: Build Release APK
         if: steps.keystore.outputs.available == 'true'
         env:
@@ -70,7 +75,7 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
-          cd android && ./gradlew assembleRelease --no-daemon
+          cd android && ./gradlew :app:assembleRelease -PdiagLogs -PunityAdsTest --no-daemon --stacktrace
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
