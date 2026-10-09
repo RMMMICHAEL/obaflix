@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef } from "react";
-import { fontesCandidatas, resolverComCoordenadas, resolverCandidataExpandindo } from "@/lib/androidMedia";
+import { fontesCandidatas, resolverComCoordenadas, type Expansao } from "@/lib/androidMedia";
 import { AcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
 import {
   corridaComPrazo,
@@ -38,24 +38,27 @@ import {
  * com a finalidade e a concessão — que `/api/player/fontes` consome no servidor
  * antes de entregar qualquer fonte. As tentativas seguintes da mesma procura
  * reaproveitam essa sessão, então trocar de servidor não pede anúncio de novo.
- * Um toque novo é uma ação nova.
+ * Um toque novo é uma ação nova, e quem o inicia chama `reiniciarAcao` antes.
  *
  * Uma sessão de download nunca serve transmissão, e nenhuma delas nasce de uma
  * concessão de reprodução — a finalidade viaja até o servidor e é conferida lá.
  *
- * ## Mesma sessão, lista que cresce
+ * ## Mesma sessão, lista que cresce (só download)
  *
- * Como o player, quando a lista base se esgota a procura expande a MESMA sessão
- * com `alternativas: true` — uma vez, aditiva. É aí que mora o MP4 baixável
- * quando a base é toda HLS (pulada) ou falha. A expansão **não** abre sessão
+ * Como o player, a procura de download pode expandir a MESMA sessão com
+ * `alternativas: true` — uma vez, aditiva. É aí que mora o MP4 baixável quando a
+ * base é toda HLS (pulada) ou falha. `expandirAlternativas` **não** abre sessão
  * nova, **não** pede anúncio e **não** consome concessão: o servidor só confere
- * o dono da sessão e acrescenta fontes. Falha/timeout da fase 2 mantém a base.
+ * o dono da sessão e acrescenta fontes. Quem orquestra as fases e os orçamentos
+ * é `procurarFonteDeDownload`; aqui só resolvemos a fonte no índice pedido e
+ * informamos onde as novas começam.
  *
  * ## Custo
  *
- * Uma chamada a `/api/playback/authorize` e uma a `/api/player/fontes` por ação,
- * mais uma a `/api/player/fonte-nativa` por servidor tentado. A extração em si
- * roda no aparelho, pelo IP do usuário — não passa pela Vercel.
+ * Uma chamada a `/api/playback/authorize` e uma a `/api/player/fontes` por ação
+ * (mais uma, no download, se a fase alternativas for necessária), e uma a
+ * `/api/player/fonte-nativa` por servidor tentado. A extração em si roda no
+ * aparelho, pelo IP do usuário — não passa pela Vercel.
  */
 
 type FinalidadeDeMidia = "download" | "transmissao";
@@ -161,17 +164,27 @@ export function useFonteParaMidia({
     [conteudoId, conteudoTipo, temporada, numeroEp],
   );
 
+  /** Um toque novo é uma ação nova: descarta a sessão (e o anúncio) da anterior. */
+  const reiniciarAcao = useCallback((finalidade: FinalidadeDeMidia) => {
+    sessoesRef.current[finalidade] = undefined;
+  }, []);
+
   /**
-   * Fase alternativas sobre a MESMA sessão de download (o que o player já faz na
-   * reprodução): `/api/player/fontes` com `alternativas: true`. É o servidor que,
-   * já conferindo o dono da sessão (`diagnosticarSessao`), acrescenta fontes —
-   * sem anúncio, sem concessão, sem sessão nova e sem aceitar URL do cliente.
+   * Fase alternativas sobre a MESMA sessão (o que o player já faz na reprodução):
+   * `/api/player/fontes` com `alternativas: true`. O servidor confere o dono da
+   * sessão (`diagnosticarSessao`) e acrescenta fontes — sem anúncio, sem
+   * concessão, sem sessão nova e sem aceitar URL do cliente.
    *
-   * Aditiva e à prova de falha: devolve a lista crescida (base + alternativas) ou
-   * a própria base em `!ok`, timeout ou erro — a fase 2 nunca quebra a base.
+   * Aditiva, à prova de falha e **uma vez por sessão** (`expandida`): devolve
+   * onde as fontes NOVAS começam e quantas são, ou `null` em `!ok`, timeout, erro
+   * ou quando nada cresceu — nesses casos a lista base fica intacta.
    */
-  const expandirFontes = useCallback(
-    async (atual: SessaoDaAcao): Promise<Fonte[]> => {
+  const expandirAlternativas = useCallback(
+    async (finalidade: FinalidadeDeMidia): Promise<Expansao | null> => {
+      const atual = sessoesRef.current[finalidade];
+      if (!atual || atual.expandida) return null;
+      atual.expandida = true;
+      const antes = atual.candidatas.length;
       try {
         const res = await fetchComPrazo(
           "/api/player/fontes",
@@ -191,28 +204,32 @@ export function useFonteParaMidia({
           PRAZO_FONTES_MS,
           "alternativas",
         );
-        if (!res.ok) return atual.candidatas;
+        if (!res.ok) return null;
         const data = await res.json().catch(() => null);
         const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
         const expandidas = fontesCandidatas(lista);
-        return expandidas.length > atual.candidatas.length ? expandidas : atual.candidatas;
+        if (expandidas.length <= antes) return null;
+        atual.candidatas = expandidas;
+        return { inicio: antes, quantidade: expandidas.length - antes };
       } catch {
-        return atual.candidatas;
+        return null;
       }
     },
     [conteudoId, conteudoTipo, temporada, numeroEp],
   );
 
   /**
-   * A n-ésima fonte candidata desta ação, já resolvida.
+   * A fonte candidata no índice pedido, já resolvida.
    *
-   * `null` só quando as fontes acabaram. Quando **este** servidor falha, lança:
-   * assim quem procura download segue para o próximo em vez de confundir um
-   * servidor quebrado com o fim da lista (ver `procurarFonteDeDownload`).
+   * `null` quando aquele índice não existe (base ainda sem expandir, ou lista
+   * esgotada). Quando **este** servidor falha, lança: assim quem procura download
+   * segue para o próximo em vez de confundir um servidor quebrado com o fim da
+   * lista (ver `procurarFonteDeDownload`). A sessão é aberta na primeira chamada,
+   * consumindo a liberação; as seguintes reaproveitam.
    */
-  return useCallback(
+  const resolverFonte = useCallback(
     async (
-      tentativa: number,
+      indice: number,
       finalidade: FinalidadeDeMidia,
       liberar?: (finalidade: FinalidadeDeMidia) => Promise<string | null>,
     ): Promise<Resolvido | null> => {
@@ -221,84 +238,76 @@ export function useFonteParaMidia({
       const ponte = (window as unknown as { obaflixDesktop?: Ponte }).obaflixDesktop;
       if (!ponte?.extractStream) return null;
 
-      // A primeira tentativa é uma ação nova: descarta a sessão da anterior.
-      if (tentativa === 0) sessoesRef.current[finalidade] = undefined;
       const atual = sessoesRef.current[finalidade] ?? (await abrirSessao(finalidade, liberar));
+      const alvo = atual.candidatas[indice];
+      if (!alvo) return null;
 
-      // Quando a lista base acaba, expande a MESMA sessão (fase alternativas) uma
-      // vez antes de dar por encerrada — o MP4 baixável pode estar só na lista
-      // expandida. A expansão não abre sessão nem pede anúncio.
-      return resolverCandidataExpandindo<Fonte, Resolvido>({
-        tentativa,
-        sessao: atual,
-        expandir: () => expandirFontes(atual),
-        resolver: async (alvo, i) => {
-          // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
-          // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
-          const servidor = alvo.rotulo || `Servidor ${i + 1}`;
-          const extrair = (embedUrl: string) => ponte.extractStream!(embedUrl);
+      // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
+      // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
+      const servidor = alvo.rotulo || `Servidor ${indice + 1}`;
+      const extrair = (embedUrl: string) => ponte.extractStream!(embedUrl);
 
-          // Coordenadas de episódio (ver src/lib/episodeCoordinates.ts): quando o
-          // provedor numera as temporadas de outro jeito, o servidor declara mais
-          // de uma, e a mesma fonte é tentada em cada uma — o que o player já
-          // fazia. Só circula o índice; a coordenada real sai do servidor.
-          const resolvida = await resolverComCoordenadas<Resolvido>({
-            // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
-            // servidor (EtapaExpirada sobe como falha de servidor) e a procura
-            // segue para o próximo, sem novo anúncio.
-            pedirFonte: async (coordenada) => {
-              const res = await fetchComPrazo(
-                "/api/player/fonte-nativa",
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(coordenada === 0
-                    ? { sessao: atual.sessao, fonteId: alvo.id }
-                    : { sessao: atual.sessao, fonteId: alvo.id, tentativa: coordenada }),
-                },
-                PRAZO_FONTE_NATIVA_MS,
-                "fonte-nativa",
-              );
-              if (!res.ok) throw new Error("fonte_falhou");
-              return res.json();
+      // Coordenadas de episódio (ver src/lib/episodeCoordinates.ts): quando o
+      // provedor numera as temporadas de outro jeito, o servidor declara mais de
+      // uma, e a mesma fonte é tentada em cada uma — o que o player já fazia.
+      // Só circula o índice; a coordenada real sai do servidor.
+      const resolvida = await resolverComCoordenadas<Resolvido>({
+        // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
+        // servidor (EtapaExpirada sobe como falha de servidor) e a procura segue
+        // para o próximo, sem novo anúncio.
+        pedirFonte: async (coordenada) => {
+          const res = await fetchComPrazo(
+            "/api/player/fonte-nativa",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(coordenada === 0
+                ? { sessao: atual.sessao, fonteId: alvo.id }
+                : { sessao: atual.sessao, fonteId: alvo.id, tentativa: coordenada }),
             },
-            // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
-            // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
-            // próximo, ainda sem novo anúncio.
-            extrair: async (embedUrl) => {
-              const dados = await corridaComPrazo(extrair(embedUrl), PRAZO_EXTRACAO_MS, "extracao");
-              if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
-              return dados;
-            },
-          });
-
-          // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
-          // devolvem o embed para o aparelho extrair (`embedUrl`). São os dois
-          // formatos que o próprio player já trata.
-          if (resolvida.via === "servidor") {
-            const nativa = resolvida.nativa;
-            return {
-              origem: "nativo",
-              stream: nativa.streamUrl,
-              referer: nativa.referer ?? null,
-              // O servidor declara o formato quando o conhece. Adivinhar pela URL
-              // errava nos dois sentidos: ".m4v" virava HLS, e um HLS com ".mp4"
-              // na query virava MP4. A adivinhação fica só para quando não houver tipo.
-              tipo:
-                nativa.tipo === "mp4" || nativa.tipo === "hls"
-                  ? nativa.tipo
-                  : String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
-              servidor,
-              via: "servidor",
-            };
-          }
-
-          // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
-          // nativo comum — os caminhos de sessão foram filtrados acima.
-          return { ...resolvida.dados, origem: "nativo", servidor, via: "aparelho" };
+            PRAZO_FONTE_NATIVA_MS,
+            "fonte-nativa",
+          );
+          if (!res.ok) throw new Error("fonte_falhou");
+          return res.json();
+        },
+        // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
+        // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
+        // próximo, ainda sem novo anúncio.
+        extrair: async (embedUrl) => {
+          const dados = await corridaComPrazo(extrair(embedUrl), PRAZO_EXTRACAO_MS, "extracao");
+          if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
+          return dados;
         },
       });
+
+      // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
+      // devolvem o embed para o aparelho extrair (`embedUrl`). São os dois
+      // formatos que o próprio player já trata.
+      if (resolvida.via === "servidor") {
+        const nativa = resolvida.nativa;
+        return {
+          origem: "nativo",
+          stream: nativa.streamUrl,
+          referer: nativa.referer ?? null,
+          // O servidor declara o formato quando o conhece. Adivinhar pela URL
+          // errava nos dois sentidos: ".m4v" virava HLS, e um HLS com ".mp4" na
+          // query virava MP4. A adivinhação fica só para quando não houver tipo.
+          tipo:
+            nativa.tipo === "mp4" || nativa.tipo === "hls"
+              ? nativa.tipo
+              : String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
+          servidor,
+          via: "servidor",
+        };
+      }
+
+      // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
+      // nativo comum — os caminhos de sessão foram filtrados acima.
+      return { ...resolvida.dados, origem: "nativo", servidor, via: "aparelho" };
     },
-    [abrirSessao, expandirFontes],
+    [abrirSessao],
   );
+
+  return { resolverFonte, expandirAlternativas, reiniciarAcao };
 }

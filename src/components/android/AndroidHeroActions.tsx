@@ -88,7 +88,7 @@ export function AndroidHeroActions({
   // sempre, mesmo quando não há alvo, senão a ordem dos hooks muda entre
   // renders quando o estado pessoal chega e a decisão troca. Ele só cria o
   // callback — nada é requisitado até alguém invocá-lo.
-  const resolverFonte = useFonteParaMidia({
+  const { resolverFonte, expandirAlternativas, reiniciarAcao } = useFonteParaMidia({
     conteudoId: alvo?.conteudoId ?? "",
     conteudoTipo: alvo?.tipo ?? "filme",
     temporada: alvo?.tipo === "serie" ? alvo.temporada : null,
@@ -160,6 +160,8 @@ export function AndroidHeroActions({
       tituloCurto={rotuloDoAlvo(titulo, decisao.alvo)}
       poster={poster}
       resolverFonte={resolverFonte}
+      expandirAlternativas={expandirAlternativas}
+      reiniciarAcao={reiniciarAcao}
       variante="hero"
     />
   );
