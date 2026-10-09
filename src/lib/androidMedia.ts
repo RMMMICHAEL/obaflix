@@ -387,6 +387,44 @@ export async function procurarFonteDeDownload<
   return { ok: false, motivo: viuHls ? "download_indisponivel" : ultimo?.motivo };
 }
 
+/** Uma sessão de fontes cuja lista candidata pode crescer uma vez (fase alternativas). */
+export type SessaoExpansivel<F> = { candidatas: F[]; expandida: boolean };
+
+/**
+ * A n-ésima candidata, expandindo a MESMA sessão (fase `alternativas:true`) uma
+ * única vez, só quando a lista base se esgota.
+ *
+ * É o que o player já faz com a sessão de reprodução, trazido para a procura de
+ * download: a lista base pode ser toda HLS (pulada) ou falhar, e o MP4 baixável
+ * aparecer só na lista expandida. Sem isto a procura via `fim` antes de alcançar
+ * o MP4 — e aumentar o teto de tentativas não resolve, porque a lista acaba.
+ *
+ * Puro: não conhece fetch, `window` nem React. A expansão:
+ *   - roda **no máximo uma vez** por sessão (`expandida`), aditiva: só cresce,
+ *     nunca encolhe a lista base já em uso;
+ *   - `expandir()` nunca lança e nunca abre sessão nova — devolve a lista
+ *     crescida (base + alternativas) ou a própria base em falha/timeout, para a
+ *     fase 2 nunca quebrar a base.
+ */
+export async function resolverCandidataExpandindo<F, R>(params: {
+  tentativa: number;
+  sessao: SessaoExpansivel<F>;
+  resolver: (alvo: F, tentativa: number) => Promise<R>;
+  expandir: () => Promise<F[]>;
+}): Promise<R | null> {
+  const { tentativa, sessao, resolver, expandir } = params;
+  let alvo = sessao.candidatas[tentativa];
+  if (!alvo && !sessao.expandida) {
+    // Marca antes de aguardar: uma expansão por sessão, mesmo se a fase 2 falhar.
+    sessao.expandida = true;
+    const crescida = await expandir();
+    if (crescida.length > sessao.candidatas.length) sessao.candidatas = crescida;
+    alvo = sessao.candidatas[tentativa];
+  }
+  if (!alvo) return null;
+  return resolver(alvo, tentativa);
+}
+
 /**
  * Um passo da procura de download, para diagnóstico.
  *
