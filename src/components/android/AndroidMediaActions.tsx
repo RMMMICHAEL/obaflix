@@ -8,6 +8,7 @@ import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
 import { AcaoInterrompida, liberarAcao } from "@/lib/ads/acaoPatrocinada";
 import {
   alvoDoPid,
+  type Expansao,
   linhaDiagDownload,
   mensagemDeFalha,
   pontesDeMidia,
@@ -167,6 +168,8 @@ export function AndroidMediaActions({
   tituloCurto,
   poster,
   resolverFonte,
+  expandirAlternativas,
+  reiniciarAcao,
   variante = "hero",
 }: {
   pid: string;
@@ -188,6 +191,16 @@ export function AndroidMediaActions({
     finalidade: FinalidadeDeMidia,
     liberar: LiberarAcao,
   ) => Promise<FonteResolvida | null>;
+  /**
+   * Fase alternativas (só download): expande a MESMA sessão uma vez. Ausente no
+   * player, que age sobre a fonte que já toca — sem lista para expandir.
+   */
+  expandirAlternativas?: (finalidade: FinalidadeDeMidia) => Promise<Expansao | null>;
+  /**
+   * Descarta a sessão da ação anterior. Um toque novo é uma ação nova. Ausente
+   * no player, cujo resolvedor é a fonte atual, sem sessão a reiniciar.
+   */
+  reiniciarAcao?: (finalidade: FinalidadeDeMidia) => void;
   variante?: VarianteVisual;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
@@ -244,15 +257,21 @@ export function AndroidMediaActions({
   const abrirEscolha = useCallback(async () => {
     const p = ponte();
     if (!p?.inspectDownloadSource) return;
+    // Toque novo = ação nova: descarta a sessão anterior antes de abrir a desta.
+    reiniciarAcao?.("download");
     setDownload("trabalhando");
     setAviso(null);
 
     // Arquivo direto primeiro: um HLS atual não vence um MP4 disponível em
     // outro servidor, e HLS não vira download enquanto não houver remux seguro
     // para um arquivo único. A regra e os testes vivem em procurarFonteDeDownload.
+    // Duas fases: até 6 da base e, se não achar, até 6 das alternativas da MESMA
+    // sessão (sem novo anúncio/concessão).
     const inspecionar = p.inspectDownloadSource;
     const resultado = await procurarFonteDeDownload<FonteResolvida, Resposta>({
       resolverFonte: (tentativa) => resolverFonte(tentativa, "download", liberar),
+      // Só quando há lista para expandir (hero/episódio). No player fica undefined.
+      expandir: expandirAlternativas ? () => expandirAlternativas("download") : undefined,
       sondar: (fonte) => inspecionar({ ...fonte, pid, titulo }),
       // Diagnóstico por tentativa (mídia, caminho, servidor genérico, motivo)
       // no canal [diag/etapa], que chega ao logcat do APK. Sem URL nem token.
@@ -280,7 +299,7 @@ export function AndroidMediaActions({
       return;
     }
     falhar(setDownload, r.motivo);
-  }, [pid, titulo, resolverFonte, liberar, concluir, falhar]);
+  }, [pid, titulo, resolverFonte, expandirAlternativas, reiniciarAcao, liberar, concluir, falhar]);
 
   // -- Baixar: etapa 2, escolha ---------------------------------------------
 
@@ -322,6 +341,8 @@ export function AndroidMediaActions({
     const p = ponte();
     if (!p?.requestCast) return;
     const requestCast = p.requestCast;
+    // Toque novo = ação nova. A transmissão não usa a fase alternativas.
+    reiniciarAcao?.("transmissao");
     setCast("trabalhando");
     setAviso(null);
 
@@ -360,7 +381,7 @@ export function AndroidMediaActions({
         falhar(setCast, resultado.motivo);
         return;
     }
-  }, [pid, titulo, poster, resolverFonte, liberar, concluir, falhar]);
+  }, [pid, titulo, poster, resolverFonte, reiniciarAcao, liberar, concluir, falhar]);
 
   /** O toque no botão "Transmitir" — o mesmo em hero, episódio e player. */
   const transmitir = executarTransmissao;

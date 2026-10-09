@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef } from "react";
-import { fontesCandidatas, resolverComCoordenadas } from "@/lib/androidMedia";
+import { fontesCandidatas, resolverComCoordenadas, type Expansao } from "@/lib/androidMedia";
 import { AcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
 import {
   corridaComPrazo,
@@ -38,16 +38,27 @@ import {
  * com a finalidade e a concessão — que `/api/player/fontes` consome no servidor
  * antes de entregar qualquer fonte. As tentativas seguintes da mesma procura
  * reaproveitam essa sessão, então trocar de servidor não pede anúncio de novo.
- * Um toque novo é uma ação nova.
+ * Um toque novo é uma ação nova, e quem o inicia chama `reiniciarAcao` antes.
  *
  * Uma sessão de download nunca serve transmissão, e nenhuma delas nasce de uma
  * concessão de reprodução — a finalidade viaja até o servidor e é conferida lá.
  *
+ * ## Mesma sessão, lista que cresce (só download)
+ *
+ * Como o player, a procura de download pode expandir a MESMA sessão com
+ * `alternativas: true` — uma vez, aditiva. É aí que mora o MP4 baixável quando a
+ * base é toda HLS (pulada) ou falha. `expandirAlternativas` **não** abre sessão
+ * nova, **não** pede anúncio e **não** consome concessão: o servidor só confere
+ * o dono da sessão e acrescenta fontes. Quem orquestra as fases e os orçamentos
+ * é `procurarFonteDeDownload`; aqui só resolvemos a fonte no índice pedido e
+ * informamos onde as novas começam.
+ *
  * ## Custo
  *
- * Uma chamada a `/api/playback/authorize` e uma a `/api/player/fontes` por ação,
- * mais uma a `/api/player/fonte-nativa` por servidor tentado. A extração em si
- * roda no aparelho, pelo IP do usuário — não passa pela Vercel.
+ * Uma chamada a `/api/playback/authorize` e uma a `/api/player/fontes` por ação
+ * (mais uma, no download, se a fase alternativas for necessária), e uma a
+ * `/api/player/fonte-nativa` por servidor tentado. A extração em si roda no
+ * aparelho, pelo IP do usuário — não passa pela Vercel.
  */
 
 type FinalidadeDeMidia = "download" | "transmissao";
@@ -79,7 +90,7 @@ type Resolvido = {
 
 type Ponte = { extractStream?: (embedUrl: string) => Promise<Resolvido> };
 
-type SessaoDaAcao = { sessao: string; candidatas: Fonte[] };
+type SessaoDaAcao = { sessao: string; candidatas: Fonte[]; expandida: boolean };
 
 export function useFonteParaMidia({
   conteudoId,
@@ -146,23 +157,79 @@ export function useFonteParaMidia({
       if (!sessao) throw new AcaoInterrompida("servidores_indisponiveis");
 
       const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
-      const aberta = { sessao, candidatas: fontesCandidatas(lista) };
+      const aberta: SessaoDaAcao = { sessao, candidatas: fontesCandidatas(lista), expandida: false };
       sessoesRef.current[finalidade] = aberta;
       return aberta;
     },
     [conteudoId, conteudoTipo, temporada, numeroEp],
   );
 
+  /** Um toque novo é uma ação nova: descarta a sessão (e o anúncio) da anterior. */
+  const reiniciarAcao = useCallback((finalidade: FinalidadeDeMidia) => {
+    sessoesRef.current[finalidade] = undefined;
+  }, []);
+
   /**
-   * A n-ésima fonte candidata desta ação, já resolvida.
+   * Fase alternativas sobre a MESMA sessão (o que o player já faz na reprodução):
+   * `/api/player/fontes` com `alternativas: true`. O servidor confere o dono da
+   * sessão (`diagnosticarSessao`) e acrescenta fontes — sem anúncio, sem
+   * concessão, sem sessão nova e sem aceitar URL do cliente.
    *
-   * `null` só quando as fontes acabaram. Quando **este** servidor falha, lança:
-   * assim quem procura download segue para o próximo em vez de confundir um
-   * servidor quebrado com o fim da lista (ver `procurarFonteDeDownload`).
+   * Aditiva, à prova de falha e **uma vez por sessão** (`expandida`): devolve
+   * onde as fontes NOVAS começam e quantas são, ou `null` em `!ok`, timeout, erro
+   * ou quando nada cresceu — nesses casos a lista base fica intacta.
    */
-  return useCallback(
+  const expandirAlternativas = useCallback(
+    async (finalidade: FinalidadeDeMidia): Promise<Expansao | null> => {
+      const atual = sessoesRef.current[finalidade];
+      if (!atual || atual.expandida) return null;
+      atual.expandida = true;
+      const antes = atual.candidatas.length;
+      try {
+        const res = await fetchComPrazo(
+          "/api/player/fontes",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conteudoId,
+              conteudoTipo,
+              temporada: temporada ?? null,
+              numeroEp: numeroEp ?? null,
+              ambiente: "android",
+              sessao: atual.sessao,
+              alternativas: true,
+            }),
+          },
+          PRAZO_FONTES_MS,
+          "alternativas",
+        );
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => null);
+        const lista: Fonte[] = Array.isArray(data?.fontes) ? data.fontes : [];
+        const expandidas = fontesCandidatas(lista);
+        if (expandidas.length <= antes) return null;
+        atual.candidatas = expandidas;
+        return { inicio: antes, quantidade: expandidas.length - antes };
+      } catch {
+        return null;
+      }
+    },
+    [conteudoId, conteudoTipo, temporada, numeroEp],
+  );
+
+  /**
+   * A fonte candidata no índice pedido, já resolvida.
+   *
+   * `null` quando aquele índice não existe (base ainda sem expandir, ou lista
+   * esgotada). Quando **este** servidor falha, lança: assim quem procura download
+   * segue para o próximo em vez de confundir um servidor quebrado com o fim da
+   * lista (ver `procurarFonteDeDownload`). A sessão é aberta na primeira chamada,
+   * consumindo a liberação; as seguintes reaproveitam.
+   */
+  const resolverFonte = useCallback(
     async (
-      tentativa: number,
+      indice: number,
       finalidade: FinalidadeDeMidia,
       liberar?: (finalidade: FinalidadeDeMidia) => Promise<string | null>,
     ): Promise<Resolvido | null> => {
@@ -171,16 +238,13 @@ export function useFonteParaMidia({
       const ponte = (window as unknown as { obaflixDesktop?: Ponte }).obaflixDesktop;
       if (!ponte?.extractStream) return null;
 
-      // A primeira tentativa é uma ação nova: descarta a sessão da anterior.
-      if (tentativa === 0) sessoesRef.current[finalidade] = undefined;
       const atual = sessoesRef.current[finalidade] ?? (await abrirSessao(finalidade, liberar));
-
-      const alvo = atual.candidatas[tentativa];
+      const alvo = atual.candidatas[indice];
       if (!alvo) return null;
 
       // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
       // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
-      const servidor = alvo.rotulo || `Servidor ${tentativa + 1}`;
+      const servidor = alvo.rotulo || `Servidor ${indice + 1}`;
       const extrair = (embedUrl: string) => ponte.extractStream!(embedUrl);
 
       // Coordenadas de episódio (ver src/lib/episodeCoordinates.ts): quando o
@@ -244,4 +308,6 @@ export function useFonteParaMidia({
     },
     [abrirSessao],
   );
+
+  return { resolverFonte, expandirAlternativas, reiniciarAcao };
 }

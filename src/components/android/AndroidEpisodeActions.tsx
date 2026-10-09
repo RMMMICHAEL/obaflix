@@ -31,7 +31,7 @@ export function AndroidEpisodeActions({
   poster?: string | null;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
-  const resolverFonte = useFonteParaMidia({
+  const { resolverFonte, expandirAlternativas, reiniciarAcao } = useFonteParaMidia({
     conteudoId: serieId,
     conteudoTipo: "serie",
     temporada,
@@ -53,6 +53,8 @@ export function AndroidEpisodeActions({
         tituloCurto={rotuloDeEpisodio(serieTitulo, temporada, numeroEp)}
         poster={poster}
         resolverFonte={resolverFonte}
+        expandirAlternativas={expandirAlternativas}
+        reiniciarAcao={reiniciarAcao}
         variante="episodio"
       />
     </div>

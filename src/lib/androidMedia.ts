@@ -285,43 +285,76 @@ export function midiaDaFonte(fonte: { stream?: string; tipo?: string | null }): 
 }
 
 /**
- * Teto de servidores tentados num toque em Baixar. Cada tentativa fora do
- * player custa uma chamada a `/api/player/fonte-nativa`; a extração em si roda
- * no aparelho.
+ * Teto de servidores da LISTA BASE num toque em Baixar. Cada tentativa fora do
+ * player custa uma chamada a `/api/player/fonte-nativa` e, possivelmente, uma
+ * extração no aparelho. HLS também conta: só dá para classificá-lo DEPOIS de
+ * resolver a fonte, então ele já pagou o custo — ignorá-lo no orçamento deixaria
+ * o número de extrações praticamente ilimitado.
  */
 export const MAX_TENTATIVAS_DE_DOWNLOAD = 6;
+
+/**
+ * Teto SEPARADO para as fontes que a fase `alternativas: true` acrescenta. É um
+ * orçamento próprio, não a continuação do da base: uma base ruim com muitas
+ * fontes não pode consumir as posições das alternativas antes de chegar nelas.
+ */
+export const MAX_TENTATIVAS_ALTERNATIVAS_DOWNLOAD = 6;
 
 export type RespostaDeSondagem = { ok: boolean; motivo?: string; tentarOutraFonte?: boolean };
 
 export type ResultadoDaProcura<R> = { ok: true; resposta: R } | { ok: false; motivo?: string };
 
+/** Onde as fontes NOVAS da expansão começam, e quantas são. */
+export type Expansao = { inicio: number; quantidade: number };
+
 /**
- * Procura a fonte de download: arquivo direto antes de HLS.
+ * Procura a fonte de download em DUAS fases, cada uma com orçamento próprio.
  *
- * Ordem: MP4/direta aceita pelo Android → próxima fonte direta → só então HLS.
- * Nesta versão o HLS não tem vez: baixá-lo gravava dezenas de `.ts` e um
- * `index.m3u8`, e ainda não há remux seguro para um arquivo único. Uma fonte HLS
- * é pulada sem sequer ser sondada, e se só houver HLS a resposta é
- * "Download indisponível para este título".
+ *  1. **base** — até `maxTentativas` fontes da lista base;
+ *  2. **alternativas** — se a base não achou download (esgotou OU consumiu o
+ *     orçamento), `expandir()` traz as fontes extras da MESMA sessão (fase
+ *     `alternativas: true`) UMA vez, e tenta até `maxAlternativas` fontes
+ *     **novas**, com orçamento à parte.
  *
- * `resolverFonte` devolve `null` quando as fontes acabaram e lança quando um
- * servidor específico falhou — a procura segue para o próximo em vez de
- * desistir no primeiro servidor quebrado.
+ * Duas fases, e não um índice linear de 12: uma base com 8 fontes ruins não
+ * gasta as posições das alternativas — tenta `maxTentativas` da base e segue
+ * para as novas. Sem `expandir`, ou com expansão que não cresce, fica só a fase
+ * 1 (idêntico ao comportamento anterior). O player não usa isto: só o download.
  *
- * Não resolve nem troca a fonte que está tocando: o que cada tentativa devolve
- * é decisão de quem chama (no player, só a fonte atual).
+ * Ordem dentro de cada fase: arquivo direto (MP4) é sondado; HLS é pulado sem
+ * sondagem (não há remux seguro para arquivo único) e, se só houver HLS, a
+ * resposta é "Download indisponível". `resolverFonte(indice)` devolve `null`
+ * quando aquele índice não existe e lança quando um servidor específico falhou —
+ * a procura segue para o próximo em vez de desistir no primeiro servidor quebrado.
+ *
+ * Não resolve nem troca a fonte que está tocando: o que cada tentativa devolve é
+ * decisão de quem chama.
  */
 export async function procurarFonteDeDownload<
   F extends { stream?: string; tipo?: string | null; servidor?: string; via?: string },
   R extends RespostaDeSondagem,
 >(params: {
-  resolverFonte: (tentativa: number) => Promise<F | null>;
+  /** Resolve a fonte no índice ABSOLUTO (base e, após `expandir`, alternativas). */
+  resolverFonte: (indice: number) => Promise<F | null>;
   sondar: (fonte: F) => Promise<R>;
+  /**
+   * Expande a MESMA sessão (fase `alternativas: true`) uma vez e devolve onde as
+   * fontes NOVAS começam e quantas são — ou `null` em falha/sem crescimento.
+   * Nunca abre sessão nem pede anúncio. Ausente: sem fase 2.
+   */
+  expandir?: () => Promise<Expansao | null>;
+  /** Orçamento da fase base. */
   maxTentativas?: number;
+  /** Orçamento da fase alternativas. */
+  maxAlternativas?: number;
   /** Diagnóstico de cada tentativa. Ver [EventoDeProcura] e [linhaDiagDownload]. */
   registrar?: (evento: EventoDeProcura) => void;
 }): Promise<ResultadoDaProcura<R>> {
-  const { resolverFonte, sondar, maxTentativas = MAX_TENTATIVAS_DE_DOWNLOAD } = params;
+  const {
+    resolverFonte, sondar, expandir,
+    maxTentativas = MAX_TENTATIVAS_DE_DOWNLOAD,
+    maxAlternativas = MAX_TENTATIVAS_ALTERNATIVAS_DOWNLOAD,
+  } = params;
   // Log que quebra não pode derrubar o download.
   const registrar = (evento: EventoDeProcura) => {
     try {
@@ -332,59 +365,100 @@ export async function procurarFonteDeDownload<
   };
   let viuHls = false;
   let ultimo: R | null = null;
+  let contador = 0; // tentativa contínua entre as fases, só para o diagnóstico
 
-  for (let tentativa = 0; tentativa < maxTentativas; tentativa++) {
-    let fonte: F | null;
-    try {
-      fonte = await resolverFonte(tentativa);
-    } catch (erro) {
-      const nome = (erro as { name?: unknown } | null)?.name;
-      // Fechar o convite de anúncio, ir assinar um plano ou ter a ação recusada
-      // comercialmente encerram a procura inteira: tentar o próximo servidor
-      // abriria o modal de novo, ou repetiria a mesma recusa.
-      if (nome === "AcaoCancelada") {
-        registrar({ tentativa, resultado: "falhou", motivo: "cancelado" });
-        return { ok: false, motivo: "cancelado" };
+  type Saida =
+    | { tipo: "aceita"; resposta: R }
+    /** Cancelamento/recusa comercial: encerra tudo, sem expandir. */
+    | { tipo: "terminal"; motivo?: string }
+    /** Android recusou e disse que outra fonte não ajuda: encerra, sem expandir. */
+    | { tipo: "parar" }
+    /** Fase acabou (lista esgotou ou orçamento consumido): pode expandir. */
+    | { tipo: "segue" };
+
+  const fase = async (inicio: number, max: number): Promise<Saida> => {
+    for (let i = 0; i < max; i++) {
+      const tentativa = contador;
+      let fonte: F | null;
+      try {
+        fonte = await resolverFonte(inicio + i);
+      } catch (erro) {
+        const nome = (erro as { name?: unknown } | null)?.name;
+        // Fechar o convite de anúncio, ir assinar ou ter a ação recusada
+        // comercialmente encerram a procura inteira: tentar outro servidor
+        // abriria o modal de novo, ou repetiria a mesma recusa.
+        if (nome === "AcaoCancelada") {
+          registrar({ tentativa, resultado: "falhou", motivo: "cancelado" });
+          return { tipo: "terminal", motivo: "cancelado" };
+        }
+        if (nome === "AcaoInterrompida") {
+          const motivo = String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada");
+          registrar({ tentativa, resultado: "falhou", motivo });
+          return { tipo: "terminal", motivo };
+        }
+        // Este servidor falhou; os próximos ainda podem servir.
+        registrar({ tentativa, resultado: "falhou" });
+        contador++;
+        continue;
       }
-      if (nome === "AcaoInterrompida") {
-        const motivo = String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada");
-        registrar({ tentativa, resultado: "falhou", motivo });
-        return { ok: false, motivo };
+      if (!fonte) {
+        registrar({ tentativa, resultado: "fim" });
+        return { tipo: "segue" };
       }
-      // Este servidor falhou; os próximos ainda podem servir.
-      registrar({ tentativa, resultado: "falhou" });
-      continue;
-    }
-    if (!fonte) {
-      registrar({ tentativa, resultado: "fim" });
-      break;
-    }
 
-    const identidade = { servidor: fonte.servidor, via: fonte.via };
-    const midia = midiaDaFonte(fonte);
-    if (midia === "hls") {
-      viuHls = true;
-      registrar({ tentativa, resultado: "pulada_hls", midia, ...identidade });
-      continue;
-    }
+      const identidade = { servidor: fonte.servidor, via: fonte.via };
+      const midia = midiaDaFonte(fonte);
+      if (midia === "hls") {
+        viuHls = true;
+        registrar({ tentativa, resultado: "pulada_hls", midia, ...identidade });
+        contador++;
+        continue;
+      }
 
-    let r: R;
-    try {
-      r = await sondar(fonte);
-    } catch {
-      r = { ok: false } as R;
+      let r: R;
+      try {
+        r = await sondar(fonte);
+      } catch {
+        r = { ok: false } as R;
+      }
+      if (r.ok) {
+        registrar({ tentativa, resultado: "aceita", midia, ...identidade });
+        return { tipo: "aceita", resposta: r };
+      }
+      registrar({ tentativa, resultado: "recusada", midia, motivo: r.motivo, ...identidade });
+      ultimo = r;
+      contador++;
+      // Só insiste quando o Android disse que outra fonte pode servir.
+      if (!r.tentarOutraFonte) return { tipo: "parar" };
     }
-    if (r.ok) {
-      registrar({ tentativa, resultado: "aceita", midia, ...identidade });
-      return { ok: true, resposta: r };
-    }
-    registrar({ tentativa, resultado: "recusada", midia, motivo: r.motivo, ...identidade });
-    ultimo = r;
-    // Só insiste quando o Android disse que outra fonte pode servir.
-    if (!r.tentarOutraFonte) break;
+    return { tipo: "segue" }; // orçamento consumido
+  };
+
+  const encerrar = (): ResultadoDaProcura<R> => ({
+    ok: false,
+    motivo: viuHls ? "download_indisponivel" : ultimo?.motivo,
+  });
+
+  const base = await fase(0, maxTentativas);
+  if (base.tipo === "aceita") return { ok: true, resposta: base.resposta };
+  if (base.tipo === "terminal") return { ok: false, motivo: base.motivo };
+  if (base.tipo === "parar") return encerrar();
+
+  // Fase 2: a base não achou download. Expande a MESMA sessão uma vez e tenta só
+  // as fontes NOVAS, com orçamento próprio. Falha/sem crescimento mantém a base.
+  if (!expandir) return encerrar();
+  let expansao: Expansao | null;
+  try {
+    expansao = await expandir();
+  } catch {
+    expansao = null;
   }
+  if (!expansao || expansao.quantidade <= 0) return encerrar();
 
-  return { ok: false, motivo: viuHls ? "download_indisponivel" : ultimo?.motivo };
+  const alt = await fase(expansao.inicio, Math.min(expansao.quantidade, maxAlternativas));
+  if (alt.tipo === "aceita") return { ok: true, resposta: alt.resposta };
+  if (alt.tipo === "terminal") return { ok: false, motivo: alt.motivo };
+  return encerrar();
 }
 
 /**
