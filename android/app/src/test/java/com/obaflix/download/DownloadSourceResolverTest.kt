@@ -176,17 +176,19 @@ class DownloadSourceResolverTest {
     // -- Download so de arquivo unico --------------------------------------------
 
     @Test
-    fun `hls nao vira download, mesmo servindo para transmissao`() {
+    fun `hls agora e elegivel na entrada (a compatibilidade e vista na sondagem)`() {
+        // A trava em bloco saiu: o HLS vira arquivo unico por concatenacao. O que
+        // impede um HLS especifico (cripto, audio separado) so da para saber lendo
+        // o manifesto, entao e decidido em MediaDownloader, nao aqui.
         val json = payload("stream" to "https://cdn.exemplo.com/x/master.m3u8", "tipo" to "hls")
-        assertTrue(DownloadSourceResolver.classificar(json, AGORA) is DownloadElegibilidade.Elegivel)
-        val r = DownloadSourceResolver.paraDownload(json, AGORA) as DownloadElegibilidade.Inelegivel
-        assertEquals(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO, r.motivo)
+        val r = DownloadSourceResolver.paraDownload(json, AGORA) as DownloadElegibilidade.Elegivel
+        assertEquals(MediaKind.HLS, r.source.kind)
     }
 
     @Test
-    fun `hls sem tipo declarado tambem e recusado para download`() {
+    fun `hls sem tipo declarado tambem e elegivel para download`() {
         val r = DownloadSourceResolver.paraDownload(payload("stream" to "https://cdn.exemplo.com/x/playlist"), AGORA)
-        assertEquals(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO, (r as DownloadElegibilidade.Inelegivel).motivo)
+        assertEquals(MediaKind.HLS, (r as DownloadElegibilidade.Elegivel).source.kind)
     }
 
     @Test

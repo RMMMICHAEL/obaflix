@@ -185,23 +185,18 @@ object DownloadSourceResolver {
     }
 
     /**
-     * [classificar] mais a regra de download: so arquivo direto (MP4) vira
-     * download nesta versao.
+     * [classificar] e a elegibilidade de entrada do download.
      *
-     * HLS e recusado com [MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO] e o lado web
-     * tenta a proxima fonte. E a defesa do lado nativo: mesmo um site antigo, que
-     * ainda mande HLS para sondagem, nao produz mais dezenas de `.ts` na pasta.
+     * MP4 e HLS passam igual aqui: o HLS agora vira UM arquivo via concatenacao
+     * ([HlsAssembler]). O que impede um HLS especifico — criptografia
+     * (#EXT-X-KEY) ou audio em faixa separada — so da para saber lendo o
+     * manifesto, entao e descoberto na sondagem real
+     * ([MediaDownloader.sondarQualidades]/[MediaDownloader.baixarHls]), que
+     * devolve [DownloadFailure.FONTE_INCOMPATIVEL] e deixa o lado web tentar a
+     * proxima fonte. Esta camada nao faz rede, entao nao decide isso aqui.
      *
      * A transmissao continua em [classificar] — o app de cast toca HLS.
      */
     fun paraDownload(payload: JSONObject, agora: Long = System.currentTimeMillis()): DownloadElegibilidade =
-        when (val base = classificar(payload, agora)) {
-            is DownloadElegibilidade.Inelegivel -> base
-            is DownloadElegibilidade.Elegivel ->
-                if (base.source.kind == MediaKind.HLS) {
-                    DownloadElegibilidade.Inelegivel(MotivoInelegivel.HLS_SEM_ARQUIVO_UNICO)
-                } else {
-                    base
-                }
-        }
+        classificar(payload, agora)
 }

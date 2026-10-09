@@ -10,6 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -35,17 +36,15 @@ class DownloadException(val motivo: DownloadFailure, mensagem: String) : Excepti
  *
  * Manda exatamente `Referer` e `User-Agent` — os mesmos dois que o
  * `PlayerWebViewClient` injeta quando a WebView busca a mesma midia. Nenhum
- * cookie sai daqui: o `OkHttpClient` usado nao tem CookieJar, entao nao ha
- * caminho pelo qual `cf_clearance`, page token ou cfv cheguem ao CDN por esta
- * classe, nem por acidente.
+ * cookie sai daqui: o `OkHttpClient` nao tem CookieJar.
  *
- * ## Por que sequencial, e nao em blocos paralelos
+ * ## HLS vira UM arquivo
  *
- * Baixar N intervalos ao mesmo tempo dentro do mesmo arquivo exige abrir o
- * descritor em "rw" e posicionar cada escrita — e uma escrita fora de ordem que
- * falha no meio deixa um arquivo com buraco que parece completo. Numa rede
- * movel o ganho e pequeno e o modo de falha e silencioso. A retomada por
- * `Range` cobre o caso que importa de verdade, que e a conexao cair.
+ * O HLS nao e gravado como pasta de segmentos + manifesto (o que a 1.0.17 fazia
+ * e o que o smoke reprovou). Os segmentos sao concatenados num unico arquivo —
+ * TS cru vira `.ts`, fMP4 (init do EXT-X-MAP + fragmentos) vira `.mp4`. A
+ * montagem e a finalizacao vivem em [HlsAssembler], puras e testaveis; aqui
+ * ficam a rede (OkHttp) e o armazenamento (SAF).
  */
 class MediaDownloader(
     private val contentResolver: ContentResolver,
@@ -64,29 +63,10 @@ class MediaDownloader(
             .build()
 
         /**
-         * Recusa destino que nao seja publico.
-         *
-         * Mesma checagem do `StreamExtractor`: a URL da fonte vem de um
-         * provedor de terceiro e um redirecionamento para `127.0.0.1` ou para
-         * um endereco de rede local transformaria o download num SSRF com o
-         * aparelho do usuario como pivo.
+         * Recusa destino que nao seja publico. Mesma checagem do StreamExtractor:
+         * a URL vem de terceiro e um redirect para 127.0.0.1 ou rede local
+         * transformaria o download num SSRF com o aparelho como pivo.
          */
-        /**
-         * "tamanho@offset" do #EXT-X-BYTERANGE vira o header `Range` do HTTP.
-         *
-         * As duas notacoes contam coisas diferentes: o HLS declara **quantos**
-         * bytes ler a partir de um offset, o HTTP declara o **ultimo indice**
-         * inclusivo. Errar o `-1` aqui pede um byte a mais em cada segmento, o
-         * que so aparece como video com estalo no fim de cada pedaco.
-         */
-        internal fun faixaDeExtX(byteRange: String): String? {
-            val partes = byteRange.trim().split("@")
-            val tamanho = partes.getOrNull(0)?.trim()?.toLongOrNull() ?: return null
-            val offset = partes.getOrNull(1)?.trim()?.toLongOrNull() ?: 0L
-            if (tamanho <= 0L) return null
-            return "bytes=$offset-${offset + tamanho - 1}"
-        }
-
         fun destinoPublico(url: String): Boolean = runCatching {
             val parsed = URL(url)
             if (parsed.protocol != "https") return false
@@ -96,29 +76,36 @@ class MediaDownloader(
                     it.isSiteLocalAddress || it.isMulticastAddress
             }
         }.getOrDefault(false)
+
+        /**
+         * Monta o pedido HTTP: sempre Referer e User-Agent (os mesmos que a
+         * WebView injeta), e o Range do HLS (BYTERANGE) ou da retomada do MP4.
+         * No companion para ser testavel sem rede.
+         */
+        internal fun pedido(source: DownloadSource, url: String, faixaDe: Long = 0L, rangeHls: String? = null): Request =
+            Request.Builder().url(url).apply {
+                source.referer?.let { header("Referer", it) }
+                source.userAgent?.let { header("User-Agent", it) }
+                when {
+                    rangeHls != null -> header("Range", rangeHls)
+                    faixaDe > 0L -> header("Range", "bytes=$faixaDe-")
+                }
+            }.build()
     }
 
     // -- Sondagem de qualidades ----------------------------------------------
 
     /**
-     * Descobre quais resolucoes esta fonte realmente oferece.
+     * Quais resolucoes esta fonte oferece — e, no caminho HLS, se ela da para
+     * baixar como arquivo unico.
      *
-     * E o unico lugar do app que sabe disso: `ExtractResult.qualities` so e
-     * preenchido no caminho do Superflix (que nao e baixavel), entao para as
-     * fontes que de fato podem ser baixadas a lista de variantes nao existe em
-     * lugar nenhum ate alguem ler o master.
-     *
-     * Custo: uma requisicao ao master. Ela nao e desperdicada — a variante
-     * escolhida ja sai daqui resolvida, e o download comeca direto na playlist
-     * dela em vez de buscar o master de novo. No total continuam sendo duas
-     * requisicoes de manifesto, as mesmas de antes.
+     * HLS: le o manifesto; master → variantes, filtrando as que tocam audio em
+     * faixa separada (so sobra o que concatena sozinho). Se nenhuma variante
+     * compativel sobrar, ou a midia direta vier criptografada, lanca
+     * [DownloadFailure.FONTE_INCOMPATIVEL] e o lado web tenta a proxima fonte.
      */
     suspend fun sondarQualidades(source: DownloadSource): List<QualidadeDownload> =
         withContext(Dispatchers.IO) {
-            // MP4 nao tem manifesto para consultar. Abrir o container so para ler
-            // a altura do track custaria baixar o inicio do arquivo, e o `moov`
-            // pode estar no fim — e nada garante que esteja la. Sem metadata
-            // confiavel, a opcao honesta e uma so.
             if (source.kind == MediaKind.MP4) return@withContext listOf(QualidadeDownload.padrao())
 
             exigirDestinoPublico(source.url)
@@ -126,10 +113,22 @@ class MediaDownloader(
             if (!HlsPlaylist.ehPlaylist(texto)) {
                 throw DownloadException(DownloadFailure.MANIFESTO_INVALIDO, "Resposta nao e um manifesto HLS")
             }
-            // Playlist de midia direta: nao ha variantes para escolher.
-            if (!HlsPlaylist.ehMaster(texto)) return@withContext listOf(QualidadeDownload.padrao())
 
-            QualidadeDownload.deVariantes(HlsPlaylist.parseMaster(texto), source.url)
+            if (!HlsPlaylist.ehMaster(texto)) {
+                // Playlist de midia direta: so recusa se vier criptografada.
+                if (HlsPlaylist.parseMedia(texto).criptografada) {
+                    throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "HLS criptografado")
+                }
+                return@withContext listOf(QualidadeDownload.padrao())
+            }
+
+            val variantes = HlsPlaylist.parseMaster(texto)
+            val externos = HlsPlaylist.gruposAudioExternos(texto)
+            val compativeis = HlsPlaylist.variantesCompativeis(variantes, externos)
+            if (compativeis.isEmpty()) {
+                throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "HLS com audio em faixa separada")
+            }
+            QualidadeDownload.deVariantes(compativeis, source.url)
         }
 
     // -- MP4 ------------------------------------------------------------------
@@ -152,8 +151,6 @@ class MediaDownloader(
         while (true) {
             currentCoroutineContext().ensureActive()
             try {
-                // "wa" (append) na retomada: o que ja foi gravado continua
-                // valido, e o Range pede so o que falta.
                 val modo = if (gravados > 0L) "wa" else "w"
                 val resposta = executar(source, source.url, faixaDe = gravados)
                 resposta.use { r ->
@@ -185,34 +182,23 @@ class MediaDownloader(
         ResultadoDownload(arquivo.uri.toString(), gravados, 0)
     }
 
-    // -- HLS ------------------------------------------------------------------
+    // -- HLS: concatena num arquivo unico -------------------------------------
 
     /**
-     * Baixa manifesto e segmentos para uma subpasta propria.
-     *
-     * A subpasta existe porque HLS nao e um arquivo: sao centenas de segmentos
-     * mais o manifesto reescrito. Jogar isso solto na pasta que o usuario
-     * escolheu misturaria os segmentos de tres episodios diferentes.
-     */
-    /**
-     * @param varianteId id da variante escolhida pelo usuario, quando houve
-     *   escolha. Normalmente a URL de [source] **ja e** a da variante — o
-     *   caminho normal nem passa por um master aqui. Este parametro cobre o
-     *   caso em que a URL guardada ainda aponta para um master: sem ele, o
-     *   downloader cairia em [HlsPlaylist.melhorVariante] e entregaria 1080p a
-     *   quem escolheu 480p.
+     * Resolve master→variante (quando houver) e concatena init + segmentos num
+     * unico arquivo via [HlsAssembler]. A variante do usuario e respeitada: se a
+     * URL guardada ainda for um master, `varianteId` decide — nunca cai para a
+     * melhor variante em silencio quando alguem escolheu outra.
      */
     suspend fun baixarHls(
         source: DownloadSource,
         pasta: DocumentFile,
-        nomePasta: String,
+        titulo: String,
         sink: ProgressoSink,
         varianteId: String? = null,
     ): ResultadoDownload = withContext(Dispatchers.IO) {
         exigirDestinoPublico(source.url)
 
-        // 1. Master -> variante. Um manifesto de midia direto tambem chega aqui,
-        //    e nesse caso nao ha o que escolher.
         val textoInicial = baixarTexto(source, source.url)
         if (!HlsPlaylist.ehPlaylist(textoInicial)) {
             throw DownloadException(DownloadFailure.MANIFESTO_INVALIDO, "Resposta nao e um manifesto HLS")
@@ -222,18 +208,20 @@ class MediaDownloader(
         var textoDaMidia = textoInicial
         if (HlsPlaylist.ehMaster(textoInicial)) {
             val variantes = HlsPlaylist.parseMaster(textoInicial)
+            val externos = HlsPlaylist.gruposAudioExternos(textoInicial)
+            val compativeis = HlsPlaylist.variantesCompativeis(variantes, externos)
+            if (compativeis.isEmpty()) {
+                throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "HLS com audio em faixa separada")
+            }
             val variante = if (varianteId != null && varianteId != QualidadeDownload.ID_PADRAO) {
-                // Escolha explicita: ou e ela, ou nada. Cair para a melhor
-                // variante aqui seria entregar em silencio uma qualidade que a
-                // pessoa nao pediu — e o arquivo ficaria no aparelho dela sem
-                // nenhum aviso de que veio diferente.
-                HlsPlaylist.porId(variantes, varianteId)
-                    ?: throw DownloadException(
-                        DownloadFailure.FONTE_INCOMPATIVEL,
-                        "Variante escolhida nao existe mais no manifesto",
-                    )
+                val escolhida = HlsPlaylist.porId(variantes, varianteId)
+                    ?: throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "Variante escolhida nao existe mais")
+                if (HlsPlaylist.temAudioSeparado(escolhida, externos)) {
+                    throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "Variante usa audio separado")
+                }
+                escolhida
             } else {
-                HlsPlaylist.melhorVariante(variantes)
+                HlsPlaylist.melhorVariante(compativeis.map { it.value })
                     ?: throw DownloadException(DownloadFailure.MANIFESTO_INVALIDO, "Master sem variantes")
             }
             urlDaMidia = HlsPlaylist.resolver(source.url, variante.uri)
@@ -243,56 +231,97 @@ class MediaDownloader(
 
         val midia = HlsPlaylist.parseMedia(textoDaMidia)
         if (midia.criptografada) {
-            // Gravar a chave de conteudo ao lado do video, na pasta do usuario,
-            // e persistir material de decodificacao — fora do que esta rodada
-            // se propoe. Recusa explicita e melhor que um arquivo ilegivel.
             throw DownloadException(DownloadFailure.FONTE_INCOMPATIVEL, "HLS criptografado")
         }
         if (midia.segmentos.isEmpty()) {
             throw DownloadException(DownloadFailure.MANIFESTO_INVALIDO, "Playlist sem segmentos")
         }
 
-        val destino = pasta.createDirectory(nomePasta)
-            ?: throw DownloadException(DownloadFailure.ESCRITA, "Nao foi possivel criar a pasta")
+        val feitosTotal = (if (midia.initSegment != null) 1 else 0) + midia.segmentos.size
+        val parcial = SafArquivoParcial(pasta, DownloadFolder.nomeSeguro(titulo, "part"))
 
-        // 2. Segmentos. O mapa guarda "URI resolvida -> nome local" e e o que a
-        //    reescrita do manifesto consulta depois.
-        val nomes = LinkedHashMap<String, String>()
-        var bytes = 0L
-        var feitos = 0
+        val (container, bytes) = try {
+            HlsAssembler.montar(
+                midia = midia,
+                urlDaMidia = urlDaMidia,
+                baixar = { url, faixa -> baixarBytes(source, url, faixa) },
+                destinoPublico = { destinoPublico(it) },
+                parcial = parcial,
+            ) { b, feitos, total -> sink.avancou(b, -1L, feitos, total) }
+        } catch (e: Throwable) {
+            // Cancelamento, falha de rede, container desconhecido: nunca deixa .part.
+            parcial.descartar()
+            throw e
+        }
 
-        val comInit = buildList {
-            midia.initSegment?.let { add(it to "init.mp4") }
-            midia.segmentos.forEachIndexed { i, seg ->
-                add(seg to "seg%05d%s".format(i + 1, extensaoDe(seg.uri)))
+        val uri = try {
+            HlsAssembler.finalizar(parcial, DownloadFolder.nomeSeguro(titulo, container.extensao()), container)
+        } catch (e: Throwable) {
+            parcial.descartar()
+            throw e
+        }
+
+        ResultadoDownload(uri, bytes, feitosTotal)
+    }
+
+    /**
+     * O arquivo `.part` sobre SAF e sua finalizacao. renameTo nao e universal
+     * entre provedores de documentos; por isso o fallback de copia.
+     */
+    private inner class SafArquivoParcial(
+        private val pasta: DocumentFile,
+        nomeParte: String,
+    ) : ArquivoParcial {
+        private val parte: DocumentFile = pasta.createFile("application/octet-stream", nomeParte)
+            ?: throw DownloadException(DownloadFailure.ESCRITA, "Nao foi possivel criar o arquivo temporario")
+        private var saida: OutputStream? = contentResolver.openOutputStream(parte.uri, "w")
+            ?: throw DownloadException(DownloadFailure.ESCRITA, "Sem stream de escrita")
+
+        override fun escrever(bytes: ByteArray) {
+            (saida ?: throw DownloadException(DownloadFailure.ESCRITA, "Stream de escrita fechado")).write(bytes)
+        }
+
+        private fun fecharStream() {
+            runCatching { saida?.flush(); saida?.close() }
+            saida = null
+        }
+
+        override fun renomearPara(nomeFinal: String): String? {
+            fecharStream()
+            val ok = runCatching { parte.renameTo(nomeFinal) }.getOrDefault(false)
+            return if (ok) parte.uri.toString() else null
+        }
+
+        override fun copiarParaFinal(nomeFinal: String, mime: String): String {
+            fecharStream()
+            val finalDoc = pasta.createFile(mime, nomeFinal)
+                ?: throw DownloadException(DownloadFailure.ESCRITA, "Nao foi possivel criar o arquivo final")
+            try {
+                val copiados = contentResolver.openInputStream(parte.uri).use { entrada ->
+                    contentResolver.openOutputStream(finalDoc.uri, "w").use { saidaFinal ->
+                        if (entrada == null || saidaFinal == null) {
+                            throw DownloadException(DownloadFailure.ESCRITA, "Sem stream para copiar")
+                        }
+                        entrada.copyTo(saidaFinal, BUFFER)
+                    }
+                }
+                if (copiados <= 0L) throw DownloadException(DownloadFailure.ESCRITA, "Copia vazia")
+            } catch (e: Throwable) {
+                // Finalizacao falhou: apaga o final incompleto e o .part. Nada
+                // parcial fica visivel, e o download nao vira CONCLUIDO.
+                runCatching { finalDoc.delete() }
+                runCatching { parte.delete() }
+                if (e is DownloadException) throw e
+                throw DownloadException(DownloadFailure.ESCRITA, e.message ?: "Falha ao finalizar")
             }
-        }
-        val total = comInit.size
-
-        for ((segmento, nomeLocal) in comInit) {
-            currentCoroutineContext().ensureActive()
-            val urlSeg = HlsPlaylist.resolver(urlDaMidia, segmento.uri)
-            exigirDestinoPublico(urlSeg)
-
-            val arquivo = destino.createFile("video/mp2t", nomeLocal)
-                ?: throw DownloadException(DownloadFailure.ESCRITA, "Nao foi possivel criar o segmento")
-
-            bytes += baixarParaArquivo(source, urlSeg, segmento.byteRange, arquivo)
-            nomes[urlSeg] = nomeLocal
-            feitos++
-            sink.avancou(bytes, -1L, feitos, total)
+            runCatching { parte.delete() }
+            return finalDoc.uri.toString()
         }
 
-        // 3. Manifesto local, apontando aos arquivos gravados.
-        val local = HlsPlaylist.reescreverParaLocal(textoDaMidia, urlDaMidia) { nomes[it] }
-        val manifesto = destino.createFile("application/x-mpegURL", "index.m3u8")
-            ?: throw DownloadException(DownloadFailure.ESCRITA, "Nao foi possivel criar o manifesto")
-        contentResolver.openOutputStream(manifesto.uri, "w").use { saida ->
-            saida?.write(local.toByteArray(Charsets.UTF_8))
-                ?: throw DownloadException(DownloadFailure.ESCRITA, "Sem stream de escrita")
+        override fun descartar() {
+            fecharStream()
+            runCatching { parte.delete() }
         }
-
-        ResultadoDownload(destino.uri.toString(), bytes, feitos)
     }
 
     // -- Comuns ---------------------------------------------------------------
@@ -303,8 +332,8 @@ class MediaDownloader(
         }
     }
 
-    private fun executar(source: DownloadSource, url: String, faixaDe: Long = 0L, byteRange: String? = null) =
-        client.newCall(pedido(source, url, faixaDe, byteRange)).execute().also { r ->
+    private fun executar(source: DownloadSource, url: String, faixaDe: Long = 0L, rangeHls: String? = null) =
+        client.newCall(pedido(source, url, faixaDe, rangeHls)).execute().also { r ->
             if (!r.isSuccessful) {
                 val codigo = r.code
                 r.close()
@@ -314,16 +343,6 @@ class MediaDownloader(
                 )
             }
         }
-
-    private fun pedido(source: DownloadSource, url: String, faixaDe: Long, byteRange: String?): Request =
-        Request.Builder().url(url).apply {
-            source.referer?.let { header("Referer", it) }
-            source.userAgent?.let { header("User-Agent", it) }
-            when {
-                byteRange != null -> Companion.faixaDeExtX(byteRange)?.let { header("Range", it) }
-                faixaDe > 0L -> header("Range", "bytes=$faixaDe-")
-            }
-        }.build()
 
     private suspend fun baixarTexto(source: DownloadSource, url: String): String {
         var tentativa = 0
@@ -345,24 +364,15 @@ class MediaDownloader(
         }
     }
 
-    private suspend fun baixarParaArquivo(
-        source: DownloadSource,
-        url: String,
-        byteRange: String?,
-        destino: DocumentFile,
-    ): Long {
+    /** Bytes de um segmento (ou do init), com a faixa de BYTERANGE quando houver. */
+    private suspend fun baixarBytes(source: DownloadSource, url: String, faixa: HlsPlaylist.Faixa?): ByteArray {
         var tentativa = 0
         while (true) {
             currentCoroutineContext().ensureActive()
             try {
-                executar(source, url, byteRange = byteRange).use { r ->
-                    val corpo = r.body ?: throw DownloadException(DownloadFailure.HTTP, "Segmento sem corpo")
-                    contentResolver.openOutputStream(destino.uri, "w").use { saida ->
-                        if (saida == null) {
-                            throw DownloadException(DownloadFailure.ESCRITA, "Sem stream de escrita")
-                        }
-                        return copiar(corpo.byteStream(), { buf, n -> saida.write(buf, 0, n) }, null)
-                    }
+                executar(source, url, rangeHls = faixa?.comoRange()).use { r ->
+                    return r.body?.bytes()
+                        ?: throw DownloadException(DownloadFailure.HTTP, "Segmento sem corpo")
                 }
             } catch (e: DownloadException) {
                 throw e
@@ -375,14 +385,6 @@ class MediaDownloader(
         }
     }
 
-    /**
-     * Copia com cancelamento cooperativo.
-     *
-     * O `ensureActive` dentro do laco e o que faz "Cancelar" surtir efeito no
-     * meio de um arquivo grande: sem ele o laco so terminaria no fim do corpo
-     * da resposta, e um episodio de 1 GB continuaria consumindo rede depois de
-     * o usuario ja ter cancelado.
-     */
     private suspend fun copiar(
         entrada: InputStream,
         escrever: (ByteArray, Int) -> Unit,
@@ -401,15 +403,5 @@ class MediaDownloader(
             }
         }
         return total
-    }
-
-    private fun extensaoDe(uri: String): String {
-        val caminho = uri.substringBefore('?').substringBefore('#')
-        return when {
-            caminho.endsWith(".m4s", ignoreCase = true) -> ".m4s"
-            caminho.endsWith(".mp4", ignoreCase = true) -> ".mp4"
-            caminho.endsWith(".aac", ignoreCase = true) -> ".aac"
-            else -> ".ts"
-        }
     }
 }

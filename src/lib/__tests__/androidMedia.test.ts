@@ -472,20 +472,31 @@ test("MP4 recusado pelo Android dá lugar à próxima fonte direta, não ao HLS"
   assert.deepEqual(sondadas, [MP4.stream, outroMp4.stream]);
 });
 
-test("só HLS: download indisponível para este título, sem sondar nada", async () => {
+test("só HLS: sondado como fallback; se todos recusarem, download indisponível", async () => {
+  // Agora o HLS é tentado (depois de não haver MP4). Quando a sondagem recusa
+  // cada HLS (incompatível), a resposta final é "Download indisponível".
   const semTipo: FonteTeste = { stream: "https://cdn-d.exemplo.com/x/playlist", tipo: "" };
   const { resolver } = resolvedor([HLS, semTipo, null]);
-  let sondou = false;
+  let sondagens = 0;
   const r = await procurarFonteDeDownload({
     resolverFonte: resolver,
     sondar: async (): Promise<Resp> => {
-      sondou = true;
-      return { ok: true };
+      sondagens++;
+      return { ok: false, motivo: "fonte_incompativel", tentarOutraFonte: true };
     },
   });
   assert.deepEqual(r, { ok: false, motivo: "download_indisponivel" });
-  assert.equal(sondou, false);
+  assert.equal(sondagens, 2, "os dois HLS guardados foram sondados");
   assert.equal(mensagemDeFalha("download_indisponivel"), "Download indisponível para este título");
+});
+
+test("HLS compatível no fallback vira download aceito", async () => {
+  const { resolver } = resolvedor([HLS, null]);
+  const r = await procurarFonteDeDownload({
+    resolverFonte: resolver,
+    sondar: async (): Promise<Resp> => ({ ok: true, sondagemId: "sHls" }),
+  });
+  assert.equal(r.ok, true);
 });
 
 test("servidor que falha no meio não encerra a procura", async () => {

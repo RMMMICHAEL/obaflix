@@ -3,11 +3,12 @@ package com.obaflix.download
 import java.net.URI
 
 /**
- * Leitura e reescrita de playlist HLS, sem rede.
+ * Leitura de playlist HLS, sem rede.
  *
- * Fica separado do downloader de proposito: o que quebra em HLS e a resolucao
- * de URI relativa e a reescrita do manifesto local, e as duas coisas sao
- * funcoes puras de texto. Testa-las exige apenas strings.
+ * Fica separado do downloader de proposito: o que quebra em HLS e a resolucao de
+ * URI relativa, a aritmetica de BYTERANGE e a elegibilidade de variante quando o
+ * audio vem em faixa separada. As tres coisas sao funcoes puras de texto, e
+ * testa-las exige apenas strings.
  */
 object HlsPlaylist {
 
@@ -15,12 +16,20 @@ object HlsPlaylist {
         val uri: String,
         val bandwidth: Long,
         val resolucao: String?,
+        /** GROUP-ID do atributo AUDIO="…" do #EXT-X-STREAM-INF, quando houver. */
+        val grupoAudio: String?,
     )
+
+    /** Intervalo de bytes ja resolvido de um segmento (#EXT-X-BYTERANGE). */
+    data class Faixa(val offset: Long, val tamanho: Long) {
+        /** `bytes=inicio-fim` para o header HTTP `Range` (fim e inclusivo). */
+        fun comoRange(): String = "bytes=$offset-${offset + tamanho - 1}"
+    }
 
     data class Segmento(
         val uri: String,
-        /** "tamanho@offset" do #EXT-X-BYTERANGE, quando houver. */
-        val byteRange: String?,
+        /** Faixa de bytes ja resolvida; `null` quando o segmento e o recurso inteiro. */
+        val faixa: Faixa?,
     )
 
     data class Midia(
@@ -30,9 +39,8 @@ object HlsPlaylist {
         /**
          * A playlist declara criptografia (#EXT-X-KEY com METHOD diferente de NONE).
          *
-         * Baixar isso exigiria gravar a chave de conteudo junto do video na
-         * pasta do usuario. Nao e feito: ver [DownloadFailure.MANIFESTO_INVALIDO]
-         * e a secao de limites conhecidos.
+         * Baixar isso exigiria gravar a chave de conteudo junto do video. Nao e
+         * feito: ver [DownloadFailure.FONTE_INCOMPATIVEL].
          */
         val criptografada: Boolean,
     )
@@ -47,8 +55,10 @@ object HlsPlaylist {
      * Variantes de um master, na ordem em que aparecem.
      *
      * `#EXT-X-STREAM-INF` descreve a variante e a URI vem na **linha seguinte**
-     * que nao seja comentario — nao no mesmo atributo. Linhas em branco entre
-     * as duas sao validas e aparecem em manifesto de CDN real.
+     * que nao seja comentario. O atributo `AUDIO="grupo"` liga a variante a um
+     * grupo de audio; se esse grupo tiver renditions com URI propria
+     * ([gruposAudioExternos]), o audio vem numa faixa separada e a variante nao
+     * da para baixar como arquivo unico sem muxar.
      */
     fun parseMaster(texto: String): List<Variante> {
         val linhas = texto.lines()
@@ -66,6 +76,7 @@ object HlsPlaylist {
                             uri = linhas[j].trim(),
                             bandwidth = atributos["BANDWIDTH"]?.toLongOrNull() ?: 0L,
                             resolucao = atributos["RESOLUTION"],
+                            grupoAudio = atributos["AUDIO"]?.ifBlank { null },
                         )
                     )
                     i = j
@@ -77,23 +88,54 @@ object HlsPlaylist {
     }
 
     /**
+     * GROUP-IDs de audio cujas renditions tem URI propria — ou seja, audio em
+     * faixa separada do video.
+     *
+     * Uma rendition `#EXT-X-MEDIA:TYPE=AUDIO` **sem** URI significa audio embutido
+     * no proprio segmento de video (apenas declara o default); so a presenca de
+     * URI torna o grupo "externo".
+     */
+    fun gruposAudioExternos(texto: String): Set<String> {
+        val grupos = mutableSetOf<String>()
+        for (linha in texto.lines()) {
+            val l = linha.trim()
+            if (!l.startsWith("#EXT-X-MEDIA:", ignoreCase = true)) continue
+            val atributos = atributosDe(l.substringAfter(':', ""))
+            if (!atributos["TYPE"].equals("AUDIO", ignoreCase = true)) continue
+            val grupo = atributos["GROUP-ID"]?.ifBlank { null } ?: continue
+            if (!atributos["URI"].isNullOrBlank()) grupos.add(grupo)
+        }
+        return grupos
+    }
+
+    /** `true` quando a variante toca o audio de um grupo externo (faixa separada). */
+    fun temAudioSeparado(variante: Variante, gruposExternos: Set<String>): Boolean =
+        variante.grupoAudio != null && variante.grupoAudio in gruposExternos
+
+    /**
+     * Variantes baixaveis como arquivo unico (audio embutido), preservando o
+     * **indice original** no master — e esse indice que vira o id da qualidade e
+     * o que [porId] usa depois para reencontrar a variante na lista completa.
+     */
+    fun variantesCompativeis(
+        variantes: List<Variante>,
+        gruposExternos: Set<String>,
+    ): List<IndexedValue<Variante>> =
+        variantes.withIndex().filter { !temAudioSeparado(it.value, gruposExternos) }
+
+    /**
      * A variante de maior largura de banda.
      *
-     * So e usada quando o usuario NAO escolheu qualidade — ou seja, quando a
-     * fonte oferece uma opcao unica ("Padrao") porque o manifesto nao declara
-     * resolucao. Depois que alguem escolheu 480p, quem manda e [porId]; cair
-     * aqui de volta entregaria 1080p a quem pediu 480p.
+     * So e usada quando o usuario NAO escolheu qualidade. Recebe ja a lista
+     * compativel: cair para uma variante de audio separado aqui entregaria um
+     * arquivo mudo em silencio.
      */
     fun melhorVariante(variantes: List<Variante>): Variante? =
         variantes.maxByOrNull { it.bandwidth }
 
     /**
-     * Altura em pixels declarada em `RESOLUTION=LARGURAxALTURA`.
-     *
-     * Zero quando o atributo nao existe ou nao e parseavel. Nunca deduz altura
-     * a partir de BANDWIDTH: a relacao entre taxa de bits e resolucao varia por
-     * codec e por encoder, e chutar "2.4 Mbps deve ser 720p" e exatamente o
-     * tipo de rotulo inventado que a interface nao pode mostrar.
+     * Altura em pixels declarada em `RESOLUTION=LARGURAxALTURA`. Zero quando o
+     * atributo nao existe ou nao e parseavel; nunca deduz altura de BANDWIDTH.
      */
     fun alturaDe(resolucao: String?): Int {
         val bruto = resolucao?.trim() ?: return 0
@@ -103,25 +145,44 @@ object HlsPlaylist {
     }
 
     /**
-     * Identificador estavel de uma variante dentro de um master.
-     *
-     * E a posicao no manifesto, nao a resolucao: dois renditions podem declarar
-     * a mesma RESOLUTION (audio diferente, codec diferente) e um id por
-     * resolucao escolheria o errado.
+     * Identificador estavel de uma variante dentro de um master: a posicao no
+     * manifesto completo, nao a resolucao.
      */
     fun idDaVariante(indice: Int): String = "v$indice"
 
-    /** A variante daquele id, ou null se o id nao pertence a este master. */
+    /** A variante daquele id na lista COMPLETA do master, ou null. */
     fun porId(variantes: List<Variante>, id: String): Variante? {
         val indice = id.removePrefix("v").toIntOrNull() ?: return null
         return variantes.getOrNull(indice)
     }
 
+    /**
+     * Segmentos da playlist de midia, com cada #EXT-X-BYTERANGE ja resolvido a
+     * um [Faixa] absoluto.
+     *
+     * Offset implicito: `#EXT-X-BYTERANGE:n` sem `@offset` comeca no byte
+     * seguinte ao fim da sub-faixa anterior **do mesmo recurso** (mesma URI).
+     * O acumulado e por URI — trocar de URI zera a contagem, senao um segmento
+     * herdaria o offset de um recurso diferente e o Range sairia errado.
+     */
     fun parseMedia(texto: String): Midia {
         val segmentos = mutableListOf<Segmento>()
         var init: Segmento? = null
         var criptografada = false
         var byteRangePendente: String? = null
+        // "uri -> proximo offset implicito" para a aritmetica de BYTERANGE.
+        val proximoOffset = HashMap<String, Long>()
+
+        fun resolverFaixa(uri: String, bruto: String?): Faixa? {
+            val raw = bruto?.trim()?.ifBlank { null } ?: return null
+            val partes = raw.split("@")
+            val tamanho = partes.getOrNull(0)?.trim()?.toLongOrNull() ?: return null
+            if (tamanho <= 0L) return null
+            val offsetExplicito = partes.getOrNull(1)?.trim()?.toLongOrNull()
+            val offset = offsetExplicito ?: (proximoOffset[uri] ?: 0L)
+            proximoOffset[uri] = offset + tamanho
+            return Faixa(offset, tamanho)
+        }
 
         val linhas = texto.lines()
         var i = 0
@@ -136,7 +197,9 @@ object HlsPlaylist {
                 }
                 linha.startsWith("#EXT-X-MAP") -> {
                     val atributos = atributosDe(linha.substringAfter(':', ""))
-                    atributos["URI"]?.let { init = Segmento(it, atributos["BYTERANGE"]) }
+                    atributos["URI"]?.let { uri ->
+                        init = Segmento(uri, resolverFaixa(uri, atributos["BYTERANGE"]))
+                    }
                 }
                 linha.startsWith("#EXT-X-BYTERANGE") -> {
                     byteRangePendente = linha.substringAfter(':', "").trim().ifBlank { null }
@@ -156,7 +219,7 @@ object HlsPlaylist {
                             j++
                             continue
                         }
-                        segmentos.add(Segmento(candidata, byteRangePendente))
+                        segmentos.add(Segmento(candidata, resolverFaixa(candidata, byteRangePendente)))
                         byteRangePendente = null
                         break
                     }
@@ -169,67 +232,16 @@ object HlsPlaylist {
     }
 
     /**
-     * Resolve uma URI de playlist contra a URL de onde ela veio.
-     *
-     * Manifesto de CDN mistura os tres casos no mesmo arquivo: absoluta
-     * (`https://...`), enraizada (`/hls/x.ts`) e relativa (`../seg/x.ts`).
-     * `URI.resolve` cobre os tres com as regras do RFC 3986 — reimplementar
-     * isso a mao e onde nasce o "404 so em alguns titulos".
+     * Resolve uma URI de playlist contra a URL de onde ela veio (RFC 3986),
+     * cobrindo absoluta, enraizada e relativa.
      */
     fun resolver(base: String, referencia: String): String = runCatching {
         URI(base).resolve(referencia).toString()
     }.getOrElse { referencia }
 
     /**
-     * Reescreve a playlist para apontar aos arquivos locais.
-     *
-     * [nomeLocal] recebe a URI original de cada segmento (ja resolvida) e
-     * devolve o nome do arquivo gravado ao lado do manifesto.
-     *
-     * `#EXT-X-BYTERANGE` sai do resultado: cada segmento virou um arquivo
-     * proprio com exatamente aqueles bytes, entao um intervalo remanescente
-     * faria o player ler o pedaco errado do arquivo local.
-     */
-    fun reescreverParaLocal(
-        texto: String,
-        base: String,
-        nomeLocal: (String) -> String?,
-    ): String {
-        val saida = StringBuilder(texto.length)
-        for (linhaBruta in texto.lines()) {
-            val linha = linhaBruta.trim()
-            when {
-                linha.startsWith("#EXT-X-BYTERANGE") -> continue
-
-                linha.startsWith("#EXT-X-MAP") -> {
-                    val atributos = atributosDe(linha.substringAfter(':', ""))
-                    val uri = atributos["URI"]
-                    val local = uri?.let { nomeLocal(resolver(base, it)) }
-                    if (local != null) {
-                        saida.append("#EXT-X-MAP:URI=\"").append(local).append("\"")
-                    } else {
-                        saida.append(linhaBruta)
-                    }
-                }
-
-                linha.isBlank() || linha.startsWith("#") -> saida.append(linhaBruta)
-
-                else -> {
-                    val local = nomeLocal(resolver(base, linha))
-                    saida.append(local ?: linhaBruta)
-                }
-            }
-            saida.append('\n')
-        }
-        return saida.toString()
-    }
-
-    /**
      * Atributos `CHAVE=valor` separados por virgula, com aspas opcionais.
-     *
-     * Virgula dentro de aspas nao separa — `CODECS="avc1.4d401f,mp4a.40.2"` e
-     * um atributo so, e dividir por virgula direto quebra justamente os
-     * manifestos com mais de um codec, que sao a maioria.
+     * Virgula dentro de aspas nao separa.
      */
     internal fun atributosDe(texto: String): Map<String, String> {
         val mapa = LinkedHashMap<String, String>()
