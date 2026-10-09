@@ -47,7 +47,10 @@ jobs:
       - name: Check keystore
         id: keystore
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          # TEMPORÁRIO: nomes reais dos secrets de assinatura do repo (iguais aos
+          # usados por release-tv.yml). Os nomes antigos (KEYSTORE_BASE64…) não
+          # existem, por isso o release saía sempre pulado/sem assinar.
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "available=true" >> $GITHUB_OUTPUT
@@ -63,10 +66,10 @@ jobs:
       - name: Build Release APK
         if: steps.keystore.outputs.available == 'true'
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > android/obaflix.jks
           cat > android/key.properties << EOF
