@@ -484,7 +484,14 @@ export async function procurarFonteDeDownload<
     let expansao: Expansao | null;
     try {
       expansao = await expandir();
-    } catch {
+    } catch (erro) {
+      // Sessão expirada/recusa da ação também são terminais na expansão.
+      // Não sondar HLS guardados depois de perder a sessão autorizada.
+      const nome = (erro as { name?: unknown } | null)?.name;
+      if (nome === "AcaoCancelada") return { ok: false, motivo: "cancelado" };
+      if (nome === "AcaoInterrompida") {
+        return { ok: false, motivo: String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada") };
+      }
       expansao = null;
     }
     if (expansao && expansao.quantidade > 0) {

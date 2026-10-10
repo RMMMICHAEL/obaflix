@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Play, Pause, AlertCircle, RotateCcw, Cast, Flag, Volume2, VolumeX, Maximize, Minimize2, PictureInPicture2, Settings2, Check } from "lucide-react";
 import { AndroidMediaActions } from "@/components/android/AndroidMediaActions";
+import { useFonteParaMidia, type SessaoDownloadDoPlayer } from "@/components/android/useFonteParaMidia";
 import { pidDeEpisodio, pidDeFilme, rotuloDeEpisodio } from "@/lib/androidMedia";
 import { fetchComPrazo, PRAZO_FONTES_MS } from "@/lib/androidCast";
 import { useRouter } from "next/navigation";
@@ -28,7 +29,7 @@ function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
 import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
-import { liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
+import { AcaoInterrompida, liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
 import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara } from "@/lib/recorte";
 import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
 import { verificarDownloadAtual, controlarMidia } from "@/lib/prepararDownload";
@@ -491,6 +492,12 @@ export function CustomPlayer({
   const [sessaoFontes, setSessaoFontes] = useState<string | null>(null);
   const [allFontes, setAllFontes] = useState<Fonte[]>([]);
   const sessaoFontesRef = useRef<string | null>(null);
+  // Preserva a fronteira base/alternativas. A ação só lê este contexto.
+  const fontesDownloadRef = useRef<{
+    sessao: string;
+    base: Fonte[];
+    alternativas?: Promise<Fonte[] | null>;
+  } | null>(null);
   /**
    * URL real por fonte, resolvida sob demanda em Electron/Android. Fica em ref
    * porque a renovação de token reextrai a MESMA fonte várias vezes por
@@ -665,6 +672,34 @@ export function CustomPlayer({
   streamTipoRef.current = streamTipo;
   const fonteAtualEhDeSessaoRef = useRef(false);
   fonteAtualEhDeSessaoRef.current = !!(fonte?.superflixLocal || fonte?.iframeDesafio);
+  const fonteAtualIdRef = useRef<string | null>(null);
+  fonteAtualIdRef.current = fonte?.id ?? null;
+
+  const capturarSessaoDoPlayer = useCallback((): SessaoDownloadDoPlayer | null => {
+    const sessao = sessaoFontesRef.current;
+    const contexto = fontesDownloadRef.current;
+    if (!sessao || contexto?.sessao !== sessao) return null;
+    const stream = directStreamRef.current;
+    const tipo = streamTipoRef.current;
+    const fonteId = fonteAtualIdRef.current;
+    return {
+      sessao,
+      base: contexto.base,
+      alternativas: contexto.alternativas,
+      atual: stream && fonteId && (tipo === "mp4" || tipo === "hls") ? {
+        fonteId,
+        midia: {
+          origem: fonteAtualEhDeSessaoRef.current ? "superflix" : "nativo",
+          stream, tipo,
+          referer: streamRefererRef.current,
+          expiresAt: streamExpiresAtRef.current,
+        },
+      } : undefined,
+    };
+  }, []);
+  const downloadAndroid = useFonteParaMidia({
+    conteudoId, conteudoTipo, temporada, numeroEp, capturarSessaoDoPlayer,
+  });
 
   /**
    * A fonte que já está tocando, para os botões de baixar/transmitir do Android.
@@ -745,6 +780,16 @@ export function CustomPlayer({
       expiresAt: streamExpiresAtRef.current,
     };
   }, [conteudoId, conteudoTipo, temporada, numeroEp, ambiente]);
+
+  // Cast e autorização do recorte mantêm a fonte atual; somente Baixar busca outras.
+  const resolverMidiaAndroid = useCallback((
+    tentativa: number,
+    finalidade: "download" | "transmissao",
+    liberar: (finalidade: "download" | "transmissao") => Promise<string | null>,
+  ) => finalidade === "download"
+    ? downloadAndroid.resolverFonte(tentativa, finalidade, liberar)
+    : fonteAtualParaMidia(tentativa, finalidade, liberar),
+  [downloadAndroid, fonteAtualParaMidia]);
 
   // Rótulo usado no diagnóstico: distingue "Player 1 · WatchPlayer" de
   // "Player 1 · VIP Player", em vez de só "Player 1 falhou".
@@ -1971,6 +2016,8 @@ export function CustomPlayer({
     // fora. Quem decide é `direitosDoCliente` em playbackAuthorization.ts.
     setPodeBaixarPeloPlano(data?.direitos?.downloads === true);
     sessaoFontesRef.current = data?.sessao ?? null;
+    fontesDownloadRef.current = typeof data?.sessao === "string"
+      ? { sessao: data.sessao, base: lista.map((f) => ({ ...f })) } : null;
     // Os ids mudam a cada sessão: o cache de URL nativa da anterior não vale.
     urlNativaRef.current.clear();
     tentativaNativaRef.current.clear();
@@ -2007,6 +2054,7 @@ export function CustomPlayer({
     setAllFontes([]);
     setSessaoFontes(null);
     sessaoFontesRef.current = null;
+    fontesDownloadRef.current = null;
     urlNativaRef.current.clear();
     tentativaNativaRef.current.clear();
     totalTentativasRef.current.clear();
@@ -2050,24 +2098,34 @@ export function CustomPlayer({
         setAlternativasPendentes(true);
 
         // Fase 2: aditiva. Falha, lista vazia ou lentidão deixam a base como está.
-        const res2 = await fetch("/api/player/fontes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conteudoId,
-            conteudoTipo,
-            temporada: temporada ?? null,
-            numeroEp: numeroEp ?? null,
-            ambiente,
-            sessao: sessaoFontesRef.current,
-            alternativas: true,
-          }),
-          signal: ctrl.signal,
-        });
-        if (!res2.ok) return;
-        const data2 = await res2.json();
-        if (ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
-        const lista2: Fonte[] = Array.isArray(data2?.fontes) ? data2.fontes : [];
+        const contextoDownload = fontesDownloadRef.current;
+        const sessaoDaExpansao = sessaoFontesRef.current;
+        const alternativas = (async (): Promise<Fonte[] | null> => {
+          const res2 = await fetch("/api/player/fontes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conteudoId,
+              conteudoTipo,
+              temporada: temporada ?? null,
+              numeroEp: numeroEp ?? null,
+              ambiente,
+              sessao: sessaoDaExpansao,
+              alternativas: true,
+            }),
+            signal: ctrl.signal,
+          });
+          if (res2.status === 410) throw new AcaoInterrompida("sessao_expirada");
+          if (!res2.ok) return null;
+          const data2 = await res2.json();
+          if (ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return null;
+          return Array.isArray(data2?.fontes) ? data2.fontes as Fonte[] : [];
+        })();
+        if (contextoDownload?.sessao === sessaoDaExpansao) contextoDownload.alternativas = alternativas;
+        // Playback conserva sua tolerância à falha; a ação recebe a expiração tipada.
+        const lista2 = await alternativas.catch(() => null);
+        if (!lista2 || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current ||
+            sessaoFontesRef.current !== sessaoDaExpansao) return;
         if (lista2.length > lista.length) {
           console.log(`[diag/server] alternativas=${lista2.length - lista.length} total=${lista2.length}`);
           setAllFontes(lista2);
@@ -3687,7 +3745,9 @@ export function CustomPlayer({
                     : rotuloDeEpisodio(titulo, temporada ?? 1, numeroEp ?? 1)
                 }
                 poster={thumbUrl ?? null}
-                resolverFonte={fonteAtualParaMidia}
+                resolverFonte={resolverMidiaAndroid}
+                expandirAlternativas={downloadAndroid.expandirAlternativas}
+                reiniciarAcao={downloadAndroid.reiniciarAcao}
                 variante="player"
               />
 

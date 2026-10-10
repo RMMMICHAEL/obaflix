@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { fontesCandidatas, resolverComCoordenadas, type Expansao } from "@/lib/androidMedia";
 import { AcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
 import {
@@ -13,6 +13,8 @@ import {
 
 /**
  * Resolve fontes para baixar ou transmitir, fora do player.
+ * No player, `capturarSessaoDoPlayer` fornece a sessão existente e o download
+ * usa uma extração nativa isolada. A página individual mantém o fluxo abaixo.
  *
  * ## Por que não reaproveita o `extract` do CustomPlayer
  *
@@ -63,7 +65,7 @@ import {
 
 type FinalidadeDeMidia = "download" | "transmissao";
 
-type Fonte = {
+export type FonteDeMidia = {
   id: string;
   disponivel: boolean;
   nativo: boolean;
@@ -73,9 +75,10 @@ type Fonte = {
   /** Rótulo genérico que o usuário comum já vê ("Servidor 3"). */
   rotulo?: string;
 };
+type Fonte = FonteDeMidia;
 
-type Resolvido = {
-  origem: string;
+export type MidiaResolvida = {
+  origem?: string;
   stream?: string;
   tipo?: string;
   referer?: string | null;
@@ -87,21 +90,179 @@ type Resolvido = {
   /** Só para diagnóstico: "servidor" (API resolveu) ou "aparelho" (app extraiu). */
   via?: string;
 };
+type Resolvido = MidiaResolvida;
 
-type Ponte = { extractStream?: (embedUrl: string) => Promise<Resolvido> };
+type Ponte = {
+  extractStream?: (embedUrl: string) => Promise<Resolvido>;
+  extractStreamForDownload?: (embedUrl: string, actionId: string) => Promise<Resolvido>;
+};
 
 type SessaoDaAcao = { sessao: string; candidatas: Fonte[]; expandida: boolean };
+
+export type SessaoDownloadDoPlayer = {
+  sessao: string;
+  base: Fonte[];
+  atual?: { fonteId: string; midia: Resolvido };
+  /** Fase já iniciada pelo playback. Só lê seu resultado, sem publicar lista. */
+  alternativas?: Promise<Fonte[] | null>;
+};
+
+type Liberar = (finalidade: FinalidadeDeMidia) => Promise<string | null>;
+
+/** Contexto privado por clique. A procura e os orçamentos continuam em androidMedia. */
+export function criarDownloadDoPlayer(deps: {
+  capturar: () => SessaoDownloadDoPlayer | null;
+  autorizar: (sessao: string, liberar: Liberar) => Promise<void>;
+  resolver: (sessao: string, fonte: Fonte, actionId: string) => Promise<Resolvido | null>;
+  expandir: (sessao: string) => Promise<Fonte[] | null>;
+}) {
+  type Acao = {
+    snapshot: SessaoDownloadDoPlayer;
+    candidatas: Fonte[];
+    ids: Set<string>;
+    actionId: string;
+    expandida: boolean;
+  };
+  let snapshot: SessaoDownloadDoPlayer | null = null;
+  let inicializacao: Promise<Acao> | null = null;
+
+  const reiniciarAcao = (finalidade: FinalidadeDeMidia) => {
+    if (finalidade !== "download") return;
+    const capturada = deps.capturar();
+    snapshot = capturada ? {
+      ...capturada,
+      base: capturada.base.map((f) => ({ ...f })),
+      atual: capturada.atual ? { ...capturada.atual, midia: { ...capturada.atual.midia } } : undefined,
+    } : null;
+    inicializacao = null;
+  };
+
+  const iniciar = (liberar: Liberar): Promise<Acao> => {
+    if (inicializacao) return inicializacao;
+    const capturada = snapshot;
+    // A Promise permanece memorizada mesmo após recusa/timeout: não cobrar de novo.
+    inicializacao = (async () => {
+      if (!capturada?.sessao) throw new AcaoInterrompida("sessao_expirada");
+      const ids = new Set<string>();
+      const candidatas: Fonte[] = [];
+      if (capturada.atual) {
+        ids.add(capturada.atual.fonteId);
+        candidatas.push({ id: capturada.atual.fonteId, disponivel: true, nativo: true });
+      }
+      for (const fonte of fontesCandidatas(capturada.base)) {
+        if (ids.has(fonte.id)) continue;
+        ids.add(fonte.id);
+        candidatas.push(fonte);
+      }
+      await deps.autorizar(capturada.sessao, liberar);
+      return { snapshot: capturada, candidatas, ids, actionId: crypto.randomUUID(), expandida: false };
+    })();
+    return inicializacao;
+  };
+
+  const resolverFonte = async (indice: number, finalidade: FinalidadeDeMidia, liberar: Liberar) => {
+    if (finalidade !== "download") return null;
+    const acao = await iniciar(liberar);
+    const fonte = acao.candidatas[indice];
+    if (!fonte) return null;
+    if (fonte.id === acao.snapshot.atual?.fonteId) return acao.snapshot.atual.midia;
+    return deps.resolver(acao.snapshot.sessao, fonte, acao.actionId);
+  };
+
+  const expandirAlternativas = async (finalidade: FinalidadeDeMidia): Promise<Expansao | null> => {
+    if (finalidade !== "download" || !inicializacao) return null;
+    const acao = await inicializacao;
+    if (acao.expandida) return null;
+    acao.expandida = true;
+    const lista = acao.snapshot.alternativas
+      ? await acao.snapshot.alternativas
+      : await deps.expandir(acao.snapshot.sessao);
+    if (!lista) return null;
+    const inicio = acao.candidatas.length;
+    for (const fonte of fontesCandidatas(lista)) {
+      if (acao.ids.has(fonte.id)) continue;
+      acao.ids.add(fonte.id);
+      acao.candidatas.push(fonte);
+    }
+    return { inicio, quantidade: acao.candidatas.length - inicio };
+  };
+
+  return { resolverFonte, expandirAlternativas, reiniciarAcao };
+}
+
+/** Resolução compartilhada pela página e pelo player; o extrator é uma dependência. */
+export async function resolverCandidataDeMidia(
+  sessao: string,
+  alvo: Fonte,
+  extrair: (embedUrl: string) => Promise<Resolvido>,
+  sessaoTerminal = false,
+): Promise<Resolvido> {
+  const servidor = alvo.rotulo || "Servidor";
+  const resolvida = await resolverComCoordenadas<Resolvido>({
+    pedirFonte: async (coordenada) => {
+      const res = await fetchComPrazo("/api/player/fonte-nativa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(coordenada === 0
+          ? { sessao, fonteId: alvo.id }
+          : { sessao, fonteId: alvo.id, tentativa: coordenada }),
+      }, PRAZO_FONTE_NATIVA_MS, "fonte-nativa");
+      if (sessaoTerminal && res.status === 410) throw new AcaoInterrompida("sessao_expirada");
+      if (!res.ok) throw new Error("fonte_falhou");
+      return res.json();
+    },
+    extrair: async (embedUrl) => {
+      const dados = await corridaComPrazo(extrair(embedUrl), PRAZO_EXTRACAO_MS, "extracao");
+      if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
+      return dados;
+    },
+  });
+  if (resolvida.via === "servidor") {
+    const nativa = resolvida.nativa;
+    return {
+      origem: "nativo", stream: nativa.streamUrl, referer: nativa.referer ?? null,
+      tipo: nativa.tipo === "mp4" || nativa.tipo === "hls"
+        ? nativa.tipo : String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
+      servidor, via: "servidor",
+    };
+  }
+  return { ...resolvida.dados, origem: "nativo", servidor, via: "aparelho" };
+}
+
+export async function autorizarDownloadNaSessao(
+  sessao: string,
+  alvo: { conteudoId: string; conteudoTipo: string; temporada?: number | null; numeroEp?: number | null },
+  liberar: Liberar,
+): Promise<void> {
+  const concessao = await liberar("download");
+  let res: Response;
+  try {
+    res = await fetchComPrazo("/api/player/fontes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...alvo, sessao, acao: true, finalidade: "download", ambiente: "android",
+        ...(concessao ? { concessao } : {}) }),
+    }, PRAZO_FONTES_MS, "fontes");
+  } catch {
+    throw new AcaoInterrompida("servidores_indisponiveis");
+  }
+  if (res.status === 410) throw new AcaoInterrompida("sessao_expirada");
+  if (res.status === 403) throw new AcaoInterrompida("acao_nao_liberada");
+  if (!res.ok) throw new AcaoInterrompida("servidores_indisponiveis");
+}
 
 export function useFonteParaMidia({
   conteudoId,
   conteudoTipo,
   temporada,
   numeroEp,
+  capturarSessaoDoPlayer,
 }: {
   conteudoId: string;
   conteudoTipo: string;
   temporada?: number | null;
   numeroEp?: number | null;
+  capturarSessaoDoPlayer?: () => SessaoDownloadDoPlayer | null;
 }) {
   const sessoesRef = useRef<Partial<Record<FinalidadeDeMidia, SessaoDaAcao>>>({});
 
@@ -242,72 +403,35 @@ export function useFonteParaMidia({
       const alvo = atual.candidatas[indice];
       if (!alvo) return null;
 
-      // Rótulo genérico ("Servidor 3") e o caminho que resolveu, só para o
-      // diagnóstico do download. Nenhum dos dois identifica provedor, URL ou token.
-      const servidor = alvo.rotulo || `Servidor ${indice + 1}`;
-      const extrair = (embedUrl: string) => ponte.extractStream!(embedUrl);
-
-      // Coordenadas de episódio (ver src/lib/episodeCoordinates.ts): quando o
-      // provedor numera as temporadas de outro jeito, o servidor declara mais de
-      // uma, e a mesma fonte é tentada em cada uma — o que o player já fazia.
-      // Só circula o índice; a coordenada real sai do servidor.
-      const resolvida = await resolverComCoordenadas<Resolvido>({
-        // Com prazo. A sessão já está aberta: um estouro aqui derruba só este
-        // servidor (EtapaExpirada sobe como falha de servidor) e a procura segue
-        // para o próximo, sem novo anúncio.
-        pedirFonte: async (coordenada) => {
-          const res = await fetchComPrazo(
-            "/api/player/fonte-nativa",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(coordenada === 0
-                ? { sessao: atual.sessao, fonteId: alvo.id }
-                : { sessao: atual.sessao, fonteId: alvo.id, tentativa: coordenada }),
-            },
-            PRAZO_FONTE_NATIVA_MS,
-            "fonte-nativa",
-          );
-          if (!res.ok) throw new Error("fonte_falhou");
-          return res.json();
-        },
-        // Com prazo: a extração roda no aparelho e é a etapa mais sujeita a
-        // pendurar. Estourar aqui derruba só este servidor; a procura tenta o
-        // próximo, ainda sem novo anúncio.
-        extrair: async (embedUrl) => {
-          const dados = await corridaComPrazo(extrair(embedUrl), PRAZO_EXTRACAO_MS, "extracao");
-          if (dados?.error || !dados?.stream) throw new Error("fonte_falhou");
-          return dados;
-        },
-      });
-
-      // Algumas fontes já voltam resolvidas do servidor (`streamUrl`), outras
-      // devolvem o embed para o aparelho extrair (`embedUrl`). São os dois
-      // formatos que o próprio player já trata.
-      if (resolvida.via === "servidor") {
-        const nativa = resolvida.nativa;
-        return {
-          origem: "nativo",
-          stream: nativa.streamUrl,
-          referer: nativa.referer ?? null,
-          // O servidor declara o formato quando o conhece. Adivinhar pela URL
-          // errava nos dois sentidos: ".m4v" virava HLS, e um HLS com ".mp4" na
-          // query virava MP4. A adivinhação fica só para quando não houver tipo.
-          tipo:
-            nativa.tipo === "mp4" || nativa.tipo === "hls"
-              ? nativa.tipo
-              : String(nativa.streamUrl).includes(".mp4") ? "mp4" : "hls",
-          servidor,
-          via: "servidor",
-        };
-      }
-
-      // `origem` diz ao Android qual caminho produziu isto. Aqui é sempre o
-      // nativo comum — os caminhos de sessão foram filtrados acima.
-      return { ...resolvida.dados, origem: "nativo", servidor, via: "aparelho" };
+      return resolverCandidataDeMidia(atual.sessao, { ...alvo, rotulo: alvo.rotulo || `Servidor ${indice + 1}` },
+        (embedUrl) => ponte.extractStream!(embedUrl));
     },
     [abrirSessao],
   );
 
-  return { resolverFonte, expandirAlternativas, reiniciarAcao };
+  const downloadDoPlayer = useMemo(() => capturarSessaoDoPlayer ? criarDownloadDoPlayer({
+    capturar: capturarSessaoDoPlayer,
+    autorizar: (sessao, liberar) => autorizarDownloadNaSessao(sessao, {
+      conteudoId, conteudoTipo, temporada: temporada ?? null, numeroEp: numeroEp ?? null,
+    }, liberar),
+    resolver: async (sessao, fonte, actionId) => {
+      const extrair = (window as unknown as { obaflixDesktop?: Ponte }).obaflixDesktop?.extractStreamForDownload;
+      // APK anterior: conserva a mídia atual, sem recorrer à extração de playback.
+      if (!extrair) return null;
+      return resolverCandidataDeMidia(sessao, fonte, (embedUrl) => extrair(embedUrl, actionId), true);
+    },
+    expandir: async (sessao) => {
+      const res = await fetchComPrazo("/api/player/fontes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conteudoId, conteudoTipo, temporada: temporada ?? null,
+          numeroEp: numeroEp ?? null, ambiente: "android", sessao, alternativas: true }),
+      }, PRAZO_FONTES_MS, "alternativas");
+      if (res.status === 410) throw new AcaoInterrompida("sessao_expirada");
+      if (!res.ok) return null;
+      const data = await res.json();
+      return Array.isArray(data?.fontes) ? data.fontes as Fonte[] : null;
+    },
+  }) : null, [capturarSessaoDoPlayer, conteudoId, conteudoTipo, temporada, numeroEp]);
+
+  return downloadDoPlayer ?? { resolverFonte, expandirAlternativas, reiniciarAcao };
 }

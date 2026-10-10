@@ -280,10 +280,11 @@ describe("enforcement de download e transmissão fica no servidor", () => {
   });
 
   test("fora do player a sessão da ação nasce com finalidade e concessão", () => {
-    assert.ok(fora.includes("await liberar(finalidade)"));
+    const abertura = fora.slice(fora.indexOf("const abrirSessao = useCallback("));
+    assert.ok(abertura.includes("await liberar(finalidade)"));
     // A abertura da sessão passou a ter prazo (fetchComPrazo); o que importa é a
     // ordem: a liberação (anúncio) vem antes da chamada a /api/player/fontes.
-    assert.ok(fora.indexOf("await liberar(finalidade)") < fora.indexOf('"/api/player/fontes"'));
+    assert.ok(abertura.indexOf("await liberar(finalidade)") < abertura.indexOf('"/api/player/fontes"'));
     assert.ok(fora.includes("finalidade,"));
     assert.ok(fora.includes("{ concessao }"));
   });

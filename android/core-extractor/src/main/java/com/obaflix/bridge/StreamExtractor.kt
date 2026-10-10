@@ -25,22 +25,28 @@ data class ExtractResult(
 // playerState compartilhado, usado pelo PlayerWebViewClient para injetar headers no CDN.
 object StreamExtractor {
 
-    /** Valida e publica no player um resultado resolvido sob demanda. */
-    suspend fun acceptNativeResult(nativeResult: NativeExtractResult): ExtractResult {
-        val parsedStream = URL(nativeResult.stream)
-        if (parsedStream.protocol != "https") throw Exception("Stream inseguro")
-        val addresses = withContext(Dispatchers.IO) {
-            InetAddress.getAllByName(parsedStream.host)
+    internal suspend fun validatePublicHttps(
+        rawUrl: String,
+        resolveAddresses: (String) -> Array<InetAddress> = { InetAddress.getAllByName(it) },
+    ) {
+        val parsed = URL(rawUrl)
+        if (parsed.protocol != "https" || parsed.userInfo != null || parsed.host.isBlank()) {
+            throw Exception("Stream inseguro")
         }
+        val addresses = withContext(Dispatchers.IO) { resolveAddresses(parsed.host) }
         if (addresses.isEmpty() || addresses.any {
                 it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
                     it.isSiteLocalAddress || it.isMulticastAddress
-            }
-        ) throw Exception("Destino de stream bloqueado")
+            }) throw Exception("Destino de stream bloqueado")
+    }
 
-        ObaflixApp.playerState.resetCdnHosts(parsedStream.host)
-        ObaflixApp.playerState.embedReferer = nativeResult.referer
-        ObaflixApp.playerState.mediaUserAgent = nativeResult.userAgent
+    /** Valida e devolve mídia. Não publica hosts ou headers na reprodução. */
+    internal suspend fun resultOnly(
+        nativeResult: NativeExtractResult,
+        resolveAddresses: (String) -> Array<InetAddress> = { InetAddress.getAllByName(it) },
+    ): ExtractResult {
+        validatePublicHttps(nativeResult.stream, resolveAddresses)
+
         return ExtractResult(
             stream = nativeResult.stream,
             referer = nativeResult.referer,
@@ -57,7 +63,20 @@ object StreamExtractor {
         )
     }
 
-    suspend fun extract(embedUrl: String): ExtractResult {
+    /** Somente o caminho de playback aplica o resultado validado. */
+    fun applyToPlayback(result: ExtractResult, updateUserAgent: Boolean = true): ExtractResult {
+        ObaflixApp.playerState.resetCdnHosts(URL(result.stream).host)
+        ObaflixApp.playerState.embedReferer = result.referer
+        if (updateUserAgent) ObaflixApp.playerState.mediaUserAgent = result.userAgent
+        return result
+    }
+
+    suspend fun acceptNativeResult(nativeResult: NativeExtractResult): ExtractResult =
+        applyToPlayback(resultOnly(nativeResult))
+
+    suspend fun extract(embedUrl: String): ExtractResult = applyToPlayback(extractResult(embedUrl))
+
+    suspend fun extractResult(embedUrl: String): ExtractResult {
         val provedor = PlayerExtractors.detectProvider(embedUrl) ?: "desconhecido"
         ObaLog.evento(ObaLog.Fase.EXTRACAO, "inicio", "provedor" to provedor)
 
@@ -83,60 +102,6 @@ object StreamExtractor {
             "stream" to ObaLog.url(nativeResult.stream),
         )
 
-        val stream = nativeResult.stream
-        val parsedStream = URL(stream)
-        if (parsedStream.protocol != "https") {
-            ObaLog.falha(
-                ObaLog.Fase.EXTRACAO, "stream_inseguro", null,
-                "protocolo" to parsedStream.protocol,
-                "host" to parsedStream.host,
-            )
-            throw Exception("Stream inseguro")
-        }
-        val addresses = withContext(Dispatchers.IO) {
-            InetAddress.getAllByName(parsedStream.host)
-        }
-        if (addresses.isEmpty() || addresses.any {
-                it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
-                    it.isSiteLocalAddress || it.isMulticastAddress
-            }
-        ) {
-            ObaLog.falha(
-                ObaLog.Fase.EXTRACAO, "destino_bloqueado", null,
-                "host" to parsedStream.host,
-                "enderecos" to addresses.size,
-            )
-            throw Exception("Destino de stream bloqueado")
-        }
-
-        try {
-            val cdnHost = URL(stream).host
-            ObaflixApp.playerState.resetCdnHosts(cdnHost)
-            ObaflixApp.playerState.embedReferer = nativeResult.referer
-            ObaflixApp.playerState.mediaUserAgent = nativeResult.userAgent
-            ObaLog.evento(
-                ObaLog.Fase.EXTRACAO, "cdn_liberado",
-                "host" to cdnHost,
-                "referer" to ObaLog.host(nativeResult.referer),
-            )
-        } catch (e: Exception) {
-            // Sem host liberado, todo segmento sai sem Referer e o CDN devolve 403.
-            ObaLog.alerta(ObaLog.Fase.EXTRACAO, "cdn_nao_liberado", "causa" to e.message?.take(120))
-        }
-
-        return ExtractResult(
-            stream = stream,
-            referer = nativeResult.referer,
-            subtitles = nativeResult.subtitles,
-            tipo = nativeResult.tipo,
-            isMaster = nativeResult.isMaster,
-            qualities = nativeResult.qualities,
-            audioTracks = nativeResult.audioTracks,
-            expiresAt = nativeResult.expiresAt,
-            userAgent = nativeResult.userAgent,
-            effectiveOptionKey = nativeResult.effectiveOptionKey,
-            effectiveOptionLabel = nativeResult.effectiveOptionLabel,
-            effectiveOptionIsFile = nativeResult.effectiveOptionIsFile,
-        )
+        return resultOnly(nativeResult)
     }
 }
