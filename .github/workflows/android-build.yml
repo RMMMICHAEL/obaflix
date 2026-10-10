@@ -47,7 +47,8 @@ jobs:
       - name: Check keystore
         id: keystore
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          # TEMPORÁRIO (branch de diagnóstico): nomes reais dos secrets do repo.
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "available=true" >> $GITHUB_OUTPUT
@@ -55,13 +56,17 @@ jobs:
             echo "available=false" >> $GITHUB_OUTPUT
           fi
 
+      # TEMPORÁRIO (branch de diagnóstico da Fase 3 — download no player): APK de
+      # release assinado com DIAG_LOGS + Unity Ads em teste, WebView apontando
+      # para o PREVIEW Vercel do commit a2ecfca (que já tem a parte web da Fase
+      # 3). Produção NÃO tem essa parte web. REVERTER/descartar — não entra no PR.
       - name: Build Release APK
         if: steps.keystore.outputs.available == 'true'
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > android/obaflix.jks
           cat > android/key.properties << EOF
@@ -70,7 +75,10 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
-          cd android && ./gradlew assembleRelease --no-daemon
+          cd android && ./gradlew :app:assembleRelease \
+            -PdiagLogs -PunityAdsTest \
+            -Pobaflix.url=https://obaflix-nbub2ogp0-michaeltrader.vercel.app \
+            --no-daemon --stacktrace
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
