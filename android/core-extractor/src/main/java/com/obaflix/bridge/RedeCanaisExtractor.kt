@@ -15,6 +15,7 @@ import com.obaflix.ObaflixApp
 import com.obaflix.removerRequestedWithHeader
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
@@ -59,20 +60,23 @@ object RedeCanaisExtractor {
         return parsed.toString()
     }
 
-    private suspend fun assertPublicDestination(stream: String) = withContext(Dispatchers.IO) {
-        val host = URL(stream).host
-        val addresses = InetAddress.getAllByName(host)
-        if (addresses.isEmpty() || addresses.any {
-                it.isAnyLocalAddress || it.isLoopbackAddress || it.isLinkLocalAddress ||
-                    it.isSiteLocalAddress || it.isMulticastAddress
-            }
-        ) {
-            throw Exception("destino de mídia bloqueado")
-        }
+    internal suspend fun resultOnly(
+        stream: String,
+        resolveAddresses: (String) -> Array<InetAddress> = { InetAddress.getAllByName(it) },
+    ): ExtractResult {
+        if (validateSignedUrl(stream) == null) throw Exception("mídia RedeCanais inválida")
+        return StreamExtractor.resultOnly(
+            NativeExtractResult(stream = stream, referer = "https://$REDECANAIS_HOST/", tipo = "mp4"),
+            resolveAddresses,
+        )
     }
 
+    suspend fun extract(parentWebView: WebView, embedUrl: String): ExtractResult =
+        StreamExtractor.applyToPlayback(extractResult(parentWebView, embedUrl), updateUserAgent = false)
+
+    /** WebView auxiliar próprio; o resultado não altera o playback. */
     @SuppressLint("SetJavaScriptEnabled")
-    suspend fun extract(parentWebView: WebView, embedUrl: String): ExtractResult {
+    suspend fun extractResult(parentWebView: WebView, embedUrl: String): ExtractResult {
         if (!isSupportedUrl(embedUrl)) throw Exception("URL RedeCanais inválida")
 
         val captured = CompletableDeferred<String>()
@@ -190,16 +194,11 @@ object RedeCanaisExtractor {
             }
 
             val stream = withTimeout(REDECANAIS_TIMEOUT_MS) { captured.await() }
-            assertPublicDestination(stream)
-
-            val referer = "https://$REDECANAIS_HOST/"
-            ObaflixApp.playerState.resetCdnHosts(URL(stream).host)
-            ObaflixApp.playerState.embedReferer = referer
-            return ExtractResult(stream = stream, referer = referer)
+            return resultOnly(stream)
         } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
             throw Exception("RedeCanais não entregou a mídia em 60 segundos")
         } finally {
-            withContext(Dispatchers.Main.immediate) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
                 extractorView?.let { view ->
                     runCatching { view.stopLoading() }
                     runCatching { parent?.removeView(view) }

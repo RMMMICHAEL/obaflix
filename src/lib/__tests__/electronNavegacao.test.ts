@@ -59,7 +59,7 @@ function montar() {
     conteudoId: "serie", conteudoTipo: "serie", temporada: 1, numeroEp: 2, ambiente: "electron",
     montadoRef: { current: true }, unmountedRef: { current: false }, instanciaPlaybackRef: { current: "ep2" },
     recuperacaoPlaybackRef: { current: null }, entradaEmRef: { current: 2000 }, retryDownloadRef: { current: null },
-    sessaoFontesRef: { current: null }, sessaoAbortRef: { current: ctrl }, prepararAbortRef: { current: null }, extractAbortRef: { current: null },
+    sessaoFontesRef: { current: null }, fontesDownloadRef: { current: null }, sessaoAbortRef: { current: ctrl }, prepararAbortRef: { current: null }, extractAbortRef: { current: null },
     urlNativaRef: { current: new Map() }, tentativaNativaRef: { current: new Map() }, totalTentativasRef: { current: new Map() }, ultimaReaberturaRef: { current: 0 },
     portasDeAnuncioRef: { current: {
       autorizar: async () => ({ decisao: "PERMITIDO" }),

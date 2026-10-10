@@ -432,6 +432,13 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
                             window._obaflixBridge.extractStream(bridgeCapability, id, embedUrl);
                         });
                     },
+                    extractStreamForDownload: function(embedUrl, actionId) {
+                        return new Promise(function(resolve, reject) {
+                            var id = Math.random().toString(36).slice(2) + Date.now();
+                            window._obaflixCallbacks[id] = { resolve: resolve, reject: reject };
+                            window._obaflixBridge.extractStreamForDownload(bridgeCapability, id, actionId, embedUrl);
+                        });
+                    },
                     prepareSuperflix: function(embedUrl) {
                         return new Promise(function(resolve, reject) {
                             var id = Math.random().toString(36).slice(2) + Date.now();

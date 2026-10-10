@@ -84,7 +84,9 @@ describe("download grátis", () => {
       "sem clique extra: concluído o anúncio, a procura continua e chega à sondagem");
   });
 
-  test("anúncio não transforma HLS em download: continua indisponível", async () => {
+  test("anúncio não transforma um HLS incompatível em download", async () => {
+    // O HLS é sondado (fallback), mas assistir ao anúncio não o torna baixável:
+    // a sondagem o recusa como incompatível e a resposta é indisponível.
     const passos: string[] = [];
     const { portas } = portasFalsas({ resposta: ANUNCIO, passos });
     const r = await procurarFonteDeDownload({
@@ -94,11 +96,12 @@ describe("download grátis", () => {
       },
       sondar: async () => {
         passos.push("sondar");
-        return { ok: true };
+        return { ok: false, motivo: "fonte_incompativel", tentarOutraFonte: true };
       },
     });
     assert.deepEqual(r, { ok: false, motivo: "download_indisponivel" });
-    assert.equal(passos.includes("sondar"), false);
+    // A liberação (anúncio) aconteceu uma única vez, na resolução da fonte.
+    assert.equal(passos.filter((p) => p === "exibir").length, 1);
   });
 
   test("fechar no X não chama a ação protegida nem reabre o modal", async () => {
@@ -277,10 +280,11 @@ describe("enforcement de download e transmissão fica no servidor", () => {
   });
 
   test("fora do player a sessão da ação nasce com finalidade e concessão", () => {
-    assert.ok(fora.includes("await liberar(finalidade)"));
+    const abertura = fora.slice(fora.indexOf("const abrirSessao = useCallback("));
+    assert.ok(abertura.includes("await liberar(finalidade)"));
     // A abertura da sessão passou a ter prazo (fetchComPrazo); o que importa é a
     // ordem: a liberação (anúncio) vem antes da chamada a /api/player/fontes.
-    assert.ok(fora.indexOf("await liberar(finalidade)") < fora.indexOf('"/api/player/fontes"'));
+    assert.ok(abertura.indexOf("await liberar(finalidade)") < abertura.indexOf('"/api/player/fontes"'));
     assert.ok(fora.includes("finalidade,"));
     assert.ok(fora.includes("{ concessao }"));
   });

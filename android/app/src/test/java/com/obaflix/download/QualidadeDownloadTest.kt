@@ -28,7 +28,7 @@ class QualidadeDownloadTest {
     """.trimIndent()
 
     private fun qualidadesDe(texto: String) =
-        QualidadeDownload.deVariantes(HlsPlaylist.parseMaster(texto), BASE)
+        QualidadeDownload.deVariantes(HlsPlaylist.parseMaster(texto).withIndex().toList(), BASE)
 
     // -- Multiplas qualidades -------------------------------------------------
 

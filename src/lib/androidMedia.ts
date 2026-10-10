@@ -321,14 +321,17 @@ export type Expansao = { inicio: number; quantidade: number };
  * para as novas. Sem `expandir`, ou com expansão que não cresce, fica só a fase
  * 1 (idêntico ao comportamento anterior). O player não usa isto: só o download.
  *
- * Ordem dentro de cada fase: arquivo direto (MP4) é sondado; HLS é pulado sem
- * sondagem (não há remux seguro para arquivo único) e, se só houver HLS, a
- * resposta é "Download indisponível". `resolverFonte(indice)` devolve `null`
- * quando aquele índice não existe e lança quando um servidor específico falhou —
- * a procura segue para o próximo em vez de desistir no primeiro servidor quebrado.
+ * Preferência MP4 → HLS, sem re-resolver nada: dentro das fases, o arquivo
+ * direto (MP4) é sondado na hora; um HLS resolvido é **guardado** (não sondado
+ * ainda) e a procura segue atrás de MP4. Só quando nenhum MP4 é aceito é que os
+ * HLS guardados são sondados, na ordem — o primeiro compatível vence, e um HLS
+ * incompatível (`tentarOutraFonte=true`) deixa o próximo ser tentado. O HLS
+ * nunca é re-resolvido/reextraído: sonda-se a mesma `FonteResolvida` guardada.
  *
- * Não resolve nem troca a fonte que está tocando: o que cada tentativa devolve é
- * decisão de quem chama.
+ * `resolverFonte(indice)` devolve `null` quando aquele índice não existe e lança
+ * quando um servidor específico falhou — a procura segue para o próximo em vez
+ * de desistir no primeiro servidor quebrado. Não resolve nem troca a fonte que
+ * está tocando: o que cada tentativa devolve é decisão de quem chama.
  */
 export async function procurarFonteDeDownload<
   F extends { stream?: string; tipo?: string | null; servidor?: string; via?: string },
@@ -366,6 +369,9 @@ export async function procurarFonteDeDownload<
   let viuHls = false;
   let ultimo: R | null = null;
   let contador = 0; // tentativa contínua entre as fases, só para o diagnóstico
+  // HLS resolvidos mas ainda não sondados: tentados só depois que nenhum MP4
+  // serviu, sem resolver/extrair de novo.
+  const hlsPendentes: F[] = [];
 
   type Saida =
     | { tipo: "aceita"; resposta: R }
@@ -409,7 +415,9 @@ export async function procurarFonteDeDownload<
       const identidade = { servidor: fonte.servidor, via: fonte.via };
       const midia = midiaDaFonte(fonte);
       if (midia === "hls") {
+        // Guarda para depois; a preferência é MP4. Nada de sondar HLS agora.
         viuHls = true;
+        hlsPendentes.push(fonte);
         registrar({ tentativa, resultado: "pulada_hls", midia, ...identidade });
         contador++;
         continue;
@@ -439,26 +447,63 @@ export async function procurarFonteDeDownload<
     motivo: viuHls ? "download_indisponivel" : ultimo?.motivo,
   });
 
+  /**
+   * Fallback: sonda os HLS já resolvidos, na ordem, sem resolver/extrair de novo.
+   * O primeiro compatível vence; um incompatível que peça outra fonte
+   * (`tentarOutraFonte`) deixa o próximo HLS ser tentado.
+   */
+  const tentarHls = async (): Promise<ResultadoDaProcura<R>> => {
+    for (const fonte of hlsPendentes) {
+      const identidade = { servidor: fonte.servidor, via: fonte.via };
+      let r: R;
+      try {
+        r = await sondar(fonte);
+      } catch {
+        r = { ok: false } as R;
+      }
+      if (r.ok) {
+        registrar({ tentativa: contador, resultado: "aceita", midia: "hls", ...identidade });
+        return { ok: true, resposta: r };
+      }
+      registrar({ tentativa: contador, resultado: "recusada", midia: "hls", motivo: r.motivo, ...identidade });
+      ultimo = r;
+      contador++;
+      if (!r.tentarOutraFonte) break;
+    }
+    return encerrar();
+  };
+
   const base = await fase(0, maxTentativas);
   if (base.tipo === "aceita") return { ok: true, resposta: base.resposta };
   if (base.tipo === "terminal") return { ok: false, motivo: base.motivo };
   if (base.tipo === "parar") return encerrar();
 
-  // Fase 2: a base não achou download. Expande a MESMA sessão uma vez e tenta só
-  // as fontes NOVAS, com orçamento próprio. Falha/sem crescimento mantém a base.
-  if (!expandir) return encerrar();
-  let expansao: Expansao | null;
-  try {
-    expansao = await expandir();
-  } catch {
-    expansao = null;
+  // Fase 2 (MP4): expande a MESMA sessão uma vez e tenta só as fontes NOVAS, com
+  // orçamento próprio. Falha/sem crescimento mantém a base.
+  if (expandir) {
+    let expansao: Expansao | null;
+    try {
+      expansao = await expandir();
+    } catch (erro) {
+      // Sessão expirada/recusa da ação também são terminais na expansão.
+      // Não sondar HLS guardados depois de perder a sessão autorizada.
+      const nome = (erro as { name?: unknown } | null)?.name;
+      if (nome === "AcaoCancelada") return { ok: false, motivo: "cancelado" };
+      if (nome === "AcaoInterrompida") {
+        return { ok: false, motivo: String((erro as { motivo?: unknown }).motivo ?? "acao_nao_liberada") };
+      }
+      expansao = null;
+    }
+    if (expansao && expansao.quantidade > 0) {
+      const alt = await fase(expansao.inicio, Math.min(expansao.quantidade, maxAlternativas));
+      if (alt.tipo === "aceita") return { ok: true, resposta: alt.resposta };
+      if (alt.tipo === "terminal") return { ok: false, motivo: alt.motivo };
+      if (alt.tipo === "parar") return encerrar();
+    }
   }
-  if (!expansao || expansao.quantidade <= 0) return encerrar();
 
-  const alt = await fase(expansao.inicio, Math.min(expansao.quantidade, maxAlternativas));
-  if (alt.tipo === "aceita") return { ok: true, resposta: alt.resposta };
-  if (alt.tipo === "terminal") return { ok: false, motivo: alt.motivo };
-  return encerrar();
+  // Nenhum MP4 aceito: agora sim os HLS guardados (base + alternativas).
+  return tentarHls();
 }
 
 /**

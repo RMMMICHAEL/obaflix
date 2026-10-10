@@ -6,6 +6,7 @@ import android.webkit.WebView
 import android.widget.Toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -31,6 +32,7 @@ class ObaflixBridge(
     // rodando: ela continuava competindo pela mesma sessão do provedor e podia
     // resolver depois da nova, sobrescrevendo o stream correto.
     private var activeExtraction: Job? = null
+    private val downloadExtractions = ConcurrentHashMap<String, Job>()
     private val superflixSessions = ConcurrentHashMap<String, SuperflixExtractor.Session>()
 
     private fun authorized(value: String): Boolean = value == capability
@@ -253,6 +255,57 @@ class ObaflixBridge(
 
                 resolveCallback(callbackId, json)
             }
+        }
+    }
+
+    /** Extração da ação, sem cancelar jobs nem publicar headers de playback. */
+    @JavascriptInterface
+    fun extractStreamForDownload(
+        capability: String,
+        callbackId: String,
+        actionId: String,
+        embedUrl: String,
+    ) {
+        if (!authorized(capability) || !validCallbackId(callbackId) ||
+            !validCallbackId(actionId) || embedUrl.length > 4096
+        ) return
+        val provider = PlayerExtractors.detectProvider(embedUrl)
+        if (provider == null || provider == "superflix") {
+            resolveCallback(callbackId, JSONObject().put("error", "fonte_incompativel").toString())
+            return
+        }
+        synchronized(downloadExtractions) {
+            if (!downloadExtractions.containsKey(actionId) && downloadExtractions.size >= 4) {
+                resolveCallback(callbackId, JSONObject().put("error", "acao_ocupada").toString())
+                return
+            }
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    StreamExtractor.validatePublicHttps(embedUrl)
+                    val result = if (provider == "redecanais") {
+                        RedeCanaisExtractor.extractResult(webView, embedUrl)
+                    } else {
+                        StreamExtractor.extractResult(embedUrl)
+                    }
+                    resolveCallback(callbackId, JSONObject().apply {
+                        put("stream", result.stream)
+                        put("tipo", result.tipo ?: if (provider == "redecanais" || result.stream.contains(".mp4")) "mp4" else "hls")
+                        put("referer", result.referer ?: JSONObject.NULL)
+                        put("userAgent", result.userAgent ?: JSONObject.NULL)
+                        put("expiresAt", result.expiresAt ?: JSONObject.NULL)
+                    }.toString())
+                } catch (error: CancellationException) {
+                    resolveCallback(callbackId, JSONObject().put("error", "extracao_cancelada").toString())
+                    throw error
+                } catch (_: Exception) {
+                    // Não entrega detalhes do provedor, URLs ou tokens à ação.
+                    resolveCallback(callbackId, JSONObject().put("error", "fonte_falhou").toString())
+                } finally {
+                    downloadExtractions.remove(actionId, coroutineContext[Job])
+                }
+            }
+            downloadExtractions.put(actionId, job)?.cancel()
+            job.start()
         }
     }
 

@@ -189,9 +189,11 @@ class DownloadService : Service() {
                     source, pasta, DownloadFolder.nomeSeguro(atual.titulo, "mp4"), sink,
                 )
                 MediaKind.HLS -> downloader.baixarHls(
-                    source, pasta, DownloadFolder.nomeSeguro(atual.titulo, "hls"), sink,
+                    source, pasta, atual.titulo, sink,
                     // A escolha do usuario viaja junto: se a URL guardada ainda
-                    // for um master, e ela que decide a variante.
+                    // for um master, e ela que decide a variante. O arquivo final
+                    // (um so) sai como .mp4 (fMP4) ou .ts (MPEG-TS) conforme o
+                    // container detectado pelos bytes.
                     varianteId = atual.qualidadeId,
                 )
             }

@@ -719,7 +719,7 @@ describe("download/cast fora do player percorrem as coordenadas", () => {
   test("o hook usa o resolvedor e manda `tentativa` só depois da primeira", async () => {
     const hook = await readFile("src/components/android/useFonteParaMidia.ts", "utf8");
     assert.match(hook, /resolverComCoordenadas<Resolvido>\(/);
-    assert.match(hook, /coordenada === 0\s*\n?\s*\? \{ sessao: atual\.sessao, fonteId: alvo\.id \}/);
+    assert.match(hook, /coordenada === 0\s*\n?\s*\? \{ sessao, fonteId: alvo\.id \}/);
     assert.match(hook, /ponte\.extractStream!\(embedUrl\)/, "chamada como método da ponte");
   });
 });

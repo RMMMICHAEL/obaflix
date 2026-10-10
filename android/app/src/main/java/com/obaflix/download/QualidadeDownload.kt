@@ -46,32 +46,33 @@ data class QualidadeDownload(
             QualidadeDownload(ID_PADRAO, "Padrão", 0, null)
 
         /**
-         * Converte as variantes de um master em opcoes.
+         * Converte variantes COMPATIVEIS de um master em opcoes.
          *
-         * Devolve uma lista com so o "Padrao" quando **alguma** variante nao
-         * declara resolucao. Misturar "1080p", "720p" e "Padrao" na mesma lista
-         * seria pior que nao oferecer escolha: o "Padrao" pareceria uma
-         * qualidade a mais, quando na verdade e uma variante que nao sabemos
-         * nomear.
+         * Recebe cada variante com o seu **indice original** no master (as
+         * incompativeis — audio em faixa separada — ja foram filtradas antes, mas
+         * o indice tem de ser o da lista completa, senao o id resolveria para
+         * outra variante em [HlsPlaylist.porId]).
+         *
+         * Devolve so o "Padrao" quando **alguma** variante nao declara resolucao.
+         * Misturar "1080p", "720p" e "Padrao" na mesma lista seria pior que nao
+         * oferecer escolha: o "Padrao" pareceria uma qualidade a mais.
          */
         fun deVariantes(
-            variantes: List<HlsPlaylist.Variante>,
+            variantes: List<IndexedValue<HlsPlaylist.Variante>>,
             urlDoMaster: String,
         ): List<QualidadeDownload> {
             if (variantes.isEmpty()) return listOf(padrao())
 
-            val comAltura = variantes.mapIndexed { indice, variante ->
-                indice to HlsPlaylist.alturaDe(variante.resolucao)
-            }
+            val comAltura = variantes.map { it to HlsPlaylist.alturaDe(it.value.resolucao) }
             if (comAltura.any { it.second <= 0 }) return listOf(padrao())
 
             return comAltura
-                .map { (indice, altura) ->
+                .map { (indexada, altura) ->
                     QualidadeDownload(
-                        id = HlsPlaylist.idDaVariante(indice),
+                        id = HlsPlaylist.idDaVariante(indexada.index),
                         label = "${altura}p",
                         altura = altura,
-                        uri = HlsPlaylist.resolver(urlDoMaster, variantes[indice].uri),
+                        uri = HlsPlaylist.resolver(urlDoMaster, indexada.value.uri),
                     )
                 }
                 // Maior primeiro: e a ordem em que a pessoa procura, e a que a
