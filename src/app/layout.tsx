@@ -1,21 +1,14 @@
 import type { Metadata } from "next";
 import { Inter, Bebas_Neue } from "next/font/google";
 import "./globals.css";
-import { Providers } from "./providers";
-import { Navbar } from "@/components/layout/Navbar";
-import { AndroidShell } from "@/components/layout/AndroidShell";
-import { APP_MODE_BOOTSTRAP_SCRIPT, AppModeProvider } from "@/components/layout/AppMode";
-import { DesktopUpdateBanner } from "@/components/ui/DesktopUpdateBanner";
-import { DesktopVersionGate } from "@/components/ui/DesktopVersionGate";
-import { CliqueDesktop } from "@/components/ads/CliqueDesktop";
-import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
+import { APP_MODE_BOOTSTRAP_SCRIPT } from "@/components/layout/AppMode";
+import { PublicDownloadShell } from "@/components/layout/PublicDownloadShell";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, DEFAULT_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 import { getObaflixSurface } from "@/config/obaflix-surface";
 
-// O catálogo e a sessão dependem de dados de runtime; não consultar Prisma no
-// prerender torna o build reprodutível sem acesso a banco de produção.
-export const dynamic = "force-dynamic";
+// Legacy routes retain force-dynamic in their own layouts. Public download
+// documents can now be prerendered without mounting the application shell.
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -74,14 +67,6 @@ export default function RootLayout({
   return (
     <html lang="pt-BR">
       <head>
-        <link
-          rel="preconnect"
-          href="https://image.tmdb.org"
-        />
-        <link
-          rel="dns-prefetch"
-          href="https://image.tmdb.org"
-        />
         {/* Marca o modo app antes da primeira pintura: sem isso o HTML do SSR
             mostra a navbar desktop por um instante junto da topbar mobile. */}
         <script dangerouslySetInnerHTML={{ __html: APP_MODE_BOOTSTRAP_SCRIPT }} />
@@ -109,17 +94,7 @@ export default function RootLayout({
             },
           ]}
         />}
-        <Providers>
-          {adminSurface ? <main>{children}</main> : <AppModeProvider>
-            <PlayerWakeLock />
-            <AndroidShell />
-            <Navbar />
-            <main>{children}</main>
-            <DesktopVersionGate />
-            <DesktopUpdateBanner />
-            <CliqueDesktop />
-          </AppModeProvider>}
-        </Providers>
+        <PublicDownloadShell admin={adminSurface}>{children}</PublicDownloadShell>
       </body>
     </html>
   );

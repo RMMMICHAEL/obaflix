@@ -843,3 +843,44 @@ model CanalFonte {
 
   @@index([provider])
 }
+
+/// Métricas first-party agregadas da landing de download (/baixar), atribuídas
+/// por UTM. Existe para medir o funil TikTok → navegador → download ANTES de
+/// gastar em campanha — sem pixel de terceiro, sem cookie de marketing.
+///
+/// Uma LINHA por combinação (dia, evento, contexto, placement, UTMs), nunca uma
+/// linha por visita: cada evento faz `count += 1` num upsert atômico, então a
+/// tabela fica pequena mesmo com muito tráfego. NÃO guarda nada que identifique
+/// pessoa — sem userId, sessão, IP, User-Agent, cookie, fingerprint, URL ou
+/// referrer completos. `android_download_click` é CLIQUE no botão, jamais
+/// instalação do APK.
+model MarketingLandingMetric {
+  id String @id @default(cuid())
+
+  /// Dia UTC do evento, sem hora. Agregação e janelas (1/7/30 dias) olham por ele.
+  day DateTime @db.Date
+
+  /// landing_view | open_external_browser_click | android_download_click
+  event String
+
+  /// in_app | browser
+  context String
+
+  /// page | hero | final | bar
+  placement String
+
+  /// UTMs já sanitizados (lowercase, trim, `[a-z0-9_-]`, ≤64). Ausente ou
+  /// inválido entra como "none" — nunca texto livre, URL, e-mail ou HTML.
+  source   String
+  medium   String
+  campaign String
+  content  String
+
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([day, event, context, placement, source, medium, campaign, content], name: "coordenada", map: "MarketingLandingMetric_coordenada_key")
+  @@index([day])
+  @@index([event, context, day])
+}

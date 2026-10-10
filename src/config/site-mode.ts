@@ -24,6 +24,8 @@
  */
 
 /** `true` reabre o site de streaming para navegador comum, e `/` volta a ser a home. */
+import { isDownloadPublicPath } from "./public-download";
+
 export const WEB_STREAMING_ENABLED = process.env.WEB_STREAMING_ENABLED === "true";
 
 export type Ambiente = "android" | "desktop" | "navegador";
@@ -141,6 +143,8 @@ export type Decisao =
 export function decidirRota(pathname: string, ambiente: Ambiente): Decisao {
   // Site reaberto: ninguém é desviado de lugar nenhum.
   if (WEB_STREAMING_ENABLED) return { tipo: "segue" };
+
+  if (isDownloadPublicPath(pathname)) return { tipo: "segue" };
 
   if (PUBLICO.some((base) => dentroDe(pathname, base))) return { tipo: "segue" };
 
