@@ -8,6 +8,9 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.Buffer
+import okio.ByteString.Companion.decodeHex
+import okio.Options
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -54,6 +57,79 @@ class MediaDownloader(
     companion object {
         private const val BUFFER = 64 * 1024
         private const val TENTATIVAS = 3
+        internal const val MAX_MANIFEST_BYTES = 4L * 1024 * 1024
+        private val MANIFEST_BOMS = Options.of(
+            "efbbbf".decodeHex(), "feff".decodeHex(), "fffe0000".decodeHex(),
+            "fffe".decodeHex(), "0000feff".decodeHex(),
+        )
+
+        /** O corpo entregue pelo OkHttp já passou pela descompressão transparente. */
+        internal suspend fun lerManifesto(client: OkHttpClient, request: Request): String {
+            var tentativa = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val call = client.newCall(request)
+                try {
+                    call.execute().use { response ->
+                        try {
+                            if (!response.isSuccessful) {
+                                throw DownloadException(
+                                    if (response.code == 401 || response.code == 403)
+                                        DownloadFailure.FONTE_EXPIRADA else DownloadFailure.HTTP,
+                                    "HTTP ${response.code}",
+                                )
+                            }
+                            val body = response.body ?: throw DownloadException(
+                                DownloadFailure.MANIFESTO_INVALIDO, "Manifesto vazio",
+                            )
+                            val input = body.source()
+                            val buffer = Buffer()
+                            var lidos = 0L
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val restante = MAX_MANIFEST_BYTES - lidos
+                                if (restante == 0L) {
+                                    // Sonda somente um byte; nunca acumula além do teto.
+                                    val excedente = Buffer()
+                                    if (input.read(excedente, 1) != -1L) {
+                                        throw DownloadException(
+                                            DownloadFailure.MANIFESTO_INVALIDO, "Manifesto acima do limite",
+                                        )
+                                    }
+                                    break
+                                }
+                                val n = input.read(buffer, minOf(8192L, restante))
+                                if (n == -1L) break
+                                lidos += n
+                            }
+                            currentCoroutineContext().ensureActive()
+                            val charset = when (buffer.select(MANIFEST_BOMS)) {
+                                0 -> Charsets.UTF_8
+                                1 -> Charsets.UTF_16BE
+                                2 -> java.nio.charset.Charset.forName("UTF-32LE")
+                                3 -> Charsets.UTF_16LE
+                                4 -> java.nio.charset.Charset.forName("UTF-32BE")
+                                else -> body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                            }
+                            return buffer.readString(charset)
+                        } catch (error: Throwable) {
+                            // Cancela antes de close: não drena uma resposta rejeitada.
+                            call.cancel()
+                            throw error
+                        }
+                    }
+                } catch (error: DownloadException) {
+                    throw error
+                } catch (error: IOException) {
+                    call.cancel()
+                    currentCoroutineContext().ensureActive()
+                    tentativa++
+                    if (tentativa >= TENTATIVAS) {
+                        throw DownloadException(DownloadFailure.REDE, error.message ?: "Falha de rede")
+                    }
+                }
+            }
+        }
 
         fun clientPadrao(): OkHttpClient = OkHttpClient.Builder()
             // Sem cookieJar de proposito — ver o KDoc da classe.
@@ -345,23 +421,7 @@ class MediaDownloader(
         }
 
     private suspend fun baixarTexto(source: DownloadSource, url: String): String {
-        var tentativa = 0
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            try {
-                executar(source, url).use { r ->
-                    return r.body?.string()
-                        ?: throw DownloadException(DownloadFailure.MANIFESTO_INVALIDO, "Manifesto vazio")
-                }
-            } catch (e: DownloadException) {
-                throw e
-            } catch (e: IOException) {
-                tentativa++
-                if (tentativa >= TENTATIVAS) {
-                    throw DownloadException(DownloadFailure.REDE, e.message ?: "Falha de rede")
-                }
-            }
-        }
+        return lerManifesto(client, pedido(source, url))
     }
 
     /** Bytes de um segmento (ou do init), com a faixa de BYTERANGE quando houver. */
