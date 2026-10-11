@@ -23,6 +23,12 @@ android {
         //   ./gradlew assembleRelease -PdiagLogs
         buildConfigField "boolean", "DIAG_LOGS", (project.hasProperty("diagLogs") ? "true" : "false")
 
+        // Identifica a distribuicao Google Play (buildType playRelease). false
+        // no release direto/debug; o playRelease sobrescreve para true. Restringe
+        // comportamento da distribuicao Play (sem download offline, consumption
+        // only, anuncio por clique) — NAO e autenticacao nem seguranca.
+        buildConfigField "boolean", "PLAY_STORE_BUILD", "false"
+
         // Unity Ads — so o aplicativo movel monetiza. O :tv e o Electron nao
         // tem nem a dependencia. Game ID e Placement ID sao identificadores
         // publicos do painel da Unity, nao segredos: nenhuma chave de API entra
@@ -74,6 +80,9 @@ android {
             matchingFallbacks = ['release']
             debuggable false
             buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+            // Marca a distribuicao Play: liga o consumption-only, o anuncio por
+            // clique e o fail-close de download (sem FGS no AAB Play).
+            buildConfigField "boolean", "PLAY_STORE_BUILD", "true"
         }
         debug {
             // Debug NUNCA pede anuncio real: nao conta impressao e nao arrisca a

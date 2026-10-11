@@ -1,12 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Overlay exclusivo da variante playRelease (Google Play). Remove do merged
-    manifest a permissao de instalar pacotes declarada pela biblioteca
-    :core-extractor para o atualizador proprio: a politica do Google Play nao a
-    permite para auto-atualizacao, e o playRelease ja desliga o atualizador
-    (UPDATE_MANIFEST_URL=""). O release direto (fora da Play) nao recebe este
-    overlay e mantem a permissao e o atualizador. Racional completo em
+    Overlay exclusivo da variante playRelease (Google Play). Racional completo em
     app/build.gradle (buildType playRelease).
+
+    Remove do merged manifest Play:
+
+    - REQUEST_INSTALL_PACKAGES: declarada pela lib :core-extractor para o
+      atualizador proprio (sideload). A politica do Google Play nao a permite
+      para auto-atualizacao, e o playRelease ja desliga o atualizador
+      (UPDATE_MANIFEST_URL="").
+
+    - FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC, o DownloadService e
+      POST_NOTIFICATIONS: o build Play NAO oferece download offline. Essas tres
+      permissoes e o servico existem no app SOMENTE para o download em primeiro
+      plano; sem download no Play, nao ha uso legitimo delas aqui. O gate real
+      do download e nativo (MediaActionsBridge recusa quando PLAY_STORE_BUILD);
+      este overlay garante que a permissao/servico nem existam no AAB.
+
+    O release direto (fora da Play) NAO recebe este overlay e mantem a permissao,
+    o atualizador, o DownloadService e o FGS dataSync intactos.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
@@ -14,5 +26,23 @@
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:node="remove" />
+
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
+
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        tools:node="remove" />
+
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        tools:node="remove" />
+
+    <application>
+        <service
+            android:name=".download.DownloadService"
+            tools:node="remove" />
+    </application>
 
 </manifest>

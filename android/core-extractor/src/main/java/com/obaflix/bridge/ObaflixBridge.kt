@@ -26,6 +26,15 @@ class ObaflixBridge(
     private val webView: WebView,
     private val scope: CoroutineScope,
     private val capability: String,
+    /**
+     * Se a distribuicao permite preparar download. Default `true` preserva TV,
+     * Electron e o APK direto. O :app movel passa
+     * `!BuildConfig.PLAY_STORE_BUILD`: no AAB Google Play (sem download offline)
+     * isto fica `false` e [extractStreamForDownload] recusa antes de tocar rede.
+     * Vive aqui, no :core-extractor compartilhado, para nao importar o
+     * `BuildConfig` do :app neste modulo.
+     */
+    private val downloadsPermitidos: Boolean = true,
 ) {
 
     // Extração em andamento. Trocar de episódio rápido deixava a cadeia anterior
@@ -269,6 +278,13 @@ class ObaflixBridge(
         if (!authorized(capability) || !validCallbackId(callbackId) ||
             !validCallbackId(actionId) || embedUrl.length > 4096
         ) return
+        // Fail-close da distribuicao Google Play (sem download offline): recusa
+        // ANTES de detectar provider, validar https ou tocar a rede. Nao devolve
+        // stream/referer/userAgent/token. Nao afeta extractStream de reproducao.
+        if (!downloadsPermitidos) {
+            resolveCallback(callbackId, JSONObject().put("error", "download_indisponivel_play").toString())
+            return
+        }
         val provider = PlayerExtractors.detectProvider(embedUrl)
         if (provider == null || provider == "superflix") {
             resolveCallback(callbackId, JSONObject().put("error", "fonte_incompativel").toString())

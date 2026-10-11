@@ -145,6 +145,42 @@ class DownloadExtractionIsolationTest {
         }
     }
 
+    @Test fun playBuildRefusesDownloadExtractionBeforeScheduling() {
+        // downloadsPermitidos=false (distribuicao Google Play): extractStreamForDownload
+        // recusa ANTES de detectar provider, validar https ou agendar coroutine —
+        // nenhum job entra em downloadExtractions e nenhuma rede e tocada.
+        val dispatcher = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) { }
+        }
+        val owner = SupervisorJob()
+        val bridge = ObaflixBridge(
+            WebView(android.app.Application()), CoroutineScope(owner + dispatcher), "capability",
+            downloadsPermitidos = false,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val downloads = bridge.javaClass.getDeclaredField("downloadExtractions").apply {
+            isAccessible = true
+        }.get(bridge) as Map<String, Job>
+        try {
+            bridge.extractStreamForDownload("capability", "cb1", "action1", "https://lulu.gg/e/video")
+            assertTrue("Play nao pode agendar extracao de download", downloads.isEmpty())
+        } finally {
+            owner.cancel()
+        }
+    }
+
+    @Test fun downloadExtractionGatedBeforeProviderDetection() {
+        // O gate do Play precisa vir antes de detectProvider/rede, e devolver so
+        // um erro controlado — nunca stream/referer/userAgent/token.
+        val src = source("ObaflixBridge")
+        val download = src.substringAfter("fun extractStreamForDownload(").substringBefore("fun prepareSuperflix(")
+        val gate = download.indexOf("downloadsPermitidos")
+        val provider = download.indexOf("detectProvider(embedUrl)")
+        assertTrue("gate de downloadsPermitidos ausente", gate >= 0)
+        assertTrue("gate do Play deve vir antes de detectProvider", gate < provider)
+        assertTrue(download.contains("download_indisponivel_play"))
+    }
+
     @Test fun resultOnlyPathsCannotPublishPlayback() {
         val stream = source("StreamExtractor")
         val extract = stream.substringAfter("suspend fun extractResult(")

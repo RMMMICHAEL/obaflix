@@ -164,7 +164,11 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             displayZoomControls = false
             setSupportZoom(false)
             userAgentString = userAgentString.replace("wv", "") +
-                " ObaflixApp/1.0"
+                " ObaflixApp/1.0" +
+                // Marcador da distribuicao Google Play. Soma ao ObaflixApp/1.0;
+                // o lado web (ehClientePlay) le isto para restringir compra e
+                // esconder download. Nao e autenticacao.
+                (if (BuildConfig.PLAY_STORE_BUILD) " ObaflixPlay/1.0" else "")
             ObaflixApp.webViewUserAgent = userAgentString
         }
 
@@ -183,7 +187,12 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
 
         // Bridge: expõe _obaflixBridge ao JS (shim cria window.obaflixDesktop)
         webView.addJavascriptInterface(
-            ObaflixBridge(webView, lifecycleScope, bridgeCapability),
+            ObaflixBridge(
+                webView, lifecycleScope, bridgeCapability,
+                // Play nao tem download offline: desliga a extracao de fonte
+                // para download tambem no nativo, nao so na UI.
+                downloadsPermitidos = !BuildConfig.PLAY_STORE_BUILD,
+            ),
             "_obaflixBridge",
         )
 
@@ -378,10 +387,12 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
         }
         val script = """
             (function() {
+                window.__OBAFLIX_PLAY_STORE__ = ${BuildConfig.PLAY_STORE_BUILD};
                 if (window.obaflixDesktop) return;
                 window.obaflixDesktop = {
                     platform: 'android',
                     isAndroid: true,
+                    isPlayStore: ${BuildConfig.PLAY_STORE_BUILD},
                     __obaflixEarly: true,
                     onUpdateReady: function(cb) { window.__obaflixShowUpdate = cb; },
                     installUpdate: function() {
@@ -410,6 +421,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             (function() {
                 document.documentElement.classList.add('obaflix-android-app');
                 window.__OBAFLIX_ANDROID__ = true;
+                window.__OBAFLIX_PLAY_STORE__ = ${BuildConfig.PLAY_STORE_BUILD};
                 // window.obaflixDesktop já pode existir aqui — vindo do shim
                 // precoce (registrarShimPrecoceDeAtualizacao). __obaflixEarly
                 // é só o esboço com onUpdateReady/installUpdate; substitui
@@ -477,6 +489,14 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
                     // pela ponte de anuncio: baixar e transmitir nao sao
                     // intencao de reproducao.
                     mediaActions: true,
+
+                    // Distribuicao Play: identificacao e capacidade de download.
+                    // isPlayStore restringe comportamento comercial no lado web;
+                    // downloads=false esconde os CTAs de baixar no build Play. O
+                    // Cast segue por mediaActions (nao e afetado). O gate real do
+                    // download e nativo (MediaActionsBridge recusa no Play).
+                    isPlayStore: ${BuildConfig.PLAY_STORE_BUILD},
+                    downloads: ${!BuildConfig.PLAY_STORE_BUILD},
 
                     inspectDownloadSource: function(payload) {
                         return new Promise(function(resolve, reject) {
