@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace 'com.obaflix'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.obaflix"
         minSdk 26
-        targetSdk 34
-        versionCode 20
-        versionName "1.0.20"
+        targetSdk 36
+        versionCode 21
+        versionName "1.0.21"
         // Mesmo valor que o :core-extractor le — ambos saem de gradle.properties.
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""
