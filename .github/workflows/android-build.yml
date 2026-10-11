@@ -79,6 +79,30 @@ jobs:
           # Mesmo keystore/upload key ja carregados acima.
           ./gradlew bundlePlayRelease --no-daemon
 
+      # Gate de politica Google Play: o AAB playRelease NAO pode conter a
+      # permissao de instalar pacotes, o FGS dataSync nem o DownloadService.
+      # Inspeciona o manifesto COMPILADO dentro do AAB (proto, sem comentarios),
+      # nao o merged manifest intermediario. Nao se aplica ao APK de release
+      # direto, que legitimamente mantem esses itens.
+      - name: Play policy gate (AAB manifest)
+        if: steps.keystore.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          AAB=android/app/build/outputs/bundle/playRelease/app-playRelease.aab
+          test -f "$AAB" || { echo "::error::AAB playRelease nao encontrado"; exit 1; }
+          rm -rf /tmp/playgate && mkdir -p /tmp/playgate
+          unzip -o "$AAB" base/manifest/AndroidManifest.xml -d /tmp/playgate >/dev/null
+          M=/tmp/playgate/base/manifest/AndroidManifest.xml
+          falhou=0
+          for TOKEN in REQUEST_INSTALL_PACKAGES FOREGROUND_SERVICE_DATA_SYNC DownloadService; do
+            if grep -aq "$TOKEN" "$M"; then
+              echo "::error::AAB playRelease contem item proibido pela politica Play: $TOKEN"
+              falhou=1
+            fi
+          done
+          if [ "$falhou" -ne 0 ]; then exit 1; fi
+          echo "Gate Play OK: sem REQUEST_INSTALL_PACKAGES / FOREGROUND_SERVICE_DATA_SYNC / DownloadService no AAB"
+
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
         uses: actions/upload-artifact@v4

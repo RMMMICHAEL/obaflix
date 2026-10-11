@@ -135,6 +135,14 @@ class MediaActionsBridge(
     fun inspecionarFonte(capability: String, callbackId: String, payloadJson: String) {
         if (!autorizado(capability) || !idValido(callbackId) || payloadJson.length > 65536) return
 
+        // Fail-close da distribuicao Play: download offline nao existe no AAB do
+        // Google Play. Recusa antes de resolver fonte, sondar ou enfileirar —
+        // nada de DownloadService/MediaDownloader. Nunca expoe URL de midia.
+        if (BuildConfig.PLAY_STORE_BUILD) {
+            responder(callbackId, recusa("download_indisponivel_play"))
+            return
+        }
+
         val payload = runCatching { JSONObject(payloadJson) }.getOrNull()
         if (payload == null) {
             responder(callbackId, recusa("payload_invalido"))
@@ -220,6 +228,13 @@ class MediaActionsBridge(
     @JavascriptInterface
     fun solicitarDownload(capability: String, callbackId: String, payloadJson: String) {
         if (!autorizado(capability) || !idValido(callbackId) || payloadJson.length > 65536) return
+
+        // Fail-close da distribuicao Play: ver inspecionarFonte. Mesmo que o JS
+        // chame direto, nenhum download inicia no AAB do Google Play.
+        if (BuildConfig.PLAY_STORE_BUILD) {
+            responder(callbackId, recusa("download_indisponivel_play"))
+            return
+        }
 
         val payload = runCatching { JSONObject(payloadJson) }.getOrNull()
         if (payload == null) {
