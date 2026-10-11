@@ -11,8 +11,8 @@ android {
         applicationId "com.obaflix"
         minSdk 26
         targetSdk 36
-        versionCode 21
-        versionName "1.0.21"
+        versionCode 22
+        versionName "1.0.22"
         // Mesmo valor que o :core-extractor le — ambos saem de gradle.properties.
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""
@@ -61,6 +61,20 @@ android {
             buildConfigField "boolean", "UNITY_ADS_TEST_MODE",
                 (unityAdsTesteForcado ? "true" : "false")
         }
+        // Variante exclusiva do Google Play. Igual ao release em minify, shrink,
+        // anuncio real e assinatura (initWith release) — muda SO o atualizador:
+        // zera UPDATE_MANIFEST_URL, e manifestoConfigurado("") -> null faz
+        // atualizacaoAtiva("") == false (sem consulta ao manifesto, sem download
+        // de APK, sem banner). O overlay src/playRelease/AndroidManifest.xml
+        // ainda remove REQUEST_INSTALL_PACKAGES, que a politica da Play nao
+        // permite para auto-atualizacao. O release direto (fora da Play) mantem
+        // o updater e a permissao intactos.
+        playRelease {
+            initWith release
+            matchingFallbacks = ['release']
+            debuggable false
+            buildConfigField "String", "UPDATE_MANIFEST_URL", "\"\""
+        }
         debug {
             // Debug NUNCA pede anuncio real: nao conta impressao e nao arrisca a
             // conta da Unity com trafego de desenvolvimento.
@@ -94,6 +108,10 @@ android {
             }
         }
         buildTypes.release.signingConfig signingConfigs.release
+        // playRelease usa a MESMA upload key do release: initWith roda antes
+        // deste bloco, quando release.signingConfig ainda e null, entao atribui
+        // aqui explicitamente.
+        buildTypes.playRelease.signingConfig signingConfigs.release
     }
 }
 

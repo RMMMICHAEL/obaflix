@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Overlay exclusivo da variante playRelease (Google Play). Remove do merged
+    manifest a permissao de instalar pacotes declarada pela biblioteca
+    :core-extractor para o atualizador proprio: a politica do Google Play nao a
+    permite para auto-atualizacao, e o playRelease ja desliga o atualizador
+    (UPDATE_MANIFEST_URL=""). O release direto (fora da Play) nao recebe este
+    overlay e mantem a permissao e o atualizador. Racional completo em
+    app/build.gradle (buildType playRelease).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+</manifest>

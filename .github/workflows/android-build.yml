@@ -71,10 +71,13 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
           cd android
+          # APK de release para distribuicao direta (fora da Play): mantem o
+          # atualizador proprio e a permissao REQUEST_INSTALL_PACKAGES.
           ./gradlew assembleRelease --no-daemon
-          # Mesmo keystore/config release ja carregados acima: tambem o App
-          # Bundle para o Google Play. Nao substitui o APK de release.
-          ./gradlew bundleRelease --no-daemon
+          # AAB exclusivo do Google Play (buildType playRelease): atualizador
+          # desligado (UPDATE_MANIFEST_URL="") e sem REQUEST_INSTALL_PACKAGES.
+          # Mesmo keystore/upload key ja carregados acima.
+          ./gradlew bundlePlayRelease --no-daemon
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
@@ -89,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: obaflix-aab-${{ github.sha }}
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          path: android/app/build/outputs/bundle/playRelease/app-playRelease.aab
           retention-days: 90
 
       - name: Create GitHub Release
