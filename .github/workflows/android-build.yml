@@ -101,12 +101,12 @@ jobs:
               falhou=1
             fi
           done
-          # FOREGROUND_SERVICE generico: conta ocorrencias totais menos as de
-          # FOREGROUND_SERVICE_DATA_SYNC, para nao dar falso positivo por substring.
-          total_fgs=$(grep -aoE "FOREGROUND_SERVICE" "$M" | wc -l)
-          fgs_datasync=$(grep -aoE "FOREGROUND_SERVICE_DATA_SYNC" "$M" | wc -l)
-          if [ "$total_fgs" -gt "$fgs_datasync" ]; then
-            echo "::error::AAB playRelease contem a permissao generica FOREGROUND_SERVICE"
+          # FOREGROUND_SERVICE generico: qualquer ocorrencia e proibida. O loop
+          # acima ja cobre FOREGROUND_SERVICE_DATA_SYNC; aqui pegamos qualquer
+          # outra forma. grep dentro de `if` e seguro com set -e/pipefail (zero
+          # matches nao encerra o script), ao contrario de `$(grep ... | wc -l)`.
+          if grep -aq "FOREGROUND_SERVICE" "$M"; then
+            echo "::error::AAB playRelease contem FOREGROUND_SERVICE"
             falhou=1
           fi
           if [ "$falhou" -ne 0 ]; then exit 1; fi
