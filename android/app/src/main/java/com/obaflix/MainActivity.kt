@@ -187,7 +187,12 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
 
         // Bridge: expõe _obaflixBridge ao JS (shim cria window.obaflixDesktop)
         webView.addJavascriptInterface(
-            ObaflixBridge(webView, lifecycleScope, bridgeCapability),
+            ObaflixBridge(
+                webView, lifecycleScope, bridgeCapability,
+                // Play nao tem download offline: desliga a extracao de fonte
+                // para download tambem no nativo, nao so na UI.
+                downloadsPermitidos = !BuildConfig.PLAY_STORE_BUILD,
+            ),
             "_obaflixBridge",
         )
 

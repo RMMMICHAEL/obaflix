@@ -92,12 +92,16 @@ class MediaActionsBridge(
     @JavascriptInterface
     fun temPasta(capability: String): Boolean {
         if (!autorizado(capability)) return false
+        // Play nao tem download: nunca ha pasta de download.
+        if (BuildConfig.PLAY_STORE_BUILD) return false
         return DownloadFolder.temPastaValida(activity)
     }
 
     @JavascriptInterface
     fun escolherPasta(capability: String) {
         if (!autorizado(capability)) return
+        // Play nao tem download: nao abre o seletor de pasta.
+        if (BuildConfig.PLAY_STORE_BUILD) return
         activity.runOnUiThread { host.pedirPastaDeDownload() }
     }
 
@@ -291,6 +295,8 @@ class MediaActionsBridge(
     @JavascriptInterface
     fun descartarSondagem(capability: String) {
         if (!autorizado(capability)) return
+        // Play nunca sonda download: no-op (nao ha sondagem para descartar).
+        if (BuildConfig.PLAY_STORE_BUILD) return
         sondagem.descartar()
     }
 
@@ -316,6 +322,9 @@ class MediaActionsBridge(
     @JavascriptInterface
     fun cancelarDownload(capability: String, id: Int) {
         if (!autorizado(capability) || id <= 0) return
+        // Play: no-op. NAO chamar DownloadService.cancelar — ele faz
+        // Context.startService, e o DownloadService nem existe no manifest Play.
+        if (BuildConfig.PLAY_STORE_BUILD) return
         DownloadService.cancelar(activity.applicationContext, id)
     }
 
@@ -323,6 +332,8 @@ class MediaActionsBridge(
     @JavascriptInterface
     fun listarDownloads(capability: String): String {
         if (!autorizado(capability)) return "{\"downloads\":[]}"
+        // Play nao tem download: lista sempre vazia.
+        if (BuildConfig.PLAY_STORE_BUILD) return "{\"downloads\":[]}"
         return store.paraJsonPublico()
     }
 

@@ -94,14 +94,23 @@ jobs:
           unzip -o "$AAB" base/manifest/AndroidManifest.xml -d /tmp/playgate >/dev/null
           M=/tmp/playgate/base/manifest/AndroidManifest.xml
           falhou=0
-          for TOKEN in REQUEST_INSTALL_PACKAGES FOREGROUND_SERVICE_DATA_SYNC DownloadService; do
+          # Tokens de string que aparecem literais no manifesto proto se declarados.
+          for TOKEN in REQUEST_INSTALL_PACKAGES FOREGROUND_SERVICE_DATA_SYNC POST_NOTIFICATIONS DownloadService; do
             if grep -aq "$TOKEN" "$M"; then
               echo "::error::AAB playRelease contem item proibido pela politica Play: $TOKEN"
               falhou=1
             fi
           done
+          # FOREGROUND_SERVICE generico: conta ocorrencias totais menos as de
+          # FOREGROUND_SERVICE_DATA_SYNC, para nao dar falso positivo por substring.
+          total_fgs=$(grep -aoE "FOREGROUND_SERVICE" "$M" | wc -l)
+          fgs_datasync=$(grep -aoE "FOREGROUND_SERVICE_DATA_SYNC" "$M" | wc -l)
+          if [ "$total_fgs" -gt "$fgs_datasync" ]; then
+            echo "::error::AAB playRelease contem a permissao generica FOREGROUND_SERVICE"
+            falhou=1
+          fi
           if [ "$falhou" -ne 0 ]; then exit 1; fi
-          echo "Gate Play OK: sem REQUEST_INSTALL_PACKAGES / FOREGROUND_SERVICE_DATA_SYNC / DownloadService no AAB"
+          echo "Gate Play OK: sem REQUEST_INSTALL_PACKAGES / FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC / POST_NOTIFICATIONS / DownloadService no AAB"
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
