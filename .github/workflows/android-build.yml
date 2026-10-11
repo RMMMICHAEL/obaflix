@@ -70,7 +70,11 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
-          cd android && ./gradlew assembleRelease --no-daemon
+          cd android
+          ./gradlew assembleRelease --no-daemon
+          # Mesmo keystore/config release ja carregados acima: tambem o App
+          # Bundle para o Google Play. Nao substitui o APK de release.
+          ./gradlew bundleRelease --no-daemon
 
       - name: Upload Release APK
         if: steps.keystore.outputs.available == 'true'
@@ -78,6 +82,14 @@ jobs:
         with:
           name: obaflix-release-${{ github.sha }}
           path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+
+      - name: Upload Release AAB
+        if: steps.keystore.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: obaflix-aab-${{ github.sha }}
+          path: android/app/build/outputs/bundle/release/app-release.aab
           retention-days: 90
 
       - name: Create GitHub Release
