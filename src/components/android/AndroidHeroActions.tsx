@@ -7,6 +7,7 @@ import {
   AndroidMediaActions,
   grupoClasse,
   useAcoesDeMidiaDisponiveis,
+  useDownloadHabilitado,
 } from "./AndroidMediaActions";
 import { useFonteParaMidia } from "./useFonteParaMidia";
 import {
@@ -71,6 +72,7 @@ export function AndroidHeroActions({
   episodioUnico?: EpisodioRef | null;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
+  const baixarHabilitado = useDownloadHabilitado();
   const [dica, setDica] = useState<string | null>(null);
 
   const decisao = decidirAcaoDoHero({
@@ -118,11 +120,18 @@ export function AndroidHeroActions({
   if (decisao.modo === "indisponivel") {
     return (
       <div className={grupoClasse("hero")}>
-        <AcaoBotao variante="hero" estado="ocioso" Icone={Download} rotulo="Baixar" desabilitado onClick={() => {}} />
+        {baixarHabilitado && (
+          <AcaoBotao variante="hero" estado="ocioso" Icone={Download} rotulo="Baixar" desabilitado onClick={() => {}} />
+        )}
         <AcaoBotao variante="hero" estado="ocioso" Icone={Cast} rotulo="Transmitir" desabilitado onClick={() => {}} />
-        <span role="status" className="text-xs leading-tight text-zinc-400">
-          {tipo === "filme" ? "Indisponível para download" : "Nenhum episódio disponível"}
-        </span>
+        {/* Nota de indisponibilidade. A de filme fala em "download"; no Play, onde
+            não há download, ela não faz sentido e some. A de série ("nenhum
+            episódio") continua, pois vale também para Transmitir. */}
+        {(tipo !== "filme" || baixarHabilitado) && (
+          <span role="status" className="text-xs leading-tight text-zinc-400">
+            {tipo === "filme" ? "Indisponível para download" : "Nenhum episódio disponível"}
+          </span>
+        )}
       </div>
     );
   }
@@ -130,13 +139,15 @@ export function AndroidHeroActions({
   if (decisao.modo === "escolher") {
     return (
       <div className={grupoClasse("hero")}>
-        <AcaoBotao
-          variante="hero"
-          estado="ocioso"
-          Icone={Download}
-          rotulo="Baixar"
-          onClick={() => escolherEpisodio("baixar")}
-        />
+        {baixarHabilitado && (
+          <AcaoBotao
+            variante="hero"
+            estado="ocioso"
+            Icone={Download}
+            rotulo="Baixar"
+            onClick={() => escolherEpisodio("baixar")}
+          />
+        )}
         <AcaoBotao
           variante="hero"
           estado="ocioso"

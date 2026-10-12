@@ -8,6 +8,7 @@ import { ModalDeAnuncio, useAnuncio } from "@/components/player/useAnuncio";
 import { AcaoInterrompida, liberarAcao } from "@/lib/ads/acaoPatrocinada";
 import {
   alvoDoPid,
+  downloadsHabilitados,
   type Expansao,
   linhaDiagDownload,
   mensagemDeFalha,
@@ -92,6 +93,8 @@ type Resposta = {
 
 type Ponte = {
   mediaActions?: boolean;
+  /** Capability do Estágio 1: `false` só no build Google Play (consumo apenas). */
+  downloads?: boolean;
   inspectDownloadSource?: (p: Record<string, unknown>) => Promise<Resposta>;
   requestDownload?: (p: Record<string, unknown>) => Promise<Resposta>;
   discardDownloadSource?: () => void;
@@ -153,6 +156,35 @@ export function useAcoesDeMidiaDisponiveis(): boolean {
   return ativo;
 }
 
+/**
+ * O botão Baixar pode aparecer? `false` só na Play (capability `downloads:false`
+ * do Estágio 1); o Cast não depende disto e continua. Lê a MESMA ponte do
+ * `useAcoesDeMidiaDisponiveis` e começa escondendo: no Play nunca há um flash do
+ * botão antes de o shim ser lido. Fora do Play a ponte diz `true`/ausente e o
+ * botão aparece assim que ela existe.
+ */
+export function useDownloadHabilitado(): boolean {
+  const [habilitado, setHabilitado] = useState(false);
+  useEffect(() => {
+    const ler = () => {
+      const p = ponte();
+      if (!p) return false;
+      setHabilitado(downloadsHabilitados(p));
+      return true;
+    };
+    if (ler()) return;
+    const t = setInterval(() => {
+      if (ler()) clearInterval(t);
+    }, 400);
+    const parar = setTimeout(() => clearInterval(t), 8000);
+    return () => {
+      clearInterval(t);
+      clearTimeout(parar);
+    };
+  }, []);
+  return habilitado;
+}
+
 export type Estado = "ocioso" | "trabalhando" | "ok" | "erro";
 
 /**
@@ -204,6 +236,7 @@ export function AndroidMediaActions({
   variante?: VarianteVisual;
 }) {
   const disponivel = useAcoesDeMidiaDisponiveis();
+  const baixarHabilitado = useDownloadHabilitado();
   const anuncio = useAnuncio();
   const portasDeAnuncio = anuncio.portas;
   const [download, setDownload] = useState<Estado>("ocioso");
@@ -432,13 +465,15 @@ export function AndroidMediaActions({
   return (
     <>
       <div className={grupoClasse(variante)}>
-        <AcaoBotao
-          variante={variante}
-          estado={download}
-          Icone={Download}
-          rotulo="Baixar"
-          onClick={abrirEscolha}
-        />
+        {baixarHabilitado && (
+          <AcaoBotao
+            variante={variante}
+            estado={download}
+            Icone={Download}
+            rotulo="Baixar"
+            onClick={abrirEscolha}
+          />
+        )}
         <AcaoBotao
           variante={variante}
           estado={cast}

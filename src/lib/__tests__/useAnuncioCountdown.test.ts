@@ -142,8 +142,11 @@ describe('o botão "Remover anúncios" no convite Android', () => {
     assert.match(corpo, /encerrar\(false\)/);
     // Teste 5: cancela, nunca concede — `encerrar(true)` seria conceder.
     assert.equal(corpo.includes("encerrar(true"), false, "assinar nunca concede acesso");
-    // Teste 6: navega para a rota de planos já existente.
-    assert.match(corpo, /router\.push\(efeito\.navegarPara\)/);
+    // Teste 6: navega para a rota de planos já existente — mas por rotaAoAssinar,
+    // que no cliente Play devolve null (fail-closed): fora do Play, destino de
+    // sempre; no Play, nenhuma navegação comercial.
+    assert.match(corpo, /rotaAoAssinar\(ehClientePlayNoNavegador\(\), efeito\.navegarPara\)/);
+    assert.match(corpo, /router\.push\(destino\)/);
     assert.match(corpo, /efeitoDoConvite\("assinar"\)/);
 
     // Ordem (defesa contra corrida clique × contagem): anular o callback e

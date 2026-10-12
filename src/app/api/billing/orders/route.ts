@@ -3,6 +3,7 @@ export const maxDuration = 30;
 
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
+import { ehClientePlay, CODIGO_COMPRAS_INDISPONIVEIS_PLAY } from "@/config/play";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
@@ -219,6 +220,17 @@ const repositorio: RepositorioDePedidos = {
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  // 0. Distribuição Google Play: consumo apenas, antes de qualquer outra coisa.
+  //    O app da Play (User-Agent `ObaflixPlay/`) não pode comprar — a loja
+  //    proíbe pagamento fora do seu sistema. Recusa AQUI, antes da flag, da
+  //    origem, da sessão, do banco e do provedor: nenhum PedidoPagamento e
+  //    nenhum PIX são criados para o cliente Play. Código estável para o cliente
+  //    ramificar; só RESTRINGE quem envia `ObaflixPlay/` — navegador, APK
+  //    direto, Electron e TV não enviam e seguem comprando como sempre.
+  if (ehClientePlay(req.headers.get("user-agent"))) {
+    return erro(403, CODIGO_COMPRAS_INDISPONIVEIS_PLAY, "Compras não estão disponíveis neste aplicativo");
+  }
+
   // 1. A flag, antes de tudo. Desligada: nenhuma consulta, nenhum pedido,
   //    nenhuma chamada externa, e a mesma resposta genérica de qualquer outra
   //    indisponibilidade.
