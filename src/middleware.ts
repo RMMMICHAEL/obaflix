@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { NextFetchEvent } from "next/server";
 import { decidirRota, detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
 import { decideSurfaceGate, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
+import { publicCanonicalUrl } from "@/config/public-canonical";
 
 /**
  * Só páginas `/admin*` chegam aqui (as APIs saem antes, e a autorização delas
@@ -66,6 +67,22 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
     req.headers.get("user-agent"),
     req.headers.get(HEADER_CLIENTE),
   );
+  const canonico = publicCanonicalUrl({
+    // Host de entrada do gateway, nunca x-forwarded-host fornecido pelo cliente.
+    host: req.headers.get("host") ?? req.nextUrl.host,
+    method: req.method,
+    pathname,
+    search: req.nextUrl.search,
+    ambiente,
+    accept: req.headers.get("accept"),
+    rsc: req.headers.get("rsc"),
+    cookieNames: req.cookies.getAll().map(({ name }) => name),
+  });
+  if (canonico) return NextResponse.redirect(canonico, {
+    status: 308,
+    headers: { "Cache-Control": "private, no-store" },
+  });
+
   const decisao = decidirRota(pathname, ambiente);
 
   if (decisao.tipo === "landing") {
