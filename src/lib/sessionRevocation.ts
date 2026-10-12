@@ -78,6 +78,24 @@
 
 import { getRedis, type RedisClient } from "@/lib/redis";
 
+/**
+ * Sinaliza ao núcleo do NextAuth que a sessão está revogada. Lançada SÓ no
+ * callback `session` — o único ponto que o rolling de `/api/auth/session`
+ * executa e que NÃO roda no fluxo de login (ver `core/routes/callback.ts`, que
+ * chama só `callbacks.jwt`). Em `core/routes/session.ts` a exceção cai no catch,
+ * que LIMPA o cookie (`sessionStore.clean()`) e NÃO executa `jwt.encode`: sem
+ * isso, um cookie revogado seria RE-ENCODADO a cada rolling, com `exp` renovado,
+ * e poderia sobreviver além do TTL de 31 dias do marcador — ressuscitando a
+ * conta quando o marcador expirasse. A mensagem é neutra e não vaza ao cliente
+ * (o core só a registra server-side e devolve uma sessão vazia).
+ */
+export class SessaoRevogadaError extends Error {
+  constructor() {
+    super("sessao_revogada");
+    this.name = "SessaoRevogadaError";
+  }
+}
+
 /** Teto do cookie de sessão. Mesmo valor de `SESSION_MAX_AGE` em `auth.ts`. */
 const SESSION_MAX_AGE_SEG = 30 * 24 * 60 * 60;
 /** Margem para clock skew entre instâncias e folga de processamento. */

@@ -8,7 +8,7 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
-import { credencialRevogada, carimboAutenticacaoSeg } from "@/lib/sessionRevocation";
+import { credencialRevogada, carimboAutenticacaoSeg, SessaoRevogadaError } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -258,15 +258,20 @@ export const authOptions: NextAuthOptions = {
         session.user.id = token.id;
         session.user.role = token.role;
       }
-      // Mesma revogação do `getUserFromRequest`, agora no caminho do cookie que
-      // resolve por `getServerSession` (páginas de servidor, rotas admin,
-      // desktop-auth) E no rolling de `/api/auth/session`. Ancorada em `authTime`
-      // (imutável), nunca em `iat` (que o re-encode de rolling reescreve). Mesmo
-      // que o NextAuth re-encode o cookie depois desta callback, o `authTime`
-      // original é preservado, então a credencial revogada continua revogada na
-      // requisição seguinte. Fail-closed sem throw.
+      // Revogação do caminho do cookie: `getServerSession` (páginas, rotas admin,
+      // desktop-auth) E o rolling de `/api/auth/session`. Ancorada em `authTime`
+      // (imutável), nunca em `iat` (que o re-encode de rolling reescreve).
+      //
+      // LANÇA em vez de só remover o user: o núcleo do NextAuth cai no catch de
+      // `core/routes/session`, LIMPA o cookie e NÃO re-encoda a sessão revogada.
+      // Sem isso, cada rolling renovaria o `exp` de um cookie revogado, que
+      // sobreviveria além do TTL do marcador e ressuscitaria a conta quando ele
+      // expirasse. Para `getServerSession` o efeito é sessão vazia = não
+      // autenticado. Não roda no login (`callbacks.session` não é chamado no
+      // sign-in). Fail-closed: Redis fora → `credencialRevogada` true → também
+      // não re-encoda.
       if (token?.id && (await credencialRevogada(token.id, token.authTime))) {
-        delete session.user;
+        throw new SessaoRevogadaError();
       }
       return session;
     },

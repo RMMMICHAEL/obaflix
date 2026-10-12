@@ -83,7 +83,11 @@ const encodeCookie = (id: string, authTime: number, role = "user") =>
  * handler do App Router porque este lê cookies de `next/headers`, indisponível
  * fora do escopo de request do Next; `AuthHandler` recebe os cookies direto.
  */
-async function rolarSessao(jwt: string): Promise<{ cookieNovo: string | null; body: any }> {
+async function rolarSessao(jwt: string): Promise<{
+  cookieNovo: string | null;
+  cookieObj: { name: string; value: string; options?: any } | null;
+  body: any;
+}> {
   const internal: any = await AuthHandler({
     req: {
       action: "session",
@@ -95,14 +99,17 @@ async function rolarSessao(jwt: string): Promise<{ cookieNovo: string | null; bo
     // chamar o AuthHandler (`options.secret ??= process.env.NEXTAUTH_SECRET`).
     options: { ...authOptions, secret: SECRET },
   });
-  let cookieNovo: string | null = null;
-  for (const c of (internal.cookies ?? []) as Array<{ name: string; value: string }>) {
-    if (c.name === "next-auth.session-token" && c.value) cookieNovo = c.value;
+  let cookieObj: { name: string; value: string; options?: any } | null = null;
+  for (const c of (internal.cookies ?? []) as Array<{ name: string; value: string; options?: any }>) {
+    if (c.name === "next-auth.session-token") cookieObj = c;
   }
+  // `cookieNovo` só é um token USÁVEL se tiver valor não vazio. Um cookie de
+  // limpeza (`sessionStore.clean()`) vem com value "" e expiração no passado.
+  const cookieNovo = cookieObj && cookieObj.value ? cookieObj.value : null;
   const body = typeof internal.body === "string"
     ? (() => { try { return JSON.parse(internal.body); } catch { return {}; } })()
     : internal.body;
-  return { cookieNovo, body };
+  return { cookieNovo, cookieObj, body };
 }
 
 const claims = (jwt: string) => decode({ token: jwt, secret: SECRET }) as Promise<Record<string, any> | null>;
@@ -289,20 +296,25 @@ describe("getUserFromRequest: token emitido DURANTE a exclusão (corrida)", () =
   });
 });
 
-describe("callback session (getServerSession): revogação remove o user", () => {
+describe("callback session: revogação LANÇA (core limpa e não re-encoda)", () => {
   const sessionBase = () => ({ user: { id: "x", role: "user", name: "N" } });
 
-  test("conta revogada perde o user — consumidores veem não autenticado", async () => {
+  test("conta revogada → o callback rejeita com SessaoRevogadaError", async () => {
     const uid = `ss-old-${Date.now()}`;
     await marcar(uid, agora() + 3600);
-    const out = await authOptions.callbacks!.session!({
-      session: sessionBase(),
-      token: { id: uid, role: "user", authTime: agora() - 100 },
-    } as any);
-    assert.equal((out as any).user, undefined);
+    await assert.rejects(
+      async () => {
+        await authOptions.callbacks!.session!({
+          session: sessionBase(),
+          token: { id: uid, role: "user", authTime: agora() - 100 },
+        } as any);
+      },
+      /sessao_revogada/,
+      "a sessão revogada precisa lançar para o core limpar o cookie e não re-encodar",
+    );
   });
 
-  test("sem marcador, o user permanece", async () => {
+  test("sem marcador, o user permanece (não lança)", async () => {
     const uid = `ss-ok-${Date.now()}`;
     const out = await authOptions.callbacks!.session!({
       session: sessionBase(),
@@ -320,74 +332,76 @@ describe("callback session (getServerSession): revogação remove o user", () =>
 // `iat`, um cookie revogado se "lavaria" só por passar por aqui. A âncora é
 // `authTime` (claim nossa, não tocada pelo encoder).
 
-describe("NextAuth rolling: /api/auth/session não lava a credencial revogada", () => {
-  test("o cookie RE-EMITIDO preserva o authTime original (re-encode real)", async () => {
-    const uid = `roll-keep-${Date.now()}`;
+describe("NextAuth rolling: /api/auth/session e a sessão revogada", () => {
+  test("sessão LEGÍTIMA (sem marcador) ainda rola, preservando authTime", async () => {
+    const uid = `roll-ok-${Date.now()}`;
     const authTime = agora() - 100;
     const jwt = await encodeCookie(uid, authTime);
     const original = await claims(jwt);
-    const { cookieNovo } = await rolarSessao(jwt);
-    assert.ok(cookieNovo, "o endpoint precisa reemitir o cookie");
-    // Re-encode de verdade: o token muda (novo jti/IV), mas...
-    assert.notEqual(cookieNovo, jwt, "o rolling re-encodou o token (string nova)");
+    const { cookieNovo, body } = await rolarSessao(jwt);
+    assert.equal(body?.user?.id, uid, "sessão legítima traz o user");
+    assert.ok(cookieNovo, "o rolling reemite o cookie de uma sessão válida");
+    assert.notEqual(cookieNovo, jwt, "o token foi re-encodado (string nova)");
     const novo = await claims(cookieNovo!);
-    assert.equal(novo!.authTime, authTime, "...a claim authTime é imutável através do re-encode");
-    assert.notEqual(novo!.jti, original!.jti, "o jti foi reescrito — prova do re-encode do NextAuth");
+    assert.equal(novo!.authTime, authTime, "authTime imutável através do re-encode");
+    assert.notEqual(novo!.jti, original!.jti, "jti reescrito — prova do re-encode");
   });
 
-  test("cookie revogado continua revogado após UM rolling (laundering fechado)", async () => {
-    const uid = `roll-1-${Date.now()}`;
+  test("sessão REVOGADA não é re-encodada: sem user e cookie LIMPO (expirado)", async () => {
+    const uid = `roll-rev-${Date.now()}`;
     const jwt = await encodeCookie(uid, agora() - 100);
-    await marcar(uid, agora() + 3600); // conta excluída: cutoff cobre o authTime antigo
-    const { cookieNovo } = await rolarSessao(jwt);
-    assert.ok(cookieNovo);
-    // Na requisição SEGUINTE, com o cookie reemitido, continua recusado:
-    assert.equal(await getUserFromRequest(cookieReq(cookieNovo!)), null);
+    await marcar(uid, agora() + 3600); // conta excluída
+    const { cookieNovo, cookieObj, body } = await rolarSessao(jwt);
+    assert.equal(body?.user, undefined, "sessão revogada nunca traz user");
+    assert.ok(!cookieNovo, "sessão revogada NÃO pode ser re-encodada num token usável");
+    // E o cookie de sessão é expirado/limpo no Set-Cookie:
+    assert.ok(cookieObj, "o core precisa emitir o cookie de limpeza");
+    const exp = cookieObj!.options?.expires ? new Date(cookieObj!.options.expires).getTime() : 0;
+    assert.ok(exp <= Date.now(), "o cookie revogado sai expirado (clean), não renovado");
   });
 
-  test("permanece revogado após VÁRIOS rollings seguidos", async () => {
+  test("múltiplos rollings nunca mantêm a sessão revogada viva", async () => {
     const uid = `roll-n-${Date.now()}`;
-    let jwt = await encodeCookie(uid, agora() - 100);
+    const jwt = await encodeCookie(uid, agora() - 100);
     await marcar(uid, agora() + 3600);
     for (let i = 0; i < 3; i++) {
-      const { cookieNovo } = await rolarSessao(jwt);
-      assert.ok(cookieNovo, `rolling ${i} precisa reemitir`);
-      jwt = cookieNovo!;
+      const { cookieNovo } = await rolarSessao(jwt); // sempre o MESMO cookie velho: nunca há renovado
+      assert.ok(!cookieNovo, `rolling ${i} não pode re-encodar a sessão revogada`);
     }
-    assert.equal(await getUserFromRequest(cookieReq(jwt)), null, "nenhum número de refreshes reabre a sessão");
   });
 
-  test("GET /api/auth/session de conta excluída não fabrica cookie que autentique depois", async () => {
-    const uid = `roll-fab-${Date.now()}`;
+  // RESURRECTION: o bug era o rolling renovar o `exp` de um cookie revogado, que
+  // sobreviveria além do TTL de 31 dias do marcador; quando o marcador expirasse,
+  // `credencialRevogada` veria "sem marcador" e o cookie renovado reautenticaria.
+  // Prova sem esperar 31 dias: coleta todo cookie RENOVADO que o rolling produzir
+  // e, após remover o marcador (expiração simulada), exige que não exista nenhum.
+  test("resurrection fechada: nenhum cookie renovado sobrevive para reautenticar após o marcador expirar", async () => {
+    const uid = `resurrect-${Date.now()}`;
+    const original = await encodeCookie(uid, agora() - 100);
+    await marcar(uid, agora() + 3600);
+    const renovados: string[] = [];
+    let atual = original;
+    for (let i = 0; i < 4; i++) {
+      const { cookieNovo } = await rolarSessao(atual);
+      if (cookieNovo) { renovados.push(cookieNovo); atual = cookieNovo; }
+    }
+    // No HEAD anterior, o rolling re-encodava → `renovados` teria tokens válidos
+    // que, após o marcador sumir, reautenticariam (resurrection). Agora: vazio.
+    assert.equal(renovados.length, 0, "o rolling não pode produzir cookie renovado para sessão revogada");
+    await getRedis().del(chaveRevogacao(uid)); // marcador "expira" (31 dias)
+    for (const r of renovados) {
+      assert.equal(await getUserFromRequest(cookieReq(r)), null, "nenhum cookie renovado reautentica pós-marcador");
+    }
+  });
+
+  test("getServerSession (via AuthHandler) de sessão revogada → sem user, cookie limpo", async () => {
+    const uid = `ss-rev-${Date.now()}`;
     const jwt = await encodeCookie(uid, agora() - 100);
     await marcar(uid, agora() + 3600);
-    const { cookieNovo, body } = await rolarSessao(jwt);
-    assert.equal(body?.user, undefined, "o corpo da sessão não traz user");
-    assert.ok(cookieNovo);
-    assert.equal(await getUserFromRequest(cookieReq(cookieNovo!)), null);
-  });
-
-  // REPRODUÇÃO do laundering, com o relógio cruzando o cutoff entre a emissão e o
-  // re-encode (o gap que o ataque real explora após a janela de 45 s). Ancorado em
-  // `iat` (comportamento pré-correção) este teste FALHA: o re-encode reescreve o
-  // `iat` para depois do cutoff e a credencial revogada reautentica. Ancorado em
-  // `authTime` (imutável) PASSA. Precisa do gap real — daí o sleep curto.
-  test("laundering temporal: cookie revogado NÃO reautentica após o rolling cruzar o cutoff", async () => {
-    const uid = `roll-launder-${Date.now()}`;
-    const base = agora();
-    const jwt = await encodeCookie(uid, base); // authTime = base
-    await marcar(uid, base + 1); // cutoff logo à frente do iat/authTime de emissão
-    assert.equal(await getUserFromRequest(cookieReq(jwt)), null, "revogado já antes do rolling");
-    await new Promise((r) => setTimeout(r, 2500)); // deixa o relógio passar do cutoff
-    const { cookieNovo } = await rolarSessao(jwt); // re-encode: iat vira agora (> cutoff)
-    assert.ok(cookieNovo);
-    const novo = await claims(cookieNovo!);
-    assert.ok(novo!.iat > base + 1, "o re-encode moveu o iat para depois do cutoff (condição do laundering)");
-    assert.equal(
-      await getUserFromRequest(cookieReq(cookieNovo!)),
-      null,
-      "ancorado em authTime imutável, segue revogado — iat lavado não reabre a sessão",
-    );
+    const { cookieNovo, cookieObj, body } = await rolarSessao(jwt);
+    assert.equal(body?.user, undefined, "não autenticado: sem user");
+    assert.ok(!cookieNovo, "não re-encoda");
+    assert.ok(cookieObj, "cookie de limpeza presente");
   });
 });
 
