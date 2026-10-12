@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import { ExcluirConta } from "@/components/conta/ExcluirConta";
 import { ctaAssinaturaConta, ehClientePlayNoNavegador, MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY } from "@/config/play";
 
 export default function ContaPage() {
@@ -99,6 +100,10 @@ export default function ContaPage() {
             );
           })}
         </div>
+      </section>
+
+      <section className="mb-10">
+        <ExcluirConta />
       </section>
     </div>
   );
