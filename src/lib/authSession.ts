@@ -128,10 +128,12 @@ export async function getUserFromRequest(
 
   // Revogação imediata: uma credencial emitida antes de a conta ser excluída
   // (cookie de 30 dias OU Bearer de TV) decodifica sem problema, mas não pode
-  // mais valer. Um único ponto, cobrindo as duas entradas de uma vez. Fecha-se
-  // quando o Redis não confirma — devolver null aqui é o mesmo que "sem
-  // credencial": a rota responde o 401/403 que já responde, sem autorizar nada.
-  if (await credencialRevogada(usuario.userId, token?.iat)) return null;
+  // mais valer. Um único ponto, cobrindo as duas entradas de uma vez. A âncora é
+  // a claim imutável `authTime`, não o `iat` (que o rolling do NextAuth reescreve
+  // — ver sessionRevocation.ts). Fecha-se quando o Redis não confirma — devolver
+  // null aqui é o mesmo que "sem credencial": a rota responde o 401/403 de
+  // sempre, sem autorizar nada.
+  if (await credencialRevogada(usuario.userId, token?.authTime)) return null;
 
   return usuario;
 }

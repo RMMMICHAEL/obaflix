@@ -10,16 +10,26 @@
  * monetização desligada, `/api/playback/authorize` devolveria `PERMITIDO` sem
  * tocar no banco. Esperar o token expirar sozinho não é revogação.
  *
- * ## O modelo (temporal, por `iat`, sem PII)
+ * ## O modelo (temporal, por `authTime`, sem PII)
  *
  * Em vez de guardar o token (cookie, e-mail ou qualquer PII), guarda-se um único
  * **cutoff**: um instante em segundos. A chave contém só o `userId` interno; o
  * valor é só o timestamp.
  *
- *   - Toda credencial que o NextAuth emite carrega `iat` (verificado: tanto o
- *     cookie de sessão quanto o Bearer de TV o trazem).
- *   - Uma credencial com `iat <= cutoff` está revogada.
- *   - Uma credencial com `iat > cutoff` continua válida.
+ *   - A âncora é a claim própria **`authTime`**: o instante da autenticação REAL
+ *     que originou a sessão. É IMUTÁVEL — gravada só quando um login de verdade
+ *     cria a sessão (Credentials/Google) ou quando a TV emite um access token a
+ *     partir do refresh, e PRESERVADA em todo re-encode.
+ *   - Uma credencial com `authTime <= cutoff` está revogada.
+ *   - Uma credencial com `authTime > cutoff` continua válida.
+ *
+ *   NÃO se usa `iat`: o NextAuth faz *rolling session* — a cada `GET
+ *   /api/auth/session` ele decodifica o cookie, roda os callbacks e RE-ENCODA o
+ *   token (`core/routes/session.ts` → `jwt.encode` → `jose.setIssuedAt()`), o que
+ *   reescreve `iat` (e `exp`/`jti`) para agora. Ancorar em `iat` deixaria um
+ *   cookie revogado "lavar" o próprio `iat` para depois do cutoff só por passar
+ *   pelo endpoint de sessão, voltando a autenticar. `authTime` é uma claim nossa
+ *   que o encoder padrão não toca, então sobrevive intacta aos re-encodes.
  *
  * ## A corrida — e por que o cutoff aponta para o FUTURO
  *
@@ -109,6 +119,14 @@ export const JANELA_CORRIDA_SEG = MAX_DURACAO_EXCLUSAO_SEG + MARGEM_SKEW_SEG;
 export const chaveRevogacao = (userId: string): string => `session:revoked:${userId}`;
 
 /**
+ * Carimbo de uma autenticação REAL, em segundos. Gravado na claim imutável
+ * `authTime` no login (Credentials/Google) e na emissão do access token de TV;
+ * NUNCA atualizado num re-encode de rolling. É a âncora que `credencialRevogada`
+ * compara com o cutoff.
+ */
+export const carimboAutenticacaoSeg = (): number => Math.floor(Date.now() / 1000);
+
+/**
  * Grava o cutoff de revogação da conta, ADIANTADO em `JANELA_CORRIDA_SEG` para
  * fechar a corrida com a emissão concorrente de credenciais (ver cabeçalho).
  *
@@ -135,13 +153,18 @@ export async function revogarSessoesDoUsuario(
  * que ela não está (fail-closed). **Nunca lança**: erro de Redis vira revogado,
  * para o chamador poder apenas negar a sessão sem precisar tratar exceção.
  *
- * `iat` chega como vier do token decodificado (`unknown`): na ausência de
- * marcador é ignorado; com marcador presente, precisa ser um número finito e
- * posterior ao cutoff, senão a credencial é recusada.
+ * `authTime` é a claim imutável de nascimento da sessão, como vier do token
+ * decodificado (`unknown`):
+ *   - SEM marcador de revogação: a credencial é legítima e segue válida, mesmo
+ *     que `authTime` esteja ausente — é o token legado anterior a este deploy,
+ *     que não deve ser expulso sem motivo.
+ *   - COM marcador: `authTime` precisa ser um número finito e posterior ao
+ *     cutoff; ausente, inválido ou `<= cutoff` → recusa (fail-closed). Assim um
+ *     token legado (sem a claim) de uma conta que pediu exclusão não passa.
  */
 export async function credencialRevogada(
   userId: string,
-  iat: unknown,
+  authTime: unknown,
   redis?: Pick<RedisClient, "get">,
 ): Promise<boolean> {
   let cutoffRaw: string | null;
@@ -154,6 +177,6 @@ export async function credencialRevogada(
   if (cutoffRaw === null) return false; // Sem marcador: credencial legítima segue válida.
   const cutoff = Number(cutoffRaw);
   if (!Number.isFinite(cutoff)) return true; // Marcador corrompido: fecha.
-  if (typeof iat !== "number" || !Number.isFinite(iat)) return true; // Sem iat confiável: fecha.
-  return iat <= cutoff;
+  if (typeof authTime !== "number" || !Number.isFinite(authTime)) return true; // Sem claim confiável: fecha.
+  return authTime <= cutoff;
 }

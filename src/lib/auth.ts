@@ -8,7 +8,7 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
-import { credencialRevogada } from "@/lib/sessionRevocation";
+import { credencialRevogada, carimboAutenticacaoSeg } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -243,6 +243,14 @@ export const authOptions: NextAuthOptions = {
         token.sub = user.id;
         token.role = user.role ?? "user";
       }
+      // `authTime`: claim imutável de nascimento da sessão. Gravada só quando há
+      // uma autenticação REAL (login — `user`/`account` presentes), e com `??=`
+      // para NUNCA ser reescrita nos re-encodes de rolling do NextAuth (quando a
+      // callback roda sem `user`/`account`). É a âncora da revogação — ver
+      // `sessionRevocation.ts`. O `iat` padrão não serve: o encoder o reescreve.
+      if ((user || account) && typeof token.authTime !== "number") {
+        token.authTime = carimboAutenticacaoSeg();
+      }
       return token;
     },
     async session({ session, token }: any) {
@@ -252,10 +260,12 @@ export const authOptions: NextAuthOptions = {
       }
       // Mesma revogação do `getUserFromRequest`, agora no caminho do cookie que
       // resolve por `getServerSession` (páginas de servidor, rotas admin,
-      // desktop-auth). Credencial de conta excluída — ou Redis que não confirma —
-      // perde o `user`: todo consumidor checa `session?.user` e trata a ausência
-      // como não autenticado. Fail-closed sem throw.
-      if (token?.id && (await credencialRevogada(token.id, token.iat))) {
+      // desktop-auth) E no rolling de `/api/auth/session`. Ancorada em `authTime`
+      // (imutável), nunca em `iat` (que o re-encode de rolling reescreve). Mesmo
+      // que o NextAuth re-encode o cookie depois desta callback, o `authTime`
+      // original é preservado, então a credencial revogada continua revogada na
+      // requisição seguinte. Fail-closed sem throw.
+      if (token?.id && (await credencialRevogada(token.id, token.authTime))) {
         delete session.user;
       }
       return session;

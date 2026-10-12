@@ -1,23 +1,27 @@
 // Revogação imediata de sessão — o fecho do gap do JWT stateless.
 // Rodar com: npm run test:web
 //
-// Duas camadas:
-//   1. a regra pura (`credencialRevogada`, `revogarSessoesDoUsuario`), inclusive
-//      os caminhos fail-closed, com um Redis injetado;
-//   2. a integração REAL pelos dois pontos compartilhados — `getUserFromRequest`
-//      (cookie e Bearer de TV) e o callback `session` de `auth.ts` — e a prova de
-//      que `/api/playback/authorize` com monetização OFF deixa de devolver
-//      PERMITIDO para uma credencial revogada.
+// Três camadas:
+//   1. a regra pura (`credencialRevogada`, `revogarSessoesDoUsuario`), ancorada na
+//      claim imutável `authTime`, inclusive os caminhos fail-closed;
+//   2. a integração REAL pelos pontos compartilhados — `getUserFromRequest`
+//      (cookie e Bearer de TV), o callback `session` de `auth.ts` e
+//      `/api/playback/authorize`;
+//   3. o rolling do NextAuth: um GET real em `/api/auth/session` RE-ENCODA o
+//      cookie (reescrevendo `iat`), e provamos que a claim `authTime` sobrevive
+//      intacta e que um cookie revogado NÃO se "lava" por atravessar o endpoint.
 
-// getToken lê o segredo do ambiente; encode recebe o mesmo. Definido antes de
-// qualquer import que resolva sessão.
+// getToken/NextAuth leem segredo e URL do ambiente; encode recebe o mesmo
+// segredo. Definidos antes de qualquer import que resolva sessão. A URL http
+// mantém `useSecureCookies=false` (cookie `next-auth.session-token`).
 process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-secret-at-least-32-chars-long-xxxxxx";
+process.env.NEXTAUTH_URL = process.env.NEXTAUTH_URL || "http://localhost:3000";
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { encode } from "next-auth/jwt";
+import { encode, decode } from "next-auth/jwt";
 import { NextRequest } from "next/server";
 
 import {
@@ -31,6 +35,15 @@ import { getRedis } from "../redis";
 import { getUserFromRequest } from "../authSession";
 import { SESSION_MAX_AGE, authOptions } from "../auth";
 import { POST as authorizePost } from "../../app/api/playback/authorize/route";
+import { renovarSessao, type BancoDeSessaoTv } from "../tvPairing";
+import { createRequire } from "node:module";
+
+// `next-auth/core` não está no mapa de `exports` do pacote; carrega-se o arquivo
+// CJS por caminho absoluto (fora da resolução de `exports`). É o MESMO núcleo que
+// `/api/auth/session` executa — inclui o re-encode de rolling.
+const { AuthHandler } = createRequire(import.meta.url)(
+  join(process.cwd(), "node_modules/next-auth/core/index.js"),
+) as { AuthHandler: (p: any) => Promise<any> };
 
 const SECRET = process.env.NEXTAUTH_SECRET!;
 const agora = () => Math.floor(Date.now() / 1000);
@@ -57,9 +70,46 @@ const cookieReq = (jwt: string) =>
 const bearerReq = (jwt: string) =>
   new NextRequest("http://local/api/x", { headers: { authorization: `Bearer ${jwt}` } });
 
+/** Cookie de sessão com claim `authTime` — como o login real passa a emitir. */
+const encodeCookie = (id: string, authTime: number, role = "user") =>
+  encode({ token: { id, role, authTime }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+
+/**
+ * Passa o cookie pela rota REAL de sessão do NextAuth, via `AuthHandler` (o mesmo
+ * núcleo que `/api/auth/session` executa — `core/routes/session.ts`), e devolve o
+ * cookie `next-auth.session-token` RE-EMITIDO mais o corpo. É aqui que o NextAuth
+ * decodifica, roda `callbacks.jwt`/`callbacks.session` e re-encoda o token
+ * (reescrevendo `iat` via `jose.setIssuedAt()`). Usa-se `AuthHandler` em vez do
+ * handler do App Router porque este lê cookies de `next/headers`, indisponível
+ * fora do escopo de request do Next; `AuthHandler` recebe os cookies direto.
+ */
+async function rolarSessao(jwt: string): Promise<{ cookieNovo: string | null; body: any }> {
+  const internal: any = await AuthHandler({
+    req: {
+      action: "session",
+      method: "GET",
+      cookies: { "next-auth.session-token": jwt },
+      headers: { host: "localhost:3000" },
+    } as any,
+    // `secret` é injetado aqui como o wrapper de rota do NextAuth faz antes de
+    // chamar o AuthHandler (`options.secret ??= process.env.NEXTAUTH_SECRET`).
+    options: { ...authOptions, secret: SECRET },
+  });
+  let cookieNovo: string | null = null;
+  for (const c of (internal.cookies ?? []) as Array<{ name: string; value: string }>) {
+    if (c.name === "next-auth.session-token" && c.value) cookieNovo = c.value;
+  }
+  const body = typeof internal.body === "string"
+    ? (() => { try { return JSON.parse(internal.body); } catch { return {}; } })()
+    : internal.body;
+  return { cookieNovo, body };
+}
+
+const claims = (jwt: string) => decode({ token: jwt, secret: SECRET }) as Promise<Record<string, any> | null>;
+
 // ── 1. A regra pura ────────────────────────────────────────────────────────────
 
-describe("credencialRevogada: iat contra o cutoff", () => {
+describe("credencialRevogada: authTime contra o cutoff", () => {
   const redisFake = (valor: string | null): Pick<ReturnType<typeof getRedis>, "get"> => ({
     get: async () => valor,
   });
@@ -68,21 +118,21 @@ describe("credencialRevogada: iat contra o cutoff", () => {
     assert.equal(await credencialRevogada("u1", agora(), redisFake(null)), false);
   });
 
-  test("marcador presente + iat <= cutoff → revogada", async () => {
+  test("marcador presente + authTime <= cutoff → revogada", async () => {
     const cutoff = agora();
     assert.equal(await credencialRevogada("u1", cutoff, redisFake(String(cutoff))), true);
     assert.equal(await credencialRevogada("u1", cutoff - 1, redisFake(String(cutoff))), true);
   });
 
-  test("marcador presente + iat > cutoff → válida (login novo após falha de exclusão)", async () => {
+  test("marcador presente + authTime > cutoff → válida (login novo após falha de exclusão)", async () => {
     const cutoff = agora();
     assert.equal(await credencialRevogada("u1", cutoff + 5, redisFake(String(cutoff))), false);
   });
 
-  test("marcador presente + iat ausente/ inválido → fail-closed", async () => {
+  test("marcador presente + authTime ausente/inválido → fail-closed", async () => {
     const cutoff = String(agora());
-    for (const iat of [undefined, null, NaN, Infinity, "123", {}]) {
-      assert.equal(await credencialRevogada("u1", iat, redisFake(cutoff)), true, `iat=${String(iat)}`);
+    for (const authTime of [undefined, null, NaN, Infinity, "123", {}]) {
+      assert.equal(await credencialRevogada("u1", authTime, redisFake(cutoff)), true, `authTime=${String(authTime)}`);
     }
   });
 
@@ -132,13 +182,13 @@ describe("corrida de emissão concorrente durante a exclusão", () => {
     const uid = `race-${Math.random()}`;
     const base = agora(); // instante em que a exclusão grava o cutoff
     await revogarSessoesDoUsuario(uid, base);
-    // Token que uma requisição concorrente emitiria durante a transação:
+    // authTime que uma requisição concorrente carimbaria durante a transação:
     for (const atraso of [1, 5, MAX_DURACAO_PLAUSIVEL, JANELA_CORRIDA_SEG]) {
-      const iatConcorrente = base + atraso;
+      const authTimeConcorrente = base + atraso;
       assert.equal(
-        await credencialRevogada(uid, iatConcorrente),
+        await credencialRevogada(uid, authTimeConcorrente),
         true,
-        `iat = base + ${atraso}s (dentro da janela) tinha de ser revogado`,
+        `authTime = base + ${atraso}s (dentro da janela) tinha de ser revogado`,
       );
     }
   });
@@ -147,7 +197,7 @@ describe("corrida de emissão concorrente durante a exclusão", () => {
     const uid = `recover-${Math.random()}`;
     const base = agora();
     await revogarSessoesDoUsuario(uid, base);
-    // `iat` após o fim da janela: só acontece se a conta ainda existe (exclusão
+    // authTime após o fim da janela: só acontece se a conta ainda existe (exclusão
     // falhou) e o relógio já passou do cutoff. Recuperação sem esperar 31 dias.
     assert.equal(await credencialRevogada(uid, base + JANELA_CORRIDA_SEG + 1), false);
   });
@@ -170,40 +220,43 @@ describe("TTL do marcador é finito e cobre o token mais longevo", () => {
 // ── 2. Integração pelos pontos compartilhados ──────────────────────────────────
 
 describe("getUserFromRequest: cookie (site/Electron/móvel)", () => {
-  test("cookie antigo com iat <= cutoff é recusado após a exclusão", async () => {
+  test("cookie antigo com authTime <= cutoff é recusado após a exclusão", async () => {
     const uid = `ck-old-${Date.now()}`;
-    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
-    await marcar(uid, agora() + 3600); // cutoff no futuro: garante iat <= cutoff
+    const jwt = await encodeCookie(uid, agora() - 100); // authTime anterior ao cutoff
+    await marcar(uid, agora() + 3600);
     assert.equal(await getUserFromRequest(cookieReq(jwt)), null);
   });
 
   test("sem marcador, o cookie legítimo continua autenticando", async () => {
     const uid = `ck-ok-${Date.now()}`;
-    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    const jwt = await encodeCookie(uid, agora());
     const u = await getUserFromRequest(cookieReq(jwt));
     assert.deepEqual(u, { userId: uid, role: "user", origem: "cookie", deviceId: null });
   });
 
-  test("token NOVO (iat > cutoff) volta a valer após uma transação de exclusão que falhou", async () => {
+  test("login novo (authTime > cutoff) volta a valer após uma exclusão que falhou", async () => {
     const uid = `ck-relogin-${Date.now()}`;
-    await marcar(uid, agora() - 10); // cutoff gravado há 10s; a transação falhou depois
-    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
-    const u = await getUserFromRequest(cookieReq(jwt)); // login novo → iat atual > cutoff
+    await marcar(uid, agora() - 10); // cutoff no passado; exclusão falhou e a janela passou
+    const jwt = await encodeCookie(uid, agora()); // login novo → authTime atual > cutoff
+    const u = await getUserFromRequest(cookieReq(jwt));
     assert.deepEqual(u, { userId: uid, role: "user", origem: "cookie", deviceId: null });
   });
 });
 
 describe("getUserFromRequest: Bearer de TV", () => {
-  test("Bearer de TV antigo (iat <= cutoff) é recusado após a exclusão", async () => {
+  const tvJwt = (id: string, authTime: number) =>
+    encode({ token: { id, role: "user", tv: true, did: "dev-1", authTime }, secret: SECRET, maxAge: 900 });
+
+  test("Bearer de TV antigo (authTime <= cutoff) é recusado após a exclusão", async () => {
     const uid = `tv-old-${Date.now()}`;
-    const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1" }, secret: SECRET, maxAge: 900 });
+    const jwt = await tvJwt(uid, agora() - 100);
     await marcar(uid, agora() + 3600);
     assert.equal(await getUserFromRequest(bearerReq(jwt)), null);
   });
 
   test("sem marcador, o Bearer de TV legítimo devolve o aparelho de origem", async () => {
     const uid = `tv-ok-${Date.now()}`;
-    const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1" }, secret: SECRET, maxAge: 900 });
+    const jwt = await tvJwt(uid, agora());
     const u = await getUserFromRequest(bearerReq(jwt));
     assert.deepEqual(u, { userId: uid, role: "user", origem: "bearer", deviceId: "dev-1" });
   });
@@ -213,24 +266,24 @@ describe("getUserFromRequest: Bearer de TV", () => {
 // cutoff fixado à mão: a exclusão começou há poucos segundos (`base`) e uma
 // requisição concorrente emite o token AGORA, com `iat` posterior ao `base`.
 describe("getUserFromRequest: token emitido DURANTE a exclusão (corrida)", () => {
-  test("login web concorrente (cookie emitido agora, iat > base) é recusado", async () => {
+  test("login web concorrente (cookie com authTime=agora > base) é recusado", async () => {
     const uid = `race-web-${Date.now()}`;
-    await revogarSessoesDoUsuario(uid, agora() - 5); // cutoff = agora+40, cobre o iat de agora
-    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    await revogarSessoesDoUsuario(uid, agora() - 5); // cutoff = agora+40, cobre authTime de agora
+    const jwt = await encodeCookie(uid, agora());
     assert.equal(await getUserFromRequest(cookieReq(jwt)), null);
   });
 
-  test("renovação de TV concorrente (Bearer emitido agora, iat > base) é recusada", async () => {
+  test("renovação de TV concorrente (Bearer com authTime=agora > base) é recusada", async () => {
     const uid = `race-tv-${Date.now()}`;
     await revogarSessoesDoUsuario(uid, agora() - 5);
-    const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1" }, secret: SECRET, maxAge: 900 });
+    const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1", authTime: agora() }, secret: SECRET, maxAge: 900 });
     assert.equal(await getUserFromRequest(bearerReq(jwt)), null);
   });
 
   test("recuperação: passada a janela (exclusão falhou), o login novo autentica", async () => {
     const uid = `race-recover-${Date.now()}`;
     await revogarSessoesDoUsuario(uid, agora() - (JANELA_CORRIDA_SEG + 10)); // cutoff já no passado
-    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    const jwt = await encodeCookie(uid, agora());
     const u = await getUserFromRequest(cookieReq(jwt));
     assert.deepEqual(u, { userId: uid, role: "user", origem: "cookie", deviceId: null });
   });
@@ -244,7 +297,7 @@ describe("callback session (getServerSession): revogação remove o user", () =>
     await marcar(uid, agora() + 3600);
     const out = await authOptions.callbacks!.session!({
       session: sessionBase(),
-      token: { id: uid, role: "user", iat: agora() },
+      token: { id: uid, role: "user", authTime: agora() - 100 },
     } as any);
     assert.equal((out as any).user, undefined);
   });
@@ -253,9 +306,160 @@ describe("callback session (getServerSession): revogação remove o user", () =>
     const uid = `ss-ok-${Date.now()}`;
     const out = await authOptions.callbacks!.session!({
       session: sessionBase(),
-      token: { id: uid, role: "user", iat: agora() },
+      token: { id: uid, role: "user", authTime: agora() },
     } as any);
     assert.equal((out as any).user.id, uid);
+  });
+});
+
+// ── 3. Rolling do NextAuth: laundering do iat fechado ──────────────────────────
+//
+// `GET /api/auth/session` (jwt strategy) decodifica o cookie, roda os callbacks e
+// RE-ENCODA o token via `jose.setIssuedAt()` — reescrevendo `iat`/`exp`/`jti` para
+// agora — devolvendo o cookie novo no `Set-Cookie`. Se a revogação dependesse de
+// `iat`, um cookie revogado se "lavaria" só por passar por aqui. A âncora é
+// `authTime` (claim nossa, não tocada pelo encoder).
+
+describe("NextAuth rolling: /api/auth/session não lava a credencial revogada", () => {
+  test("o cookie RE-EMITIDO preserva o authTime original (re-encode real)", async () => {
+    const uid = `roll-keep-${Date.now()}`;
+    const authTime = agora() - 100;
+    const jwt = await encodeCookie(uid, authTime);
+    const original = await claims(jwt);
+    const { cookieNovo } = await rolarSessao(jwt);
+    assert.ok(cookieNovo, "o endpoint precisa reemitir o cookie");
+    // Re-encode de verdade: o token muda (novo jti/IV), mas...
+    assert.notEqual(cookieNovo, jwt, "o rolling re-encodou o token (string nova)");
+    const novo = await claims(cookieNovo!);
+    assert.equal(novo!.authTime, authTime, "...a claim authTime é imutável através do re-encode");
+    assert.notEqual(novo!.jti, original!.jti, "o jti foi reescrito — prova do re-encode do NextAuth");
+  });
+
+  test("cookie revogado continua revogado após UM rolling (laundering fechado)", async () => {
+    const uid = `roll-1-${Date.now()}`;
+    const jwt = await encodeCookie(uid, agora() - 100);
+    await marcar(uid, agora() + 3600); // conta excluída: cutoff cobre o authTime antigo
+    const { cookieNovo } = await rolarSessao(jwt);
+    assert.ok(cookieNovo);
+    // Na requisição SEGUINTE, com o cookie reemitido, continua recusado:
+    assert.equal(await getUserFromRequest(cookieReq(cookieNovo!)), null);
+  });
+
+  test("permanece revogado após VÁRIOS rollings seguidos", async () => {
+    const uid = `roll-n-${Date.now()}`;
+    let jwt = await encodeCookie(uid, agora() - 100);
+    await marcar(uid, agora() + 3600);
+    for (let i = 0; i < 3; i++) {
+      const { cookieNovo } = await rolarSessao(jwt);
+      assert.ok(cookieNovo, `rolling ${i} precisa reemitir`);
+      jwt = cookieNovo!;
+    }
+    assert.equal(await getUserFromRequest(cookieReq(jwt)), null, "nenhum número de refreshes reabre a sessão");
+  });
+
+  test("GET /api/auth/session de conta excluída não fabrica cookie que autentique depois", async () => {
+    const uid = `roll-fab-${Date.now()}`;
+    const jwt = await encodeCookie(uid, agora() - 100);
+    await marcar(uid, agora() + 3600);
+    const { cookieNovo, body } = await rolarSessao(jwt);
+    assert.equal(body?.user, undefined, "o corpo da sessão não traz user");
+    assert.ok(cookieNovo);
+    assert.equal(await getUserFromRequest(cookieReq(cookieNovo!)), null);
+  });
+
+  // REPRODUÇÃO do laundering, com o relógio cruzando o cutoff entre a emissão e o
+  // re-encode (o gap que o ataque real explora após a janela de 45 s). Ancorado em
+  // `iat` (comportamento pré-correção) este teste FALHA: o re-encode reescreve o
+  // `iat` para depois do cutoff e a credencial revogada reautentica. Ancorado em
+  // `authTime` (imutável) PASSA. Precisa do gap real — daí o sleep curto.
+  test("laundering temporal: cookie revogado NÃO reautentica após o rolling cruzar o cutoff", async () => {
+    const uid = `roll-launder-${Date.now()}`;
+    const base = agora();
+    const jwt = await encodeCookie(uid, base); // authTime = base
+    await marcar(uid, base + 1); // cutoff logo à frente do iat/authTime de emissão
+    assert.equal(await getUserFromRequest(cookieReq(jwt)), null, "revogado já antes do rolling");
+    await new Promise((r) => setTimeout(r, 2500)); // deixa o relógio passar do cutoff
+    const { cookieNovo } = await rolarSessao(jwt); // re-encode: iat vira agora (> cutoff)
+    assert.ok(cookieNovo);
+    const novo = await claims(cookieNovo!);
+    assert.ok(novo!.iat > base + 1, "o re-encode moveu o iat para depois do cutoff (condição do laundering)");
+    assert.equal(
+      await getUserFromRequest(cookieReq(cookieNovo!)),
+      null,
+      "ancorado em authTime imutável, segue revogado — iat lavado não reabre a sessão",
+    );
+  });
+});
+
+// ── 4. Token legado (anterior a este deploy, sem a claim authTime) ─────────────
+
+describe("compatibilidade: token legado sem authTime", () => {
+  test("SEM marcador continua funcionando (não expulsamos todo mundo no deploy)", async () => {
+    const uid = `leg-ok-${Date.now()}`;
+    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    const u = await getUserFromRequest(cookieReq(jwt));
+    assert.deepEqual(u, { userId: uid, role: "user", origem: "cookie", deviceId: null });
+  });
+
+  test("COM marcador (conta pediu exclusão) é recusado fail-closed", async () => {
+    const uid = `leg-no-${Date.now()}`;
+    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    await marcar(uid, agora() + 3600);
+    assert.equal(await getUserFromRequest(cookieReq(jwt)), null);
+  });
+});
+
+// ── 5. TV: a claim na emissão + refresh pós-falha / pós-sucesso ────────────────
+
+/** Banco falso que faz `renovarSessao` emitir uma sessão nova, sem Postgres. */
+function bancoComRefresh(userId: string): BancoDeSessaoTv {
+  return {
+    tvRefreshToken: {
+      findUnique: async () => ({
+        id: "rt-1",
+        familia: "fam-1",
+        usadoEm: null,
+        revogadoEm: null,
+        expiraEm: new Date(Date.now() + 60 * 24 * 3600 * 1000),
+        device: { id: "dev-1", userId, fingerprint: "a".repeat(64), modelo: "TV", revogadoEm: null },
+      }),
+      update: async () => ({}),
+      create: async () => ({}),
+    },
+    tvDevice: {
+      upsert: async () => ({ id: "dev-1", user: { role: "user" } }),
+    },
+  } as unknown as BancoDeSessaoTv;
+}
+
+/** Banco falso de conta já excluída: o refresh não existe mais. */
+const bancoSemRefresh: BancoDeSessaoTv = {
+  tvRefreshToken: { findUnique: async () => null },
+} as unknown as BancoDeSessaoTv;
+
+describe("TV: emissão e renovação com authTime", () => {
+  const argsRenov = { fingerprint: "a".repeat(64), rede: "10.0.0", userAgent: "tv" };
+
+  test("o access token emitido carrega a claim authTime", async () => {
+    const r = await renovarSessao({ refreshToken: "x", ...argsRenov }, bancoComRefresh("u-tv-claim"));
+    assert.ok(r.ok);
+    const c = await claims(r.ok ? r.sessao.accessToken : "");
+    assert.equal(typeof c!.authTime, "number", "authTime presente no Bearer de TV");
+    assert.equal(c!.tv, true);
+  });
+
+  test("refresh após exclusão que FALHOU, passada a janela, volta a autenticar", async () => {
+    const uid = "u-tv-recover";
+    await marcar(uid, agora() - 10); // cutoff no passado (janela já passou)
+    const r = await renovarSessao({ refreshToken: "x", ...argsRenov }, bancoComRefresh(uid));
+    assert.ok(r.ok);
+    const u = await getUserFromRequest(bearerReq(r.ok ? r.sessao.accessToken : ""));
+    assert.equal(u?.userId, uid, "authTime novo > cutoff → autentica");
+  });
+
+  test("após exclusão BEM-SUCEDIDA o refresh não existe — renovação falha", async () => {
+    const r = await renovarSessao({ refreshToken: "x", ...argsRenov }, bancoSemRefresh);
+    assert.equal(r.ok, false);
   });
 });
 

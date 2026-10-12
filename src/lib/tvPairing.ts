@@ -27,6 +27,7 @@ import { encode } from "next-auth/jwt";
 import { getRedis } from "./redis";
 import { prisma } from "./prisma";
 import { audit } from "./auditLog";
+import { carimboAutenticacaoSeg } from "./sessionRevocation";
 
 // ── Parâmetros ───────────────────────────────────────────────────────────────
 
@@ -324,7 +325,18 @@ async function emitirAccessToken(userId: string, role: string, deviceId: string)
   // Mesmo formato e mesmo segredo da sessão do site: é o que permite existir um
   // só ponto de autorização no servidor. As claims `tv` e `did` são o que separa
   // as duas entradas — ver authSession.ts.
-  return encode({ token: { id: userId, role, tv: true, did: deviceId }, secret: segredo, maxAge: ACCESS_TTL_SEG });
+  //
+  // `authTime`: claim imutável de autenticação, a âncora da revogação de sessão
+  // (ver sessionRevocation.ts). Cada emissão de access token — pareamento ou
+  // renovação pelo refresh — é uma autenticação real e carimba o instante atual.
+  // Após uma exclusão bem-sucedida não há refresh (TvRefreshToken sai na
+  // transação); após uma exclusão que falhou, um refresh depois da janela gera
+  // `authTime > cutoff` e volta a valer.
+  return encode({
+    token: { id: userId, role, tv: true, did: deviceId, authTime: carimboAutenticacaoSeg() },
+    secret: segredo,
+    maxAge: ACCESS_TTL_SEG,
+  });
 }
 
 /**
