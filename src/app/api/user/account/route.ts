@@ -6,6 +6,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
+import { invalidarEntitlements } from "@/lib/entitlements";
 import {
   confirmacaoValida,
   excluirDadosDaConta,
@@ -121,6 +122,21 @@ export async function DELETE(req: NextRequest) {
   } catch {
     audit("account_delete_rejected", { userId, ip, ua, detail: "falha_na_transacao" });
     return erro(500, "falha", "Não foi possível excluir a conta");
+  }
+
+  // Cache de entitlement: a conta pode ter direitos **pagos** memorizados por até
+  // ~2 min (`TTL_ENTITLEMENTS_SEG`). As linhas de `Assinatura` já foram apagadas
+  // na transação acima, então qualquer resolução a partir de agora só pode
+  // reencher com o plano padrão — mas uma entrada ainda viva concederia o plano
+  // pago por essa janela nas rotas que resolvem entitlements. Invalida-se
+  // **depois** do commit, de propósito: antes dele uma resolução concorrente
+  // reencheria a partir das linhas que ainda existiam. Falha aqui **não desfaz** a
+  // exclusão (os dados já se foram) e **não é silenciosa** — é auditada; o TTL é o
+  // teto do resíduo. Não transforma hiccup de Redis em "exclusão não concluída".
+  try {
+    await invalidarEntitlements(userId);
+  } catch {
+    audit("billing_entitlements_invalidation_failed", { userId, ip, ua, detail: "account_delete" });
   }
 
   audit("account_delete_completed", { userId, ip, ua });

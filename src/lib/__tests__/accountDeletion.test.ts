@@ -11,7 +11,9 @@ import {
   sessaoPodeExcluir,
 } from "../account/deletion";
 import { decidirRota } from "../../config/site-mode";
-import type { UsuarioRequisicao } from "../authSession";
+import { normalizarToken, type UsuarioRequisicao } from "../authSession";
+import { NextRequest } from "next/server";
+import { POST as authorizePost } from "../../app/api/playback/authorize/route";
 
 /**
  * Exclusão de conta — Estágio 3.
@@ -349,5 +351,79 @@ describe("login pós-exclusão falha por construção", () => {
   });
   test("o login Google também exige a conta local", () => {
     assert.ok(/if \(!local\) return false/.test(auth));
+  });
+});
+
+// ── 8. REPRODUÇÃO do gap de sessão (blocker) + mitigação de cache ──────────────
+//
+// A sessão do Obaflix é um JWT stateless de 30 dias; `getUserFromRequest` só
+// decodifica, sem provar que a linha `User` ainda existe. Logo, um cookie emitido
+// ANTES da exclusão continua "autenticando" DEPOIS dela. Revogar isso de imediato
+// exige mudança central de custo/arquitetura (DB por request em todo cliente, ou
+// lista de revogação em Redis com decisão de fail-open/closed global) — condições
+// que o escopo manda PARAR e reportar. Estes testes reproduzem o cenário e fixam
+// a mitigação que é segura e barata: invalidar o cache de entitlement na exclusão.
+
+describe("REPRODUÇÃO: sessão emitida antes da exclusão ainda passa (blocker)", () => {
+  test("normalizarToken decodifica o JWT de uma conta já apagada, sem prova de existência", () => {
+    const u = normalizarToken({ id: "conta-apagada", role: "user" }, "cookie");
+    assert.deepEqual(u, { userId: "conta-apagada", role: "user", origem: "cookie", deviceId: null });
+  });
+
+  test("/api/playback/authorize devolve PERMITIDO (monetização off) mesmo sem a conta existir", async () => {
+    const handlerAuth = authorizePost.createForTest({
+      getUserFromRequest: async () => ({ userId: "conta-apagada", role: "user", origem: "cookie", deviceId: null }),
+      monetizacaoAtiva: () => false,
+      promocaoTvAtiva: () => false,
+      anuncioAndroidAtivo: () => false,
+      anuncioElectronAtivo: () => false,
+      isIpBlocked: async () => false,
+      recordAbuseAttempt: async () => {},
+    });
+    const req = new NextRequest("http://local/api/playback/authorize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ conteudoId: "filme-123", conteudoTipo: "filme" }),
+    });
+    const res = await handlerAuth(req);
+    const json = (await res.json()) as { decisao?: string };
+    // Estado ATUAL, vulnerável e reportado como blocker: PERMITIDO sem resolver
+    // entitlements nem provar existência. Fechá-lo exige a mudança central que o
+    // escopo mandou reportar antes de implementar (ver relatório).
+    assert.equal(res.status, 200);
+    assert.equal(json.decisao, "PERMITIDO");
+  });
+});
+
+describe("MITIGAÇÃO: a exclusão invalida o cache de entitlement", () => {
+  test("invalida o cache DEPOIS da transação (nunca antes do commit)", () => {
+    assert.ok(codigo.includes("invalidarEntitlements("), "a exclusão precisa invalidar o cache");
+    assert.ok(
+      posicaoDe("prisma.$transaction") < posicaoDe("invalidarEntitlements("),
+      "o cache só pode ser invalidado depois do commit",
+    );
+  });
+
+  test("falha de invalidação é auditada, sem derrubar a exclusão já concluída", () => {
+    const bloco = handler.slice(posicaoDe("invalidarEntitlements("));
+    assert.ok(
+      /catch[\s\S]{0,140}billing_entitlements_invalidation_failed/.test(bloco),
+      "falha de cache é auditada e não vira erro de exclusão",
+    );
+  });
+});
+
+describe("AdminAudit: FK NO ACTION e o caso do ex-admin (documentado, sem migration)", () => {
+  const fonte = readFileSync(join(process.cwd(), "src/lib/account/deletion.ts"), "utf8");
+  test("a ordem de exclusão nunca inclui AdminAudit", () => {
+    // Reafirma a garantia: nenhuma operação de delegate sobre adminAudit no
+    // orquestrador (o comentário cita `AdminAudit.adminUserId`, mas não há
+    // `tx.adminAudit`).
+    assert.equal(fonte.includes("tx.adminAudit"), false, "AdminAudit não pode ser apagado");
+  });
+  test("o motivo e o caso do ex-admin rebaixado estão documentados", () => {
+    assert.ok(fonte.includes("AdminAudit"));
+    assert.ok(/NO ACTION/i.test(fonte));
+    assert.ok(/ex-admin|rebaixado/i.test(fonte), "o caso do ex-admin precisa estar documentado");
   });
 });
