@@ -12,8 +12,6 @@ import {
 } from "../account/deletion";
 import { decidirRota } from "../../config/site-mode";
 import { normalizarToken, type UsuarioRequisicao } from "../authSession";
-import { NextRequest } from "next/server";
-import { POST as authorizePost } from "../../app/api/playback/authorize/route";
 
 /**
  * Exclusão de conta — Estágio 3.
@@ -354,44 +352,35 @@ describe("login pós-exclusão falha por construção", () => {
   });
 });
 
-// ── 8. REPRODUÇÃO do gap de sessão (blocker) + mitigação de cache ──────────────
+// ── 8. Revogação imediata de sessão (blocker FECHADO) + mitigação de cache ─────
 //
-// A sessão do Obaflix é um JWT stateless de 30 dias; `getUserFromRequest` só
-// decodifica, sem provar que a linha `User` ainda existe. Logo, um cookie emitido
-// ANTES da exclusão continua "autenticando" DEPOIS dela. Revogar isso de imediato
-// exige mudança central de custo/arquitetura (DB por request em todo cliente, ou
-// lista de revogação em Redis com decisão de fail-open/closed global) — condições
-// que o escopo manda PARAR e reportar. Estes testes reproduzem o cenário e fixam
-// a mitigação que é segura e barata: invalidar o cache de entitlement na exclusão.
+// A sessão do Obaflix é um JWT stateless de 30 dias; `normalizarToken` só
+// decodifica, sem provar que a linha `User` existe. Sozinho, um cookie (ou Bearer
+// de TV) emitido ANTES da exclusão continuaria "autenticando" DEPOIS dela. O fecho
+// é central e barato: `src/lib/sessionRevocation.ts` grava um cutoff por `userId`
+// no Redis e `getUserFromRequest` + o callback `session` de `auth.ts` recusam
+// `iat <= cutoff`. A exclusão grava o cutoff ANTES da transação destrutiva.
+//
+// A prova de ponta a ponta (token antigo recusado, token novo aceito, fail-closed,
+// playback com monetização off deixando de devolver PERMITIDO) vive em
+// `sessionRevocation.test.ts`. Aqui ficam o motivo (decodificação pura) e a ordem
+// na rota (cutoff antes de apagar).
 
-describe("REPRODUÇÃO: sessão emitida antes da exclusão ainda passa (blocker)", () => {
-  test("normalizarToken decodifica o JWT de uma conta já apagada, sem prova de existência", () => {
+describe("revogação de sessão: motivo e ordem na exclusão", () => {
+  test("normalizarToken decodifica o JWT mesmo de conta apagada — por isso o cutoff é necessário", () => {
     const u = normalizarToken({ id: "conta-apagada", role: "user" }, "cookie");
     assert.deepEqual(u, { userId: "conta-apagada", role: "user", origem: "cookie", deviceId: null });
   });
 
-  test("/api/playback/authorize devolve PERMITIDO (monetização off) mesmo sem a conta existir", async () => {
-    const handlerAuth = authorizePost.createForTest({
-      getUserFromRequest: async () => ({ userId: "conta-apagada", role: "user", origem: "cookie", deviceId: null }),
-      monetizacaoAtiva: () => false,
-      promocaoTvAtiva: () => false,
-      anuncioAndroidAtivo: () => false,
-      anuncioElectronAtivo: () => false,
-      isIpBlocked: async () => false,
-      recordAbuseAttempt: async () => {},
-    });
-    const req = new NextRequest("http://local/api/playback/authorize", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ conteudoId: "filme-123", conteudoTipo: "filme" }),
-    });
-    const res = await handlerAuth(req);
-    const json = (await res.json()) as { decisao?: string };
-    // Estado ATUAL, vulnerável e reportado como blocker: PERMITIDO sem resolver
-    // entitlements nem provar existência. Fechá-lo exige a mudança central que o
-    // escopo mandou reportar antes de implementar (ver relatório).
-    assert.equal(res.status, 200);
-    assert.equal(json.decisao, "PERMITIDO");
+  test("a exclusão grava o cutoff de revogação ANTES da transação destrutiva", () => {
+    const revog = posicaoDe("revogarSessoesDoUsuario(");
+    const transacao = posicaoDe("prisma.$transaction");
+    assert.ok(revog < transacao, "o cutoff tem de ser gravado antes de qualquer linha ser apagada");
+  });
+
+  test("se o cutoff não persistir, 503 e a conta NÃO é apagada", () => {
+    const bloco = handler.slice(posicaoDe("revogarSessoesDoUsuario("), posicaoDe("prisma.$transaction"));
+    assert.ok(/catch[\s\S]{0,180}erro\(503/.test(bloco), "falha ao revogar recusa com 503 antes de apagar");
   });
 });
 
@@ -413,17 +402,26 @@ describe("MITIGAÇÃO: a exclusão invalida o cache de entitlement", () => {
   });
 });
 
-describe("AdminAudit: FK NO ACTION e o caso do ex-admin (documentado, sem migration)", () => {
+describe("AdminAudit: SET NULL (PR #74) e o ex-admin agora excluível, sem apagar auditoria", () => {
   const fonte = readFileSync(join(process.cwd(), "src/lib/account/deletion.ts"), "utf8");
-  test("a ordem de exclusão nunca inclui AdminAudit", () => {
-    // Reafirma a garantia: nenhuma operação de delegate sobre adminAudit no
-    // orquestrador (o comentário cita `AdminAudit.adminUserId`, mas não há
-    // `tx.adminAudit`).
+  test("a ordem de exclusão nunca inclui AdminAudit (auditoria é imutável)", () => {
+    // Nenhuma operação de delegate sobre adminAudit no orquestrador: o comentário
+    // cita `AdminAudit.adminUserId`, mas não há `tx.adminAudit`.
     assert.equal(fonte.includes("tx.adminAudit"), false, "AdminAudit não pode ser apagado");
   });
-  test("o motivo e o caso do ex-admin rebaixado estão documentados", () => {
+  test("o comentário documenta SET NULL e o ex-admin rebaixado agora excluível", () => {
     assert.ok(fonte.includes("AdminAudit"));
-    assert.ok(/NO ACTION/i.test(fonte));
+    assert.ok(/SET NULL/i.test(fonte), "a FK agora é SET NULL (PR #74), não mais NO ACTION");
     assert.ok(/ex-admin|rebaixado/i.test(fonte), "o caso do ex-admin precisa estar documentado");
+  });
+  test("ex-admin rebaixado (role != admin) passa o portão de papel e apaga User sem tocar AdminAudit", async () => {
+    // O portão de papel só barra `admin`; um ex-admin rebaixado a 'moderador'/'user'
+    // passa. A transação apaga a linha `User` — e, pela FK SET NULL, a auditoria
+    // fica com `adminUserId = null` em vez de derrubar a exclusão (o antigo blocker).
+    assert.deepEqual(papelPodeExcluir("moderador"), { ok: true });
+    const { tx, chamadas } = criarTxFake();
+    await excluirDadosDaConta(tx as unknown as TxParam, "ex-admin-1");
+    assert.ok(chamadas.some((c) => c.modelo === "user" && c.op === "delete"), "User é apagado");
+    assert.ok(!chamadas.some((c) => c.modelo === "adminAudit"), "AdminAudit nunca é apagado");
   });
 });

@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
 import { invalidarEntitlements } from "@/lib/entitlements";
+import { revogarSessoesDoUsuario } from "@/lib/sessionRevocation";
 import {
   confirmacaoValida,
   excluirDadosDaConta,
@@ -114,7 +115,21 @@ export async function DELETE(req: NextRequest) {
 
   audit("account_delete_requested", { userId, ip, ua });
 
-  // 6. Exclusão transacional, na ordem real das FKs. Tudo ou nada: qualquer
+  // 6. Revogação imediata da sessão, ANTES de apagar. Grava no Redis o cutoff que
+  //    invalida toda credencial (cookie de 30 dias e Bearer de TV) emitida até
+  //    agora — sem isso, o JWT stateless da conta continuaria "autenticando" por
+  //    até 30 dias. **Falha fechado**: se o cutoff não persistir, 503 e a conta
+  //    NÃO é apagada. Se a transação abaixo falhar depois, deixar o cutoff gravado
+  //    é seguro: a conta ainda existe e um login novo emite token com `iat`
+  //    posterior ao cutoff, que volta a valer — sem rollback frágil no Redis.
+  try {
+    await revogarSessoesDoUsuario(userId);
+  } catch {
+    audit("account_delete_rejected", { userId, ip, ua, detail: "revogacao_indisponivel" });
+    return erro(503, "indisponivel", "Serviço temporariamente indisponível");
+  }
+
+  // 7. Exclusão transacional, na ordem real das FKs. Tudo ou nada: qualquer
   //    falha reverte e nada é apagado pela metade. O erro ao cliente é neutro —
   //    não expõe FK, tabela nem motivo interno.
   try {
@@ -141,9 +156,11 @@ export async function DELETE(req: NextRequest) {
 
   audit("account_delete_completed", { userId, ip, ua });
 
-  // A sessão continua sendo um JWT que ainda decodifica até expirar — mas a
-  // linha `User` não existe mais, então login futuro falha (`auth.ts` não acha a
-  // conta) e os refresh tokens de TV já saíram com os dispositivos. O cliente
-  // encerra a sessão (`signOut`) ao receber esta resposta.
+  // A credencial antiga (cookie ou Bearer de TV) ainda DECODIFICA até expirar,
+  // mas o cutoff gravado no passo 6 a invalida de imediato em `getUserFromRequest`
+  // e no callback `session` de `auth.ts`: `iat <= cutoff` é recusado. Soma-se a
+  // isso que a linha `User` sumiu (login futuro falha em `auth.ts`) e que os
+  // refresh tokens de TV saíram com os dispositivos. O cliente encerra a sessão
+  // (`signOut`) ao receber esta resposta.
   return NextResponse.json({ ok: true }, { status: 200, headers: NO_STORE });
 }

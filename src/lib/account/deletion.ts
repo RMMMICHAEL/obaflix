@@ -109,11 +109,13 @@ export interface ResumoExclusao {
  * na cascata disparada por `User.delete`: a cascata e as FKs NO ACTION acima
  * conviveriam na mesma transação, e a ordem de uma cascata não é contrato.
  *
- * `AdminAudit.adminUserId → User` é NO ACTION e **não é tocado aqui**: é registro
- * imutável de ação administrativa, e esta rota só exclui contas `role != admin`,
- * que não são autoras de auditoria. Uma conta comum nunca tem linha lá; o caso
- * patológico (ex-admin rebaixado com auditoria) faria `User.delete` falhar e a
- * transação inteira reverter — nada é apagado pela metade.
+ * `AdminAudit.adminUserId → User` é **ON DELETE SET NULL** (PR #74) e **não é
+ * tocado aqui**: é registro imutável de ação administrativa. Esta rota só exclui
+ * contas `role != admin`, que em regra não são autoras de auditoria; o caso do
+ * ex-admin rebaixado (que tem linha lá) agora resolve-se sozinho — `User.delete`
+ * desvincula o ator (`adminUserId` vira `null`) sem apagar a auditoria e sem
+ * derrubar a transação. Antes da PR #74 a FK era NO ACTION e esse `User.delete`
+ * falharia, revertendo tudo; esse blocker foi resolvido estruturalmente.
  *
  * `RevisaoPagamento.userId` é coluna escalar (sem FK), por isso o filtro é
  * direto; `RevisaoPagamentoEvento` e `EventoPagamento` não têm `userId` e são

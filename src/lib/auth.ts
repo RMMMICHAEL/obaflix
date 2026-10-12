@@ -8,6 +8,7 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
+import { credencialRevogada } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
 export const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -248,6 +249,14 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         session.user.id = token.id;
         session.user.role = token.role;
+      }
+      // Mesma revogação do `getUserFromRequest`, agora no caminho do cookie que
+      // resolve por `getServerSession` (páginas de servidor, rotas admin,
+      // desktop-auth). Credencial de conta excluída — ou Redis que não confirma —
+      // perde o `user`: todo consumidor checa `session?.user` e trata a ausência
+      // como não autenticado. Fail-closed sem throw.
+      if (token?.id && (await credencialRevogada(token.id, token.iat))) {
+        delete session.user;
       }
       return session;
     },

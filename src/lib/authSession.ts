@@ -25,6 +25,7 @@
 
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { credencialRevogada } from "@/lib/sessionRevocation";
 
 /** Por onde a credencial chegou. */
 export type OrigemSessao = "cookie" | "bearer";
@@ -122,5 +123,15 @@ export async function getUserFromRequest(
     cookieName: NOME_COOKIE,
   })) as Record<string, unknown> | null;
 
-  return normalizarToken(token, temCookie ? "cookie" : "bearer");
+  const usuario = normalizarToken(token, temCookie ? "cookie" : "bearer");
+  if (!usuario) return null;
+
+  // Revogação imediata: uma credencial emitida antes de a conta ser excluída
+  // (cookie de 30 dias OU Bearer de TV) decodifica sem problema, mas não pode
+  // mais valer. Um único ponto, cobrindo as duas entradas de uma vez. Fecha-se
+  // quando o Redis não confirma — devolver null aqui é o mesmo que "sem
+  // credencial": a rota responde o 401/403 que já responde, sem autorizar nada.
+  if (await credencialRevogada(usuario.userId, token?.iat)) return null;
+
+  return usuario;
 }
