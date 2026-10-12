@@ -317,8 +317,11 @@ model SyncRun {
 /// Registro imutável de ações humanas sensíveis no painel.
 model AdminAudit {
   id          String   @id @default(cuid())
-  adminUserId String
-  adminUser   User     @relation(fields: [adminUserId], references: [id], onDelete: NoAction)
+  /// Ator da ação. Opcional porque, ao apagar a conta, a FK faz SET NULL: o
+  /// registro imutável permanece e o ator passa a "conta excluída", sem snapshot
+  /// de PII. Administrador atual continua sem poder se autoexcluir (regra na #73).
+  adminUserId String?
+  adminUser   User?    @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
   action      String
   targetType  String
   targetId    String?
