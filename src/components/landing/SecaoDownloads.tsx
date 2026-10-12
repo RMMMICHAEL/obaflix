@@ -202,6 +202,13 @@ export function SecaoDownloads({
         <p className="mt-8 text-center text-xs text-white/30">
           Downloads servidos diretamente pelo nosso armazenamento de arquivos.
         </p>
+        <p className="mt-3 text-center text-sm text-zinc-300">
+          Consulte os{" "}
+          <a href="/termos" className="rounded-sm underline underline-offset-4 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white">
+            Termos de Serviço
+          </a>{" "}
+          antes de instalar.
+        </p>
       </div>
     </section>
   );

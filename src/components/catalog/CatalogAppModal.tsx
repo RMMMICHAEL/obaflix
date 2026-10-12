@@ -147,6 +147,14 @@ export function CatalogAppModal({
           ))}
         </div>
 
+        <p className="mt-3 text-sm text-zinc-300">
+          Consulte os{" "}
+          <a href="/termos" className="rounded-sm underline underline-offset-4 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white">
+            Termos de Serviço
+          </a>{" "}
+          antes de instalar.
+        </p>
+
         <button
           type="button"
           onClick={onFechar}

@@ -72,6 +72,9 @@ export function detectarAmbiente(
  * É allowlist de propósito: rota pública nova nasce fechada para navegador.
  * Esquecer de liberar é visível e reversível; esquecer de fechar não seria.
  */
+// Documento legal único: não libera subrotas nem prefixos semelhantes.
+const PUBLICO_EXATO = ["/termos", "/termos/"];
+
 const PUBLICO = [
   // Fichas de catálogo. Públicas e indexáveis mesmo com o streaming web fechado:
   // são páginas de informação (sinopse, elenco, temporadas, episódios), não de
@@ -142,7 +145,7 @@ export function decidirRota(pathname: string, ambiente: Ambiente): Decisao {
   // Site reaberto: ninguém é desviado de lugar nenhum.
   if (WEB_STREAMING_ENABLED) return { tipo: "segue" };
 
-  if (PUBLICO.some((base) => dentroDe(pathname, base))) return { tipo: "segue" };
+  if (PUBLICO_EXATO.includes(pathname) || PUBLICO.some((base) => dentroDe(pathname, base))) return { tipo: "segue" };
 
   // As entradas internas só respondem para o ambiente a que pertencem. Saber a
   // URL não é o que dá acesso: um navegador em `/android` volta para a landing.
