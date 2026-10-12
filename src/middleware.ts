@@ -4,6 +4,7 @@ import type { NextFetchEvent } from "next/server";
 import { decidirRota, detectarAmbiente, HEADER_CLIENTE } from "@/config/site-mode";
 import { decideSurfaceGate, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
 import { publicCanonicalUrl } from "@/config/public-canonical";
+import { ehClientePlay, rotaComercialBloqueadaNoPlay } from "@/config/play";
 
 /**
  * Só páginas `/admin*` chegam aqui (as APIs saem antes, e a autorização delas
@@ -61,6 +62,19 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
       r: NextRequest,
       e: NextFetchEvent,
     ) => ReturnType<typeof NextResponse.next>)(req, event);
+  }
+
+  // Distribuição Google Play: consumo apenas. O app da Play (User-Agent
+  // `ObaflixPlay/`) não pode abrir catálogo de planos nem checkout — a loja
+  // proíbe compra fora do seu próprio sistema. Mandamos para `/conta`, que já
+  // mostra o plano atual e a mensagem neutra. Só RESTRINGE o cliente Play:
+  // navegador, APK direto, Electron e TV nunca enviam esse marcador e seguem
+  // idênticos. A recusa de verdade da compra é no servidor (`/api/billing/orders`).
+  if (
+    rotaComercialBloqueadaNoPlay(pathname) &&
+    ehClientePlay(req.headers.get("user-agent"))
+  ) {
+    return NextResponse.redirect(new URL("/conta", req.url), 307);
   }
 
   const ambiente = detectarAmbiente(

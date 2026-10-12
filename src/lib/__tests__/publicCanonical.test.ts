@@ -2,6 +2,8 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { NextRequest, type NextFetchEvent } from "next/server";
+import { detectarAmbiente } from "../../config/site-mode";
+import { ehClientePlay } from "../../config/play";
 
 let middleware: typeof import("../../middleware").default;
 let middlewareConfig: typeof import("../../middleware").config;
@@ -69,6 +71,60 @@ test("Android, TV e Electron preservam raiz reescrita, catálogo e players", () 
 test("sessões, cookies fragmentados e estados OAuth não migram de origem", () => {
   for (const name of ["next-auth.session-token", "__Secure-next-auth.session-token.0", "__Host-next-auth.csrf-token", "__Secure-next-auth.callback-url", "next-auth.state", "next-auth.pkce.code_verifier"]) {
     assert.equal(request("https://obaflix.vercel.app/", { cookie: `${name}=test-only` }).headers.get("location"), null);
+  }
+});
+
+test("UA real Play continua Android e bloqueia compra antes de qualquer canonical", () => {
+  // MainActivity soma o marcador Play ao marcador Android existente.
+  const ua = "Mozilla/5.0 Android Mobile ObaflixApp/1.0 ObaflixPlay/1.0";
+  assert.equal(detectarAmbiente(ua, null), "android");
+  assert.equal(ehClientePlay(ua), true);
+  for (const host of ["obaflix.vercel.app", "www.obaflixbr.com", "obaflixbr.com"]) {
+    for (const method of ["GET", "HEAD"]) {
+      for (const cookie of ["", "__Secure-next-auth.session-token=test-only"]) {
+        const headers = { "user-agent": ua, accept: "text/html", cookie };
+        for (const path of ["/planos", "/checkout", "/checkout/pedido"]) {
+          const response = request(`https://${host}${path}?origem=play`, headers, method);
+          assert.equal(response.status, 307);
+          assert.equal(response.headers.get("location"), `https://${host}/conta`);
+        }
+        const root = request(`https://${host}/?origem=play`, headers, method);
+        assert.equal(root.headers.get("location"), null);
+        assert.equal(root.headers.get("x-middleware-rewrite"), `https://${host}/android?origem=play`);
+        for (const path of ["/filmes", "/serie/silo--158", "/conta", "/api/billing/orders", "/api/auth/callback/google", "/api/tv/session", "/player"]) {
+          assert.equal(request(`https://${host}${path}`, headers, method).headers.get("location"), null, path);
+        }
+      }
+    }
+  }
+});
+
+test("matriz APK direto, TV, Electron, anônimo, sessão e Googlebot preserva origem", () => {
+  const clients: { headers: Record<string, string>; target: string }[] = [
+    { headers: { "user-agent": "ObaflixApp/1.0" }, target: "/android" },
+    { headers: { "x-obaflix-client": "android", "user-agent": "Android TV" }, target: "/android" },
+    { headers: { "user-agent": "ObaflixDesktop/1.0.13" }, target: "/desktop" },
+  ];
+  for (const { headers, target } of clients) {
+    assert.equal(ehClientePlay(headers["user-agent"]), false);
+    const root = request("https://obaflix.vercel.app/?x=%2F", headers);
+    assert.equal(root.headers.get("location"), null);
+    assert.equal(root.headers.get("x-middleware-rewrite"), `https://obaflix.vercel.app${target}?x=%2F`);
+    for (const path of ["/planos", "/checkout", "/filmes", "/api/auth/callback/google"]) {
+      assert.equal(request(`https://obaflix.vercel.app${path}`, headers).headers.get("location"), null);
+    }
+  }
+  for (const ua of ["Mozilla/5.0", "Googlebot/2.1"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const url = "https://obaflix.vercel.app/series?page=2";
+      const headers = { "user-agent": ua, accept: "text/html" };
+      const anonymous = request(url, headers, method);
+      assert.equal(anonymous.status, 308);
+      assert.equal(anonymous.headers.get("cache-control"), "private, no-store");
+      assert.equal(anonymous.headers.get("location"), "https://obaflixbr.com/series?page=2");
+      assert.equal(request(url, { ...headers, cookie: "next-auth.session-token=test-only" }, method).headers.get("location"), null);
+      assert.equal(request(url, { ...headers, rsc: "1" }, method).headers.get("location"), null);
+    }
   }
 });
 
