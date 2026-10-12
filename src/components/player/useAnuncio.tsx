@@ -7,6 +7,7 @@ import { X } from "lucide-react";
 import { efeitoDoConvite, type FinalidadeDeAcao } from "@/lib/ads/acaoPatrocinada";
 import { criarContagemAndroid } from "@/lib/ads/contagemAndroid";
 import { segundosRestantesAnuncio } from "@/lib/ads/tempoAnuncio";
+import { ehClientePlayNoNavegador } from "@/config/play";
 import {
   executarFluxoDeAnuncio,
   type PlataformaDeAnuncio,
@@ -351,6 +352,12 @@ export function ModalDeAnuncio(props: {
   const { estado, aoConfirmar, aoFechar, aoAssinar } = props;
   if (estado.fase === "oculto") return null;
 
+  // Google Play é consumo apenas: o convite de anúncio continua (o streaming é
+  // gratuito/por anúncio), mas sem nenhum CTA que leve a assinar/remover
+  // anúncios — isso é compra, e a loja proíbe fora do seu sistema. Só esconde
+  // o botão comercial; nada do fluxo de anúncio em si muda.
+  const play = ehClientePlayNoNavegador();
+
   return (
     <div
       role="dialog"
@@ -382,14 +389,17 @@ export function ModalDeAnuncio(props: {
             {/* Secundário, abaixo da contagem: reaproveita exatamente o mesmo
                 `aoAssinar` do convite Electron — encerra timer/listeners (via
                 `encerrar`), não chama a ponte nem concede acesso, e navega aos
-                planos. Nenhuma rota ou lógica de pagamento nova. */}
-            <button
-              type="button"
-              onClick={aoAssinar}
-              className="mt-5 text-sm font-medium text-gray-400 underline underline-offset-4 hover:text-white"
-            >
-              Remover anúncios
-            </button>
+                planos. Nenhuma rota ou lógica de pagamento nova. Escondido no
+                Play, onde não há compra. */}
+            {!play && (
+              <button
+                type="button"
+                onClick={aoAssinar}
+                className="mt-5 text-sm font-medium text-gray-400 underline underline-offset-4 hover:text-white"
+              >
+                Remover anúncios
+              </button>
+            )}
           </>
         )}
 
@@ -408,13 +418,15 @@ export function ModalDeAnuncio(props: {
             >
               Continuar gratuitamente
             </button>
-            <button
-              type="button"
-              onClick={aoAssinar}
-              className="mt-2 w-full rounded-full border border-white/15 py-3 text-sm font-semibold text-white hover:bg-white/10"
-            >
-              Ver planos e remover anúncios
-            </button>
+            {!play && (
+              <button
+                type="button"
+                onClick={aoAssinar}
+                className="mt-2 w-full rounded-full border border-white/15 py-3 text-sm font-semibold text-white hover:bg-white/10"
+              >
+                Ver planos e remover anúncios
+              </button>
+            )}
           </>
         )}
 

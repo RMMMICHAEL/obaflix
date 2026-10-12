@@ -203,6 +203,22 @@ export function pontesDeMidia<T extends { mediaActions?: boolean }>(
 }
 
 /**
+ * O build pode baixar offline?
+ *
+ * A capability `downloads` é emitida pelo shim nativo (Estágio 1): `false` só na
+ * distribuição Google Play, que é consumo apenas. É `true`/ausente em todos os
+ * outros — APK direto, versões antigas sem a flag — então o padrão NUNCA
+ * esconde o botão de quem sempre pôde baixar; só o Play, que diz `false`
+ * explicitamente, perde o CTA. O Cast não passa por aqui (segue por
+ * `mediaActions`) e continua no Play.
+ */
+export function downloadsHabilitados(
+  desktop: { downloads?: unknown } | undefined | null,
+): boolean {
+  return desktop?.downloads !== false;
+}
+
+/**
  * Mensagem para o usuário comum.
  *
  * Genérica de propósito: o motivo técnico (`sessao_do_navegador`, `expirada`)
