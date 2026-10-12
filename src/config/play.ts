@@ -58,6 +58,39 @@ export function rotaComercialBloqueadaNoPlay(pathname: string): boolean {
   return /^\/(?:planos|checkout)(?:[/?#]|$)/.test(pathname);
 }
 
+/**
+ * O que a seção de assinatura da `/conta` mostra, decidido fail-closed.
+ *
+ * `play` chega `null` enquanto a detecção não rodou (primeiro render, antes da
+ * hidratação/efeito). Nesse estado desconhecido NÃO se mostra CTA comercial: um
+ * cliente Play não pode ver "Ver planos" nem por um instante. Só quando a
+ * detecção confirma `false` é que o CTA aparece.
+ *
+ *   - `neutro`      → mensagem neutra (Play);
+ *   - `cta`         → "Ver planos" (não-Play confirmado);
+ *   - `indefinido`  → nada ainda (desconhecido; fail-closed, sem compra).
+ */
+export type CtaAssinaturaConta = "neutro" | "cta" | "indefinido";
+
+export function ctaAssinaturaConta(play: boolean | null): CtaAssinaturaConta {
+  if (play === null) return "indefinido";
+  return play ? "neutro" : "cta";
+}
+
+/**
+ * Para onde a ação "assinar / remover anúncios" do convite de anúncio navega.
+ *
+ * Fail-closed por natureza: no Play devolve `null` — a ação cancela o anúncio
+ * como sempre, mas nunca navega para rota comercial nem abre site/navegador.
+ * Fora do Play devolve o destino de sempre (calculado por quem chama). É defesa
+ * extra: mesmo que um CTA comercial reapareça por engano no futuro, no Play ele
+ * não leva a lugar nenhum.
+ */
+export function rotaAoAssinar(play: boolean, navegarPara: string | null | undefined): string | null {
+  if (play) return null;
+  return navegarPara ?? null;
+}
+
 /** Código estável da recusa de compra no cliente Play. Nunca muda — o cliente ramifica por ele. */
 export const CODIGO_COMPRAS_INDISPONIVEIS_PLAY = "compras_indisponiveis_play";
 

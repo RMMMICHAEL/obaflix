@@ -5,8 +5,10 @@ import { NextRequest } from "next/server";
 
 import {
   CODIGO_COMPRAS_INDISPONIVEIS_PLAY,
+  ctaAssinaturaConta,
   ehClientePlay,
   ehClientePlayNoNavegador,
+  rotaAoAssinar,
   rotaComercialBloqueadaNoPlay,
 } from "@/config/play";
 import { downloadsHabilitados } from "@/lib/androidMedia";
@@ -51,6 +53,26 @@ test("downloadsHabilitados só esconde o download quando a capability é false e
   assert.equal(downloadsHabilitados({}), true); // versão antiga sem a flag
   assert.equal(downloadsHabilitados(undefined), true);
   assert.equal(downloadsHabilitados(null), true);
+});
+
+// ── ctaAssinaturaConta: fail-closed no estado desconhecido ─────────────────────
+
+test("ctaAssinaturaConta não mostra CTA comercial enquanto a detecção é desconhecida", () => {
+  // null = ainda não detectado (primeiro render, antes do efeito): NUNCA CTA.
+  assert.equal(ctaAssinaturaConta(null), "indefinido");
+  // Play confirmado: mensagem neutra, sem CTA.
+  assert.equal(ctaAssinaturaConta(true), "neutro");
+  // Não-Play confirmado: o CTA "Ver planos".
+  assert.equal(ctaAssinaturaConta(false), "cta");
+});
+
+// ── rotaAoAssinar: no Play não navega para rota comercial (fail-closed) ────────
+
+test("rotaAoAssinar nunca leva o Play a rota comercial; preserva o resto", () => {
+  assert.equal(rotaAoAssinar(true, "/planos"), null); // Play: lugar nenhum
+  assert.equal(rotaAoAssinar(false, "/planos"), "/planos"); // não-Play: destino de sempre
+  assert.equal(rotaAoAssinar(false, null), null);
+  assert.equal(rotaAoAssinar(false, undefined), null);
 });
 
 // ── ehClientePlayNoNavegador (cliente): flag do shim, ponte, ou UA ─────────────
@@ -130,14 +152,22 @@ test("middleware bloqueia rota comercial do Play e manda para /conta", () => {
   assert.ok(destino > gate, "o bloqueio do Play deve redirecionar para /conta");
 });
 
-test("/conta troca o CTA de planos por mensagem neutra no Play", () => {
+test("/conta decide o CTA por ctaAssinaturaConta, fail-closed no desconhecido", () => {
   const pagina = readFileSync("src/app/conta/page.tsx", "utf8");
   assert.match(pagina, /ehClientePlayNoNavegador/);
+  assert.match(pagina, /ctaAssinaturaConta/);
   assert.match(pagina, /MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY/);
-  // O CTA "Ver planos" só existe no ramo !play (else do ternário com a mensagem).
-  const msg = pagina.indexOf("MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY");
-  const verPlanos = pagina.indexOf("Ver planos");
-  assert.ok(msg >= 0 && verPlanos > msg, "Ver planos tem de ficar no ramo não-Play");
+  // Estado inicial desconhecido: começa null, não `false` — senão o navegador
+  // comum mostraria a mensagem-Play, e o Play não pode começar mostrando CTA.
+  assert.match(pagina, /useState<boolean \| null>\(null\)/);
+  // "Ver planos" só no ramo cta === "cta"; a mensagem neutra no ramo "neutro".
+  assert.ok(pagina.includes('cta === "cta"'), "CTA tem de depender de cta === \"cta\"");
+  assert.ok(pagina.includes('cta === "neutro"'), "mensagem neutra tem de depender de cta === \"neutro\"");
+  const ramoCta = pagina.indexOf('cta === "cta"');
+  // O CTA "Ver planos" aparece DEPOIS do início do ramo cta (procura a partir
+  // dele — a palavra também aparece num comentário mais acima, que não conta).
+  const verPlanos = pagina.indexOf("Ver planos", ramoCta);
+  assert.ok(ramoCta >= 0 && verPlanos > ramoCta, "Ver planos tem de ficar sob o ramo cta");
 });
 
 test("modal de anúncio esconde todo CTA comercial no Play", () => {
@@ -151,6 +181,12 @@ test("modal de anúncio esconde todo CTA comercial no Play", () => {
     const gate = src.lastIndexOf("{!play && (", cta);
     assert.ok(gate >= 0 && cta - gate < 400, `"${texto}" precisa estar sob {!play && (`);
   }
+  // Defesa extra: aoAssinar passa por rotaAoAssinar(ehClientePlayNoNavegador(), …)
+  // antes de qualquer router.push — no Play devolve null e não navega.
+  assert.match(src, /rotaAoAssinar\(ehClientePlayNoNavegador\(\)/);
+  const decisao = src.indexOf("rotaAoAssinar(ehClientePlayNoNavegador(");
+  const push = src.indexOf("router.push", decisao);
+  assert.ok(decisao >= 0 && push > decisao, "a navegação de aoAssinar tem de passar pelo gate do Play");
 });
 
 test("Baixar é escondido no Play e o Cast (Transmitir) continua", () => {

@@ -7,7 +7,7 @@ import { X } from "lucide-react";
 import { efeitoDoConvite, type FinalidadeDeAcao } from "@/lib/ads/acaoPatrocinada";
 import { criarContagemAndroid } from "@/lib/ads/contagemAndroid";
 import { segundosRestantesAnuncio } from "@/lib/ads/tempoAnuncio";
-import { ehClientePlayNoNavegador } from "@/config/play";
+import { ehClientePlayNoNavegador, rotaAoAssinar } from "@/config/play";
 import {
   executarFluxoDeAnuncio,
   type PlataformaDeAnuncio,
@@ -319,13 +319,21 @@ export function useAnuncio() {
     encerrar(false);
   }, [encerrar]);
 
-  /** "Assinar um plano": cancela a ação pendente ANTES de navegar para a escolha. */
+  /**
+   * "Assinar um plano": cancela a ação pendente ANTES de navegar para a escolha.
+   *
+   * No Play a navegação é fail-closed: cancela/limpa como sempre, mas NUNCA vai
+   * para rota comercial (`rotaAoAssinar` devolve null). Os CTAs comerciais já
+   * ficam escondidos no Play; isto é defesa extra caso um reapareça por engano.
+   * Fora do Play o comportamento é idêntico ao de antes.
+   */
   const aoAssinar = useCallback(() => {
     const efeito = efeitoDoConvite("assinar");
     foiAssinarRef.current = true;
     window.__obaflixAnuncioConcluido = undefined;
     encerrar(false);
-    if (efeito.navegarPara) router.push(efeito.navegarPara);
+    const destino = rotaAoAssinar(ehClientePlayNoNavegador(), efeito.navegarPara);
+    if (destino) router.push(destino);
   }, [encerrar, router]);
 
   /** Se o último cancelamento foi para ir aos planos. */
