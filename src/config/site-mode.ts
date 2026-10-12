@@ -110,6 +110,11 @@ const PUBLICO = [
   "/planos",
   "/checkout",
   "/conta",
+  // Exclusão de conta. Pública de propósito: a loja exige uma página de
+  // exclusão alcançável fora do app, sem ter o app instalado. Não é interface de
+  // streaming — explica o efeito e, para quem não está logado, manda entrar e
+  // volta para cá. O DELETE real continua exigindo sessão, origem e confirmação.
+  "/excluir-conta",
   "/admin",
   "/api",
   "/robots.txt",

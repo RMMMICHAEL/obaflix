@@ -79,7 +79,15 @@ export type AuditEvent =
   // amount, nunca o valor). Nunca transactionId real, status literal, amount,
   // paidAt, corpo cru, headers, chave ou dado do cliente.
   | "billing_confirmation_shape"
-  | "billing_order_blocked_review";
+  | "billing_order_blocked_review"
+  // Exclusão de conta (autosserviço). Só eventos técnicos e ids internos: nunca
+  // e-mail, nome, telefone, documento, cookie, token ou qualquer PII. `detail`
+  // leva apenas o código da recusa (`sem_sessao`, `admin_nao_pode_excluir`,
+  // `confirmacao_invalida`, `limite_indisponivel`, `falha_na_transacao`), nunca
+  // o valor que falhou.
+  | "account_delete_requested"
+  | "account_delete_completed"
+  | "account_delete_rejected";
 
 interface AuditMeta {
   userId?: string;
