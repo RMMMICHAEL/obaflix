@@ -13,15 +13,36 @@
  * ## O modelo (temporal, por `iat`, sem PII)
  *
  * Em vez de guardar o token (cookie, e-mail ou qualquer PII), guarda-se um único
- * **cutoff**: o instante da revogação, em segundos. A chave contém só o `userId`
- * interno; o valor é só o timestamp.
+ * **cutoff**: um instante em segundos. A chave contém só o `userId` interno; o
+ * valor é só o timestamp.
  *
  *   - Toda credencial que o NextAuth emite carrega `iat` (verificado: tanto o
  *     cookie de sessão quanto o Bearer de TV o trazem).
  *   - Uma credencial com `iat <= cutoff` está revogada.
- *   - Uma credencial com `iat > cutoff` continua válida: é o login novo. Importa
- *     caso a transação de exclusão falhe DEPOIS de o cutoff ser gravado — a conta
- *     ainda existe e o usuário precisa poder entrar de novo sem esperar 30 dias.
+ *   - Uma credencial com `iat > cutoff` continua válida.
+ *
+ * ## A corrida — e por que o cutoff aponta para o FUTURO
+ *
+ * A exclusão grava o cutoff e só então roda a transação destrutiva, que leva
+ * tempo (`maxDuration = 30 s`). Enquanto a conta e seus `TvRefreshToken` ainda
+ * existem, uma requisição concorrente pode AUTENTICAR DE NOVO (Credentials/Google
+ * login) ou RENOVAR a sessão da TV (`POST /api/tv/session` → `renovarSessao`) e
+ * receber um JWT com `iat` já POSTERIOR ao instante em que o cutoff foi gravado.
+ * Se o cutoff fosse "agora", esse token teria `iat > cutoff` e sobreviveria à
+ * exclusão — autenticando uma conta que não existe mais.
+ *
+ * O fecho é gravar o cutoff ADIANTADO: `agora + JANELA_CORRIDA_SEG`, uma janela
+ * que cobre com folga toda a duração possível da operação + clock skew. Assim
+ * QUALQUER token emitido durante a exclusão também cai em `iat <= cutoff` e é
+ * recusado. Não há segundo `SET` após o `User.delete` (um erro de Redis ali
+ * deixaria a conta apagada com token concorrente vivo); há um só `SET`, antes de
+ * tudo, e ele já cobre a janela inteira.
+ *
+ * Se a transação FALHAR e o `User` permanecer, nada de Redis precisa ser
+ * desfeito: o cutoff é temporal, então assim que o relógio ultrapassa a janela um
+ * login novo emite `iat > cutoff` e volta a valer. A espera máxima é
+ * `JANELA_CORRIDA_SEG` — curta e explicitamente limitada —, nunca os 31 dias do
+ * marcador.
  *
  * ## TTL — por que 31 dias
  *
@@ -55,23 +76,57 @@ const MARGEM_SEG = 24 * 60 * 60;
 /** TTL finito do marcador: teto do token mais longevo + margem. */
 export const REVOGACAO_TTL_SEG = SESSION_MAX_AGE_SEG + MARGEM_SEG;
 
+// ── Janela da corrida ──────────────────────────────────────────────────────────
+//
+// O cutoff é gravado ADIANTADO em `agora + JANELA_CORRIDA_SEG` para cobrir todo
+// token que uma requisição concorrente possa emitir ENQUANTO a transação de
+// exclusão ainda não terminou. A janela é derivada, não arbitrária:
+
+/**
+ * Teto de duração da rota de exclusão: `export const maxDuration = 30` em
+ * `src/app/api/user/account/route.ts`. A função serverless é encerrada aí, então
+ * a transação comita, no mais tardar, `maxDuration` após o cutoff ser gravado —
+ * depois disso nenhuma autenticação concorrente consegue mais ler `User`.
+ */
+const MAX_DURACAO_EXCLUSAO_SEG = 30;
+
+/**
+ * Folga sobre a janela de exclusão. Cobre, somados: clock skew bidirecional entre
+ * instâncias serverless (o relógio que carimba o `iat` do token concorrente pode
+ * adiantar-se ao relógio que grava o cutoff), o arredondamento do `iat` para
+ * segundos e a latência entre a leitura do `User`/refresh e o carimbo do `iat`.
+ * 15 s é folgado para instâncias sincronizadas por NTP (desvio típico < 1 s).
+ */
+const MARGEM_SKEW_SEG = 15;
+
+/**
+ * Janela da corrida: nenhum JWT emitido durante a exclusão escapa a `iat <= cutoff`,
+ * e é o teto da espera para reautenticar caso a exclusão falhe. 30 + 15 = 45 s.
+ */
+export const JANELA_CORRIDA_SEG = MAX_DURACAO_EXCLUSAO_SEG + MARGEM_SKEW_SEG;
+
 /** Chave só com o id interno — nunca cookie, e-mail ou outra PII. */
 export const chaveRevogacao = (userId: string): string => `session:revoked:${userId}`;
 
 /**
- * Grava o cutoff de revogação da conta.
+ * Grava o cutoff de revogação da conta, ADIANTADO em `JANELA_CORRIDA_SEG` para
+ * fechar a corrida com a emissão concorrente de credenciais (ver cabeçalho).
  *
  * Usada ANTES da transação destrutiva: se não persistir, a rota responde 503 e
  * NÃO apaga a conta. Por isso **lança** quando o Redis não confirma o `SET` —
  * deixar passar reabriria a janela que esta função existe para fechar.
+ *
+ * `agoraSeg` é o "agora" de referência (injetável nos testes); o cutoff gravado é
+ * `agoraSeg + JANELA_CORRIDA_SEG`.
  */
 export async function revogarSessoesDoUsuario(
   userId: string,
   agoraSeg: number = Math.floor(Date.now() / 1000),
   redis?: Pick<RedisClient, "set">,
 ): Promise<void> {
+  const cutoff = agoraSeg + JANELA_CORRIDA_SEG;
   const client = redis ?? getRedis();
-  const ok = await client.set(chaveRevogacao(userId), String(agoraSeg), { ex: REVOGACAO_TTL_SEG });
+  const ok = await client.set(chaveRevogacao(userId), String(cutoff), { ex: REVOGACAO_TTL_SEG });
   if (ok !== "OK") throw new Error("revogacao_nao_persistida");
 }
 

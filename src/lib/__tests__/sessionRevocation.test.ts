@@ -15,11 +15,14 @@ process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-secret-at-lea
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { encode } from "next-auth/jwt";
 import { NextRequest } from "next/server";
 
 import {
   REVOGACAO_TTL_SEG,
+  JANELA_CORRIDA_SEG,
   chaveRevogacao,
   credencialRevogada,
   revogarSessoesDoUsuario,
@@ -31,6 +34,18 @@ import { POST as authorizePost } from "../../app/api/playback/authorize/route";
 
 const SECRET = process.env.NEXTAUTH_SECRET!;
 const agora = () => Math.floor(Date.now() / 1000);
+
+/**
+ * `maxDuration` real da rota de exclusão, lido do fonte — é o teto da janela em
+ * que a conta ainda existe depois de o cutoff ser gravado. Lido (não fixado) para
+ * que um bump futuro de `maxDuration` quebre o teste se a janela não acompanhar.
+ */
+const MAX_DURACAO_PLAUSIVEL = (() => {
+  const src = readFileSync(join(process.cwd(), "src/app/api/user/account/route.ts"), "utf8");
+  const m = src.match(/export const maxDuration\s*=\s*(\d+)/);
+  assert.ok(m, "maxDuration não encontrado na rota de exclusão");
+  return Number(m![1]);
+})();
 
 /** Marca a conta como revogada com um cutoff explícito, direto no Redis de teste. */
 async function marcar(userId: string, cutoff: number) {
@@ -85,12 +100,12 @@ describe("credencialRevogada: iat contra o cutoff", () => {
   });
 });
 
-describe("revogarSessoesDoUsuario: grava o cutoff e falha alto", () => {
-  test("persiste o cutoff recuperável pela mesma chave", async () => {
+describe("revogarSessoesDoUsuario: grava o cutoff ADIANTADO e falha alto", () => {
+  test("persiste o cutoff = agora + JANELA_CORRIDA_SEG (não o 'agora' cru)", async () => {
     const uid = `rev-${Math.random()}`;
     const t = agora();
     await revogarSessoesDoUsuario(uid, t);
-    assert.equal(await getRedis().get(chaveRevogacao(uid)), String(t));
+    assert.equal(await getRedis().get(chaveRevogacao(uid)), String(t + JANELA_CORRIDA_SEG));
   });
 
   test("lança quando o SET não confirma — a rota vira 503, não apaga nada", async () => {
@@ -100,6 +115,46 @@ describe("revogarSessoesDoUsuario: grava o cutoff e falha alto", () => {
 
   test("a chave contém só o userId e o valor só o timestamp (sem PII)", () => {
     assert.equal(chaveRevogacao("abc"), "session:revoked:abc");
+  });
+});
+
+// ── 1b. A corrida: token emitido DURANTE a exclusão ────────────────────────────
+//
+// Reproduz o blocker: a exclusão grava o cutoff e só depois roda a transação;
+// enquanto a conta existe, um login/renovação concorrente emite um JWT com `iat`
+// POSTERIOR ao instante do cutoff. Com cutoff cru (= agora) esse token teria
+// `iat > cutoff` e sobreviveria — é o que estes testes provam estar fechado pelo
+// cutoff adiantado. (Com `JANELA_CORRIDA_SEG = 0` o primeiro teste falharia,
+// exatamente o comportamento do HEAD anterior à correção.)
+
+describe("corrida de emissão concorrente durante a exclusão", () => {
+  test("JWT emitido DEPOIS do cutoff gravado, mas DENTRO da janela, é revogado após o sucesso", async () => {
+    const uid = `race-${Math.random()}`;
+    const base = agora(); // instante em que a exclusão grava o cutoff
+    await revogarSessoesDoUsuario(uid, base);
+    // Token que uma requisição concorrente emitiria durante a transação:
+    for (const atraso of [1, 5, MAX_DURACAO_PLAUSIVEL, JANELA_CORRIDA_SEG]) {
+      const iatConcorrente = base + atraso;
+      assert.equal(
+        await credencialRevogada(uid, iatConcorrente),
+        true,
+        `iat = base + ${atraso}s (dentro da janela) tinha de ser revogado`,
+      );
+    }
+  });
+
+  test("passada a janela, um login novo (exclusão falhou) volta a valer — espera limitada", async () => {
+    const uid = `recover-${Math.random()}`;
+    const base = agora();
+    await revogarSessoesDoUsuario(uid, base);
+    // `iat` após o fim da janela: só acontece se a conta ainda existe (exclusão
+    // falhou) e o relógio já passou do cutoff. Recuperação sem esperar 31 dias.
+    assert.equal(await credencialRevogada(uid, base + JANELA_CORRIDA_SEG + 1), false);
+  });
+
+  test("a janela cobre o maxDuration da rota de exclusão (derivada, não arbitrária)", () => {
+    assert.ok(JANELA_CORRIDA_SEG >= MAX_DURACAO_PLAUSIVEL, "a janela precisa cobrir toda a transação");
+    assert.ok(Number.isFinite(JANELA_CORRIDA_SEG) && JANELA_CORRIDA_SEG > 0);
   });
 });
 
@@ -151,6 +206,33 @@ describe("getUserFromRequest: Bearer de TV", () => {
     const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1" }, secret: SECRET, maxAge: 900 });
     const u = await getUserFromRequest(bearerReq(jwt));
     assert.deepEqual(u, { userId: uid, role: "user", origem: "bearer", deviceId: "dev-1" });
+  });
+});
+
+// Ponta a ponta com o cutoff adiantado REAL (revogarSessoesDoUsuario), não um
+// cutoff fixado à mão: a exclusão começou há poucos segundos (`base`) e uma
+// requisição concorrente emite o token AGORA, com `iat` posterior ao `base`.
+describe("getUserFromRequest: token emitido DURANTE a exclusão (corrida)", () => {
+  test("login web concorrente (cookie emitido agora, iat > base) é recusado", async () => {
+    const uid = `race-web-${Date.now()}`;
+    await revogarSessoesDoUsuario(uid, agora() - 5); // cutoff = agora+40, cobre o iat de agora
+    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    assert.equal(await getUserFromRequest(cookieReq(jwt)), null);
+  });
+
+  test("renovação de TV concorrente (Bearer emitido agora, iat > base) é recusada", async () => {
+    const uid = `race-tv-${Date.now()}`;
+    await revogarSessoesDoUsuario(uid, agora() - 5);
+    const jwt = await encode({ token: { id: uid, role: "user", tv: true, did: "dev-1" }, secret: SECRET, maxAge: 900 });
+    assert.equal(await getUserFromRequest(bearerReq(jwt)), null);
+  });
+
+  test("recuperação: passada a janela (exclusão falhou), o login novo autentica", async () => {
+    const uid = `race-recover-${Date.now()}`;
+    await revogarSessoesDoUsuario(uid, agora() - (JANELA_CORRIDA_SEG + 10)); // cutoff já no passado
+    const jwt = await encode({ token: { id: uid, role: "user" }, secret: SECRET, maxAge: SESSION_MAX_AGE });
+    const u = await getUserFromRequest(cookieReq(jwt));
+    assert.deepEqual(u, { userId: uid, role: "user", origem: "cookie", deviceId: null });
   });
 });
 

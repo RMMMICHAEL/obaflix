@@ -115,13 +115,16 @@ export async function DELETE(req: NextRequest) {
 
   audit("account_delete_requested", { userId, ip, ua });
 
-  // 6. Revogação imediata da sessão, ANTES de apagar. Grava no Redis o cutoff que
-  //    invalida toda credencial (cookie de 30 dias e Bearer de TV) emitida até
-  //    agora — sem isso, o JWT stateless da conta continuaria "autenticando" por
-  //    até 30 dias. **Falha fechado**: se o cutoff não persistir, 503 e a conta
-  //    NÃO é apagada. Se a transação abaixo falhar depois, deixar o cutoff gravado
-  //    é seguro: a conta ainda existe e um login novo emite token com `iat`
-  //    posterior ao cutoff, que volta a valer — sem rollback frágil no Redis.
+  // 6. Revogação da sessão, ANTES de apagar. Grava no Redis um cutoff ADIANTADO
+  //    (`agora + JANELA_CORRIDA_SEG`) que invalida toda credencial (cookie de 30
+  //    dias e Bearer de TV) emitida até agora E qualquer uma emitida por uma
+  //    requisição concorrente DURANTE esta transação — login ou renovação de TV
+  //    enquanto a conta ainda existe. Sem isso, um JWT com `iat` posterior ao
+  //    instante do cutoff sobreviveria à exclusão. **Falha fechado**: se o cutoff
+  //    não persistir, 503 e a conta NÃO é apagada. Se a transação abaixo falhar
+  //    depois, deixar o cutoff gravado é seguro e sem rollback: por ser temporal,
+  //    ele expira sozinho ao fim da janela e um login novo volta a valer — a
+  //    espera máxima é `JANELA_CORRIDA_SEG`, nunca os 31 dias do marcador.
   try {
     await revogarSessoesDoUsuario(userId);
   } catch {
