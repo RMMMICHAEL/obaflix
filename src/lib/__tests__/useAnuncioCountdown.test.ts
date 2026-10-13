@@ -50,17 +50,17 @@ describe("Android dispara a ponte pela contagem, sem clique", () => {
 
   /** A ponte recebe capability + desafioId do servidor, como sempre. */
   test("a ponte nativa continua mínima e amarrada ao desafio do servidor", () => {
-    assert.match(codigo, /mostrarAnuncio\(capability, entrada\.desafioId\)/);
+    assert.match(codigo, /mostrar\(capability, entrada\.desafioId\)/);
     // Cenário 8: callback tardia de outro desafio é ignorada.
     assert.match(codigo, /if \(desafioId !== entrada\.desafioId\) return;/);
   });
 
   /** Cenário 7: sem ponte ou sem capability, falha fechada — nunca libera. */
   test("ponte ou capability ausente cancela sem conceder", () => {
-    assert.match(codigo, /if \(!ponte\?\.mostrarAnuncio \|\| !capability\) \{/);
-    const inicio = codigo.indexOf("if (!ponte?.mostrarAnuncio || !capability) {");
+    assert.match(codigo, /if \(!mostrar \|\| !capability\) \{/);
+    const inicio = codigo.indexOf("if (!mostrar || !capability) {");
     const bloco = codigo.slice(inicio, codigo.indexOf("}", inicio));
-    assert.match(bloco, /encerrar\(false\)/, "sem ponte, a ação é cancelada (fail-closed)");
+    assert.match(bloco, /encerrar\(false, "indisponivel"\)/, "sem ponte, a ação é recusada (fail-closed)");
   });
 
   /** Cenários 5 e 6: cancelar e desmontar limpam timer, listener e contagem. */
@@ -105,8 +105,8 @@ describe("Electron mantém o fluxo e o botão atuais", () => {
 
 describe('o botão "Remover anúncios" no convite Android', () => {
   /** O bloco do convite Android, isolado do bloco do Electron. */
-  const inicioAndroid = fonte.indexOf('estado.plataforma === "android" && (');
-  const inicioElectron = fonte.indexOf('estado.plataforma !== "android" && (');
+  const inicioAndroid = fonte.indexOf('estado.plataforma === "android" && !play && (');
+  const inicioElectron = fonte.indexOf('(estado.plataforma !== "android" || play) && (');
   const blocoAndroid = fonte.slice(inicioAndroid, inicioElectron);
 
   /** Teste 1: o botão aparece no modal Android, abaixo da contagem. */

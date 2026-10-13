@@ -71,6 +71,12 @@ export class AnuncioIndisponivel extends Error {
  */
 interface PonteDeAnuncioAndroid {
   capability?: string;
+  rewardedProtocol?: string;
+  configurar?: (capability: string, config: string) => void;
+  mostrarBanner?: (capability: string) => void;
+  ocultarBanner?: (capability: string) => void;
+  privacidade?: (capability: string) => void;
+  mostrarRewarded?: (capability: string, desafioId: string) => void;
   mostrarAnuncio?: (capability: string, desafioId: string) => void;
 }
 
@@ -83,7 +89,7 @@ declare global {
     obaflixAds?: PonteDeAnuncioAndroid;
     obaflixDesktop?: PonteDesktop;
     /** Resolvida pelo nativo quando o anúncio fecha. Ver `AdsScript`. */
-    __obaflixAnuncioConcluido?: (desafioId: string, concluido: boolean) => void;
+    __obaflixAnuncioConcluido?: (desafioId: string, concluido: boolean, motivo?: string) => void;
   }
 }
 
@@ -135,14 +141,14 @@ export function useAnuncio() {
   /** O último cancelamento foi para escolher um plano: quem chamou não deve navegar por cima. */
   const foiAssinarRef = useRef(false);
 
-  const encerrar = useCallback((concluido: boolean) => {
+  const encerrar = useCallback((concluido: boolean, motivo?: "indisponivel") => {
     limparRef.current?.();
     limparRef.current = null;
     aceitarRef.current = null;
     const resolver = resolverRef.current;
     resolverRef.current = null;
     setModal({ fase: "oculto" });
-    resolver?.({ concluido });
+    resolver?.({ concluido, ...(motivo ? { motivo } : {}) });
   }, []);
 
   useEffect(() => () => {
@@ -167,26 +173,41 @@ export function useAnuncio() {
         // O convite fica esperando: no Electron, a escolha do usuário; no
         // Android, o fim da contagem. Os dois caminhos chamam `aceitarRef`.
         aceitarRef.current = async () => {
+          aceitarRef.current = null;
           if (entrada.plataforma === "android") {
             const ponte = window.obaflixAds;
             const capability = ponte?.capability;
-            if (!ponte?.mostrarAnuncio || !capability) {
+            const mostrar = ehClientePlayNoNavegador() ? ponte?.mostrarRewarded : ponte?.mostrarAnuncio;
+            if (!mostrar || !capability) {
               // Aplicativo antigo, sem a ponte: não há como exibir anúncio. Não
               // travar o usuário por uma versão que ele não escolheu — cancela,
               // e o servidor continua recusando a ação sem concessão.
-              encerrar(false);
+              encerrar(false, "indisponivel");
               return;
             }
+            const config = await fetch("/api/ads/config", { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null);
+            if (resolverRef.current !== resolve) return;
+            const enabled = ehClientePlayNoNavegador() ? config?.rewarded : config?.interstitial;
+            if (!enabled || !config?.placements?.includes("playback") || config?.sessionCap <= 0) {
+              encerrar(false, "indisponivel");
+              return;
+            }
+            ponte?.configurar?.(capability, JSON.stringify(config));
             setModal({ fase: "exibindo" });
             // O nativo chama isto quando o anúncio fecha. O `desafioId` volta
             // junto para uma callback tardia de outro pedido não ser aceita.
-            window.__obaflixAnuncioConcluido = (desafioId, concluido) => {
+            window.__obaflixAnuncioConcluido = (desafioId, concluido, motivo) => {
               if (desafioId !== entrada.desafioId) return;
               window.__obaflixAnuncioConcluido = undefined;
               // Concluído, a ação original continua sozinha: nenhum clique extra.
-              encerrar(concluido === true);
+              encerrar(concluido === true, !concluido && motivo !== "CANCELLED" ? "indisponivel" : undefined);
             };
-            ponte.mostrarAnuncio(capability, entrada.desafioId);
+            const timeout = setTimeout(() => {
+              window.__obaflixAnuncioConcluido = undefined;
+              encerrar(false, "indisponivel");
+            }, 240_000);
+            limparRef.current = () => clearTimeout(timeout);
+            mostrar(capability, entrada.desafioId);
             return;
           }
 
@@ -237,6 +258,12 @@ export function useAnuncio() {
           return;
         }
 
+        if (ehClientePlayNoNavegador()) {
+          setModal({ fase: "convite", plataforma: "android", finalidade });
+          return;
+        }
+
+        // APK direto: mantém o convite comercial legado.
         // Android: nenhum clique obrigatório. O convite abre contando 3 s e, ao
         // zerar, chama a ponte nativa sozinho (via `aceitarRef`). A contagem em
         // si — disparo único, pausa em segundo plano, encerramento — vive em
@@ -288,12 +315,29 @@ export function useAnuncio() {
       const res = await fetch("/api/playback/authorize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        ...(ehClientePlayNoNavegador() && window.obaflixAds?.rewardedProtocol === "levelplay-v1"
+          ? { headers: { "Content-Type": "application/json", "x-obaflix-rewarded": "levelplay-v1" } } : {}),
         body: JSON.stringify(pedido),
       });
       if (!res.ok) throw new Error("autorizacao indisponivel");
       return res.json();
     },
     async concluir(entrada) {
+      if (ehClientePlayNoNavegador()) {
+        // O callback Android é somente um sinal para consultar a prova S2S.
+        for (let tentativa = 0; tentativa < 12; tentativa++) {
+          const res = await fetch("/api/ads/levelplay/status", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ desafioId: entrada.desafioId }),
+          });
+          if (!res.ok) return null;
+          const data = await res.json().catch(() => null);
+          if (data?.state === "verified" && typeof data.concessao === "string") return data.concessao;
+          if (data?.state !== "pending") return null;
+          await new Promise(resolve => setTimeout(resolve, Math.min(500 * 2 ** tentativa, 2500)));
+        }
+        return null;
+      }
       const res = await fetch("/api/ads/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -383,7 +427,7 @@ export function ModalDeAnuncio(props: {
           <X size={18} aria-hidden="true" />
         </button>
 
-        {estado.fase === "convite" && estado.plataforma === "android" && (
+        {estado.fase === "convite" && estado.plataforma === "android" && !play && (
           // Android: sem clique obrigatório. O convite conta sozinho e o X só
           // cancela a ação — nunca concede acesso. A concessão continua no
           // callback nativo + servidor.
@@ -411,7 +455,7 @@ export function ModalDeAnuncio(props: {
           </>
         )}
 
-        {estado.fase === "convite" && estado.plataforma !== "android" && (
+        {estado.fase === "convite" && (estado.plataforma !== "android" || play) && (
           <>
             <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
               Continue assistindo gratuitamente
@@ -424,7 +468,7 @@ export function ModalDeAnuncio(props: {
               onClick={aoConfirmar}
               className="mt-5 w-full rounded-full bg-white py-3 text-sm font-bold text-black"
             >
-              Continuar gratuitamente
+              {play ? "Assistir anúncio e continuar" : "Continuar gratuitamente"}
             </button>
             {!play && (
               <button

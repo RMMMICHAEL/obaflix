@@ -5,6 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
+import { ehClientePlay } from "@/config/play";
 import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
@@ -203,6 +204,11 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     await registrarAbuso(ip);
     audit("play_token_rejected", { userId, ip, ua, detail: "/ads/complete: desafio inválido" });
     return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
+  }
+  // The legacy namespace never upgrades into LevelPlay proof. Play may only use
+  // the new S2S status endpoint; direct APK, TV and Electron keep their contracts.
+  if (desafio.plataforma === "android" && ehClientePlay(req.headers.get("user-agent"))) {
+    return NextResponse.json({ error: "Confirmação do servidor necessária", codigo: "rewarded_s2s_required" }, { status: 403, headers: NO_STORE });
   }
 
   // Global desligada: cada flag específica só conclui o desafio da SUA
