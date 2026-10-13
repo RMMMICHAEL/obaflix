@@ -65,10 +65,13 @@ class AdsContratoTest {
     fun `nenhum arquivo do pacote usa SharedPreferences`() {
         val comPrefs = pacoteAds.listFiles()
             .orEmpty()
-            .filter { it.isFile && soCodigo(it.readText()).contains("SharedPreferences") }
+            .filter { it.isFile && it.name != "AdConsent.kt" && soCodigo(it.readText()).contains("SharedPreferences") }
             .map { it.name }
 
         assertEquals("o ciclo de anuncio nao pode viver no aparelho", emptyList<String>(), comPrefs)
+        val consent = File(pacoteAds, "AdConsent.kt").readText()
+        assertTrue(consent.contains("IABTCF_PurposeConsents"))
+        assertFalse("CMP preferences are read-only", soCodigo(consent).contains(".edit("))
     }
 
     /**
@@ -84,7 +87,7 @@ class AdsContratoTest {
             .map { it.groupValues[1] }
             .toList()
 
-        assertEquals(listOf("mostrarAnuncio"), expostos)
+        assertEquals(listOf("mostrarAnuncio", "mostrarRewarded", "configurar", "mostrarRewardedOpcional", "mostrarBanner", "ocultarBanner", "privacidade"), expostos)
     }
 
     /** Sem o capability da sessao, a chamada nao passa. */

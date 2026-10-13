@@ -42,6 +42,16 @@ object AdsScript {
   Object.defineProperty(window, 'obaflixAds', {
     value: Object.freeze({
       capability: $cap,
+      configurar: function (capability, config) { nativo.configurar(capability, config); },
+      mostrarBanner: function (capability) { nativo.mostrarBanner(capability); },
+      ocultarBanner: function (capability) { nativo.ocultarBanner(capability); },
+      privacidade: function (capability) { nativo.privacidade(capability); },
+      rewardedProtocol: '${if (com.obaflix.BuildConfig.ADS_APPROVED && com.obaflix.BuildConfig.ADS_AUDIENCE_VALIDATED) "levelplay-v1" else ""}',
+      mostrarRewarded: function (capability, desafioId) {
+        nativo.mostrarRewarded(capability, desafioId);
+      },
+      optionalRewardedProtocol: '${if (com.obaflix.BuildConfig.ADMOB_REWARDED_APPROVED && com.obaflix.BuildConfig.ADS_AUDIENCE_VALIDATED) "admob-ssv-v1" else ""}',
+      mostrarRewardedOpcional: function (capability, nonce) { nativo.mostrarRewardedOpcional(capability, nonce); },
       mostrarAnuncio: function (capability, desafioId) {
         nativo.mostrarAnuncio(capability, desafioId);
       }
@@ -49,6 +59,7 @@ object AdsScript {
     writable: false,
     configurable: false
   });
+  window.dispatchEvent(new Event('obaflixadsready'));
 })();
 """.trimIndent()
     }

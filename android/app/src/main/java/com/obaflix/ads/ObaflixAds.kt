@@ -40,7 +40,7 @@ object ObaflixAds {
     fun provider(context: Context): InterstitialAdProvider {
         provedor?.let { return it }
         return synchronized(this) {
-            provedor ?: UnityInterstitialAdProvider(context.applicationContext).also { provedor = it }
+            provedor ?: LevelPlayAds(context.applicationContext).also { provedor = it }
         }
     }
 
@@ -56,12 +56,6 @@ object ObaflixAds {
      * Aquecer nao decide nada: um assinante simplesmente nunca chega a
      * `mostrarAnuncio`, e o interstitial carregado e descartado sem ser exibido.
      */
-    fun aquecer(context: Context) {
-        val p = provider(context)
-        p.initialize()
-        p.preload()
-    }
-
     /** Ponto de injecao para teste. Producao nunca chama. */
     fun substituirProvedorParaTeste(novo: InterstitialAdProvider?) {
         synchronized(this) { provedor = novo }
