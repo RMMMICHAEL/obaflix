@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
      * reproducao, e quem decide anuncio e o servidor. Ver SuperficieDeMidiaGuardTest.
      */
     private var mediaBridge: MediaActionsBridge? = null
+    private var adsBridge: AdsBridge? = null
 
     /** Proxy de loopback da reproducao local (Playerflix). Recriado com a WebView. */
     private var localMediaServer: LocalMediaServer? = null
@@ -226,14 +227,14 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
         // aleatorio por sessao. O nativo nao decide se ha anuncio — quem decide
         // e o servidor, e esta ponte so exibe quando mandam. Ver AdsBridge.
         webView.addJavascriptInterface(
-            AdsBridge(bridgeCapability, ObaflixAds.provider(this), this, webView),
+            AdsBridge(bridgeCapability, ObaflixAds.provider(this), this, webView).also { adsBridge = it },
             AdsBridge.NOME_JS,
         )
 
         // Inicializa o SDK fora do caminho critico: aquecer nao pode atrasar a
         // primeira renderizacao, e o interstitial precisa estar pronto muito antes
         // de o usuario tocar em ASSISTIR. Quem nao ve anuncio nunca chega a exibi-lo.
-        webView.post { ObaflixAds.aquecer(applicationContext) }
+        // SDKs só inicializam após entitlement e consentimento, em AdsBridge.
 
         webView.webViewClient = PlayerWebViewClient(
             bridgeCapability = bridgeCapability,
@@ -280,6 +281,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
             }
 
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                adsBridge?.suspendAds()
                 ObaLog.evento(ObaLog.Fase.PLAYER, "tela_cheia", "ativo" to true)
                 fullscreenView = view
                 val container = findViewById<ViewGroup>(R.id.container)
@@ -311,6 +313,8 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
      */
     @SuppressLint("SetJavaScriptEnabled")
     private fun rebuildWebViewAposCrash(dead: WebView, crashed: Boolean) {
+        adsBridge?.suspendAds()
+        adsBridge = null
         val container = findViewById<ViewGroup>(R.id.container)
 
         // Se o renderer morreu com o player em tela cheia, a view do fullscreen
@@ -619,6 +623,7 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
     }
 
     override fun onPause() {
+        adsBridge?.suspendAds()
         super.onPause()
         webView.onPause()
     }
@@ -645,6 +650,8 @@ class MainActivity : AppCompatActivity(), AcoesDeMidiaHost {
     }
 
     override fun onDestroy() {
+        adsBridge?.suspendAds()
+        adsBridge = null
         localMediaServer?.close()
         localMediaServer = null
         // destroy() com a WebView ainda anexada deixa o Chromium tentando desenhar

@@ -3,6 +3,22 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Android aligns compile/runtime versions by default. Compile our own Kotlin 1.9
+// sources against their existing API, while packaging the newer network runtime.
+// No metadata checks are suppressed and no network runtime is downgraded.
+configurations.configureEach { configuration ->
+    if (configuration.name.endsWith('CompileClasspath')) {
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22',
+            'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.22',
+            'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.22',
+            'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3',
+            'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.7.3',
+            'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    }
+    resolutionStrategy.force 'com.unity3d.ads-mediation:adquality-sdk:9.9.0'
+}
+dependencyLocking { lockAllConfigurations() }
+
 android {
     namespace 'com.obaflix'
     compileSdk 36
@@ -28,6 +44,22 @@ android {
         // comportamento da distribuicao Play (sem download offline, consumption
         // only, anuncio por clique) — NAO e autenticacao nem seguranca.
         buildConfigField "boolean", "PLAY_STORE_BUILD", "false"
+        // IDs públicos fornecidos pelo painel. Ausência mantém formatos desligados.
+        ['LEVELPLAY_APP_KEY', 'LEVELPLAY_INTERSTITIAL_ID', 'LEVELPLAY_REWARDED_ID',
+         'LEVELPLAY_BANNER_ID', 'ADMOB_APP_ID', 'ADMOB_APP_OPEN_ID',
+         'ADMOB_REWARDED_PLAY_STANDARD_ID', 'ADMOB_REWARDED_DIRECT_STANDARD_ID'].each { field ->
+            def value = providers.gradleProperty("ads.${field}").getOrElse('')
+            if (!(value ==~ /[A-Za-z0-9_~\/-]*/)) throw new GradleException("Invalid public ads ID: ${field}")
+            buildConfigField 'String', field, "\"${value}\""
+        }
+        buildConfigField 'boolean', 'ADS_APPROVED', providers.gradleProperty('ads.approved').getOrElse('false') == 'true' ? 'true' : 'false'
+        // Content rating is not an advertising age policy. Requires a separately
+        // reviewed eligibility/CMP integration; cannot be enabled remotely.
+        buildConfigField 'boolean', 'ADS_AUDIENCE_VALIDATED', 'false'
+        buildConfigField 'boolean', 'APP_OPEN_APPROVED', 'false'
+        // Optional benefit/SSV/device homologation requires separate approval.
+        buildConfigField 'boolean', 'ADMOB_REWARDED_APPROVED', 'false'
+        manifestPlaceholders.admobAppId = providers.gradleProperty('ads.ADMOB_APP_ID').getOrElse('')
 
         // Unity Ads — so o aplicativo movel monetiza. O :tv e o Electron nao
         // tem nem a dependencia. Game ID e Placement ID sao identificadores
@@ -124,6 +156,22 @@ android {
     }
 }
 
+// The Next-Gen Google adapter ships Kotlin 2.1 metadata. Only this Java boundary
+// compiles against the runtime; Kotlin code continues using its original API.
+tasks.withType(JavaCompile).configureEach { task ->
+    def variant = task.name.replaceFirst('^compile', '').replaceFirst('JavaWithJavac$', '')
+    if (task.name.endsWith('JavaWithJavac') && !task.name.contains('UnitTest')) {
+        def runtime = configurations.findByName(variant.uncapitalize() + 'RuntimeClasspath')
+        if (runtime != null) {
+            def sdkJars = runtime.incoming.artifactView {
+                attributes { attribute(org.gradle.api.attributes.Attribute.of('artifactType', String), 'android-classes-jar') }
+            }.files
+            task.inputs.files(sdkJars).withPropertyName('adsBoundaryRuntimeJars')
+            task.doFirst { task.classpath = files(task.classpath, sdkJars) }
+        }
+    }
+}
+
 dependencies {
     // Extracao de midia compartilhada com o :tv. Traz okhttp, corrotinas e
     // webkit como `api`, alem das regras de R8 da ponte JS.
@@ -149,7 +197,24 @@ dependencies {
     // conhecer a dependencia. A 4.18.1 traz kotlin-stdlib 1.8.10 e coroutines
     // 1.6.4, ambos abaixo do que o projeto ja usa, entao a resolucao do Gradle
     // nao rebaixa nada.
-    implementation 'com.unity3d.ads:unity-ads:4.18.1'
+    implementation 'com.unity3d.ads-mediation:mediation-sdk:9.5.0'
+    implementation 'com.google.android.ump:user-messaging-platform:4.0.0'
+    // Runtime-only keeps newer network Kotlin metadata out of the 1.9 compiler.
+    runtimeOnly 'com.unity3d.ads-mediation:unityads-adapter:5.14.0'
+    runtimeOnly 'com.unity3d.ads:unity-ads:4.21.0'
+    runtimeOnly 'com.unity3d.ads-mediation:admob-adapter:5.16.0'
+    runtimeOnly 'com.google.android.libraries.ads.mobile.sdk:ads-mobile-sdk:1.5.0'
+    runtimeOnly 'com.unity3d.ads-mediation:pangle-adapter:5.24.0'
+    runtimeOnly 'com.pangle.global:pag-sdk:8.3.0.4'
+    runtimeOnly 'com.unity3d.ads-mediation:inmobi-adapter:5.10.0'
+    runtimeOnly 'com.inmobi.monetization:inmobi-ads-kotlin:11.5.0'
+    runtimeOnly 'com.unity3d.ads-mediation:vungle-adapter:5.16.0'
+    runtimeOnly 'com.vungle:vungle-ads:7.7.9'
+    runtimeOnly 'com.unity3d.ads-mediation:fyber-adapter:5.10.0'
+    runtimeOnly 'com.fyber:marketplace-sdk:8.4.7'
+    // Pair published in Unity's current official VK/myTarget guide.
+    runtimeOnly 'com.unity3d.ads-mediation:mytarget-adapter:5.2.0'
+    runtimeOnly 'com.my.target:mytarget-sdk:5.27.2'
     // O POM da Unity declara adquality-sdk como faixa aberta "(,10.0.0)", o que
     // deixaria o build nao reproduzivel — duas maquinas resolveriam versoes
     // diferentes. Fixado na maior existente hoje; sem dependencias proprias.

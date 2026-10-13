@@ -262,7 +262,8 @@ describe("o player pergunta antes de abrir sessão", () => {
    */
   test("a ponte Android é mínima e amarrada ao desafio do servidor", () => {
     const hook = readFileSync(join(raiz, "src/components/player/useAnuncio.tsx"), "utf8");
-    assert.match(hook, /mostrarAnuncio\(capability, entrada\.desafioId\)/);
+    assert.match(hook, /mostrar\(capability, entrada\.desafioId\)/);
+    assert.match(hook, /ehClientePlayNoNavegador\(\) \? ponte\?\.mostrarRewarded : ponte\?\.mostrarAnuncio/);
     assert.match(hook, /if \(desafioId !== entrada\.desafioId\) return;/);
   });
 });

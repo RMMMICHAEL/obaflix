@@ -56,6 +56,7 @@ export interface RespostaDeAutorizacao {
 export interface ResultadoDaExibicao {
   /** `false` quando o usuário desistiu, foi assinar ou a rede não tinha inventário. */
   concluido: boolean;
+  motivo?: "indisponivel";
 }
 
 export interface PortasDoFluxo {
@@ -163,7 +164,7 @@ export async function executarFluxoDeAnuncio(
     return { situacao: "falhou" };
   }
 
-  if (!exibicao.concluido) return { situacao: "cancelado" };
+  if (!exibicao.concluido) return { situacao: exibicao.motivo === "indisponivel" ? "indisponivel" : "cancelado" };
 
   // `concluido` vai junto como informação de produto — o servidor registra e
   // **não** decide por ele. Quem decide lá é o desafio e o tempo mínimo.

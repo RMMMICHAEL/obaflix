@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
-import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
+import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { prisma } from "@/lib/prisma";
@@ -30,6 +30,9 @@ import {
 import { HEADER_CLIENTE } from "@/config/site-mode";
 import { hostParaLog, resolverDirectLink } from "@/lib/ads/directLink";
 import { resolverPromocaoTv } from "@/lib/ads/promocaoTv";
+import { ehClientePlay } from "@/config/play";
+import { LevelPlayRewards, rewardedConfigurado } from "@/lib/ads/levelplayRewarded";
+import { adsRemoteConfig } from "@/lib/ads/remoteConfig";
 
 /**
  * `POST /api/playback/authorize` — "posso reproduzir, baixar ou transmistir isto agora?"
@@ -512,6 +515,21 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
       },
       { headers: NO_STORE },
     );
+  }
+
+  if (plataforma === "android" && ehClientePlay(req.headers.get("user-agent"))) {
+    // Entitlements/cotas já foram resolvidos acima; só chega quem precisa de anúncio.
+    // Sem SDK negociado e S2S homologado, não oferece um anúncio que não pode conceder.
+    const config = adsRemoteConfig(process.env.LEVELPLAY_REMOTE_CONFIG, true, true);
+    if (!rewardedConfigurado() || !config.rewarded || !config.placements.includes("playback") || config.sessionCap === 0 ||
+        req.headers.get("x-obaflix-rewarded") !== "levelplay-v1") {
+      return NextResponse.json({ decisao: "ANUNCIO_INDISPONIVEL", codigo: "rewarded_indisponivel" }, { headers: NO_STORE });
+    }
+    if (!(await checkRateLimit(`ads:levelplay:open:${userId}`, config.sessionCap, 3600)).allowed) {
+      return NextResponse.json({ decisao: "ANUNCIO_INDISPONIVEL", codigo: "rewarded_limite" }, { headers: NO_STORE });
+    }
+    const desafioId = await new LevelPlayRewards().open({ userId, finalidade, alvo });
+    return NextResponse.json({ decisao: "ANUNCIO_NECESSARIO", desafioId, formato: "rewarded" }, { headers: NO_STORE });
   }
 
   // O desafio grava finalidade e alvo. `/api/ads/complete` os lê daqui, e não
