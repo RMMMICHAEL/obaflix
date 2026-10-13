@@ -4,6 +4,7 @@ import { HomeStreaming } from "@/components/home/HomeStreaming";
 import { WEB_STREAMING_ENABLED } from "@/config/site-mode";
 
 export const revalidate = 300;
+export const dynamic = "force-dynamic";
 
 /**
  * A raiz do site.

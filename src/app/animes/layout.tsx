@@ -1,4 +1,6 @@
 import { catalogPageMetadata } from "@/lib/seo";
+// Preserve the runtime behavior previously inherited from the root layout.
+export const dynamic = "force-dynamic";
 
 export const metadata = catalogPageMetadata(
   "Animes",

@@ -259,9 +259,12 @@ describe("renderer: passivo, sem URL, só no app Windows", () => {
   });
 
   test("montado uma vez no layout do app (não no admin)", () => {
-    const layout = ler("src/app/layout.tsx");
+    const layout = ler("src/components/layout/ApplicationShell.tsx");
     assert.equal((layout.match(/<CliqueDesktop \/>/g) || []).length, 1);
     assert.ok(layout.indexOf("<CliqueDesktop />") > layout.indexOf("<AppModeProvider>"));
+    assert.ok(layout.indexOf("admin ? <main>") < layout.indexOf("<AppModeProvider>"));
+    const publicShell = ler("src/components/layout/PublicDownloadShell.tsx");
+    assert.ok(publicShell.indexOf("if (isDownloadPublicPath(pathname))") < publicShell.indexOf("return <ApplicationShell"));
   });
 
   test("In-Page Push intacto: zona 11921288 no banner do ads-site", () => {
