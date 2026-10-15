@@ -237,7 +237,19 @@ export function useAnuncio() {
           return;
         }
 
-        // Android: nenhum clique obrigatório. O convite abre contando 3 s e, ao
+        if (ehClientePlayNoNavegador()) {
+          // Google Play é consumo por clique: NENHUM disparo automático. O
+          // convite abre e espera um toque real em "Assistir anúncio e
+          // continuar" — só então `aoConfirmar` chama `aceitarRef` (disparo
+          // único) e a ponte nativa. Sem timer, sem contagem. O X cancela sem
+          // conceder, e a concessão continua inteira no callback nativo +
+          // servidor; esta ramificação não toca em nada disso. O APK direto
+          // (abaixo) mantém a contagem de 3 s intacta.
+          setModal({ fase: "convite", plataforma: "android", finalidade });
+          return;
+        }
+
+        // Android (APK direto): nenhum clique obrigatório. O convite abre contando 3 s e, ao
         // zerar, chama a ponte nativa sozinho (via `aceitarRef`). A contagem em
         // si — disparo único, pausa em segundo plano, encerramento — vive em
         // `contagemAndroid` e é testada lá; aqui só se liga ao relógio real, à
@@ -307,10 +319,18 @@ export function useAnuncio() {
   });
   portas.current.exibirAnuncio = exibirAnuncio;
 
-  /** "Assistir anúncio". A única escolha que exibe. */
+  /**
+   * "Assistir anúncio". A única escolha que exibe.
+   *
+   * Disparo único: consome `aceitarRef` ao chamar, então toques repetidos no
+   * botão (Play) ou um duplo-clique no Electron não abrem dois anúncios nem
+   * chamam a ponte nativa duas vezes. Um novo `exibirAnuncio` reatribui a ref.
+   */
   const aoConfirmar = useCallback(() => {
     if (!efeitoDoConvite("assistir").exibirAnuncio) return;
-    aceitarRef.current?.();
+    const aceitar = aceitarRef.current;
+    aceitarRef.current = null;
+    aceitar?.();
   }, []);
 
   /** X: fecha e cancela só a ação pendente. Nenhuma rota é chamada. */
@@ -384,31 +404,51 @@ export function ModalDeAnuncio(props: {
         </button>
 
         {estado.fase === "convite" && estado.plataforma === "android" && (
-          // Android: sem clique obrigatório. O convite conta sozinho e o X só
-          // cancela a ação — nunca concede acesso. A concessão continua no
-          // callback nativo + servidor.
-          <>
-            <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
-              Seu conteúdo começa após o anúncio
-            </h2>
-            <p className="mt-3 text-2xl font-bold text-white" role="status" aria-live="polite">
-              Anúncio em {estado.contagem ?? 3}
-            </p>
-            {/* Secundário, abaixo da contagem: reaproveita exatamente o mesmo
-                `aoAssinar` do convite Electron — encerra timer/listeners (via
-                `encerrar`), não chama a ponte nem concede acesso, e navega aos
-                planos. Nenhuma rota ou lógica de pagamento nova. Escondido no
-                Play, onde não há compra. */}
-            {!play && (
+          play ? (
+            // Google Play: consumo por clique. Nenhuma contagem automática — o
+            // anúncio só abre após um toque explícito em "Assistir anúncio e
+            // continuar", que chama `aoConfirmar` (disparo único). O X cancela
+            // sem conceder; a concessão continua no callback nativo + servidor.
+            <>
+              <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
+                Seu conteúdo começa após o anúncio
+              </h2>
+              <p className="mt-2 text-sm text-gray-400">{textoDoConvite(estado.finalidade)}</p>
               <button
                 type="button"
-                onClick={aoAssinar}
-                className="mt-5 text-sm font-medium text-gray-400 underline underline-offset-4 hover:text-white"
+                onClick={aoConfirmar}
+                className="mt-5 w-full rounded-full bg-white py-3 text-sm font-bold text-black"
               >
-                Remover anúncios
+                Assistir anúncio e continuar
               </button>
-            )}
-          </>
+            </>
+          ) : (
+            // Android APK direto: sem clique obrigatório. O convite conta sozinho
+            // e o X só cancela a ação — nunca concede acesso. A concessão
+            // continua no callback nativo + servidor. Fluxo inalterado.
+            <>
+              <h2 id="titulo-do-anuncio" className="px-8 text-lg font-bold text-white">
+                Seu conteúdo começa após o anúncio
+              </h2>
+              <p className="mt-3 text-2xl font-bold text-white" role="status" aria-live="polite">
+                Anúncio em {estado.contagem ?? 3}
+              </p>
+              {/* Secundário, abaixo da contagem: reaproveita exatamente o mesmo
+                  `aoAssinar` do convite Electron — encerra timer/listeners (via
+                  `encerrar`), não chama a ponte nem concede acesso, e navega aos
+                  planos. Nenhuma rota ou lógica de pagamento nova. Escondido no
+                  Play, onde não há compra. */}
+              {!play && (
+                <button
+                  type="button"
+                  onClick={aoAssinar}
+                  className="mt-5 text-sm font-medium text-gray-400 underline underline-offset-4 hover:text-white"
+                >
+                  Remover anúncios
+                </button>
+              )}
+            </>
+          )
         )}
 
         {estado.fase === "convite" && estado.plataforma !== "android" && (
