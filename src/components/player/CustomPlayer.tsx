@@ -1997,6 +1997,11 @@ export function CustomPlayer({
   }, []);
 
   const previsualizarCena = useCallback((cena: CenaEditor) => {
+    // Move a seleção (alças + faixa) para o trecho e pré-visualiza a partir do seu
+    // início; não altera a lista. A parada no fim usa o mesmo lotePreview.
+    setRecorteInicio(cena.inicio);
+    setRecorteFim(cena.fim);
+    setRecorteTextos({ inicio: textoDoTempo(cena.inicio), fim: textoDoTempo(cena.fim) });
     const player = jwRef.current;
     if (player) { player.seek(cena.inicio); controlarMidia(() => player.play(), ambiente === "electron"); }
     else if (videoRef.current) { videoRef.current.currentTime = cena.inicio; videoRef.current.play().catch(() => {}); }
