@@ -582,7 +582,7 @@ export function CustomPlayer({
   const [cenasAviso, setCenasAviso] = useState<string | null>(null);
   const [lotePreview, setLotePreview] = useState<number | null>(null);
   const [loteProgresso, setLoteProgresso] = useState<{ indice: number; total: number } | null>(null);
-  const [loteResultado, setLoteResultado] = useState<{ concluidas: number; falhas: number; total: number } | null>(null);
+  const [loteResultado, setLoteResultado] = useState<{ concluidas: number; falhas: number; total: number; caminho?: string } | null>(null);
   const [mostrarTutorialCenas, setMostrarTutorialCenas] = useState(false);
   const loteCanceladoRef = useRef(false);
   const cenaIdRef = useRef(0);
@@ -1950,12 +1950,14 @@ export function CustomPlayer({
     setLoteResultado(null);
   }, []);
 
-  const adicionarCenaAtual = useCallback(() => {
-    const inicio = Math.max(0, Math.floor(progressoRef.current));
-    const fim = Math.max(inicio + 1, Math.floor(Math.min(duration || inicio + 30, inicio + 30)));
+  // Adiciona à lista exatamente o intervalo marcado pelas alças (a mesma seleção
+  // do modo Manual, agora também visível e ajustável na aba Vários trechos).
+  const adicionarSelecao = useCallback(() => {
+    const inicio = Math.max(0, Math.round(recorteInicio));
+    const fim = Math.max(inicio + 1, Math.round(recorteFim));
     setCenas((atual) => [...atual, novaCena(inicio, fim)]);
     setLoteResultado(null);
-  }, [duration, novaCena]);
+  }, [recorteInicio, recorteFim, novaCena]);
 
   const importarTextoCenas = useCallback(() => {
     const { cenas: novas, ignoradas } = parsearCenas(textoCenas, duration);
@@ -2050,6 +2052,7 @@ export function CustomPlayer({
     setShowDownload(false);
     setDownloadResultado(null);
     setLoteResultado(null);
+    let ultimoCaminho = ""; // um arquivo concluído, para o "Ver na pasta" do lote
     try {
       const resumo = await executarLoteDownload(operacoes, {
         autorizar: async () => !!await fonteAtualParaMidia(0, "download", (finalidade) => liberarAcao({
@@ -2062,11 +2065,14 @@ export function CustomPlayer({
           catch (e) { return ehAcaoCancelada(e) ? { cancelado: true } : { error: "falha" }; }
         },
         aoIniciarCena: (indice) => { if (montadoRef.current) setLoteProgresso({ indice, total: operacoes.length }); },
-        aoConcluirCena: () => { if (montadoRef.current) setDownloadProgresso(null); },
+        aoConcluirCena: (_indice, resultado) => {
+          if (montadoRef.current) setDownloadProgresso(null);
+          if (resultado.ok && resultado.caminho) ultimoCaminho = resultado.caminho;
+        },
         cancelado: () => loteCanceladoRef.current || !montadoRef.current,
       });
       if (!montadoRef.current) return;
-      setLoteResultado({ concluidas: resumo.concluidas, falhas: resumo.falhas, total: resumo.total });
+      setLoteResultado({ concluidas: resumo.concluidas, falhas: resumo.falhas, total: resumo.total, caminho: ultimoCaminho || undefined });
     } catch {
       if (montadoRef.current) setLoteResultado({ concluidas: 0, falhas: cenas.length, total: cenas.length });
     } finally {
@@ -4040,12 +4046,12 @@ export function CustomPlayer({
                         <p className="text-[11px] text-white/70 leading-snug">{downloadResultado.erro}</p>
                       ) : (
                         <>
-                          <p className="text-[11px] text-white/70 mb-2">Salvo em Downloads</p>
+                          <p className="text-[11px] text-white/80 mb-2 font-medium">Download concluído!</p>
                           <button
                             onClick={() => desktopBridge?.revealDownload?.(downloadResultado.caminho)}
                             className="w-full text-center text-[11px] text-white bg-white/10 hover:bg-white/20 rounded-lg py-1.5 transition-colors"
                           >
-                            Abrir pasta
+                            Ver na pasta
                           </button>
                         </>
                       )}
@@ -4288,11 +4294,14 @@ export function CustomPlayer({
                             Adicionar à lista
                           </button>
                           <button
-                            onClick={adicionarCenaAtual}
+                            onClick={adicionarSelecao}
                             className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
                           >
-                            + Cena atual
+                            + Adicionar seleção
                           </button>
+                          <span className="text-[10px] text-white/45 tabular-nums ml-auto" title="Seleção marcada na linha do tempo">
+                            seleção {textoDoTempo(recorteInicio)}–{textoDoTempo(recorteFim)}
+                          </span>
                         </div>
 
                         {mostrarTutorialCenas && (
@@ -4374,10 +4383,30 @@ export function CustomPlayer({
                             </button>
                           )}
                           {loteResultado && (
-                            <span className="text-[11px] text-white/60 tabular-nums">
-                              {loteResultado.concluidas}/{loteResultado.total} baixado{loteResultado.concluidas === 1 ? "" : "s"}
-                              {loteResultado.falhas ? ` · ${loteResultado.falhas} falha(s)` : ""}
-                            </span>
+                            <div className="flex items-center gap-2 ml-auto">
+                              <span className="text-[11px] text-white/80">
+                                {loteResultado.concluidas === 0
+                                  ? `Nenhum trecho baixado${loteResultado.falhas ? ` · ${loteResultado.falhas} falha(s)` : ""}`
+                                  : loteResultado.falhas === 0
+                                    ? `${loteResultado.concluidas} trecho${loteResultado.concluidas === 1 ? "" : "s"} baixado${loteResultado.concluidas === 1 ? "" : "s"} com sucesso!`
+                                    : `${loteResultado.concluidas} de ${loteResultado.total} trechos baixados · ${loteResultado.falhas} falha(s)`}
+                              </span>
+                              {loteResultado.concluidas > 0 && loteResultado.caminho && (
+                                <button
+                                  onClick={() => desktopBridge?.revealDownload?.(loteResultado.caminho)}
+                                  className="px-2 py-0.5 rounded-full bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
+                                >
+                                  Ver na pasta
+                                </button>
+                              )}
+                              <button
+                                onClick={() => setLoteResultado(null)}
+                                title="Fechar"
+                                className="px-1 text-[12px] text-white/40 hover:text-white transition-colors"
+                              >
+                                ✕
+                              </button>
+                            </div>
                           )}
                         </div>
                       </>
@@ -4417,8 +4446,8 @@ export function CustomPlayer({
                     className="absolute inset-y-0 left-0 rounded-full bg-[#E50914]"
                     style={{ width: `${pct}%` }}
                   />
-                  {/* Faixa selecionada para recorte */}
-                  {recorteAtivo && duration > 0 && (
+                  {/* Faixa selecionada para recorte (visível nas abas Manual e Vários trechos) */}
+                  {(recorteAtivo || multiCenasAtivo) && duration > 0 && (
                     <div
                       className="absolute inset-y-0 bg-white/45 ring-1 ring-white/70"
                       style={{
@@ -4429,8 +4458,8 @@ export function CustomPlayer({
                   )}
                 </div>
 
-                {/* Alças de recorte: arrastar ajusta início e fim pela própria barra */}
-                {recorteAtivo && duration > 0 && (["inicio", "fim"] as const).map((qual) => {
+                {/* Alças de recorte: arrastar ajusta início e fim pela própria barra (ambas as abas) */}
+                {(recorteAtivo || multiCenasAtivo) && duration > 0 && (["inicio", "fim"] as const).map((qual) => {
                   const valor = qual === "inicio" ? recorteInicio : recorteFim;
                   return (
                     <div
