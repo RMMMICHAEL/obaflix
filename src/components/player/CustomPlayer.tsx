@@ -583,6 +583,7 @@ export function CustomPlayer({
   const [lotePreview, setLotePreview] = useState<number | null>(null);
   const [loteProgresso, setLoteProgresso] = useState<{ indice: number; total: number } | null>(null);
   const [loteResultado, setLoteResultado] = useState<{ concluidas: number; falhas: number; total: number } | null>(null);
+  const [mostrarTutorialCenas, setMostrarTutorialCenas] = useState(false);
   const loteCanceladoRef = useRef(false);
   const cenaIdRef = useRef(0);
   const novaCena = useCallback((inicio: number, fim: number): CenaEditor => ({
@@ -1929,22 +1930,25 @@ export function CustomPlayer({
   // ── Múltiplas cenas ───────────────────────────────────────────────────────────
   // Abre o editor de cenas verificando a fonte atual, igual ao recorte: a mesma
   // preparação e o mesmo preflight de fonte valem para o lote inteiro.
-  const abrirMultiCenas = useCallback(async () => {
-    if (!await prepararDownload("trecho") || !montadoRef.current) return;
-    const midiaPreparada = operacaoAtualRef.current("trecho");
-    recortePreflightRef.current = {
-      fonteId: midiaPreparada.fonteId, stream: midiaPreparada.stream,
-      referer: midiaPreparada.referer, tipo: midiaPreparada.tipo,
-    };
-    const inicio = Math.max(0, Math.floor(progressoRef.current));
-    const fim = Math.max(inicio + 1, Math.floor(Math.min(duration || inicio + 30, inicio + 30)));
-    setRecorteAtivo(false);
+  // Troca de abas do editor de trecho. A fonte já foi validada ao abrir pelo menu
+  // ("Baixar trecho…" roda o preflight em abrirRecorte); alternar de aba não refaz
+  // preflight, não inicia download e não cria cenas — a lista já montada é mantida.
+  const irParaAbaManual = useCallback(() => { setMultiCenasAtivo(false); setRecorteAtivo(true); }, []);
+  const irParaAbaVarios = useCallback(() => { setRecorteAtivo(false); setMultiCenasAtivo(true); }, []);
+  const fecharEditor = useCallback(() => { setRecorteAtivo(false); setMultiCenasAtivo(false); }, []);
+
+  // Reordena a lista de trechos (subir/descer). A ordem define a numeração do lote.
+  const moverCena = useCallback((id: number, dir: -1 | 1) => {
+    setCenas((atual) => {
+      const i = atual.findIndex((c) => c.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= atual.length) return atual;
+      const copia = atual.slice();
+      [copia[i], copia[j]] = [copia[j], copia[i]];
+      return copia;
+    });
     setLoteResultado(null);
-    setCenasAviso(null);
-    setCenas((atual) => atual.length ? atual : [novaCena(inicio, fim)]);
-    setMultiCenasAtivo(true);
-    setShowDownload(false);
-  }, [duration, prepararDownload, novaCena]);
+  }, []);
 
   const adicionarCenaAtual = useCallback(() => {
     const inicio = Math.max(0, Math.floor(progressoRef.current));
@@ -3996,13 +4000,6 @@ export function CustomPlayer({
                       >
                         Baixar trecho…
                       </button>
-                      <div className="border-t border-white/10" />
-                      <button
-                        onClick={abrirMultiCenas}
-                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
-                      >
-                        Selecionar múltiplas cenas…
-                      </button>
                     </div>
                   )}
 
@@ -4146,207 +4143,246 @@ export function CustomPlayer({
         {showCustomControls ? (
           <div className="pointer-events-auto px-3 pt-4 pb-2 bg-gradient-to-t from-black/80 via-black/30 to-transparent md:px-8 md:pt-10 landscape:pt-2 md:pb-4">
 
-            {/* Painel de recorte — some quando não está recortando */}
-            {recorteAtivo && (
-              <div className="flex flex-wrap items-center gap-2 mb-2 px-1 pointer-events-auto">
-                <span className="text-[10px] uppercase tracking-wide text-white/40">Recorte</span>
-
-                {(["inicio", "fim"] as const).map((qual) => (
-                  <label key={qual} className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-white/50">
-                      {qual === "inicio" ? "Início" : "Fim"}
-                    </span>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      onFocus={(e) => e.currentTarget.select()}
-                      value={recorteTextos[qual]}
-                      onBeforeInput={(e) => {
-                        const input = e.currentTarget;
-                        if (input.selectionStart === 0 && input.selectionEnd === input.value.length) formatoManualRef.current[qual] = false;
-                      }}
-                      onKeyDown={(e) => {
-                        if (formatoManualRef.current[qual]) return;
-                        const input = e.currentTarget;
-                        const pos = input.selectionStart ?? 0;
-                        if (pos !== input.selectionEnd) return;
-                        if (e.key === "Backspace" && input.value[pos - 1] === ":") input.setSelectionRange(pos - 2, pos);
-                        if (e.key === "Delete" && input.value[pos] === ":") input.setSelectionRange(pos, pos + 2);
-                      }}
-                      onChange={(e) => {
-                        const input = e.currentTarget;
-                        const bruto = input.value;
-                        const evento = e.nativeEvent as InputEvent;
-                        if (evento.data === ":" || evento.inputType === "insertFromPaste") formatoManualRef.current[qual] = bruto.includes(":");
-                        if (!bruto) formatoManualRef.current[qual] = false;
-                        const texto = formatoManualRef.current[qual] ? bruto.replace(/[^\d:]/g, "").slice(0, 8) : mascararTempo(bruto);
-                        const cursor = formatoManualRef.current[qual] ? input.selectionStart ?? texto.length
-                          : cursorDaMascara(bruto, input.selectionStart ?? bruto.length, texto);
-                        setRecorteTextos((atual) => ({ ...atual, [qual]: texto }));
-                        requestAnimationFrame(() => { if (document.activeElement === input) input.setSelectionRange(cursor, cursor); });
-                        retryDownloadRef.current = null;
-                        const seg = segundosDoTexto(texto);
-                        if (seg === null || duration < 1) return;
-                        const intervalo = ajustarIntervalo(qual, seg, recorteInicio, recorteFim, duration);
-                        setRecorteInicio(intervalo.inicio);
-                        setRecorteFim(intervalo.fim);
-                        const outro = qual === "inicio" ? "fim" : "inicio";
-                        setRecorteTextos((atual) => ({ ...atual, [outro]: textoDoTempo(intervalo[outro]) }));
-                        if (jwRef.current) jwRef.current.seek(intervalo[qual]);
-                        else if (videoRef.current) videoRef.current.currentTime = intervalo[qual];
-                      }}
-                      onBlur={() => setRecorteTextos((atual) => ({ ...atual, [qual]: textoDoTempo(qual === "inicio" ? recorteInicio : recorteFim) }))}
-                      className="w-[74px] bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
-                      placeholder="00:00"
-                    />
-                  </label>
-                ))}
-
-                <span className="text-[11px] text-white/40 tabular-nums">
-                  duração {formatTime(Math.max(0, recorteFim - recorteInicio))}
-                </span>
-
-                <button
-                  onClick={previsualizarRecorte}
-                  className="px-3 py-1 rounded-full bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
-                >
-                  Pré-visualizar
-                </button>
-                <button
-                  onClick={() => iniciarDownload("trecho")}
-                  className="px-3 py-1 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors"
-                >
-                  Baixar trecho
-                </button>
-                <button
-                  onClick={() => setRecorteAtivo(false)}
-                  className="px-2 py-1 text-[11px] text-white/40 hover:text-white transition-colors"
-                >
-                  Cancelar
-                </button>
-              </div>
-            )}
-
-            {/* Painel de múltiplas cenas */}
-            {multiCenasAtivo && (
-              <div className="mb-2 px-1 pointer-events-auto rounded-lg bg-black/40 border border-white/10 p-2">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] uppercase tracking-wide text-white/40">Múltiplas cenas</span>
+            {/* Editor de trecho — abas Manual / Vários trechos. A seleção visual
+                do modo Manual continua na própria linha do tempo abaixo. */}
+            {(recorteAtivo || multiCenasAtivo) && (
+              <div className="mb-2 px-1 pointer-events-auto rounded-lg bg-black/40 border border-white/10 max-w-full">
+                {/* Abas */}
+                <div className="flex items-center gap-1 border-b border-white/10 px-2 pt-1.5">
+                  <button
+                    onClick={irParaAbaManual}
+                    disabled={!!loteProgresso}
+                    className={`px-3 py-1.5 text-[11px] rounded-t-md transition-colors disabled:opacity-40 ${recorteAtivo ? "bg-white/10 text-white font-medium" : "text-white/50 hover:text-white"}`}
+                  >
+                    Manual
+                  </button>
+                  <button
+                    onClick={irParaAbaVarios}
+                    disabled={!!loteProgresso}
+                    className={`px-3 py-1.5 text-[11px] rounded-t-md transition-colors disabled:opacity-40 ${multiCenasAtivo ? "bg-white/10 text-white font-medium" : "text-white/50 hover:text-white"}`}
+                  >
+                    Vários trechos
+                  </button>
                   {!loteProgresso && (
                     <button
-                      onClick={() => setMultiCenasAtivo(false)}
-                      className="text-[11px] text-white/40 hover:text-white transition-colors"
+                      onClick={fecharEditor}
+                      title="Fechar"
+                      className="ml-auto px-2 py-1 text-[12px] text-white/40 hover:text-white transition-colors"
                     >
-                      Fechar
+                      ✕
                     </button>
                   )}
                 </div>
 
-                {loteProgresso ? (
-                  <div>
-                    <div className="flex items-center justify-between text-[11px] text-white/70 mb-1.5">
-                      <span>Baixando cena {loteProgresso.indice + 1} de {loteProgresso.total}</span>
-                      <span>{downloadProgresso ? `${downloadProgresso.pct}%` : "preparando…"}</span>
-                    </div>
-                    <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full bg-[#E50914] transition-all duration-300" style={{ width: `${downloadProgresso?.pct ?? 0}%` }} />
-                    </div>
+                {/* Aba Manual */}
+                {recorteAtivo && (
+                  <div className="flex flex-wrap items-center gap-2 p-2">
+                    <span className="text-[10px] uppercase tracking-wide text-white/40">Recorte</span>
+                    {(["inicio", "fim"] as const).map((qual) => (
+                      <label key={qual} className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-white/50">
+                          {qual === "inicio" ? "Início" : "Fim"}
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          onFocus={(e) => e.currentTarget.select()}
+                          value={recorteTextos[qual]}
+                          onBeforeInput={(e) => {
+                            const input = e.currentTarget;
+                            if (input.selectionStart === 0 && input.selectionEnd === input.value.length) formatoManualRef.current[qual] = false;
+                          }}
+                          onKeyDown={(e) => {
+                            if (formatoManualRef.current[qual]) return;
+                            const input = e.currentTarget;
+                            const pos = input.selectionStart ?? 0;
+                            if (pos !== input.selectionEnd) return;
+                            if (e.key === "Backspace" && input.value[pos - 1] === ":") input.setSelectionRange(pos - 2, pos);
+                            if (e.key === "Delete" && input.value[pos] === ":") input.setSelectionRange(pos, pos + 2);
+                          }}
+                          onChange={(e) => {
+                            const input = e.currentTarget;
+                            const bruto = input.value;
+                            const evento = e.nativeEvent as InputEvent;
+                            if (evento.data === ":" || evento.inputType === "insertFromPaste") formatoManualRef.current[qual] = bruto.includes(":");
+                            if (!bruto) formatoManualRef.current[qual] = false;
+                            const texto = formatoManualRef.current[qual] ? bruto.replace(/[^\d:]/g, "").slice(0, 8) : mascararTempo(bruto);
+                            const cursor = formatoManualRef.current[qual] ? input.selectionStart ?? texto.length
+                              : cursorDaMascara(bruto, input.selectionStart ?? bruto.length, texto);
+                            setRecorteTextos((atual) => ({ ...atual, [qual]: texto }));
+                            requestAnimationFrame(() => { if (document.activeElement === input) input.setSelectionRange(cursor, cursor); });
+                            retryDownloadRef.current = null;
+                            const seg = segundosDoTexto(texto);
+                            if (seg === null || duration < 1) return;
+                            const intervalo = ajustarIntervalo(qual, seg, recorteInicio, recorteFim, duration);
+                            setRecorteInicio(intervalo.inicio);
+                            setRecorteFim(intervalo.fim);
+                            const outro = qual === "inicio" ? "fim" : "inicio";
+                            setRecorteTextos((atual) => ({ ...atual, [outro]: textoDoTempo(intervalo[outro]) }));
+                            if (jwRef.current) jwRef.current.seek(intervalo[qual]);
+                            else if (videoRef.current) videoRef.current.currentTime = intervalo[qual];
+                          }}
+                          onBlur={() => setRecorteTextos((atual) => ({ ...atual, [qual]: textoDoTempo(qual === "inicio" ? recorteInicio : recorteFim) }))}
+                          className="w-[74px] bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
+                          placeholder="00:00"
+                        />
+                      </label>
+                    ))}
+                    <span className="text-[11px] text-white/40 tabular-nums">
+                      duração {formatTime(Math.max(0, recorteFim - recorteInicio))}
+                    </span>
                     <button
-                      onClick={cancelarLote}
-                      className="mt-2 w-full text-center text-[11px] text-white/50 hover:text-white transition-colors"
+                      onClick={previsualizarRecorte}
+                      className="px-3 py-1 rounded-full bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
                     >
-                      Cancelar
+                      Pré-visualizar
+                    </button>
+                    <button
+                      onClick={() => iniciarDownload("trecho")}
+                      className="px-3 py-1 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors"
+                    >
+                      Baixar trecho
                     </button>
                   </div>
-                ) : (
-                  <>
-                    <div className="flex flex-col sm:flex-row gap-2 mb-2">
-                      <textarea
-                        value={textoCenas}
-                        onChange={(e) => setTextoCenas(e.target.value)}
-                        rows={2}
-                        placeholder={"Cole intervalos, ex.:\n10:59-11:50"}
-                        className="flex-1 bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white placeholder:text-white/30 focus:outline-none focus:border-white/40 resize-none"
-                      />
-                      <div className="flex sm:flex-col gap-1.5">
+                )}
+
+                {/* Aba Vários trechos */}
+                {multiCenasAtivo && (
+                  <div className="p-2">
+                    {loteProgresso ? (
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] text-white/70 mb-1.5">
+                          <span>Baixando trecho {loteProgresso.indice + 1} de {loteProgresso.total}</span>
+                          <span>{downloadProgresso ? `${downloadProgresso.pct}%` : "preparando…"}</span>
+                        </div>
+                        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                          <div className="h-full bg-[#E50914] transition-all duration-300" style={{ width: `${downloadProgresso?.pct ?? 0}%` }} />
+                        </div>
                         <button
-                          onClick={importarTextoCenas}
-                          className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors whitespace-nowrap"
+                          onClick={cancelarLote}
+                          className="mt-2 w-full text-center text-[11px] text-white/50 hover:text-white transition-colors"
                         >
-                          Adicionar lista
-                        </button>
-                        <button
-                          onClick={adicionarCenaAtual}
-                          className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors whitespace-nowrap"
-                        >
-                          + Cena atual
+                          Cancelar
                         </button>
                       </div>
-                    </div>
+                    ) : (
+                      <>
+                        <textarea
+                          value={textoCenas}
+                          onChange={(e) => setTextoCenas(e.target.value)}
+                          rows={3}
+                          placeholder={"Cole vários intervalos, ex.:\n10:50-11:00\n12:30-12:45"}
+                          className="w-full bg-white/10 border border-white/15 rounded-md px-2.5 py-2 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:border-white/40 resize-y leading-relaxed"
+                        />
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                          <button
+                            onClick={() => setMostrarTutorialCenas((v) => !v)}
+                            className="px-2.5 py-1 rounded bg-white/5 text-white/70 text-[11px] hover:bg-white/15 hover:text-white transition-colors"
+                          >
+                            ? Tutorial
+                          </button>
+                          <button
+                            onClick={importarTextoCenas}
+                            className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
+                          >
+                            Adicionar à lista
+                          </button>
+                          <button
+                            onClick={adicionarCenaAtual}
+                            className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors"
+                          >
+                            + Cena atual
+                          </button>
+                        </div>
 
-                    {cenasAviso && <p className="text-[10px] text-white/50 mb-1.5">{cenasAviso}</p>}
-
-                    {cenas.length > 0 && (
-                      <div className="max-h-28 overflow-y-auto flex flex-col gap-1 mb-2">
-                        {cenas.map((cena, i) => (
-                          <div key={cena.id} className="flex items-center gap-1.5 text-[11px]">
-                            <span className="text-white/40 tabular-nums w-5 text-right">{i + 1}</span>
-                            {(["inicio", "fim"] as const).map((campo) => (
-                              <input
-                                key={campo}
-                                type="text"
-                                inputMode="numeric"
-                                onFocus={(e) => e.currentTarget.select()}
-                                value={campo === "inicio" ? cena.tInicio : cena.tFim}
-                                onChange={(e) => editarCenaTexto(cena.id, campo, e.currentTarget.value)}
-                                onBlur={() => comitarCena(cena.id, campo)}
-                                className="w-[66px] bg-white/10 border border-white/15 rounded px-1.5 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
-                                placeholder="00:00"
-                              />
-                            ))}
-                            <span className="text-white/40 tabular-nums">{formatTime(Math.max(0, cena.fim - cena.inicio))}</span>
-                            <button
-                              onClick={() => previsualizarCena(cena)}
-                              className="ml-auto px-2 py-0.5 rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
-                            >
-                              Ver
-                            </button>
-                            <button
-                              onClick={() => removerCena(cena.id)}
-                              title="Excluir cena"
-                              className="px-1.5 py-0.5 text-white/40 hover:text-white transition-colors"
-                            >
-                              ✕
-                            </button>
+                        {mostrarTutorialCenas && (
+                          <div className="mt-2 text-[10px] text-white/60 bg-white/5 rounded-md p-2.5 leading-relaxed space-y-0.5">
+                            <p className="text-white/70">Formatos aceitos pelo colar:</p>
+                            <p>• Um intervalo por linha: <span className="text-white/80">10:50-11:00</span></p>
+                            <p>• Vários na mesma linha, por vírgula: <span className="text-white/80">10:50-11:00, 12:30-12:45</span></p>
+                            <p>• Par sem traço: <span className="text-white/80">10:50,11:00</span></p>
+                            <p>• Com horas também vale: <span className="text-white/80">01:10:50-01:11:00</span></p>
+                            <p className="text-white/40">Os espaços são opcionais. Horários inválidos ou fora da duração são ignorados.</p>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        )}
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={baixarCenas}
-                        disabled={!cenas.length}
-                        className="px-3 py-1 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-                      >
-                        Baixar {cenas.length} cena{cenas.length === 1 ? "" : "s"}
-                      </button>
-                      {cenas.length > 0 && (
-                        <button
-                          onClick={() => { setCenas([]); setLoteResultado(null); setCenasAviso(null); }}
-                          className="px-2 py-1 text-[11px] text-white/40 hover:text-white transition-colors"
-                        >
-                          Limpar
-                        </button>
-                      )}
-                      {loteResultado && (
-                        <span className="text-[11px] text-white/60 tabular-nums">
-                          {loteResultado.concluidas}/{loteResultado.total} baixada{loteResultado.concluidas === 1 ? "" : "s"}
-                          {loteResultado.falhas ? ` · ${loteResultado.falhas} falha(s)` : ""}
-                        </span>
-                      )}
-                    </div>
-                  </>
+                        {cenasAviso && <p className="text-[10px] text-white/50 mt-2">{cenasAviso}</p>}
+
+                        {cenas.length > 0 && (
+                          <div className="mt-2 max-h-36 overflow-y-auto flex flex-col divide-y divide-white/5">
+                            {cenas.map((cena, i) => (
+                              <div key={cena.id} className="flex items-center gap-1.5 text-[11px] py-1">
+                                <div className="flex flex-col leading-none">
+                                  <button onClick={() => moverCena(cena.id, -1)} disabled={i === 0} title="Subir" className="text-white/40 hover:text-white disabled:opacity-20 text-[9px] leading-none">▲</button>
+                                  <button onClick={() => moverCena(cena.id, 1)} disabled={i === cenas.length - 1} title="Descer" className="text-white/40 hover:text-white disabled:opacity-20 text-[9px] leading-none">▼</button>
+                                </div>
+                                <span className="text-white/40 tabular-nums w-5 text-right">{i + 1}</span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  onFocus={(e) => e.currentTarget.select()}
+                                  value={cena.tInicio}
+                                  onChange={(e) => editarCenaTexto(cena.id, "inicio", e.currentTarget.value)}
+                                  onBlur={() => comitarCena(cena.id, "inicio")}
+                                  className="w-[64px] bg-white/10 border border-white/15 rounded px-1.5 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
+                                  placeholder="00:00"
+                                />
+                                <span className="text-white/30">–</span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  onFocus={(e) => e.currentTarget.select()}
+                                  value={cena.tFim}
+                                  onChange={(e) => editarCenaTexto(cena.id, "fim", e.currentTarget.value)}
+                                  onBlur={() => comitarCena(cena.id, "fim")}
+                                  className="w-[64px] bg-white/10 border border-white/15 rounded px-1.5 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
+                                  placeholder="00:00"
+                                />
+                                <span className="text-white/40 tabular-nums w-12 text-right">{formatTime(Math.max(0, cena.fim - cena.inicio))}</span>
+                                <button
+                                  onClick={() => previsualizarCena(cena)}
+                                  className="ml-auto px-2 py-0.5 rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
+                                >
+                                  Ver
+                                </button>
+                                <button
+                                  onClick={() => removerCena(cena.id)}
+                                  title="Excluir"
+                                  className="px-1.5 py-0.5 text-white/40 hover:text-white transition-colors"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-2 mt-2">
+                          <button
+                            onClick={baixarCenas}
+                            disabled={!cenas.length}
+                            className="px-3 py-1.5 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                          >
+                            Baixar {cenas.length} trecho{cenas.length === 1 ? "" : "s"}
+                          </button>
+                          {cenas.length > 0 && (
+                            <button
+                              onClick={() => { setCenas([]); setLoteResultado(null); setCenasAviso(null); }}
+                              className="px-3 py-1.5 text-[11px] text-white/50 hover:text-white transition-colors"
+                            >
+                              Limpar lista
+                            </button>
+                          )}
+                          {loteResultado && (
+                            <span className="text-[11px] text-white/60 tabular-nums">
+                              {loteResultado.concluidas}/{loteResultado.total} baixado{loteResultado.concluidas === 1 ? "" : "s"}
+                              {loteResultado.falhas ? ` · ${loteResultado.falhas} falha(s)` : ""}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             )}
