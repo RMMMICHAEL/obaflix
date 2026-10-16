@@ -30,8 +30,8 @@ import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import { AcaoInterrompida, liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
-import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara } from "@/lib/recorte";
-import { executarTentativaDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
+import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara, parsearCenas } from "@/lib/recorte";
+import { executarTentativaDownload, executarLoteDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
 import { verificarDownloadAtual, controlarMidia } from "@/lib/prepararDownload";
 import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
@@ -571,6 +571,23 @@ export function CustomPlayer({
   const [recorteTextos, setRecorteTextos] = useState({ inicio: "00:00", fim: "00:00" });
   const formatoManualRef = useRef({ inicio: false, fim: false });
   const [arrastandoAlca, setArrastandoAlca] = useState<"inicio" | "fim" | null>(null);
+
+  // ── Múltiplas cenas ───────────────────────────────────────────────────────────
+  // Cada cena reaproveita o mesmo recorte/download de uma cena única; o lote só
+  // as baixa em sequência, cada uma com a sua própria autorização.
+  type CenaEditor = { id: number; inicio: number; fim: number; tInicio: string; tFim: string };
+  const [multiCenasAtivo, setMultiCenasAtivo] = useState(false);
+  const [cenas, setCenas] = useState<CenaEditor[]>([]);
+  const [textoCenas, setTextoCenas] = useState("");
+  const [cenasAviso, setCenasAviso] = useState<string | null>(null);
+  const [lotePreview, setLotePreview] = useState<number | null>(null);
+  const [loteProgresso, setLoteProgresso] = useState<{ indice: number; total: number } | null>(null);
+  const [loteResultado, setLoteResultado] = useState<{ concluidas: number; falhas: number; total: number } | null>(null);
+  const loteCanceladoRef = useRef(false);
+  const cenaIdRef = useRef(0);
+  const novaCena = useCallback((inicio: number, fim: number): CenaEditor => ({
+    id: ++cenaIdRef.current, inicio, fim, tInicio: textoDoTempo(inicio), tFim: textoDoTempo(fim),
+  }), []);
 
   // A montagem da lista saiu daqui. Ela vivia neste arquivo, e por isso cada
   // domínio de provedor era string literal do bundle — visível sem sequer
@@ -1818,6 +1835,7 @@ export function CustomPlayer({
     setRecorteTextos({ inicio: textoDoTempo(intervalo.inicio), fim: textoDoTempo(intervalo.fim) });
     formatoManualRef.current = { inicio: false, fim: false };
     retryDownloadRef.current = null;
+    setMultiCenasAtivo(false);
     setRecorteAtivo(true);
     setShowDownload(false);
   }, [duration, prepararDownload]);
@@ -1907,6 +1925,152 @@ export function CustomPlayer({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, fonteAtualParaMidia, portasDeAnuncio]);
+
+  // ── Múltiplas cenas ───────────────────────────────────────────────────────────
+  // Abre o editor de cenas verificando a fonte atual, igual ao recorte: a mesma
+  // preparação e o mesmo preflight de fonte valem para o lote inteiro.
+  const abrirMultiCenas = useCallback(async () => {
+    if (!await prepararDownload("trecho") || !montadoRef.current) return;
+    const midiaPreparada = operacaoAtualRef.current("trecho");
+    recortePreflightRef.current = {
+      fonteId: midiaPreparada.fonteId, stream: midiaPreparada.stream,
+      referer: midiaPreparada.referer, tipo: midiaPreparada.tipo,
+    };
+    const inicio = Math.max(0, Math.floor(progressoRef.current));
+    const fim = Math.max(inicio + 1, Math.floor(Math.min(duration || inicio + 30, inicio + 30)));
+    setRecorteAtivo(false);
+    setLoteResultado(null);
+    setCenasAviso(null);
+    setCenas((atual) => atual.length ? atual : [novaCena(inicio, fim)]);
+    setMultiCenasAtivo(true);
+    setShowDownload(false);
+  }, [duration, prepararDownload, novaCena]);
+
+  const adicionarCenaAtual = useCallback(() => {
+    const inicio = Math.max(0, Math.floor(progressoRef.current));
+    const fim = Math.max(inicio + 1, Math.floor(Math.min(duration || inicio + 30, inicio + 30)));
+    setCenas((atual) => [...atual, novaCena(inicio, fim)]);
+    setLoteResultado(null);
+  }, [duration, novaCena]);
+
+  const importarTextoCenas = useCallback(() => {
+    const { cenas: novas, ignoradas } = parsearCenas(textoCenas, duration);
+    if (novas.length) setCenas((atual) => [...atual, ...novas.map((c) => novaCena(c.inicio, c.fim))]);
+    setTextoCenas("");
+    setLoteResultado(null);
+    setCenasAviso(
+      novas.length
+        ? `${novas.length} cena(s) adicionada(s)${ignoradas ? `; ${ignoradas} ignorada(s)` : ""}.`
+        : "Nenhum intervalo válido. Use mm:ss-mm:ss, um por linha.",
+    );
+  }, [textoCenas, duration, novaCena]);
+
+  const editarCenaTexto = useCallback((id: number, campo: "inicio" | "fim", texto: string) => {
+    const mascara = mascararTempo(texto);
+    const chave = campo === "inicio" ? "tInicio" : "tFim";
+    setCenas((atual) => atual.map((c) => (c.id === id ? { ...c, [chave]: mascara } : c)));
+    setLoteResultado(null);
+  }, []);
+
+  // No blur, normaliza o campo contra o intervalo: horário inválido volta ao valor
+  // anterior; válido reajusta início/fim (fim nunca abaixo de início + 1 s).
+  const comitarCena = useCallback((id: number, campo: "inicio" | "fim") => {
+    setCenas((atual) => atual.map((c) => {
+      if (c.id !== id) return c;
+      const seg = segundosDoTexto(campo === "inicio" ? c.tInicio : c.tFim);
+      if (seg === null) return { ...c, tInicio: textoDoTempo(c.inicio), tFim: textoDoTempo(c.fim) };
+      const total = duration > 0 ? duration : Math.max(c.inicio, c.fim, seg) + 1;
+      const intervalo = ajustarIntervalo(campo, seg, c.inicio, c.fim, total);
+      return { ...c, inicio: intervalo.inicio, fim: intervalo.fim, tInicio: textoDoTempo(intervalo.inicio), tFim: textoDoTempo(intervalo.fim) };
+    }));
+  }, [duration]);
+
+  const removerCena = useCallback((id: number) => {
+    setCenas((atual) => atual.filter((c) => c.id !== id));
+    setLoteResultado(null);
+  }, []);
+
+  const previsualizarCena = useCallback((cena: CenaEditor) => {
+    const player = jwRef.current;
+    if (player) { player.seek(cena.inicio); controlarMidia(() => player.play(), ambiente === "electron"); }
+    else if (videoRef.current) { videoRef.current.currentTime = cena.inicio; videoRef.current.play().catch(() => {}); }
+    setLotePreview(cena.fim);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ambiente]);
+
+  // Pré-visualização de cena: para ao chegar no fim, sem ativar o recorte.
+  useEffect(() => {
+    if (lotePreview === null) return;
+    if (position < lotePreview || position > lotePreview + 1.5) return;
+    if (jwRef.current) jwRef.current.pause();
+    else videoRef.current?.pause();
+    setLotePreview(null);
+  }, [position, lotePreview]);
+
+  const cancelarLote = useCallback(() => {
+    loteCanceladoRef.current = true;
+    desktopBridge?.cancelDownload?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Baixa as cenas como UMA ação: autoriza uma vez (um convite/concessão) e então
+  // recorta todas da mesma fonte já validada. O contexto é reconferido antes de
+  // cada cena; se a fonte/usuário/conteúdo/sessão mudar, o lote para.
+  const baixarCenas = useCallback(async () => {
+    if (!desktopBridge?.downloadMedia || downloadPendenteRef.current || preparandoDownloadRef.current) return;
+    if (!directStreamRef.current || !montadoRef.current || !podeBaixarPeloPlano || !cenas.length) return;
+    const base = operacaoAtualRef.current("trecho");
+    const preparada = recortePreflightRef.current;
+    if (!preparada || preparada.fonteId !== base.fonteId || preparada.stream !== base.stream ||
+      preparada.referer !== base.referer || preparada.tipo !== base.tipo) {
+      setMultiCenasAtivo(false);
+      setDownloadResultado({ caminho: "", erro: "Este servidor não permite download. Selecione outro servidor e tente novamente." });
+      setShowSources(true);
+      return;
+    }
+    const largura = String(cenas.length).length;
+    const operacoes: OperacaoDownload[] = cenas.map((c, i) => ({
+      ...base, modo: "trecho", inicioSeg: c.inicio, fimSeg: c.fim,
+      titulo: `${String(i + 1).padStart(largura, "0")} - ${base.titulo}`,
+    }));
+    // A fonte validada pela autorização única só vale enquanto nada disto muda.
+    const contextoValido = () =>
+      montadoRef.current &&
+      base.usuario === usuarioAtual &&
+      base.fonteId === (fonteSelecionadaRef.current ?? fonte?.id ?? "") &&
+      base.stream === (directStreamRef.current ?? "") &&
+      base.referer === (streamRefererRef.current ?? "") &&
+      sessaoFontesRef.current === base.sessao;
+    downloadPendenteRef.current = true;
+    loteCanceladoRef.current = false;
+    setShowDownload(false);
+    setDownloadResultado(null);
+    setLoteResultado(null);
+    try {
+      const resumo = await executarLoteDownload(operacoes, {
+        autorizar: async () => !!await fonteAtualParaMidia(0, "download", (finalidade) => liberarAcao({
+          conteudoId, conteudoTipo, temporada, numeroEp, plataforma: "electron", finalidade,
+        }, portasDeAnuncio)),
+        contextoValido,
+        iniciar: async (operacao) => {
+          setDownloadProgresso({ pct: 0, atual: 0, total: 0, bytes: 0 });
+          try { return await desktopBridge.downloadMedia(operacao); }
+          catch (e) { return ehAcaoCancelada(e) ? { cancelado: true } : { error: "falha" }; }
+        },
+        aoIniciarCena: (indice) => { if (montadoRef.current) setLoteProgresso({ indice, total: operacoes.length }); },
+        aoConcluirCena: () => { if (montadoRef.current) setDownloadProgresso(null); },
+        cancelado: () => loteCanceladoRef.current || !montadoRef.current,
+      });
+      if (!montadoRef.current) return;
+      setLoteResultado({ concluidas: resumo.concluidas, falhas: resumo.falhas, total: resumo.total });
+    } catch {
+      if (montadoRef.current) setLoteResultado({ concluidas: 0, falhas: cenas.length, total: cenas.length });
+    } finally {
+      downloadPendenteRef.current = false;
+      if (montadoRef.current) { setLoteProgresso(null); setDownloadProgresso(null); }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cenas, conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, fonteAtualParaMidia, portasDeAnuncio, usuarioAtual, fonte?.id]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -3832,6 +3996,13 @@ export function CustomPlayer({
                       >
                         Baixar trecho…
                       </button>
+                      <div className="border-t border-white/10" />
+                      <button
+                        onClick={abrirMultiCenas}
+                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
+                      >
+                        Selecionar múltiplas cenas…
+                      </button>
                     </div>
                   )}
 
@@ -4053,6 +4224,130 @@ export function CustomPlayer({
                 >
                   Cancelar
                 </button>
+              </div>
+            )}
+
+            {/* Painel de múltiplas cenas */}
+            {multiCenasAtivo && (
+              <div className="mb-2 px-1 pointer-events-auto rounded-lg bg-black/40 border border-white/10 p-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wide text-white/40">Múltiplas cenas</span>
+                  {!loteProgresso && (
+                    <button
+                      onClick={() => setMultiCenasAtivo(false)}
+                      className="text-[11px] text-white/40 hover:text-white transition-colors"
+                    >
+                      Fechar
+                    </button>
+                  )}
+                </div>
+
+                {loteProgresso ? (
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] text-white/70 mb-1.5">
+                      <span>Baixando cena {loteProgresso.indice + 1} de {loteProgresso.total}</span>
+                      <span>{downloadProgresso ? `${downloadProgresso.pct}%` : "preparando…"}</span>
+                    </div>
+                    <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-[#E50914] transition-all duration-300" style={{ width: `${downloadProgresso?.pct ?? 0}%` }} />
+                    </div>
+                    <button
+                      onClick={cancelarLote}
+                      className="mt-2 w-full text-center text-[11px] text-white/50 hover:text-white transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-col sm:flex-row gap-2 mb-2">
+                      <textarea
+                        value={textoCenas}
+                        onChange={(e) => setTextoCenas(e.target.value)}
+                        rows={2}
+                        placeholder={"Cole intervalos, ex.:\n10:59-11:50"}
+                        className="flex-1 bg-white/10 border border-white/15 rounded px-2 py-1 text-[11px] text-white placeholder:text-white/30 focus:outline-none focus:border-white/40 resize-none"
+                      />
+                      <div className="flex sm:flex-col gap-1.5">
+                        <button
+                          onClick={importarTextoCenas}
+                          className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors whitespace-nowrap"
+                        >
+                          Adicionar lista
+                        </button>
+                        <button
+                          onClick={adicionarCenaAtual}
+                          className="px-2.5 py-1 rounded bg-white/10 text-white text-[11px] hover:bg-white/20 transition-colors whitespace-nowrap"
+                        >
+                          + Cena atual
+                        </button>
+                      </div>
+                    </div>
+
+                    {cenasAviso && <p className="text-[10px] text-white/50 mb-1.5">{cenasAviso}</p>}
+
+                    {cenas.length > 0 && (
+                      <div className="max-h-28 overflow-y-auto flex flex-col gap-1 mb-2">
+                        {cenas.map((cena, i) => (
+                          <div key={cena.id} className="flex items-center gap-1.5 text-[11px]">
+                            <span className="text-white/40 tabular-nums w-5 text-right">{i + 1}</span>
+                            {(["inicio", "fim"] as const).map((campo) => (
+                              <input
+                                key={campo}
+                                type="text"
+                                inputMode="numeric"
+                                onFocus={(e) => e.currentTarget.select()}
+                                value={campo === "inicio" ? cena.tInicio : cena.tFim}
+                                onChange={(e) => editarCenaTexto(cena.id, campo, e.currentTarget.value)}
+                                onBlur={() => comitarCena(cena.id, campo)}
+                                className="w-[66px] bg-white/10 border border-white/15 rounded px-1.5 py-1 text-[11px] text-white tabular-nums text-center focus:outline-none focus:border-white/40"
+                                placeholder="00:00"
+                              />
+                            ))}
+                            <span className="text-white/40 tabular-nums">{formatTime(Math.max(0, cena.fim - cena.inicio))}</span>
+                            <button
+                              onClick={() => previsualizarCena(cena)}
+                              className="ml-auto px-2 py-0.5 rounded-full bg-white/10 text-white/80 hover:bg-white/20 transition-colors"
+                            >
+                              Ver
+                            </button>
+                            <button
+                              onClick={() => removerCena(cena.id)}
+                              title="Excluir cena"
+                              className="px-1.5 py-0.5 text-white/40 hover:text-white transition-colors"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={baixarCenas}
+                        disabled={!cenas.length}
+                        className="px-3 py-1 rounded-full bg-[#E50914] text-white text-[11px] font-medium hover:bg-red-600 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                      >
+                        Baixar {cenas.length} cena{cenas.length === 1 ? "" : "s"}
+                      </button>
+                      {cenas.length > 0 && (
+                        <button
+                          onClick={() => { setCenas([]); setLoteResultado(null); setCenasAviso(null); }}
+                          className="px-2 py-1 text-[11px] text-white/40 hover:text-white transition-colors"
+                        >
+                          Limpar
+                        </button>
+                      )}
+                      {loteResultado && (
+                        <span className="text-[11px] text-white/60 tabular-nums">
+                          {loteResultado.concluidas}/{loteResultado.total} baixada{loteResultado.concluidas === 1 ? "" : "s"}
+                          {loteResultado.falhas ? ` · ${loteResultado.falhas} falha(s)` : ""}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 

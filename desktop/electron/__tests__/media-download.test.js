@@ -36,6 +36,21 @@ test("MP4 direto segue candidato a recorte e FFmpeg não recebe opções HLS", a
     await fs.promises.unlink(r.caminho);
   } finally { await fs.promises.rmdir(dir); }
 });
+test("destinoDisponivel não sobrescreve: acrescenta (2), (3)… e baixa cenas sem colidir", async () => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "obaflix-test-"));
+  try {
+    assert.equal(await _test.destinoDisponivel(dir, "cena", "mp4"), path.join(dir, "cena.mp4"));
+    // Duas cenas com o mesmo título e o mesmo intervalo não se sobrescrevem.
+    const a = await baixarMidia({ stream: "https://p.test/f.mp4", referer: "https://p.test/e", tipo: "mp4", titulo: "cena", modo: "trecho", inicioSeg: 60, fimSeg: 70, destinoDir: dir });
+    const b = await baixarMidia({ stream: "https://p.test/f.mp4", referer: "https://p.test/e", tipo: "mp4", titulo: "cena", modo: "trecho", inicioSeg: 60, fimSeg: 70, destinoDir: dir });
+    assert.notEqual(a.caminho, b.caminho);
+    assert.ok(b.caminho.includes("(2)"));
+    assert.equal(fs.existsSync(a.caminho), true);
+    assert.equal(fs.existsSync(b.caminho), true);
+    await fs.promises.unlink(a.caminho);
+    await fs.promises.unlink(b.caminho);
+  } finally { await fs.promises.rmdir(dir); }
+});
 test("HLS preserva opções específicas e capacidade MP4 exige tentativa real de mux/seek", async () => {
   assert.ok(_test.opcoesEntrada("hls").includes("-allowed_extensions"));
   assert.deepEqual(_test.opcoesEntrada("mp4"), []);
