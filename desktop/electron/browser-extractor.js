@@ -60,7 +60,7 @@ const LIMPEZA_PAGINA_PROVEDOR = `
 
 const APP_URL =
   process.env.OBAFLIX_URL ||
-  "https://obaflix.vercel.app";
+  "https://obaflixbr.com";
 
 let activeExtraction = null;
 

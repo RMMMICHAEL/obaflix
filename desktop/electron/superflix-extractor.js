@@ -1277,7 +1277,7 @@ class SuperflixSession {
     if (typeof fetchImpl !== "function") throw new Error("fetch indisponível no Electron");
 
     const ua = options.ua || DEFAULT_UA;
-    const appReferer = options.appReferer || "https://obaflix.vercel.app/";
+    const appReferer = options.appReferer || (process.env.OBAFLIX_URL || "https://obaflixbr.com").replace(/\/+$/, "") + "/";
     const input = new URL(embedUrl);
     if (!EH_SUPERFLIX.test(input.hostname)) throw new Error("URL SuperFlix inválida");
 

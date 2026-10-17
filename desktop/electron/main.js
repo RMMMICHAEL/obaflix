@@ -43,7 +43,7 @@ process.on("unhandledRejection", (reason) => {
   log.error("processo", "unhandledRejection", reason instanceof Error ? reason : { motivo: String(reason) });
 });
 
-const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
+const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflixbr.com";
 const OBAFLIX_ORIGIN = new URL(OBAFLIX_URL).origin;
 // Entrada dedicada do Electron. A raiz do site passou a ser a landing de
 // download para navegador comum; `/desktop` serve a mesma interface completa de
