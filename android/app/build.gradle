@@ -11,8 +11,8 @@ android {
         applicationId "com.obaflix"
         minSdk 26
         targetSdk 36
-        versionCode 23
-        versionName "1.0.23"
+        versionCode 24
+        versionName "1.0.24"
         // Mesmo valor que o :core-extractor le — ambos saem de gradle.properties.
         buildConfigField "String", "OBAFLIX_URL", "\"${project.property('obaflix.url')}\""
         buildConfigField "String", "UPDATE_MANIFEST_URL", "\"${project.property('obaflix.updateManifestUrl')}\""

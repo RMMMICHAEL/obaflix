@@ -106,7 +106,7 @@ android {
             if (!urlTeste?.startsWith('https://')) {
                 throw new GradleException("assembleHomologacao exige -Pobaflix.urlTeste=https://<ambiente-de-teste>")
             }
-            if (urlTeste == project.property('obaflix.url')) {
+            if (urlTeste == project.property('obaflix.url') || urlTeste.contains('obaflix.online') || urlTeste.contains('obaflixbr.com')) {
                 throw new GradleException("obaflix.urlTeste nao pode ser a URL de Production")
             }
 
@@ -129,7 +129,7 @@ android {
                         }
                     } else if (!valor.startsWith('https://')) {
                         throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} precisa ser https")
-                    } else if (valor == producao || valor.contains('obaflix.online')) {
+                    } else if (valor == producao || valor.contains('obaflix.online') || valor.contains('obaflixbr.com')) {
                         throw new GradleException("homologacao: ${modulo.path} BuildConfig.${nome} aponta para Production")
                     }
                 }

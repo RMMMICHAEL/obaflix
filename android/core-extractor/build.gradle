@@ -56,7 +56,7 @@ android {
             if (!urlTeste?.startsWith('https://')) {
                 throw new GradleException(":core-extractor homologacao exige -Pobaflix.urlTeste=https://<ambiente-de-teste>")
             }
-            if (urlTeste == project.property('obaflix.url') || urlTeste.contains('obaflix.online')) {
+            if (urlTeste == project.property('obaflix.url') || urlTeste.contains('obaflix.online') || urlTeste.contains('obaflixbr.com')) {
                 throw new GradleException(":core-extractor homologacao: obaflix.urlTeste nao pode ser Production")
             }
         }

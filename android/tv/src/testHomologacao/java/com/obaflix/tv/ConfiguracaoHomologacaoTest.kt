@@ -33,6 +33,7 @@ class ConfiguracaoHomologacaoTest {
         assertNotNull("OBAFLIX_URL invalida: '${BuildConfig.OBAFLIX_URL}'", url)
         assertTrue(url!!.isHttps)
         assertFalse("OBAFLIX_URL aponta para Production", url.host.endsWith("obaflix.online"))
+        assertFalse("OBAFLIX_URL aponta para Production", url.host.endsWith("obaflixbr.com"))
     }
 
     @Test
@@ -65,6 +66,7 @@ class ConfiguracaoHomologacaoTest {
                     assertNotNull("${config.simpleName}.${campo.name} invalida: '$valor'", url)
                     assertTrue("${config.simpleName}.${campo.name} fora de https", url!!.isHttps)
                     assertNotEquals("${config.simpleName}.${campo.name} em Production", "obaflix.online", url.host)
+                    assertFalse("${config.simpleName}.${campo.name} em Production", url.host.endsWith("obaflixbr.com"))
                 }
             }
         }
