@@ -23,7 +23,7 @@ const MOON = "https://app.megafrixapi.com/moon.php";
 const REFERER_DEFAULT = "https://megaflix.lat/";
 // Usado apenas no corpo POST do rola3/rola4 (campo "r") — preserva o comportamento
 // original de extractSecuredLink, anterior à generalização deste módulo.
-const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflix.vercel.app";
+const OBAFLIX_URL = process.env.OBAFLIX_URL || "https://obaflixbr.com";
 
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const politica = require("../window-policy");
 
-const APP = "https://obaflix.vercel.app";
+const APP = "https://obaflixbr.com";
 const BANNER = `${APP}/desktop/banner.html`;
 const ADS = "https://obaflix-ads.vercel.app";
 const ANUNCIO = `${ADS}/banner.html#feed`;
@@ -76,9 +76,11 @@ test("window.open: esquema não-https nunca sai (nem para o navegador)", () => {
 
 test("o app não é confundido com host parecido", () => {
   for (const url of [
-    "https://obaflix.vercel.app.evil.test/desktop",
-    "https://evil.test/https://obaflix.vercel.app/desktop",
-    "https://obaflix.vercel.app@evil.test/desktop",
+    "https://obaflixbr.com.evil.test/desktop",
+    "https://evil.test/https://obaflixbr.com/desktop",
+    "https://obaflixbr.com@evil.test/desktop",
+    "https://obaflix.online/desktop",
+    "https://obaflix.vercel.app/desktop",
   ]) {
     assert.equal(politica.ehDoApp(url, APP), false, url);
     assert.equal(politica.ehDocumentoDoBanner(url, APP), false, url);
@@ -172,7 +174,7 @@ test("download: só com toda a cadeia na origem do app; anúncio e terceiros can
     ["https://evil.test/m.exe"],
     [`${APP}/redir`, "https://evil.test/m.exe"],
     ["data:application/octet-stream;base64,TVo="],
-    ["https://obaflix.vercel.app.evil.test/m.exe"],
+    ["https://obaflixbr.com.evil.test/m.exe"],
     [],
     undefined,
   ]) {
