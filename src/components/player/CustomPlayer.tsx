@@ -357,6 +357,11 @@ export function CustomPlayer({
   const progressoRef = useRef(0);
   const durationRef = useRef(duracaoSeg ?? 0);
   const autoSkipDoneRef = useRef(false);
+  // Última posição (em segundos) que /api/progress aceitou. Evita reenviar a
+  // mesma posição — o que acontecia a cada tick com o vídeo parado ou pausado.
+  const ultimaPosEnviadaRef = useRef(-1);
+  // Espelho de `playing` para o timer periódico decidir sem recriar o efeito.
+  const playingRef = useRef(false);
   // [DIAG] timestamp do último load() — para medir intervalo até o primeiro erro/warning pós-renovação
   const lastLoadAtRef = useRef(0);
   const mediaSessionRef = useRef<{ api: { stop: (id: string) => Promise<unknown> }; id: string } | null>(null);
@@ -930,22 +935,33 @@ export function CustomPlayer({
 
   // ── Save progress ────────────────────────────────────────────────────────────
   const saveProgress = useCallback(async () => {
-    if (!progressoRef.current) return;
-    await fetch("/api/progress", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        conteudoId, conteudoTipo, episodioId, temporada, numeroEp,
-        progressoSeg: progressoRef.current,
-        duracaoSeg: durationRef.current || duracaoSeg,
-      }),
-    }).catch(() => {});
+    const pos = progressoRef.current;
+    if (!pos) return;
+    // Sem mudança desde o último envio aceito: nada a salvar. Cobre o vídeo
+    // pausado e o parado, e elimina duplicatas entre timer, pause e saída.
+    if (pos === ultimaPosEnviadaRef.current) return;
+    try {
+      await fetch("/api/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conteudoId, conteudoTipo, episodioId, temporada, numeroEp,
+          progressoSeg: pos,
+          duracaoSeg: durationRef.current || duracaoSeg,
+        }),
+      });
+      // Só marca como enviado se a escrita não lançou: uma falha mantém a
+      // posição para o próximo gatilho reenviar, preservando Continuar Assistindo.
+      ultimaPosEnviadaRef.current = pos;
+    } catch { /* mantém ultimaPosEnviadaRef para reenviar depois */ }
   }, [conteudoId, conteudoTipo, episodioId, temporada, numeroEp, duracaoSeg]);
 
   saveProgressRef.current = saveProgress;
 
   useEffect(() => {
-    const t = setInterval(saveProgress, 15000);
+    // 30s durante reprodução ativa. Pausado não envia aqui — o evento de pause
+    // já salvou a posição uma vez, e a deduplicação barra reenvios iguais.
+    const t = setInterval(() => { if (playingRef.current) saveProgress(); }, 30000);
     const onHide = () => { if (document.visibilityState === "hidden") saveProgress(); };
     const onUnload = () => saveProgress();
     document.addEventListener("visibilitychange", onHide);
@@ -2452,6 +2468,7 @@ export function CustomPlayer({
         setShowRetry(false);
         setStatus("playing");
         setPlaying(true);
+        playingRef.current = true;
         if (ambiente !== "electron") initialLoadRef.current = false; // web mantém fallback histórico; Electron espera frame apresentado
         if (ambiente !== "electron") reExtractCountRef.current = 0;
         resetControlsTimerRef.current();
@@ -2459,11 +2476,17 @@ export function CustomPlayer({
       player.on("pause", () => {
         if (unmountedRef.current) return;
         setPlaying(false);
+        playingRef.current = false;
         setControlsVisible(true);
         if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
         saveProgressRef.current();
       });
-      player.on("complete", () => { if (!unmountedRef.current) void saveProgressRef.current().catch(() => {}); });
+      player.on("complete", () => { playingRef.current = false; if (!unmountedRef.current) void saveProgressRef.current().catch(() => {}); });
+      // Buscar outra posição: salva o destino (a dedup deixa passar por ser mudança).
+      player.on("seek", ({ offset }: any) => {
+        if (typeof offset === "number" && isFinite(offset)) progressoRef.current = Math.floor(offset);
+        if (!unmountedRef.current) void saveProgressRef.current().catch(() => {});
+      });
 
       player.on("time", ({ position, duration }: any) => {
         if (unmountedRef.current) return;
@@ -3411,14 +3434,21 @@ export function CustomPlayer({
 
     const onPlay = () => {
       setPlaying(true);
+      playingRef.current = true;
       setStatus("playing");
       setAutoPlayBlocked(false);
       resetControlsTimerRef.current();
     };
     const onPause = () => {
       setPlaying(false);
+      playingRef.current = false;
       setControlsVisible(true);
       if (controlsTimerRef.current) { clearTimeout(controlsTimerRef.current); controlsTimerRef.current = null; }
+      saveProgress();
+    };
+    // Buscar outra posição: atualiza a posição e salva o destino (dedup deixa passar).
+    const onSeeked = () => {
+      progressoRef.current = Math.floor(video.currentTime);
       saveProgress();
     };
     const onWaiting = () => setStatus("loading");
@@ -3455,6 +3485,7 @@ export function CustomPlayer({
 
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
+    video.addEventListener("seeked", onSeeked);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("timeupdate", onTimeUpdate);
@@ -3463,6 +3494,7 @@ export function CustomPlayer({
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("timeupdate", onTimeUpdate);
