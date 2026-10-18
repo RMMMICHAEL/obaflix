@@ -57,4 +57,4 @@ O compartilhamento usa um PNG original estático de 1200 × 630, sem dependênci
 - `vercel.json` e `ads-site/vercel.json`: deploy automático desativado somente para a branch de revisão, nos dois projetos conectados.
 - `docs/landing-obaflix-cortes.md`: escopo, evidências e próximas integrações.
 
-O projeto separado obaflix-ads disparou um preview automaticamente no primeiro push, pois usa ads-site/vercel.json. A mesma restrição de branch foi aplicada também ali. Nenhuma alteração de produção foi promovida.
+O projeto separado obaflix-ads disparou um preview automaticamente no primeiro push, pois usa ads-site/vercel.json. A mesma restrição de branch foi aplicada também ali. O preview dpl_5wY5ceMTEAabbppRGcyZrdFGMcTC foi removido, com confirmação da CLI. Nenhuma alteração de produção foi promovida.
