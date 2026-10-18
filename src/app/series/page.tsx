@@ -89,10 +89,9 @@ export default async function SeriesPage({
       where: { series: { some: { serie: serieDisponivel({ tipo: "serie" }) } } },
       orderBy: { nome: "asc" },
     }),
-    prisma.serie.findMany({
+    prisma.serie.groupBy({
+      by: ["ano"],
       where: serieDisponivel({ tipo: "serie", ano: { not: null } }),
-      select: { ano: true },
-      distinct: ["ano"],
       orderBy: { ano: "desc" },
     }),
   ]);
