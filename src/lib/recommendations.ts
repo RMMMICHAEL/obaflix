@@ -98,17 +98,14 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
         id: true, titulo: true, poster: true, background: true, logo: true,
         ano: true, nota: true, popularidade: true, tipo: true,
         generos: { select: { generoId: true } },
-        // Só para derivar dois booleanos. O array não entra no cache — vira
-        // `temDub`/`temLeg` logo abaixo. Trocar isso por colunas em Serie é a
-        // fase seguinte, tratada em separado.
-        episodios: {
-          where: { OR: [{ urlDub: { not: null } }, { urlLeg: { not: null } }] },
-          select: { urlDub: true, urlLeg: true },
-          take: 20,
-        },
+        // `temDub`/`temLeg` saem de `carregarFlagsDeAudio` abaixo — sem trazer
+        // as URLs de milhares de episódios só para derivar dois booleanos.
       },
     }),
   ]);
+
+  // Presença de dublagem/legenda por série, sem egress das URLs.
+  const flags = await carregarFlagsDeAudio(series.map((s) => s.id));
 
   // Separados por tipo: o corte em 180 é por modelo, como era o `take`.
   return {
@@ -122,9 +119,50 @@ async function carregarPool(): Promise<{ filmes: PoolItem[]; series: PoolItem[] 
       id: s.id, tipo: normalizeSeriesType(s.tipo), titulo: s.titulo, poster: s.poster, background: s.background, logo: s.logo,
       ano: s.ano, nota: s.nota, popularidade: s.popularidade,
       generoIds: s.generos.map((g) => g.generoId),
-      temDub: s.episodios.some((ep) => Boolean(ep.urlDub)),
-      temLeg: s.episodios.some((ep) => Boolean(ep.urlLeg)),
+      temDub: flags.temDub.has(s.id),
+      temLeg: flags.temLeg.has(s.id),
     })),
+  };
+}
+
+/**
+ * `temDub`/`temLeg` por série sem transferir URLs de episódios.
+ *
+ * Duas agregações FIXAS por `serieId` (não uma por série — nada de N+1) que
+ * contam a PRESENÇA de uma fonte VÁLIDA. "Válida" = não-nula **e** não-vazia:
+ * o indicador antigo usava `Boolean(url)`, e `Boolean("")` é `false`, enquanto
+ * `COUNT(coluna)` contaria `""` como presente. Por isso o filtro é
+ * `not: null` **e** `not: ""` por campo (um `_count` por campo), em vez de um
+ * único `_count` de ambos — diferença intencional, exigida pela semântica de
+ * string vazia.
+ *
+ * Diferença intencional vs. o código anterior: o antigo lia só os primeiros
+ * 20 episódios reproduzíveis **sem `orderBy`** — ou seja, era não-determinístico
+ * para séries com mais de 20 episódios. A agregação olha todos, então é igual
+ * para ≤20 e mais correta (e estável) acima disso.
+ *
+ * `db` é injetável só para teste; em produção usa o `prisma` compartilhado.
+ */
+export async function carregarFlagsDeAudio(
+  serieIds: string[],
+  db: typeof prisma = prisma,
+): Promise<{ temDub: Set<string>; temLeg: Set<string> }> {
+  if (serieIds.length === 0) return { temDub: new Set(), temLeg: new Set() };
+  const [comDub, comLeg] = await Promise.all([
+    db.episodio.groupBy({
+      by: ["serieId"],
+      where: { serieId: { in: serieIds }, AND: [{ urlDub: { not: null } }, { urlDub: { not: "" } }] },
+      _count: { urlDub: true },
+    }),
+    db.episodio.groupBy({
+      by: ["serieId"],
+      where: { serieId: { in: serieIds }, AND: [{ urlLeg: { not: null } }, { urlLeg: { not: "" } }] },
+      _count: { urlLeg: true },
+    }),
+  ]);
+  return {
+    temDub: new Set(comDub.map((r) => r.serieId)),
+    temLeg: new Set(comLeg.map((r) => r.serieId)),
   };
 }
 
