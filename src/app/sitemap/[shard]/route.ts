@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 const SHARD_CATALOGO = /^(filmes|series)-([1-9][0-9]{0,3})\.xml$/;
 
 async function paginasFixas() {
-  const urls = [absoluteUrl("/")];
+  const urls = [absoluteUrl("/"), absoluteUrl("/cortes")];
 
   // Listagens e generos so entram quando o catalogo pode ser indexado: enquanto
   // a flag estiver off essas paginas respondem noindex, e anunciar URL noindex
