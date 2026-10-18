@@ -70,10 +70,9 @@ export default async function AnimesPage({
       where: { series: { some: { serie: serieDisponivel({ tipo: "anime" }) } } },
       orderBy: { nome: "asc" },
     }),
-    prisma.serie.findMany({
+    prisma.serie.groupBy({
+      by: ["ano"],
       where: serieDisponivel({ ...animeCatalogWhere, ano: { not: null } }),
-      select: { ano: true },
-      distinct: ["ano"],
       orderBy: { ano: "desc" },
     }),
   ]);

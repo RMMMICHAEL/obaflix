@@ -58,10 +58,9 @@ const getBrowseData = unstable_cache(
       where: { series: { some: { serie: serieDisponivel({ tipo: "desenho" }) } } },
       orderBy: { nome: "asc" },
     }),
-    prisma.serie.findMany({
+    prisma.serie.groupBy({
+      by: ["ano"],
       where: serieDisponivel({ tipo: "desenho", ano: { not: null } }),
-      select: { ano: true },
-      distinct: ["ano"],
       orderBy: { ano: "desc" },
     }),
     prisma.serie.findMany({ where: serieDisponivel({ tipo: "desenho" }), orderBy: { popularidade: { sort: "desc", nulls: "last" } }, take: 72, select: selBrowseWithGenres }),
@@ -119,10 +118,9 @@ export default async function DesenhoPage({
         where: { series: { some: { serie: serieDisponivel({ tipo: "desenho" }) } } },
         orderBy: { nome: "asc" },
       }),
-      prisma.serie.findMany({
+      prisma.serie.groupBy({
+        by: ["ano"],
         where: serieDisponivel({ tipo: "desenho", ano: { not: null } }),
-        select: { ano: true },
-        distinct: ["ano"],
         orderBy: { ano: "desc" },
       }),
       prisma.serie.findMany({ where: serieDisponivel(where), orderBy, skip, take: limit, select: selGrid }),

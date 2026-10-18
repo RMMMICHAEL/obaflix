@@ -93,10 +93,9 @@ export default async function FilmesPage({
       where: { filmes: { some: { filme: filmeDisponivel() } } },
       orderBy: { nome: "asc" },
     }),
-    prisma.filme.findMany({
+    prisma.filme.groupBy({
+      by: ["ano"],
       where: filmeDisponivel({ ano: { not: null } }),
-      select: { ano: true },
-      distinct: ["ano"],
       orderBy: { ano: "desc" },
     }),
   ]);
