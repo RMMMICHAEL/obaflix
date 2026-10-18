@@ -34,13 +34,13 @@ O elemento raiz contém `data-cortes-variant="demo"`. CTAs usam `data-cortes-cta
 
 ## Segurança e consumo
 
-Revisão explícita: nenhuma credencial, domínio de mídia, token ou URL interna introduzida. Nenhuma API, chamada externa, entrada de usuário, armazenamento ou coleta adicionada. JSON-LD reutiliza `JsonLd`, com escape de `<`. CTAs são âncoras internas. Não há mudanças nos gates de sessão ou autorização. Sem consulta adicional ao Supabase e sem polling. A página pode ser pré-renderizada; o PNG de compartilhamento é servido como arquivo estático.
+Revisão explícita: nenhuma credencial, domínio de mídia, token ou URL interna introduzida. Nenhuma API, chamada externa, entrada de usuário, armazenamento ou coleta adicionada. JSON-LD reutiliza `JsonLd`, com escape de `<`. CTAs são âncoras internas. Não há mudanças nos gates de sessão ou autorização. Sem consulta adicional ao Supabase e sem polling. O layout raiz da main força renderização dinâmica, preservada neste PR; o PNG de compartilhamento é servido como arquivo estático.
 
 A configuração `git.deploymentEnabled` desliga deploy automático somente para `codex/obaflix-cortes`, conforme https://vercel.com/docs/project-configuration/git-configuration. Nenhuma alteração às regras de outras branches, nenhum merge ou deploy manual.
 
 ## Validação
 
-Validação local: 21 testes de roteamento e SEO aprovados; lint completo sem erros, com avisos preexistentes fora dos arquivos novos; TypeScript sem erros. Navegador: HTTP 200, título e canonical específicos, um H1, CTAs internos, três etapas da demonstração, operação por Enter, FAQ expansível e console sem erros. Layout revisado em desktop, 390 px e 320 px, sem rolagem horizontal. `npm run build` aprovado, incluindo Prisma generate, compilação, checagem de tipos e pré-renderização. `/cortes` foi gerada como página estática.
+Validação local: 21 testes de roteamento e SEO aprovados; lint completo sem erros, com avisos preexistentes fora dos arquivos novos; TypeScript sem erros. Navegador: HTTP 200, título e canonical específicos, um H1, CTAs internos, três etapas da demonstração, operação por Enter, FAQ expansível e console sem erros. Layout revisado em desktop, 390 px e 320 px, sem rolagem horizontal. `npm run build` aprovado, incluindo Prisma generate, compilação, checagem de tipos e pré-renderização. `/cortes` tem 3,9 kB de JavaScript específico e 91,3 kB de primeiro carregamento no relatório do build; permanece dinâmica por herdar `force-dynamic` do layout raiz.
 
 O compartilhamento usa um PNG original estático de 1200 × 630, sem dependência de renderização dinâmica ou custo de geração em runtime.
 
@@ -54,5 +54,7 @@ O compartilhamento usa um PNG original estático de 1200 × 630, sem dependênci
 - `src/config/site-mode.ts`: allowlist da apresentação pública.
 - `src/app/sitemap/[shard]/route.ts`: URL da landing no sitemap.
 - `src/lib/__tests__/siteModeCortes.test.ts`: regressão de roteamento.
-- `vercel.json`: deploy automático desativado somente para a branch de revisão.
+- `vercel.json` e `ads-site/vercel.json`: deploy automático desativado somente para a branch de revisão, nos dois projetos conectados.
 - `docs/landing-obaflix-cortes.md`: escopo, evidências e próximas integrações.
+
+O projeto separado obaflix-ads disparou um preview automaticamente no primeiro push, pois usa ads-site/vercel.json. A mesma restrição de branch foi aplicada também ali. Nenhuma alteração de produção foi promovida.
