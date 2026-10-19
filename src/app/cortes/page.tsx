@@ -8,13 +8,12 @@ import {
   Sparkles,
 } from "lucide-react";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { CortesDemo } from "./CortesDemo";
 import styles from "./cortes.module.css";
 
 const description =
-  "Encontre momentos, selecione trechos e prepare seu material para edição com o Obaflix Cortes para Windows. Conheça o fluxo e os próximos passos do produto.";
+  "Assista a filmes e séries e selecione cenas diretamente no player do Obaflix Cortes para Windows, sem baixar o episódio completo antes de preparar seus trechos.";
 export const metadata: Metadata = {
-  title: { absolute: "Obaflix Cortes | Menos procura. Mais edição." },
+  title: { absolute: "Obaflix Cortes | Assista e faça cortes ao mesmo tempo" },
   description,
   alternates: { canonical: "/cortes" },
   category: "technology",
@@ -25,7 +24,7 @@ export const metadata: Metadata = {
     "edição de vídeo Windows",
   ],
   openGraph: {
-    title: "Obaflix Cortes | Menos procura. Mais edição.",
+    title: "Obaflix Cortes | Assista e faça cortes ao mesmo tempo",
     description,
     url: "/cortes",
     type: "website",
@@ -49,8 +48,8 @@ export const metadata: Metadata = {
 
 const faqs = [
   [
-    "Como funciona o Obaflix Cortes?",
-    "O fluxo parte do player: você navega até o momento desejado, marca início e fim, confere a prévia e baixa o trecho. Depois, leva o arquivo para o editor que já usa. A demonstração desta página é ilustrativa e não processa vídeos.",
+    "Preciso baixar o filme ou episódio inteiro?",
+    "Não é necessário baixar o vídeo completo antes de selecionar o corte. Enquanto assiste no aplicativo Windows, marque início e fim, confira a prévia e baixe o trecho. O recorte depende de uma fonte e de um formato compatíveis; alguns caminhos exigem FFmpeg.",
   ],
   [
     "Funciona no Windows? Preciso instalar?",
@@ -62,7 +61,7 @@ const faqs = [
   ],
   [
     "Ele substitui meu editor de vídeo?",
-    "Não. A proposta é ajudar na preparação do material. Montagem, sincronização com a narração, legendas e finalização continuam no seu editor. A timeline mostrada aqui representa essa etapa externa.",
+    "Não. O Obaflix prepara os trechos. Montagem, sincronização com a narração, legendas e finalização continuam no editor que você já usa.",
   ],
   [
     "Todo conteúdo pode ser exportado?",
@@ -97,7 +96,6 @@ export default function CortesPage() {
         <a
           href="#inicio"
           className={styles.brand}
-          aria-label="Obaflix Cortes, início"
         >
           <span>
             OBA<span>FLIX</span>
@@ -115,22 +113,21 @@ export default function CortesPage() {
           className={styles.headerCta}
           data-cortes-cta="header"
         >
-          Ver na prática <ArrowUpRight size={16} aria-hidden />
+          Como funciona <ArrowUpRight size={16} aria-hidden />
         </a>
       </header>
 
       <section className={styles.hero} id="conteudo" aria-labelledby="titulo">
         <div className={styles.heroCopy}>
           <p className={styles.kicker}>
-            <Scissors size={15} aria-hidden /> Seu próximo vídeo começa no
-            trecho certo
+            <Scissors size={15} aria-hidden /> Para quem cria com filmes e séries
           </p>
           <h1 id="titulo">
-            Pare de perder horas <span>procurando cenas</span> para seus vídeos.
+            Assista e faça cortes <span>ao mesmo tempo.</span>
           </h1>
           <p className={styles.lead}>
-            Encontre seus momentos favoritos, selecione os trechos que precisa e
-            prepare tudo para sua edição em um só lugar.
+            Achou uma cena enquanto assiste? Selecione o trecho direto no player
+            e prepare seu vídeo, sem baixar o episódio completo antes.
           </p>
           <div className={styles.actions}>
             <a
@@ -138,10 +135,10 @@ export default function CortesPage() {
               className={styles.primary}
               data-cortes-cta="hero"
             >
-              Veja como funciona <ArrowDown size={18} aria-hidden />
+              Veja como preparar um corte <ArrowDown size={18} aria-hidden />
             </a>
-            <a href="#lancamento" className={styles.textLink}>
-              Conheça o Cortes <ArrowUpRight size={17} aria-hidden />
+            <a href="#recursos" className={styles.textLink}>
+              Explore os recursos <ArrowUpRight size={17} aria-hidden />
             </a>
           </div>
           <p className={styles.availability}>
@@ -149,81 +146,16 @@ export default function CortesPage() {
             Oferta comercial em preparação
           </p>
         </div>
-        <div className={styles.heroVisual}>
-          <div className={styles.windowTop}>
-            <span>
-              <Scissors size={14} aria-hidden /> Obaflix Cortes
-            </span>
-            <span aria-hidden>− &nbsp; □ &nbsp; ×</span>
+        <aside className={styles.recording} aria-labelledby="gravacao-titulo">
+          <div className={styles.recordingScreen}>
+            <Monitor size={36} aria-hidden />
+            <span>APLICATIVO WINDOWS</span>
+            <h2 id="gravacao-titulo">Veja o corte acontecer.</h2>
+            <p>Uma gravação real mostrará a cena em reprodução, a seleção no player e o trecho exportado.</p>
+            <small>Gravação ainda não disponível.</small>
           </div>
-          <div
-            className={styles.playerArt}
-            role="img"
-            aria-label="Cena vetorial original de montanhas ao pôr do sol, usada como exemplo de seleção de trecho"
-          >
-            <svg viewBox="0 0 700 420" aria-hidden>
-              <defs>
-                <linearGradient id="sky" x2="0" y2="1">
-                  <stop stopColor="#c49373" />
-                  <stop offset="1" stopColor="#443a4a" />
-                </linearGradient>
-              </defs>
-              <path fill="url(#sky)" d="M0 0h700v420H0z" />
-              <circle cx="463" cy="117" r="48" fill="#eed0a0" />
-              <path
-                fill="#63525a"
-                d="M0 260 170 110 330 277 500 188 700 286V420H0z"
-              />
-              <path
-                fill="#393c47"
-                d="m0 325 261-173 220 241 118-139 101 74v92H0z"
-              />
-              <path
-                fill="#202d35"
-                d="m0 364 147-98 178 154H0zm360 56 207-142 133 71v71z"
-              />
-              <path fill="#a8a699" d="m286 420 77-132 20-13-22 74 66 71z" />
-              <path fill="#d3b998" d="m306 420 57-132 9-5-34 93 38 44z" />
-            </svg>
-            <span className={styles.artLabel}>
-              EXEMPLO VISUAL · CENA ORIGINAL
-            </span>
-            <span className={styles.timecode}>00:24:18</span>
-          </div>
-          <div className={styles.playerControls}>
-            <span aria-hidden>Ⅱ</span>
-            <span>
-              24:18 <span>/ 01:32:00</span>
-            </span>
-            <Scissors size={16} aria-hidden />
-          </div>
-          <div className={styles.selection}>
-            <span />
-            <b />
-          </div>
-          <div className={styles.cutPanel}>
-            <div>
-              <small>INÍCIO</small>
-              <strong>00:24:18</strong>
-            </div>
-            <span>→</span>
-            <div>
-              <small>FIM</small>
-              <strong>00:24:30</strong>
-            </div>
-            <span className={styles.cutAction}>
-              Trecho de 12s <Check size={14} aria-hidden />
-            </span>
-          </div>
-          <p className={styles.visualCaption}>
-            Encontre. Marque. Confira. Prepare para editar.
-          </p>
-          <span className={styles.annotation}>
-            O momento que faltava
-            <br />
-            no seu roteiro. <Scissors size={23} aria-hidden />
-          </span>
-        </div>
+          <p className={styles.recordingCaption}>Demonstração real do aplicativo, sem simulação de telas.</p>
+        </aside>
       </section>
       <div className={styles.audience}>
         <span>Para quem transforma cenas em histórias</span>
@@ -232,95 +164,20 @@ export default function CortesPage() {
         </p>
       </div>
 
-      <section
-        className={`${styles.section} ${styles.problem}`}
-        aria-labelledby="problema"
-      >
-        <div>
-          <p className={styles.overline}>
-            O roteiro está pronto. As cenas, ainda não.
-          </p>
-          <h2 id="problema">
-            Sua criatividade não deveria ficar <span>presa na procura.</span>
-          </h2>
-        </div>
-        <div className={styles.problemList}>
-          <p>
-            <span>01</span> Abrir várias abas atrás de um scene pack que talvez
-            nem tenha o que você precisa.
-          </p>
-          <p>
-            <span>02</span> Rever o vídeo, anotar horários e tentar lembrar onde
-            estava aquela cena.
-          </p>
-          <p>
-            <span>03</span> Chegar ao editor com a narração pronta e a faixa de
-            vídeo vazia.
-          </p>
-        </div>
-      </section>
-
-      <section className={styles.section} id="fluxo" aria-labelledby="solucao">
-        <div className={styles.sectionIntro}>
+      <section className={`${styles.section} ${styles.demoSection}`} id="demonstracao" aria-labelledby="demo-titulo">
+        <div id="fluxo" className={styles.sectionIntro}>
           <div>
-            <p className={styles.overline}>Da ideia ao material de edição</p>
-            <h2 id="solucao">
-              Menos vai e volta.
-              <br />
-              Mais história na timeline.
-            </h2>
+            <p className={styles.overline}>A narração está pronta. A faixa de vídeo, vazia.</p>
+            <h2 id="demo-titulo">Da voz às cenas, em quatro passos.</h2>
           </div>
-          <p>
-            Reúna a busca pelo momento e a preparação do trecho no mesmo fluxo.
-            Leve para o editor só o que você escolheu.
-          </p>
+          <p>Seu roteiro está pronto. Agora encontre as cenas: assista no Obaflix, prepare os trechos e leve os arquivos para a montagem.</p>
         </div>
-        <ol className={styles.workflow}>
-          <li>
-            <span>01 / ENCONTRE</span>
-            <h3>Vá até o momento.</h3>
-            <p>
-              Navegue pelo conteúdo no player e encontre a cena que conversa com
-              o seu roteiro.
-            </p>
-          </li>
-          <li>
-            <span>02 / SELECIONE</span>
-            <h3>Fique com o que importa.</h3>
-            <p>
-              Ajuste o início e o fim. Veja a prévia para conferir o trecho
-              antes de baixar.
-            </p>
-          </li>
-          <li>
-            <span>03 / PREPARE</span>
-            <h3>Leve para a edição.</h3>
-            <p>
-              Exporte um trecho por vez e organize os arquivos no seu fluxo de
-              trabalho.
-            </p>
-          </li>
+        <ol className={styles.flowSteps}>
+          <li><span>01 / NO SEU EDITOR</span><h3>Comece pela narração.</h3><p>Use o roteiro e a voz para saber quais imagens sua história precisa.</p></li>
+          <li><span>02 / NO OBAFLIX</span><h3>Encontre a cena.</h3><p>Assista a filmes e séries. Ao encontrar uma cena para seu roteiro, selecione o trecho no próprio player.</p></li>
+          <li><span>03 / PREPARE O TRECHO</span><h3>Marque, confira e baixe.</h3><p>Ajuste início e fim, veja a prévia e exporte. Repita para cada novo intervalo.</p></li>
+          <li><span>04 / DE VOLTA AO EDITOR</span><h3>Monte sua história.</h3><p>Importe os arquivos e alinhe as cenas à narração. A edição continua com você.</p></li>
         </ol>
-      </section>
-
-      <section
-        className={`${styles.section} ${styles.demoSection}`}
-        id="demonstracao"
-        aria-labelledby="demo-titulo"
-      >
-        <div className={styles.sectionIntro}>
-          <div>
-            <p className={styles.overline}>
-              Veja o caminho do seu próximo corte
-            </p>
-            <h2 id="demo-titulo">Da narração ao trecho certo.</h2>
-          </div>
-          <p>
-            Explore as três etapas. Uma representação do processo, da procura no
-            player à montagem no seu editor.
-          </p>
-        </div>
-        <CortesDemo />
       </section>
 
       <section
@@ -369,10 +226,10 @@ export default function CortesPage() {
               </p>
             </article>
             <article>
-              <h3>Acompanhe a preparação.</h3>
+              <h3>Mais histórias para descobrir.</h3>
               <p>
-                Veja o progresso do download e localize o arquivo salvo.
-                Organize os trechos nas suas pastas para levar ao editor.
+                Explore filmes e séries em um catálogo em constante atualização.
+                Encontre referências para suas análises, resumos e próximos vídeos.
               </p>
             </article>
           </div>
@@ -384,58 +241,21 @@ export default function CortesPage() {
         </p>
       </section>
 
-      <section
-        className={`${styles.section} ${styles.ai}`}
-        aria-labelledby="ai-titulo"
-      >
-        <div>
-          <span className={styles.future}>
-            <Sparkles size={14} aria-hidden /> Em desenvolvimento · indisponível
-            hoje
-          </span>
-          <h2 id="ai-titulo">
-            Você traz o roteiro.
-            <br />A IA ajuda a encontrar
-            <br />
-            <span>os momentos.</span>
-          </h2>
-          <p>
-            A visão do Obaflix Cortes AI é receber seu roteiro dentro do player,
-            sugerir cenas relacionadas e preencher um painel de cortes para sua
-            revisão.
-          </p>
-          <p className={styles.note}>
-            Uma próxima etapa do produto, sem data confirmada. As sugestões e o
-            painel de cortes com IA ainda não estão disponíveis.
-          </p>
-        </div>
-        <div
-          className={styles.scriptPreview}
-          aria-label="Conceito futuro da IA, ainda não funcional"
-        >
-          <span>VISÃO DO PRODUTO / CORTES AI</span>
-          <p>
-            “A viagem começa quando ele decide seguir um caminho diferente.”
-          </p>
-          <div>
-            <Sparkles size={20} aria-hidden />
-            <p>Roteiro → sugestões de momentos → sua revisão</p>
-          </div>
-          <small>
-            Conceito ilustrativo. Nenhum roteiro é enviado ou processado aqui.
-          </small>
-        </div>
-      </section>
+      <aside className={`${styles.section} ${styles.futureNote}`} aria-labelledby="ai-titulo">
+        <span className={styles.future}><Sparkles size={14} aria-hidden /> Em desenvolvimento · indisponível hoje</span>
+        <h2 id="ai-titulo">Mais adiante: Obaflix Cortes AI.</h2>
+        <p>A visão futura é receber seu roteiro no player, sugerir momentos e preencher um painel de cortes para revisão. Essas funções ainda não existem no fluxo atual e não têm data confirmada.</p>
+      </aside>
 
       <section
-        className={`${styles.section} ${styles.plans}`}
+        className={styles.section}
         id="lancamento"
         aria-labelledby="planos-titulo"
       >
         <div className={styles.sectionIntro}>
           <div>
             <p className={styles.overline}>Um produto com próximos capítulos</p>
-            <h2 id="planos-titulo">Conheça o que vem pela frente.</h2>
+            <h2 id="planos-titulo">Uma oferta própria, em preparação.</h2>
           </div>
           <p>
             Modalidades em preparação. Os detalhes serão apresentados quando a
@@ -490,20 +310,20 @@ export default function CortesPage() {
       <section className={styles.final} aria-labelledby="final-titulo">
         <Scissors size={34} aria-hidden />
         <h2 id="final-titulo">
-          Seu tempo é para criar.
+          Encontrou a cena?
           <br />
-          <span>Encontre o trecho. Conte a história.</span>
+          <span>Transforme em parte da sua história.</span>
         </h2>
         <p>
-          Conheça um fluxo mais direto para preparar o material do seu próximo
-          vídeo.
+          Assista, selecione e prepare o trecho. Depois, dê o seu olhar
+          à montagem no editor que você já usa.
         </p>
         <a
           href="#demonstracao"
           className={styles.primary}
           data-cortes-cta="footer"
         >
-          Explorar a demonstração <ArrowUpRight size={18} aria-hidden />
+          Conheça o fluxo de cortes <ArrowUpRight size={18} aria-hidden />
         </a>
         <small>
           O checkout e a lista de interessados do Cortes ainda não estão

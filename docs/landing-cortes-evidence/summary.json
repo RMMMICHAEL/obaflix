@@ -1,0 +1,43 @@
+{
+  "environment": "local production build, simulated Lighthouse throttling",
+  "results": {
+    "mobile": {
+      "lighthouse": "13.5.0",
+      "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/142.0.0.0 Safari/537.36",
+      "fetchTime": "2026-10-19T13:48:14.524Z",
+      "performance": 90,
+      "accessibility": 100,
+      "lcpMs": 3460.5749999999994,
+      "cls": 0,
+      "tbtMs": 104,
+      "runtimeError": null
+    },
+    "desktop": {
+      "lighthouse": "13.5.0",
+      "browser": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/142.0.0.0 Safari/537.36",
+      "fetchTime": "2026-10-19T13:48:48.957Z",
+      "performance": 100,
+      "accessibility": 100,
+      "lcpMs": 726.6669999999999,
+      "cls": 0.0006617580153215128,
+      "tbtMs": 0,
+      "runtimeError": null
+    }
+  },
+  "fieldINP": "not measured",
+  "interactionSamplesMs": [
+    40,
+    24
+  ],
+  "interactionLimit": "Two local interactions, EventTiming durationThreshold=16. Not field INP.",
+  "responsiveWidths": [
+    320,
+    390,
+    768,
+    1440
+  ],
+  "mobileCtaBottomPx": {
+    "320": 425.015625,
+    "390": 364.90625
+  }
+}
