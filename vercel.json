@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "feat/cortes-permissoes": false
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/sync",
