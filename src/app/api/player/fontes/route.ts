@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
+import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo, cortePermitido } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
 import { ehRequisicaoElectron, plataformaDaRequisicao } from "@/lib/ads/politica";
 import { HEADER_CLIENTE } from "@/config/site-mode";
@@ -171,6 +171,8 @@ interface Corpo {
   finalidade?: unknown;
   /** `true`: cobrar download/transmissão da fonte que já toca, numa sessão existente. */
   acao?: unknown;
+  /** "individual" | "lote": modo do corte, quando a ação é um recorte de cena. */
+  corte?: unknown;
 }
 
 function normalizarAmbiente(valor: unknown): Ambiente {
@@ -288,6 +290,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Sessão de reprodução expirada", codigo: "sessao_invalida" },
         { status: 410, headers: NO_STORE },
+      );
+    }
+    // Direito de corte no servidor — ANTES do anúncio (um corte sem direito não
+    // consome anúncio) e independente de MONETIZACAO_ATIVA. Só age com o controle
+    // comercial ligado e quando a ação é um recorte; download completo segue em
+    // `downloads`. Desligado, nada muda para os planos de hoje. Bloqueio visual
+    // não basta: é aqui que o recurso novo fica indisponível a quem não tem direito.
+    const corteModo = corpo.corte === "individual" || corpo.corte === "lote" ? corpo.corte : undefined;
+    if (corteModo && !(await cortePermitido(userId, corteModo))) {
+      audit("playback_negado", { userId, ip, ua, detail: `/fontes corte: sem_direito modo:${corteModo}` });
+      return NextResponse.json(
+        { error: "Seu plano não inclui este recurso", codigo: "corte_nao_autorizado" },
+        { status: 403, headers: NO_STORE },
       );
     }
     const liberacao = await autorizarPorAnuncio({

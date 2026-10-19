@@ -86,6 +86,19 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
       "tocando tem os bytes. Ver docs/monetizacao-arquitetura.md 5.3.",
   },
 
+  cortesNivel: {
+    estado: "aplicado",
+    onde: "src/lib/playbackAuthorization.ts",
+    nota:
+      "`cortePermitido` resolve o direito e aplica a escada nenhum<individual<lote<ia; " +
+      "POST /api/player/fontes nega a ação de corte (403 `corte_nao_autorizado`) antes " +
+      "do anúncio. Atrás de CORTES_CONTROLE_ATIVO e **independente de MONETIZACAO_ATIVA**: " +
+      "desligado, os planos de hoje seguem cortando; ligado, o recurso novo fica " +
+      "indisponível a quem não tem direito. Mesma limitação de `downloads`: o corte roda " +
+      "no cliente sobre a mídia já entregue, então é decisão de servidor obedecida no " +
+      "cliente, não fronteira criptográfica. Uma autorização por lote, sem requisição por cena.",
+  },
+
   canaisNivel: {
     estado: "aplicado",
     onde: "src/lib/canais/acesso.ts",

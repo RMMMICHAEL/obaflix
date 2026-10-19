@@ -24,12 +24,34 @@
 export const CANAIS_NIVEIS = ["nenhum", "gratuito", "plus", "premium"] as const;
 export const RESOLUCOES = ["sd", "hd", "fhd", "4k"] as const;
 export const TV_NIVEIS = ["nenhum", "limitado", "completo"] as const;
+/// Direito de cortes, ORDENADO (como canaisNivel): nenhum < individual < lote < ia.
+/// `individual` = corte único; `lote` = múltiplos cortes num pedido; `ia` = reserva
+/// de permissão futura (sem API). Um nível concede os abaixo dele. Default do
+/// schema é "nenhum": plano criado sem informar não concede corte por acidente.
+export const CORTES_NIVEIS = ["nenhum", "individual", "lote", "ia"] as const;
 export const STATUS_ASSINATURA = ["ATIVA", "EXPIRADA", "CANCELADA", "SUSPENSA"] as const;
 export const ORIGENS_ASSINATURA = ["pagamento", "cortesia", "migracao", "admin"] as const;
 
 export type CanaisNivel = (typeof CANAIS_NIVEIS)[number];
 export type Resolucao = (typeof RESOLUCOES)[number];
 export type TvNivel = (typeof TV_NIVEIS)[number];
+export type CortesNivel = (typeof CORTES_NIVEIS)[number];
+
+/// O que o cliente pede: corte único ou lote. "completo" (download inteiro) NÃO é
+/// corte — continua governado por `downloads`, não por `cortesNivel`.
+export type ModoCorte = "individual" | "lote";
+
+/**
+ * Um nível de cortes autoriza um modo? Escada: quem tem `lote` também corta
+ * `individual`; `ia` cobre tudo; `nenhum` não corta nada. Puro e default-deny
+ * (nível fora do domínio → index -1 → nega). O servidor é quem decide — bloqueio
+ * visual não basta.
+ */
+export function corteAutorizado(nivel: CortesNivel, modo: ModoCorte): boolean {
+  const tem = CORTES_NIVEIS.indexOf(nivel);
+  const exigido = CORTES_NIVEIS.indexOf(modo === "lote" ? "lote" : "individual");
+  return tem >= exigido && tem > 0;
+}
 
 /** Os direitos de um plano, como o banco os guarda. */
 export interface DireitosDoPlano {
@@ -40,6 +62,9 @@ export interface DireitosDoPlano {
   series: boolean;
   canaisNivel: CanaisNivel;
   downloads: boolean;
+  /// Cortes de cena. Separado de `downloads`: baixar o conteúdo inteiro e recortar
+  /// trechos são direitos distintos. Default "nenhum" (restritivo).
+  cortesNivel: CortesNivel;
   telasMax: number;
   perfisMax: number;
   resolucaoMax: Resolucao;
@@ -134,6 +159,7 @@ export const PLANO_GRATUITO: PlanoSemeado = {
   // Abaixo do Basic exigiria "menos que nenhum"; aqui os dois empatam, e a
   // diferença entre gratuito e Basic fica em telas e qualidade.
   downloads: false,
+  cortesNivel: "nenhum",
 
   // Uma tela. **Aplicado de verdade** assim que a flag ligar — é o campo desta
   // linha com o efeito mais visível para quem usa hoje.
@@ -219,6 +245,7 @@ export const PLANO_BASIC: PlanoSemeado = {
 
   canaisNivel: "nenhum",
   downloads: false,
+  cortesNivel: "nenhum",
 
   telasMax: 2,
   perfisMax: 1,
@@ -255,6 +282,7 @@ export const PLANO_PLUS: PlanoSemeado = {
 
   canaisNivel: "plus",
   downloads: true,
+  cortesNivel: "nenhum",
 
   telasMax: 2,
   perfisMax: 1,
@@ -306,6 +334,7 @@ export const PLANO_PREMIUM: PlanoSemeado = {
 
   canaisNivel: "premium",
   downloads: true,
+  cortesNivel: "nenhum",
 
   telasMax: 2,
   perfisMax: 1,
@@ -451,6 +480,10 @@ export function planoDaLinhaCrua(
   const series = bool(linha.series);
   const downloads = bool(linha.downloads);
   const anunciosObrigatorios = bool(linha.anunciosObrigatorios);
+  // Coluna nova (migration de cortes): ausente/ inválida conta como "nenhum",
+  // igual ao tratamento leniente de `servidorVip` — não derruba o plano inteiro.
+  const cortesNivel: CortesNivel = (CORTES_NIVEIS as readonly string[]).includes(linha.cortesNivel as string)
+    ? (linha.cortesNivel as CortesNivel) : "nenhum";
 
   if (
     id === null || canaisNivel === null || resolucaoMax === null || tvNivel === null ||
@@ -474,6 +507,7 @@ export function planoDaLinhaCrua(
     series,
     canaisNivel: canaisNivel as CanaisNivel,
     downloads,
+    cortesNivel,
     telasMax,
     perfisMax,
     resolucaoMax: resolucaoMax as Resolucao,

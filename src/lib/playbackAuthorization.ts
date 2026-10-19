@@ -32,7 +32,8 @@
 
 import { entitlementsDoUsuario } from "./entitlements";
 import type { Entitlements } from "./entitlements";
-import type { DireitosDoPlano } from "./planos";
+import { corteAutorizado } from "./planos";
+import type { DireitosDoPlano, ModoCorte } from "./planos";
 
 export type ConteudoAutorizavel = "filme" | "serie";
 
@@ -142,6 +143,19 @@ export function anuncioElectronAtivo(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return env.ANUNCIO_ELECTRON_ATIVO === "true";
+}
+
+/**
+ * Controle comercial dos cortes. **Independente de `MONETIZACAO_ATIVA`**: a
+ * separação por direito vale por si. Desligado (default), o servidor não confere
+ * `cortesNivel` — os planos tradicionais seguem exatamente como hoje. Ligado, o
+ * recurso novo fica indisponível para quem não tiver o direito. Leitura estrita
+ * (`"true"`), `env` injetável para o teste.
+ */
+export function cortesControleAtivo(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.CORTES_CONTROLE_ATIVO === "true";
 }
 
 /**
@@ -353,5 +367,28 @@ export async function direitosDoCliente(
     return { downloads: entitlements.direitos.downloads === true };
   } catch {
     return { downloads: false };
+  }
+}
+
+/**
+ * O corte pedido está autorizado para este usuário? Mora aqui, não na rota:
+ * decisão de direito vive em playbackAuthorization. Com o controle comercial
+ * desligado, devolve `true` — os planos de hoje seguem cortando como sempre.
+ * Ligado, resolve o direito e aplica a escada de `cortesNivel`. Erro ao resolver
+ * nega (nunca concede por coerção). `resolver`/`controleAtivo` injetáveis no teste.
+ */
+export async function cortePermitido(
+  userId: string,
+  modo: ModoCorte,
+  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean } = {},
+): Promise<boolean> {
+  const controle = opcoes.controleAtivo ?? cortesControleAtivo();
+  if (!controle) return true;
+  const resolver = opcoes.resolver ?? entitlementsDoUsuario;
+  try {
+    const { direitos } = await resolver(userId);
+    return corteAutorizado(direitos.cortesNivel, modo);
+  } catch {
+    return false;
   }
 }

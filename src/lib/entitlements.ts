@@ -40,7 +40,9 @@ import {
   CANAIS_NIVEIS,
   RESOLUCOES,
   TV_NIVEIS,
+  CORTES_NIVEIS,
   type CanaisNivel,
+  type CortesNivel,
   type DireitosDoPlano,
   type Resolucao,
   type TvNivel,
@@ -211,6 +213,7 @@ function apenasDireitos(p: DireitosDoPlano): DireitosDoPlano {
     series: p.series,
     canaisNivel: p.canaisNivel,
     downloads: p.downloads,
+    cortesNivel: p.cortesNivel,
     telasMax: p.telasMax,
     perfisMax: p.perfisMax,
     resolucaoMax: p.resolucaoMax,
@@ -247,6 +250,7 @@ interface LinhaDePlano {
   series: boolean;
   canaisNivel: string;
   downloads: boolean;
+  cortesNivel: string;
   telasMax: number;
   perfisMax: number;
   resolucaoMax: string;
@@ -264,6 +268,7 @@ export function planoDaLinha(linha: LinhaDePlano): PlanoAutorizador {
     series: linha.series,
     canaisNivel: emDominio<CanaisNivel>(linha.canaisNivel, CANAIS_NIVEIS, "canaisNivel"),
     downloads: linha.downloads,
+    cortesNivel: emDominio<CortesNivel>(linha.cortesNivel, CORTES_NIVEIS, "cortesNivel"),
     telasMax: linha.telasMax,
     perfisMax: linha.perfisMax,
     resolucaoMax: emDominio<Resolucao>(linha.resolucaoMax, RESOLUCOES, "resolucaoMax"),
@@ -426,6 +431,9 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
   }
 
   if (typeof d.canaisNivel !== "string" || !(CANAIS_NIVEIS as readonly string[]).includes(d.canaisNivel)) return null;
+  // Entrada de cache sem `cortesNivel` é de formato antigo e vira miss — recarrega
+  // do banco, em vez de supor "nenhum" e talvez negar corte a quem tem direito.
+  if (typeof d.cortesNivel !== "string" || !(CORTES_NIVEIS as readonly string[]).includes(d.cortesNivel)) return null;
   if (typeof d.resolucaoMax !== "string" || !(RESOLUCOES as readonly string[]).includes(d.resolucaoMax)) return null;
   if (typeof d.tvNivel !== "string" || !(TV_NIVEIS as readonly string[]).includes(d.tvNivel)) return null;
 
@@ -439,6 +447,7 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
       series: d.series as boolean,
       canaisNivel: d.canaisNivel as CanaisNivel,
       downloads: d.downloads as boolean,
+      cortesNivel: d.cortesNivel as CortesNivel,
       telasMax: d.telasMax as number,
       perfisMax: d.perfisMax as number,
       resolucaoMax: d.resolucaoMax as Resolucao,
@@ -465,6 +474,7 @@ const COLUNAS_DE_PLANO = {
   series: true,
   canaisNivel: true,
   downloads: true,
+  cortesNivel: true,
   telasMax: true,
   perfisMax: true,
   resolucaoMax: true,
