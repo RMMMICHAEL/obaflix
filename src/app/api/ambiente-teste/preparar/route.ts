@@ -45,7 +45,14 @@ export async function POST(req: NextRequest) {
       `SELECT count(*)::int AS fora FROM "User" WHERE email NOT LIKE $1`, `%${DOMINIO}`);
     const [{ pagos }] = await prisma.$queryRawUnsafe<{ pagos: number }[]>(
       `SELECT count(*)::int AS pagos FROM "PedidoPagamento" WHERE status = 'PAGO' AND provedor <> 'simulado'`);
-    if (fora > 0 || pagos > 0) throw new Error("dados-reais");
+    if (fora > 0 || pagos > 0) {
+      // Só domínios e provedores (sem e-mails), para decidir se é dado real.
+      const dominios = await prisma.$queryRawUnsafe<{ d: string; n: number }[]>(
+        `SELECT split_part(email, '@', 2) AS d, count(*)::int AS n FROM "User" WHERE email NOT LIKE $1 GROUP BY 1`, `%${DOMINIO}`);
+      const provedores = await prisma.$queryRawUnsafe<{ p: string; n: number }[]>(
+        `SELECT provedor AS p, count(*)::int AS n FROM "PedidoPagamento" WHERE status = 'PAGO' AND provedor <> 'simulado' GROUP BY 1`);
+      return NextResponse.json({ ok: false, erro: "dados-reais", fora, pagos, dominios, provedores }, { status: 409, headers: NO_STORE });
+    }
     relatorio.marcador = "teste";
 
     // 2) Migration (mesmo SQL do arquivo, idempotente) + registro no histórico do Prisma.
