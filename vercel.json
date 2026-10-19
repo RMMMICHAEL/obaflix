@@ -1,9 +1,5 @@
 {
-  "git": {
-    "deploymentEnabled": {
-      "feat/cortes-permissoes": false
-    }
-  },
+  "ignoreCommand": "node scripts/ambiente-teste/preview-ignorar-build.mjs; test $? -eq 10 && exit 1 || exit 0",
   "crons": [
     {
       "path": "/api/cron/sync",

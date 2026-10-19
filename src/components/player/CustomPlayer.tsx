@@ -2621,8 +2621,10 @@ export function CustomPlayer({
           ms: lastLoadAtRef.current > 0 ? Date.now() - lastLoadAtRef.current : undefined,
         });
         const host = jwHostRef.current;
-        const mount = ambiente === "electron" ? mountDoEfeito : container;
-        const video = mount?.querySelector<HTMLVideoElement>("video") ?? null;
+        // O JW substitui o div inicial; o compositor precisa do container vivo.
+        const mount = ambiente === "electron" ? player.getContainer?.() ?? mountDoEfeito : container;
+        // getContainer vem sem tipo do JW; o cast fica aqui para a expressão do mount seguir JS puro (playerDiag.test).
+        const video = (mount?.querySelector("video") ?? null) as HTMLVideoElement | null;
         const quadrosDecodificados = () => {
           try { return Number(video?.getVideoPlaybackQuality?.().totalVideoFrames ?? 0); }
           catch { return 0; }

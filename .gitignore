@@ -62,3 +62,5 @@ android/local.properties
 # backups locais de manutenção (dumps de produção) — nunca commitar
 /backups/
 episodios-dedupe-*.json
+
+.vercel

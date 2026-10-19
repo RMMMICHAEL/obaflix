@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 test("JW Electron usa mount imperativo dedicado e só confirma reprodução após frame apresentado", () => {
   const player = readFileSync(join(process.cwd(), "src/components/player/CustomPlayer.tsx"), "utf8");
@@ -26,4 +27,18 @@ test("JW Electron usa mount imperativo dedicado e só confirma reprodução apó
   const compositor = handler.slice(handler.indexOf("const confirmarFrameVisivel"));
   assert.ok(compositor.indexOf("compositor_frame=presented") < compositor.indexOf("initialLoadRef.current = false"));
   assert.doesNotMatch(handler, /OK_PLAYBACK|url:\s*directStreamRef/);
+});
+
+test("primeiro frame consulta o container substituído pelo JW e preserva mount original para cleanup", () => {
+  const fonte = readFileSync(join(process.cwd(), "src/components/player/CustomPlayer.tsx"), "utf8");
+  const linha = fonte.split("\n").find(l => l.includes('const mount = ambiente === "electron"'));
+  assert.ok(linha);
+  const expressao = linha.trim().slice("const mount = ".length, -1);
+  const original = { isConnected: false };
+  const atual = { isConnected: true, video: { videoWidth: 640 } };
+  const contexto = { ambiente: "electron", player: { getContainer: () => atual }, mountDoEfeito: original, container: original };
+  assert.equal(runInNewContext(expressao, contexto), atual);
+  assert.equal(contexto.mountDoEfeito, original);
+  assert.equal(runInNewContext(expressao, { ...contexto, ambiente: "web" }), original);
+  assert.equal(runInNewContext(expressao, { ...contexto, player: {} }), original);
 });
