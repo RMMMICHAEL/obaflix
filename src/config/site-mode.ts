@@ -91,6 +91,7 @@ const PUBLICO = [
   "/series",
   "/genero",
   "/tiktok",
+  "/cortes", // Apresentação pública do Cortes, sem player ou checkout.
   "/parear",
   "/login",
   "/cadastro",
