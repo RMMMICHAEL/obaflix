@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo, cortePermitido } from "@/lib/playbackAuthorization";
+import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo, downloadPermitido } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
 import { ehRequisicaoElectron, plataformaDaRequisicao } from "@/lib/ads/politica";
 import { HEADER_CLIENTE } from "@/config/site-mode";
@@ -292,16 +292,19 @@ export async function POST(req: NextRequest) {
         { status: 410, headers: NO_STORE },
       );
     }
-    // Direito de corte no servidor — ANTES do anúncio (um corte sem direito não
-    // consome anúncio) e independente de MONETIZACAO_ATIVA. Só age com o controle
-    // comercial ligado e quando a ação é um recorte; download completo segue em
-    // `downloads`. Desligado, nada muda para os planos de hoje. Bloqueio visual
-    // não basta: é aqui que o recurso novo fica indisponível a quem não tem direito.
-    const corteModo = corpo.corte === "individual" || corpo.corte === "lote" ? corpo.corte : undefined;
-    if (corteModo && !(await cortePermitido(userId, corteModo))) {
-      audit("playback_negado", { userId, ip, ua, detail: `/fontes corte: sem_direito modo:${corteModo}` });
+    // Direito de download/corte no servidor — ANTES do anúncio (ação sem direito
+    // não consome anúncio) e independente de MONETIZACAO_ATIVA. **Toda** operação
+    // de download é gateada, não só o corte: `completo` exige `downloads`,
+    // `individual`/`lote` exigem a escada de `cortesNivel`. Gatear só o corte
+    // deixaria OMITIR o tipo (cair em `completo`) contornar o bloqueio — o
+    // parâmetro do cliente não é prova de autorização. Só age com o controle
+    // comercial ligado; desligado, nada muda para os planos de hoje. Transmissão
+    // (cast) não passa por aqui. Bloqueio visual não basta.
+    const operacao = corpo.corte === "individual" || corpo.corte === "lote" ? corpo.corte : "completo";
+    if (finalidade === "download" && !(await downloadPermitido(userId, operacao))) {
+      audit("playback_negado", { userId, ip, ua, detail: `/fontes download: sem_direito op:${operacao}` });
       return NextResponse.json(
-        { error: "Seu plano não inclui este recurso", codigo: "corte_nao_autorizado" },
+        { error: "Seu plano não inclui este recurso", codigo: "download_nao_autorizado" },
         { status: 403, headers: NO_STORE },
       );
     }

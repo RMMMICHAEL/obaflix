@@ -184,6 +184,24 @@ function nomeSeguro(titulo) {
     .slice(0, 90) || "obaflix";
 }
 
+/**
+ * Caminho que ainda não existe em disco: um download novo nunca sobrescreve um
+ * arquivo já salvo (inclusive ao baixar várias cenas do mesmo título). Acrescenta
+ * " (2)", " (3)"… antes da extensão. Como os downloads rodam um de cada vez, basta
+ * checar a existência imediatamente antes de gravar.
+ */
+async function destinoDisponivel(dir, base, extensao) {
+  for (let n = 1; ; n += 1) {
+    const sufixo = n === 1 ? "" : ` (${n})`;
+    const candidato = path.join(dir, `${base}${sufixo}.${extensao}`);
+    try {
+      await fs.promises.access(candidato);
+    } catch {
+      return candidato;
+    }
+  }
+}
+
 /** hh:mm:ss.mmm de uma duração em segundos, para o -ss/-to do ffmpeg. */
 function paraTimecode(seg) {
   const s = Math.max(0, Number(seg) || 0);
@@ -203,7 +221,7 @@ async function baixarComFfmpeg({
   const base = nomeSeguro(titulo);
   const recorta = modo === "trecho" && Number.isFinite(inicioSeg) && Number.isFinite(fimSeg);
   const sufixo = recorta ? ` ${Math.round(inicioSeg)}s-${Math.round(fimSeg)}s` : "";
-  const destino = path.join(destinoDir, `${base}${sufixo}.mp4`);
+  const destino = await destinoDisponivel(destinoDir, `${base}${sufixo}`, "mp4");
 
   const cabecalhosExtra = [];
   if (referer) {
@@ -318,7 +336,7 @@ async function baixarMidia({
     progresso({ etapa: "baixando", atual: 0, total: 1, bytes: 0, pct: 0 });
     const r = await fetch(stream, { headers: cabecalhos(referer), signal: sinal });
     if (!r.ok) throw new Error(`HTTP ${r.status} ao baixar o MP4`);
-    const destino = path.join(destinoDir, `${base}.mp4`);
+    const destino = await destinoDisponivel(destinoDir, base, "mp4");
     const buf = Buffer.from(await r.arrayBuffer());
     await fs.promises.writeFile(destino, buf);
     progresso({ etapa: "concluido", atual: 1, total: 1, bytes: buf.length, pct: 100 });
@@ -418,7 +436,7 @@ async function baixarMidia({
   await new Promise((resolve, reject) => saida.end((e) => (e ? reject(e) : resolve())));
 
   const extensao = container === "fmp4" ? "mp4" : "ts";
-  const destino = path.join(destinoDir, `${base}${sufixoTrecho}.${extensao}`);
+  const destino = await destinoDisponivel(destinoDir, `${base}${sufixoTrecho}`, extensao);
   await fs.promises.rename(parcial, destino).catch(async () => {
     await fs.promises.copyFile(parcial, destino);
     await fs.promises.unlink(parcial).catch(() => {});
@@ -484,5 +502,5 @@ module.exports = {
   baixarMidia,
   verificarMidia,
   // Exportado para os testes locais; o app usa só baixarMidia.
-  _test: { lerPlaylist, selecionarSegmentos, identificarContainer, nomeSeguro, resolverPlaylistDeMidia, opcoesEntrada },
+  _test: { lerPlaylist, selecionarSegmentos, identificarContainer, nomeSeguro, resolverPlaylistDeMidia, opcoesEntrada, destinoDisponivel },
 };

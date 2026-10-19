@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { corteAutorizado, type CortesNivel, type ModoCorte } from "../planos";
-import { cortePermitido, cortesControleAtivo } from "../playbackAuthorization";
+import { downloadPermitido, cortesControleAtivo } from "../playbackAuthorization";
 
 describe("corteAutorizado: escada nenhum<individual<lote<ia, default-deny", () => {
   const casos: [CortesNivel, ModoCorte, boolean][] = [
@@ -18,34 +18,38 @@ describe("corteAutorizado: escada nenhum<individual<lote<ia, default-deny", () =
   });
 });
 
-describe("cortePermitido: controle desligado preserva; ligado aplica o direito", () => {
-  const resolver = (nivel: CortesNivel) => (async () => ({
+describe("downloadPermitido: controle desligado preserva; ligado aplica o direito", () => {
+  const resolver = (nivel: CortesNivel, downloads = false) => (async () => ({
     assinatura: { ativa: true, planoId: "x", expiraEm: null },
-    direitos: { cortesNivel: nivel },
+    direitos: { cortesNivel: nivel, downloads },
   })) as unknown as typeof import("../entitlements").entitlementsDoUsuario;
 
-  test("desligado: libera sem sequer resolver o direito (planos de hoje seguem cortando)", async () => {
+  test("desligado: libera sem sequer resolver o direito (planos de hoje seguem baixando/cortando)", async () => {
     let tocou = false;
-    const r = await cortePermitido("u", "lote", {
-      controleAtivo: false,
-      resolver: (async () => { tocou = true; throw new Error("não devia resolver"); }) as never,
-    });
-    assert.equal(r, true);
+    const portas = { controleAtivo: false, resolver: (async () => { tocou = true; throw new Error("não devia resolver"); }) as never };
+    assert.equal(await downloadPermitido("u", "lote", portas), true);
+    assert.equal(await downloadPermitido("u", "completo", portas), true);
     assert.equal(tocou, false);
   });
 
-  test("ligado: lote exige nível lote", async () => {
-    assert.equal(await cortePermitido("u", "lote", { controleAtivo: true, resolver: resolver("individual") }), false);
-    assert.equal(await cortePermitido("u", "lote", { controleAtivo: true, resolver: resolver("lote") }), true);
+  test("ligado: lote exige nível lote; individual basta individual; nenhum nega", async () => {
+    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver: resolver("individual") }), false);
+    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver: resolver("lote") }), true);
+    assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver: resolver("individual") }), true);
+    assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver: resolver("nenhum") }), false);
   });
 
-  test("ligado: individual basta nível individual, nenhum nega", async () => {
-    assert.equal(await cortePermitido("u", "individual", { controleAtivo: true, resolver: resolver("individual") }), true);
-    assert.equal(await cortePermitido("u", "individual", { controleAtivo: true, resolver: resolver("nenhum") }), false);
+  test("ligado: completo exige `downloads` — omitir o tipo não contorna o bloqueio de corte", async () => {
+    // Conta cortes-only (cortesNivel=lote, downloads=false): se tentar baixar como
+    // "completo" (omitindo o corte), é NEGADA — não vira um atalho sem direito.
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver: resolver("lote", false) }), false);
+    // Conta com downloads baixa completo; corte só com cortesNivel.
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver: resolver("nenhum", true) }), true);
+    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver: resolver("nenhum", true) }), false);
   });
 
   test("ligado: erro ao resolver nega (nunca concede por coerção)", async () => {
-    const r = await cortePermitido("u", "individual", {
+    const r = await downloadPermitido("u", "individual", {
       controleAtivo: true,
       resolver: (async () => { throw new Error("redis down"); }) as never,
     });

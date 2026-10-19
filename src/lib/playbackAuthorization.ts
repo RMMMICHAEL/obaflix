@@ -371,15 +371,24 @@ export async function direitosDoCliente(
 }
 
 /**
- * O corte pedido está autorizado para este usuário? Mora aqui, não na rota:
- * decisão de direito vive em playbackAuthorization. Com o controle comercial
- * desligado, devolve `true` — os planos de hoje seguem cortando como sempre.
- * Ligado, resolve o direito e aplica a escada de `cortesNivel`. Erro ao resolver
- * nega (nunca concede por coerção). `resolver`/`controleAtivo` injetáveis no teste.
+ * Uma operação de download está autorizada para este usuário? Mora aqui, não na
+ * rota: decisão de direito vive em playbackAuthorization.
+ *
+ * O download/corte roda no cliente sobre a mídia já entregue (Electron vai direto
+ * ao CDN), então o servidor não distingue a operação pelos bytes — só pelo que o
+ * cliente declara. Por isso **todas as operações** são gateadas, não só o corte:
+ * se apenas `individual`/`lote` fossem conferidos, bastaria OMITIR o tipo (cair em
+ * `completo`) para contornar. Aqui `completo` exige `downloads` e o corte exige a
+ * escada de `cortesNivel` — omitir ou falsificar o tipo nunca concede mais do que
+ * o direito real da conta. Não é fronteira criptográfica (quem tem os bytes os
+ * tem), mas o parâmetro do cliente deixa de ser prova de autorização.
+ *
+ * Controle desligado → `true`: os planos de hoje seguem baixando/cortando como
+ * sempre. Erro ao resolver nega. `resolver`/`controleAtivo` injetáveis no teste.
  */
-export async function cortePermitido(
+export async function downloadPermitido(
   userId: string,
-  modo: ModoCorte,
+  operacao: "completo" | ModoCorte,
   opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean } = {},
 ): Promise<boolean> {
   const controle = opcoes.controleAtivo ?? cortesControleAtivo();
@@ -387,7 +396,9 @@ export async function cortePermitido(
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
   try {
     const { direitos } = await resolver(userId);
-    return corteAutorizado(direitos.cortesNivel, modo);
+    return operacao === "completo"
+      ? direitos.downloads === true
+      : corteAutorizado(direitos.cortesNivel, operacao);
   } catch {
     return false;
   }
