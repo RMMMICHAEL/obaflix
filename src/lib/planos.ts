@@ -358,6 +358,43 @@ export const PLANOS_COMERCIAIS: readonly PlanoSemeado[] = [
   PLANO_PREMIUM,
 ];
 
+/** Bootstrap fora de venda: mesmos direitos de assistir do Básico, sem download
+ * completo. Ordem herdada não define upgrade entre famílias; decidir antes de vender.
+ */
+export const PLANO_CORTES_START: PlanoSemeado = {
+  ...PLANO_BASIC,
+  id: "cortes-start",
+  nome: "Obaflix Cortes Start",
+  descricao: "Filmes e séries com corte individual. Não inclui download completo.",
+  ativo: false,
+  filmes: true,
+  series: true,
+  downloads: false,
+  cortesNivel: "individual",
+};
+
+export const PLANO_CORTES_PRO: PlanoSemeado = {
+  ...PLANO_CORTES_START,
+  id: "cortes-pro",
+  nome: "Obaflix Cortes Pro",
+  descricao: "Filmes e séries com cortes individuais e múltiplos cortes. Não inclui download completo.",
+  cortesNivel: "lote",
+};
+
+export const PLANO_CORTES_AI: PlanoSemeado = {
+  ...PLANO_CORTES_PRO,
+  id: "cortes-ai",
+  nome: "Obaflix Cortes AI",
+  descricao: "Filmes e séries com múltiplos cortes e permissão futura de IA, ainda não implementada. Não inclui download completo.",
+  cortesNivel: "ia",
+};
+
+export const PLANOS_CORTES: readonly PlanoSemeado[] = [
+  PLANO_CORTES_START,
+  PLANO_CORTES_PRO,
+  PLANO_CORTES_AI,
+];
+
 /**
  * O mínimo do banco que o seed precisa. Existe para o seed ser exercitado de
  * verdade nos testes — sem Postgres e sem simular o Prisma inteiro.
