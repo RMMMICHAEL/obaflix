@@ -1,5 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { corteAutorizado, type CortesNivel, type ModoCorte } from "../planos";
 import { downloadPermitido, cortesControleAtivo } from "../playbackAuthorization";
 
@@ -61,4 +63,80 @@ test("cortesControleAtivo: só a string exata 'true' liga, independente de MONET
   assert.equal(cortesControleAtivo({ CORTES_CONTROLE_ATIVO: "true" }), true);
   assert.equal(cortesControleAtivo({ CORTES_CONTROLE_ATIVO: "1" }), false);
   assert.equal(cortesControleAtivo({}), false);
+});
+
+test("interface: cada nível e usuários tradicionais recebem os gates correspondentes", () => {
+  const player = readFileSync("src/components/player/CustomPlayer.tsx", "utf8");
+  const expressao = (nome: string) => {
+    const linha = player.split("\n").find((l) => l.trimStart().startsWith(`const ${nome} = `));
+    assert.ok(linha);
+    return linha.trim().slice(`const ${nome} = `.length, -1);
+  };
+  for (const [nivelCortes, individual, lote] of [
+    ["nenhum", false, false], ["individual", true, false],
+    ["lote", true, true], ["ia", true, true], ["forjado", false, false],
+  ] as const) {
+    for (const podeBaixarPeloPlano of [false, true]) {
+      const contexto = { nivelCortes, podeBaixarPeloPlano, controleCortes: true };
+      assert.equal(runInNewContext(expressao("podeCortar"), contexto), individual);
+      assert.equal(runInNewContext(expressao("podeLote"), contexto), lote);
+      contexto.controleCortes = false;
+      assert.equal(runInNewContext(expressao("podeCortar"), contexto), podeBaixarPeloPlano);
+      assert.equal(runInNewContext(expressao("podeLote"), contexto), podeBaixarPeloPlano);
+    }
+  }
+});
+
+
+describe("direitos do Electron na resposta existente", () => {
+  for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
+    test(`projeta ${nivel} uma vez, independente da monetização`, async () => {
+      const { direitosDoCliente } = await import("../playbackAuthorization");
+      let chamadas = 0;
+      const resolver = (async () => { chamadas++; return { direitos: { downloads: false, cortesNivel: nivel } }; }) as never;
+      assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: true, resolver }), {
+        downloads: false, cortesNivel: nivel, cortesControleAtivo: true,
+      });
+      assert.equal(chamadas, 1);
+    });
+  }
+  test("flag desligada preserva direitos tradicionais e não consulta sem monetização", async () => {
+    const { direitosDoCliente } = await import("../playbackAuthorization");
+    const resolver = (async () => { throw new Error("não consultar"); }) as never;
+    assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: false, resolver }), {
+      downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false,
+    });
+  });
+  test("ausência de direitos e falha negam; operação falsificada não concede", async () => {
+    const { direitosDoCliente } = await import("../playbackAuthorization");
+    const resolver = (async () => ({ direitos: {} })) as never;
+    assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver })).downloads, false);
+    assert.equal(await downloadPermitido("u", "inventado" as never, { controleAtivo: true, resolver }), false);
+    const falha = (async () => { throw new Error("indisponível"); }) as never;
+    assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver: falha })).cortesNivel, "nenhum");
+  });
+});
+
+for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
+  for (const operacao of ["completo", "individual", "lote"] as const) {
+    test(`servidor: ${nivel}/${operacao}, sem download completo`, async () => {
+      const resolver = (async () => ({ direitos: { cortesNivel: nivel, downloads: false } })) as never;
+      const esperado = operacao !== "completo" && corteAutorizado(nivel, operacao);
+      assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, resolver }), esperado);
+      assert.equal(await downloadPermitido("u", "forjado" as never, { controleAtivo: true, resolver }), false);
+    });
+  }
+}
+
+
+test("controle desligado mantém downloads do plano tradicional com monetização ativa", async () => {
+  const { direitosDoCliente } = await import("../playbackAuthorization");
+  for (const downloads of [false, true]) {
+    let chamadas = 0;
+    const resolver = (async () => { chamadas++; return { direitos: { downloads, cortesNivel: "nenhum" } }; }) as never;
+    const direitos = await direitosDoCliente("u", { ativa: true, controleAtivo: false, resolver });
+    assert.equal(direitos.downloads, downloads);
+    assert.equal(direitos.cortesControleAtivo, false);
+    assert.equal(chamadas, 1);
+  }
 });

@@ -48,6 +48,7 @@ export type ModoCorte = "individual" | "lote";
  * visual não basta.
  */
 export function corteAutorizado(nivel: CortesNivel, modo: ModoCorte): boolean {
+  if (modo !== "individual" && modo !== "lote") return false;
   const tem = CORTES_NIVEIS.indexOf(nivel);
   const exigido = CORTES_NIVEIS.indexOf(modo === "lote" ? "lote" : "individual");
   return tem >= exigido && tem > 0;

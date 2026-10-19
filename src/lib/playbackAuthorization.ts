@@ -333,19 +333,19 @@ export async function limiteDeTelas(
  * O subconjunto dos direitos que a interface precisa para não oferecer o que a
  * conta não tem.
  *
- * **Só `downloads`, e só porque o download é feito pelo cliente.** Todo o resto
- * é decidido no servidor, e o cliente não precisa saber — o que ele não sabe ele
- * não tenta contornar, e um objeto de direitos completo na resposta seria um
- * mapa do que vale a pena atacar.
+ * Downloads e cortes são executados pelo cliente; a resposta expõe apenas
+ * os direitos necessários à interface. O servidor revalida cada operação.
  */
 export interface DireitosDoCliente {
   downloads: boolean;
+  cortesNivel: import("./planos").CortesNivel;
+  cortesControleAtivo: boolean;
 }
 
 /**
  * Resolve o que o cliente pode saber.
  *
- * Com a flag desligada devolve o comportamento de hoje — download liberado —
+ * Com monetização e controle de cortes desligados, mantém download liberado
  * **sem chamar o resolver**, pela mesma razão de `limiteDeTelas`.
  *
  * Falha do resolver devolve `downloads: false`. Fail-closed, e aqui custa pouco:
@@ -355,18 +355,23 @@ export interface DireitosDoCliente {
  */
 export async function direitosDoCliente(
   userId: string,
-  opcoes: OpcoesDeAutorizacao = {},
+  opcoes: OpcoesDeAutorizacao & { controleAtivo?: boolean } = {},
 ): Promise<DireitosDoCliente> {
   const ativa = opcoes.ativa ?? monetizacaoAtiva();
-  if (!ativa) return { downloads: true };
+  const controle = opcoes.controleAtivo ?? cortesControleAtivo();
+  if (!ativa && !controle) return { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
 
   try {
     const entitlements = await resolver(userId);
-    return { downloads: entitlements.direitos.downloads === true };
+    return {
+      downloads: entitlements.direitos.downloads === true,
+      cortesNivel: entitlements.direitos.cortesNivel ?? "nenhum",
+      cortesControleAtivo: controle,
+    };
   } catch {
-    return { downloads: false };
+    return { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: controle };
   }
 }
 

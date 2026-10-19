@@ -1120,3 +1120,16 @@ describe("falha operacional do cache continua degradando para o Postgres", () =>
     assert.equal(r.direitos.telasMax, 2);
   });
 });
+
+
+test("Electron: assinatura de cortes vencida usa padrão e nega lote", async () => {
+  const { direitosDoCliente, downloadPermitido } = await import("../playbackAuthorization");
+  const resolvido = resolverEntitlements({
+    agora: AGORA,
+    candidatas: [assinatura({ terminaEm: emMinutos(-1), plano: planoPago({ cortesNivel: "ia" }) })],
+    planoPadrao: planoPadraoRestrito(),
+  });
+  const resolver = (async () => resolvido) as typeof entitlementsDoUsuario;
+  assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver })).cortesNivel, "nenhum");
+  assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver }), false);
+});

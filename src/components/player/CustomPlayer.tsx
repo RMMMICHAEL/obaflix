@@ -402,6 +402,11 @@ export function CustomPlayer({
   const { data: sessaoDaConta } = useSession();
   const usuarioAtual = (sessaoDaConta?.user as { id?: string } | undefined)?.id ?? "";
   const [podeBaixarPeloPlano, setPodeBaixarPeloPlano] = useState(false);
+  const [controleCortes, setControleCortes] = useState(false);
+  const [nivelCortes, setNivelCortes] = useState("nenhum");
+  const podeCortar = controleCortes ? ["individual", "lote", "ia"].includes(nivelCortes) : podeBaixarPeloPlano;
+  const podeLote = controleCortes ? ["lote", "ia"].includes(nivelCortes) : podeBaixarPeloPlano;
+  const orientarPlano = (recurso: string) => setDownloadResultado({ caminho: "", erro: `Para ${recurso}, contrate um plano que inclua esse recurso. Consulte os planos em sua conta.` });
   const directStreamRef = useRef<string | null>(null);
   const streamRefererRef = useRef<string | null>(null);
   const reExtractCountRef = useRef(0); // falhas consecutivas de renovação por fonte (reseta a cada play bem-sucedido)
@@ -813,7 +818,14 @@ export function CustomPlayer({
     }
     if (!res.ok) {
       if (res.status === 410) throw interrompida("sessao_expirada");
-      if (res.status === 403) throw interrompida("acao_nao_liberada");
+      if (res.status === 403) {
+        const recusa = await res.json().catch(() => null);
+        if (recusa?.codigo === "download_nao_autorizado") {
+          orientarPlano(corte === "lote" ? "baixar cortes em lote" : corte === "individual" ? "baixar cortes individuais" : "baixar conteúdo completo");
+          return null;
+        }
+        throw interrompida("acao_nao_liberada");
+      }
       throw interrompida("servidores_indisponiveis");
     }
     return {
@@ -1766,12 +1778,12 @@ export function CustomPlayer({
   // o download é tecnicamente possível (app desktop, mídia resolvida, tipo
   // suportado); esta diz se a conta tem direito. Sem ela, `Plano.downloads` era
   // coluna sem consumidor.
-  const podeBaixar = podeBaixarPeloPlano && !!desktopBridge?.downloadMedia &&
+  const podeBaixar = (controleCortes || podeBaixarPeloPlano) && !!desktopBridge?.downloadMedia &&
     (ambiente === "electron" || (!!directStreamRef.current && (streamTipo === "hls" || streamTipo === "mp4")));
 
   const prepararDownload = useCallback(async (modo: "completo" | "trecho") => {
     if (ambiente !== "electron") return !!directStreamRef.current;
-    if (preparandoDownloadRef.current || !podeBaixarPeloPlano) return false;
+    if (preparandoDownloadRef.current || !(modo === "completo" ? podeBaixarPeloPlano : podeCortar)) return false;
     preparandoDownloadRef.current = true;
     setPreparandoDownload(modo);
     setShowDownload(false);
@@ -1819,7 +1831,7 @@ export function CustomPlayer({
       if (montadoRef.current) setPreparandoDownload(null);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ambiente, fonte, usuarioAtual, podeBaixarPeloPlano, desktopBridge]);
+  }, [ambiente, fonte, usuarioAtual, podeBaixarPeloPlano, podeCortar, desktopBridge]);
 
   useEffect(() => {
     desktopBridge?.onDownloadProgress?.((p: { pct: number; atual: number; total: number; bytes: number; etapa: string }) => {
@@ -1917,7 +1929,7 @@ export function CustomPlayer({
     // decide se o botão aparece, isto decide se a ação acontece. Uma UI
     // desatualizada — sessão reaberta com plano diferente, painel já montado —
     // não deve conseguir disparar o download.
-    if (!podeBaixarPeloPlano) return;
+    if (!(modo === "completo" ? podeBaixarPeloPlano : podeCortar)) return;
     const operacao = operacaoAtualRef.current(modo);
     downloadPendenteRef.current = true;
     setShowDownload(false);
@@ -1953,7 +1965,7 @@ export function CustomPlayer({
       downloadPendenteRef.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, fonteAtualParaMidia, portasDeAnuncio]);
+  }, [conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, podeCortar, fonteAtualParaMidia, portasDeAnuncio]);
 
   // ── Múltiplas cenas ───────────────────────────────────────────────────────────
   // Abre o editor de cenas verificando a fonte atual, igual ao recorte: a mesma
@@ -1962,7 +1974,7 @@ export function CustomPlayer({
   // ("Baixar trecho…" roda o preflight em abrirRecorte); alternar de aba não refaz
   // preflight, não inicia download e não cria cenas — a lista já montada é mantida.
   const irParaAbaManual = useCallback(() => { setMultiCenasAtivo(false); setRecorteAtivo(true); }, []);
-  const irParaAbaVarios = useCallback(() => { setRecorteAtivo(false); setMultiCenasAtivo(true); }, []);
+  const irParaAbaVarios = useCallback(() => { if (!podeLote) { orientarPlano("baixar cortes em lote"); return; } setRecorteAtivo(false); setMultiCenasAtivo(true); }, [podeLote]);
   const fecharEditor = useCallback(() => { setRecorteAtivo(false); setMultiCenasAtivo(false); }, []);
 
   // Reordena a lista de trechos (subir/descer). A ordem define a numeração do lote.
@@ -2057,7 +2069,7 @@ export function CustomPlayer({
   // cada cena; se a fonte/usuário/conteúdo/sessão mudar, o lote para.
   const baixarCenas = useCallback(async () => {
     if (!desktopBridge?.downloadMedia || downloadPendenteRef.current || preparandoDownloadRef.current) return;
-    if (!directStreamRef.current || !montadoRef.current || !podeBaixarPeloPlano || !cenas.length) return;
+    if (!directStreamRef.current || !montadoRef.current || !podeLote || !cenas.length) return;
     const base = operacaoAtualRef.current("trecho");
     const preparada = recortePreflightRef.current;
     if (!preparada || preparada.fonteId !== base.fonteId || preparada.stream !== base.stream ||
@@ -2113,7 +2125,7 @@ export function CustomPlayer({
       if (montadoRef.current) { setLoteProgresso(null); setDownloadProgresso(null); }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cenas, conteudoId, conteudoTipo, temporada, numeroEp, podeBaixarPeloPlano, fonteAtualParaMidia, portasDeAnuncio, usuarioAtual, fonte?.id]);
+  }, [cenas, conteudoId, conteudoTipo, temporada, numeroEp, podeLote, fonteAtualParaMidia, portasDeAnuncio, usuarioAtual, fonte?.id]);
 
   // Registra qual servidor interno está sendo tentado. Sem isso o log só diz
   // "Player 1 falhou", sem distinguir qual das fontes do Playerflix falhou.
@@ -2222,6 +2234,8 @@ export function CustomPlayer({
     // resposta sem o campo, `undefined` ou qualquer outro valor deixa o botão
     // fora. Quem decide é `direitosDoCliente` em playbackAuthorization.ts.
     setPodeBaixarPeloPlano(data?.direitos?.downloads === true);
+    setControleCortes(data?.direitos?.cortesControleAtivo === true);
+    setNivelCortes(data?.direitos?.cortesNivel ?? "nenhum");
     sessaoFontesRef.current = data?.sessao ?? null;
     fontesDownloadRef.current = typeof data?.sessao === "string"
       ? { sessao: data.sessao, base: lista.map((f) => ({ ...f })) } : null;
@@ -4048,18 +4062,20 @@ export function CustomPlayer({
                   {showDownload && !downloadProgresso && (
                     <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[210px] shadow-2xl">
                       <button
-                        onClick={() => iniciarDownload("completo")}
+                        onClick={() => podeBaixarPeloPlano ? iniciarDownload("completo") : orientarPlano("baixar conteúdo completo")}
+                        aria-disabled={!podeBaixarPeloPlano}
                         className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
                       >
-                        Baixar conteúdo completo
+                        Baixar conteúdo completo{!podeBaixarPeloPlano && " · Requer plano com downloads"}
                       </button>
                       <div className="border-t border-white/10" />
                       {/* Verifica somente a fonte que está tocando antes de abrir o editor. */}
                       <button
-                        onClick={abrirRecorte}
+                        onClick={() => podeCortar ? abrirRecorte() : orientarPlano("baixar cortes individuais")}
+                        aria-disabled={!podeCortar}
                         className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
                       >
-                        Baixar trecho…
+                        Baixar trecho…{!podeCortar && " · Requer plano de cortes"}
                       </button>
                     </div>
                   )}
@@ -4219,10 +4235,11 @@ export function CustomPlayer({
                   </button>
                   <button
                     onClick={irParaAbaVarios}
+                    aria-disabled={!podeLote}
                     disabled={!!loteProgresso}
                     className={`px-3 py-1.5 text-[11px] rounded-t-md transition-colors disabled:opacity-40 ${multiCenasAtivo ? "bg-white/10 text-white font-medium" : "text-white/50 hover:text-white"}`}
                   >
-                    Vários trechos
+                    Vários trechos{!podeLote && " · Requer plano com lote"}
                   </button>
                   {!loteProgresso && (
                     <button

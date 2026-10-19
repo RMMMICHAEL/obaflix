@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo, downloadPermitido } from "@/lib/playbackAuthorization";
+import { autorizarCatalogo, direitosDoCliente, negativaDeCatalogo, anuncioElectronAtivo, downloadPermitido, cortesControleAtivo } from "@/lib/playbackAuthorization";
 import { autorizarPorAnuncio } from "@/lib/ads/enforcement";
 import { ehRequisicaoElectron, plataformaDaRequisicao } from "@/lib/ads/politica";
 import { HEADER_CLIENTE } from "@/config/site-mode";
@@ -300,6 +300,10 @@ export async function POST(req: NextRequest) {
     // parâmetro do cliente não é prova de autorização. Só age com o controle
     // comercial ligado; desligado, nada muda para os planos de hoje. Transmissão
     // (cast) não passa por aqui. Bloqueio visual não basta.
+    if (finalidade === "download" && cortesControleAtivo() && corpo.corte !== undefined &&
+        corpo.corte !== "individual" && corpo.corte !== "lote") {
+      return NextResponse.json({ error: "Operação de corte inválida" }, { status: 400, headers: NO_STORE });
+    }
     const operacao = corpo.corte === "individual" || corpo.corte === "lote" ? corpo.corte : "completo";
     if (finalidade === "download" && !(await downloadPermitido(userId, operacao))) {
       audit("playback_negado", { userId, ip, ua, detail: `/fontes download: sem_direito op:${operacao}` });
@@ -562,7 +566,7 @@ export async function POST(req: NextRequest) {
 
   // ── Direitos que o cliente precisa conhecer ───────────────────────────────
   //
-  // Só `downloads`, e só porque o download é executado PELO cliente: no
+  // Downloads e cortes são executados PELO cliente: no
   // Electron o app baixa do CDN direto, sem passar por nós. Não existe momento
   // posterior em que o servidor possa negar — então ou ele decide aqui, ou não
   // decide em lugar nenhum.
@@ -573,7 +577,7 @@ export async function POST(req: NextRequest) {
   // esta rota já devolvia — nenhuma requisição nova, conforme a regra de
   // consumo do CLAUDE.md.
   //
-  // Nada além de `downloads` sai daqui. Um objeto de direitos completo seria um
+  // Só os direitos de download e cortes necessários à interface saem daqui.
   // mapa do que vale a pena atacar, e o resto é decidido no servidor de
   // qualquer forma.
   //
