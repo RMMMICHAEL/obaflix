@@ -607,9 +607,15 @@ model Assinatura {
 /// utilizável, e guardar documento sem necessidade contraria a retenção mínima
 /// (D-13).
 model PedidoPagamento {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String  @id @default(cuid())
+  /// Nulo só em compra Cortes sem login: a conta nasce (ou é vinculada pelo
+  /// e-mail) na confirmação autenticada do pagamento. CHECK exige conta ou e-mail.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// E-mail normalizado e nome de quem comprou sem login. Nunca CPF.
+  emailComprador String?
+  nomeComprador  String?
 
   /// RESTRICT no banco: plano com pedido não é apagado. Descontinuar é
   /// `ativo = false`, como em `Assinatura`.
@@ -727,8 +733,9 @@ model RevisaoPagamento {
   pedidoId String
   pedido   PedidoPagamento @relation(fields: [pedidoId], references: [id], onDelete: NoAction)
   /// Desnormalizado de propósito: a trava de compra por conta e a consulta
-  /// administrativa filtram por conta sem juntar com o pedido.
-  userId   String
+  /// administrativa filtram por conta sem juntar com o pedido. Nulo quando o
+  /// pedido é de compra sem login ainda não vinculada a uma conta.
+  userId   String?
 
   /// Código interno do primeiro motivo (`MOTIVOS_DE_REVISAO` em
   /// src/lib/billing/revisao.ts). Motivos posteriores ficam no histórico.

@@ -12,6 +12,7 @@ function tabelasDeRevisao(estado: any) {
     revisaoPagamento: {
       findFirst: async ({ where }: any) => estado.revisoes.find((r: any) => (!where.pedidoId || r.pedidoId === where.pedidoId) && (!where.userId || r.userId === where.userId) && (!where.status || r.status === where.status)) ?? null,
       create: async ({ data }: any) => { const r = { id: `rev-${++n}`, ...data }; estado.revisoes.push(r); return r; },
+      updateMany: async ({ where, data }: any) => { const alvo = estado.revisoes.filter((r: any) => r.pedidoId === where.pedidoId && r.userId === where.userId); alvo.forEach((r: any) => Object.assign(r, data)); return { count: alvo.length }; },
     },
     revisaoPagamentoEvento: {
       create: async ({ data }: any) => { estado.eventosRevisao.push(data); return data; },
@@ -25,6 +26,7 @@ export function criarFake(estado: any, erros: unknown[] = []) {
   const tx:any={
     ...revisao,
     pedidoPagamento:{findUnique:async()=>estado.pedido,update:async({data}:any)=>Object.assign(estado.pedido,data)},
+    user:{upsert:async({where,create}:any)=>{ estado.usuarios??=[]; let u=estado.usuarios.find((x:any)=>x.email===where.email); if(!u){ u={id:`user-${estado.usuarios.length+1}`,senhaHash:null,...create}; estado.usuarios.push(u); } return {id:u.id}; }},
     assinatura:{findMany:async({where}:any={})=>{ const f=where?.plano?.cortesNivel; return (estado.ativas??[]).filter((a:any)=>{ const n=a.plano?.cortesNivel??"nenhum"; return f===undefined||(typeof f==="string"?n===f:n!==f.not); }); },create:async({data}:any)=>{ if(estado.conflito) throw estado.conflito; estado.pedido.assinatura={id:"a",...data}; return estado.pedido.assinatura; },update:async({where,data}:any)=>{ const alvo=(estado.ativas??[]).find((a:any)=>a.id===where.id); if(alvo) return Object.assign(alvo,data); return Object.assign(estado.pedido.assinatura,data); }},
   };
   const banco:any={

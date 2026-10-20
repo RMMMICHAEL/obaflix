@@ -717,3 +717,60 @@ describe("NENHUM caminho ativa assinatura", () => {
     );
   });
 });
+
+// ── Compra Cortes sem login ──────────────────────────────────────────────────
+
+import { emailDoComprador } from "../billing/pagador";
+
+describe("compra Cortes sem login", () => {
+  const PRECO_CORTES: PrecoDoBanco = { ...PRECO, id: "preco_cortes", planoId: "cortes-start", plano: { id: "cortes-start", nome: "Cortes Start", ativo: true, cortesNivel: "individual" } };
+  const SEM_LOGIN = { userId: null, planoId: "cortes-start", planoPrecoId: "preco_cortes", pagador: PAGADOR, comprador: { email: "fulano@example.test", nome: "Fulano de Tal" } };
+
+  test("e-mail do comprador é normalizado e validado", () => {
+    assert.equal(emailDoComprador("  Fulano@Example.TEST "), "fulano@example.test");
+    for (const ruim of [undefined, 1, "", "sem-arroba", "a@b", `${"a".repeat(250)}@x.com`]) assert.equal(emailDoComprador(ruim), null);
+  });
+
+  test("Cortes sem conta: pedido nova com e-mail, sem consultar a conta e sem CPF", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO_CORTES);
+    let consultouConta = false;
+    repo.periodosEmAberto = async () => { consultouConta = true; return []; };
+    repo.revisaoPendente = async () => { consultouConta = true; return false; };
+    const { provedor } = provedorFalso({ ok: true, venda: VENDA_OK });
+    const r = await criarPedidoPix(SEM_LOGIN, { repo, provedor });
+    assert.equal(r.situacao, "criado");
+    assert.equal(consultouConta, false);
+    const dados = gravacoes[0].dados!;
+    assert.equal(dados.userId, null);
+    assert.equal(dados.emailComprador, "fulano@example.test");
+    assert.equal(dados.nomeComprador, "Fulano de Tal");
+    assert.equal(dados.operacao, "nova");
+    assert.ok(!JSON.stringify(dados).includes(PAGADOR.documento.numero));
+  });
+
+  test("tradicional sem conta: exige login, sem pedido e sem provedor", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO);
+    const { provedor, chamadas } = provedorFalso({ ok: true, venda: VENDA_OK });
+    const r = await criarPedidoPix({ ...SEM_LOGIN, planoId: "plus", planoPrecoId: "preco_plus_mensal" }, { repo, provedor });
+    assert.deepEqual(r, { situacao: "exige_login" });
+    assert.equal(gravacoes.length, 0);
+    assert.equal(chamadas.length, 0);
+  });
+
+  test("sem conta e sem comprador: exige login", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO_CORTES);
+    const { provedor } = provedorFalso({ ok: true, venda: VENDA_OK });
+    const { comprador: _c, ...semComprador } = SEM_LOGIN;
+    assert.deepEqual(await criarPedidoPix(semComprador, { repo, provedor }), { situacao: "exige_login" });
+    assert.equal(gravacoes.length, 0);
+  });
+
+  test("com conta, nada muda: pedido sem e-mail de comprador", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO_CORTES);
+    const { provedor } = provedorFalso({ ok: true, venda: VENDA_OK });
+    const r = await criarPedidoPix({ ...SEM_LOGIN, userId: "user_1" }, { repo, provedor });
+    assert.equal(r.situacao, "criado");
+    assert.equal(gravacoes[0].dados!.userId, "user_1");
+    assert.equal(gravacoes[0].dados!.emailComprador, null);
+  });
+});

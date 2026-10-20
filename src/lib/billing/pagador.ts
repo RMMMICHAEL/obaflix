@@ -30,6 +30,19 @@ export function identificadorComercial(valor: unknown): string | null {
   return /^[A-Za-z0-9_-]{1,64}$/.test(limpo) ? limpo : null;
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * E-mail de quem compra Cortes sem login, normalizado (trim + minúsculas) como
+ * no cadastro: é a chave que cria ou vincula a conta na confirmação. Informar o
+ * e-mail não dá acesso a nada — só identifica a cobrança.
+ */
+export function emailDoComprador(valor: unknown): string | null {
+  if (typeof valor !== "string") return null;
+  const email = valor.trim().toLowerCase();
+  return email.length <= 254 && EMAIL_RE.test(email) ? email : null;
+}
+
 /** O que a conta autenticada fornece. Nunca vem do corpo. */
 export interface ContaDoPagador {
   nome: string | null;

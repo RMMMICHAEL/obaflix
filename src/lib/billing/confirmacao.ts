@@ -7,7 +7,7 @@ import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
 import { confirmadorDeCobranca } from "./simulado";
 
-type Pedido = { id: string; userId: string; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
+type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
 export function decidirConfirmacao(p: Pedido, c: ConfirmacaoBlackcat, agora: Date): Decisao {
   if (p.status === "REVISAO_MANUAL") return "MANTER";
@@ -100,7 +100,18 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
   const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
-    const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: { assinatura: true, plano: { select: { cortesNivel: true } } } }); if (!atual) return;
+    const incluir = { assinatura: true, plano: { select: { cortesNivel: true } } } as const;
+    let atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: incluir }); if (!atual) return;
+    // Compra sem login: a conta nasce, ou é vinculada pelo e-mail, só com o
+    // pagamento confirmado pelo provedor. Conta existente não tem nada alterado
+    // (`update: {}`): sem senha nova, sem acesso por informar o e-mail.
+    if (!atual.userId && atual.emailComprador && externo.confirmacao.status === "PAID" && atual.transacaoId === externo.confirmacao.transactionId) {
+      const conta = await tx.user.upsert({ where: { email: atual.emailComprador }, create: { email: atual.emailComprador, nome: atual.nomeComprador }, update: {}, select: { id: true } });
+      atual = await tx.pedidoPagamento.update({ where: { id: atual.id }, data: { userId: conta.id }, include: incluir });
+      // Revisão aberta antes da conta passa a ser dela: trava, consulta e exclusão de conta a enxergam.
+      await tx.revisaoPagamento.updateMany({ where: { pedidoId: atual.id, userId: null }, data: { userId: conta.id } });
+    }
+    const userId = atual.userId;
     // Repetição após commit é sucesso idempotente; nunca reabre uma compra paga.
     if (atual.status === "PAGO" && atual.assinatura && externo.confirmacao.status !== "REFUNDED") return;
     const d = decidirConfirmacao(atual, externo.confirmacao, agora);
@@ -121,11 +132,13 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     const extra = atual as typeof atual & { operacao?: string | null; assinaturasSubstituidas?: string[] | null; duracaoMeses?: number | null; telasAdicionais?: number | null; servidorVip?: boolean | null };
     // Só períodos da mesma família: ativar Cortes nunca encerra o tradicional, e vice-versa.
     const familia=ehPlanoCortes((atual as { plano?: { cortesNivel?: string } | null }).plano?.cortesNivel) ? { not: "nenhum" } : "nenhum";
-    const abertos=await tx.assinatura.findMany({where:{userId:atual.userId,status:"ATIVA",terminaEm:{gt:agora},plano:{cortesNivel:familia}},select:{id:true,terminaEm:true}});
+    // Ativar exige PAID com a transação do pedido, que acima já garantiu a conta.
+    if (!userId) throw new Error("pedido_sem_conta");
+    const abertos=await tx.assinatura.findMany({where:{userId,status:"ATIVA",terminaEm:{gt:agora},plano:{cortesNivel:familia}},select:{id:true,terminaEm:true}});
     const plano=planejarAtivacao({operacao:extra.operacao,assinaturasSubstituidas:extra.assinaturasSubstituidas,duracao:duracaoDoPedido(extra)},abertos,agora);
     if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
-    await tx.assinatura.create({data:{userId:atual.userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
+    await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=atual.userId;
   }); } catch (erro) {
     if (!conflitoPedidoId(erro)) throw erro;

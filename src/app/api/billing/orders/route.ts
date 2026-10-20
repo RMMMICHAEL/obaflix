@@ -10,6 +10,7 @@ import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib
 import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
 import {
+  emailDoComprador,
   identificadorComercial,
   montarPagador,
   type CorpoDoPagador,
@@ -102,6 +103,8 @@ const MENSAGEM_DA_RECUSA: Record<string, string> = {
  * avulso). Nenhum campo de valor.
  */
 interface Corpo extends CorpoDoPagador, CorpoDasOpcoes {
+  /** Só sem sessão (compra Cortes sem login). Com sessão, vale o e-mail da conta. */
+  email?: unknown;
   planoId?: unknown;
   planoPrecoId?: unknown;
 }
@@ -181,10 +184,13 @@ const repositorio: RepositorioDePedidos = {
     // Conta travada durante a checagem e a gravação. Quem abre revisão usa a
     // mesma trava; com requisições simultâneas, uma espera a outra e a checagem
     // enxerga o caso que acabou de ser gravado.
+    // Compra sem login não tem conta a travar nem revisão de conta a conferir.
+    if (!colunas.userId) return prisma.pedidoPagamento.create({ data: colunas, select: { id: true } });
+    const userId = colunas.userId;
     return prisma.$transaction(async (tx) => {
-      await travarContaParaCobranca(tx, colunas.userId);
+      await travarContaParaCobranca(tx, userId);
       const pendente = await tx.revisaoPagamento.findFirst({
-        where: { userId: colunas.userId, status: "PENDENTE" },
+        where: { userId, status: "PENDENTE" },
         select: { id: true },
       });
       if (pendente) return null;
@@ -253,21 +259,19 @@ export async function POST(req: NextRequest) {
   }
 
   // 3. Sessão. Cookie (site, Electron, app) ou Bearer de TV — o mesmo ponto
-  //    único de autorização do resto do projeto.
+  //    único de autorização do resto do projeto. Sem sessão, segue só a compra
+  //    Cortes por e-mail: a conta nasce na confirmação autenticada do pagamento.
   const usuario = await getUserFromRequest(req);
-  if (!usuario) {
-    audit("auth_failure", { ip, ua, detail: "/billing/orders sem sessão" });
-    return erro(401, "acesso_negado", "Acesso negado");
-  }
-  const userId = usuario.userId;
+  const userId = usuario?.userId ?? null;
 
   // 4. Limites. Os dois sempre, e nesta ordem: a conta é o sujeito da cobrança,
-  //    o IP é o que impede contornar o limite da conta criando contas.
+  //    o IP é o que impede contornar o limite da conta criando contas. Sem
+  //    conta, o limite por e-mail vem depois do corpo.
   //
   //    **Dinheiro não falha aberto**: o `catch` recusa, em vez de deixar passar.
   try {
     const [porConta, porIp] = await Promise.all([
-      checkRateLimit(`billing:orders:user:${userId}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS),
+      userId ? checkRateLimit(`billing:orders:user:${userId}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS) : { allowed: true },
       checkRateLimit(`billing:orders:ip:${ip}`, LIMITE_POR_IP, JANELA_SEGUNDOS),
     ]);
     if (!porConta.allowed || !porIp.allowed) {
@@ -316,12 +320,25 @@ export async function POST(req: NextRequest) {
     return erro(400, "parametros_invalidos", "Parâmetros inválidos");
   }
 
-  const conta = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { nome: true, email: true },
-  });
+  const conta = userId
+    ? await prisma.user.findUnique({ where: { id: userId }, select: { nome: true, email: true } })
+    : (() => { const email = emailDoComprador(corpo.email); return email ? { nome: null, email } : null; })();
   if (!conta) {
+    if (!userId) audit("auth_failure", { ip, ua, detail: "/billing/orders sem sessão" });
     return erro(401, "acesso_negado", "Acesso negado");
+  }
+  if (!userId) {
+    // Sem conta, o e-mail é o sujeito: impede usar a rota para encher a caixa
+    // de alguém com cobranças.
+    try {
+      const porEmail = await checkRateLimit(`billing:orders:email:${conta.email}`, LIMITE_POR_CONTA, JANELA_SEGUNDOS);
+      if (!porEmail.allowed) {
+        audit("rate_limited", { ip, ua, detail: "/billing/orders email" });
+        return erro(429, "muitas_tentativas", "Muitas tentativas. Tente mais tarde");
+      }
+    } catch {
+      return INDISPONIVEL();
+    }
   }
 
   const pagador = montarPagador(conta, corpo);
@@ -345,6 +362,7 @@ export async function POST(req: NextRequest) {
     resultado = await criarPedidoPix(
       {
         userId, planoId, planoPrecoId, pagador,
+        ...(userId ? {} : { comprador: { email: conta.email, nome: pagador.nome } }),
         telasAdicionais: opcoes.telasAdicionais,
         servidorVip: opcoes.servidorVip,
       },
@@ -358,6 +376,12 @@ export async function POST(req: NextRequest) {
   if (resultado.situacao === "nao_compravel") {
     audit("billing_order_failed", { userId, ip, ua, detail: `nao compravel: ${resultado.motivo}` });
     return erro(422, "plano_indisponivel", "Plano indisponível para compra");
+  }
+
+  // Mesma resposta de "sem sessão": não diz nada sobre o plano nem o e-mail.
+  if (resultado.situacao === "exige_login") {
+    audit("auth_failure", { ip, ua, detail: "/billing/orders sem sessão" });
+    return erro(401, "acesso_negado", "Acesso negado");
   }
 
   if (resultado.situacao === "revisao_pendente") {

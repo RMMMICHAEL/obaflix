@@ -212,7 +212,7 @@ function bancoComTrava() {
     periodosEmAberto: async () => [],
     revisaoPendente: async (userId) => revisoes.has(userId),
     criar: (dados) => comTrava(async () => {
-      if (revisoes.has(dados.userId)) return null;
+      if (dados.userId && revisoes.has(dados.userId)) return null;
       pedidos.push(dados.refExterna);
       return { id: `p-${pedidos.length}` };
     }),

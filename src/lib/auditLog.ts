@@ -90,7 +90,7 @@ export type AuditEvent =
   | "account_delete_rejected";
 
 interface AuditMeta {
-  userId?: string;
+  userId?: string | null;
   ip?: string;
   ua?: string;
   detail?: string;

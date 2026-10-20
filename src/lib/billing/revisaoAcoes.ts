@@ -296,6 +296,10 @@ export async function executarAcaoDeRevisao(
   });
   if (!caso) return { ok: false, status: 404, codigo: "revisao_nao_encontrada" };
   if (caso.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" };
+  // Compra sem login ainda sem conta: não há a quem conceder nem de quem
+  // retirar. A conta nasce quando o provedor confirma o pagamento.
+  const userId = caso.pedido.userId;
+  if (!userId) return { ok: false, status: 409, codigo: "pedido_sem_conta" };
 
   // A consulta ao provedor fica fora da transação: rede não segura trava.
   //
@@ -324,7 +328,7 @@ export async function executarAcaoDeRevisao(
   try {
     resposta = await transacaoComRetry(banco, async (tx) => {
       mudouDireito = false;
-      await travarContaParaCobranca(tx, caso.pedido.userId);
+      await travarContaParaCobranca(tx, userId);
 
       const atual = await tx.revisaoPagamento.findUnique({ where: { id: caso.id }, select: { status: true, pedidoId: true } });
       if (!atual || atual.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" } as const;
@@ -333,7 +337,7 @@ export async function executarAcaoDeRevisao(
       if (!pedido) throw new ConflitoDeEstado("pedido_ausente");
 
       const abertos = await tx.assinatura.findMany({
-        where: { userId: pedido.userId, status: "ATIVA", terminaEm: { gt: agora } },
+        where: { userId, status: "ATIVA", terminaEm: { gt: agora } },
         select: { id: true, terminaEm: true },
       });
       const substituidas = pedido.assinaturasSubstituidas.length
@@ -344,7 +348,7 @@ export async function executarAcaoDeRevisao(
         : [];
 
       const plano = planejarResolucao({
-        acao, pedido, confirmacao, abertos, substituidas, observacao, agora,
+        acao, pedido: { ...pedido, userId }, confirmacao, abertos, substituidas, observacao, agora,
         assinaturaDoPedido: pedido.assinatura ? { id: pedido.assinatura.id, status: pedido.assinatura.status } : null,
       });
 
@@ -374,7 +378,7 @@ export async function executarAcaoDeRevisao(
         // `Assinatura.pedidoId` é único: uma segunda ativação do mesmo pedido falha no banco.
         await tx.assinatura.create({
           data: {
-            userId: pedido.userId, planoId: pedido.planoId, planoPrecoId: pedido.planoPrecoId, pedidoId: pedido.id,
+            userId, planoId: pedido.planoId, planoPrecoId: pedido.planoPrecoId, pedidoId: pedido.id,
             status: "ATIVA", origem: "pagamento", iniciaEm: ef.iniciaEm, terminaEm: ef.terminaEm,
             telasAdicionais: pedido.telasAdicionais, servidorVip: pedido.servidorVip,
           },
@@ -446,9 +450,9 @@ export async function executarAcaoDeRevisao(
   }
 
   if (resposta.ok) {
-    audit("billing_review_action", { userId: caso.pedido.userId, detail: `revisao ${caso.id} ${acao} -> ${resposta.resultado}` });
+    audit("billing_review_action", { userId: userId, detail: `revisao ${caso.id} ${acao} -> ${resposta.resultado}` });
     if (mudouDireito) {
-      try { await invalidar(caso.pedido.userId); } catch { audit("billing_entitlements_invalidation_failed", { userId: caso.pedido.userId, detail: "apos_revisao" }); }
+      try { await invalidar(userId); } catch { audit("billing_entitlements_invalidation_failed", { userId: userId, detail: "apos_revisao" }); }
     }
   } else {
     // Diagnóstico autoritativo, só com ids permitidos e a classificação —
@@ -457,11 +461,11 @@ export async function executarAcaoDeRevisao(
     // provedor não trouxe status sem vazar nada sensível.
     if (falhaProvedor) {
       audit("billing_review_provider_failed", {
-        userId: caso.pedido.userId,
+        userId: userId,
         detail: `falha=${falhaProvedor} revisao=${caso.id} pedido=${caso.pedidoId}`,
       });
     }
-    audit("billing_review_action_refused", { userId: caso.pedido.userId, detail: `revisao ${caso.id} ${acao}: ${resposta.codigo}` });
+    audit("billing_review_action_refused", { userId: userId, detail: `revisao ${caso.id} ${acao}: ${resposta.codigo}` });
   }
   return resposta;
 }
