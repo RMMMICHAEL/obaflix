@@ -1,3 +1,5 @@
+import { PLANOS_CORTES } from "../planos";
+
 export const STATUS_TERMINAIS_DO_PEDIDO = new Set([
   "PAGO", "EXPIRADO", "CANCELADO", "ESTORNADO", "REVISAO_MANUAL",
 ]);
@@ -36,15 +38,22 @@ export function corpoCriarPedido(
   planoId: string | null,
   planoPrecoId: string | null,
   pagador: { nome: string; telefone: string; documento: string },
-  opcoes: { cupom?: string; telasAdicionais?: number } = {},
+  opcoes: { cupom?: string; telasAdicionais?: number; email?: string } = {},
 ) {
   const cupom = opcoes.cupom?.trim();
+  const email = opcoes.email?.trim();
   const telas = opcoes.telasAdicionais;
   return {
     planoId, planoPrecoId, ...pagador,
     ...(cupom ? { cupom } : {}),
+    ...(email ? { email } : {}),
     ...(typeof telas === "number" && telas > 0 ? { telasAdicionais: telas } : {}),
   };
+}
+
+/** Só Cortes compra sem login; o servidor decide de novo e recusa o resto (401). */
+export function checkoutSemLoginPermitido(planoId: string | null) {
+  return !!planoId && PLANOS_CORTES.some((plano) => plano.id === planoId);
 }
 
 /** Texto da operação que o servidor decidiu. Informativo; o valor já veio calculado. */

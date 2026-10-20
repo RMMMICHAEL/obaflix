@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as plansGet } from "../../app/api/billing/plans/route";
 import { GET as meGet } from "../../app/api/billing/me/route";
 import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
-import { acaoComercialDoPlano, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
+import { acaoComercialDoPlano, checkoutSemLoginPermitido, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
 const createPlansHandler = plansGet.createForTest;
@@ -57,6 +57,10 @@ test("recuperação de pendente é autenticada, do dono, vigente e sem transacti
 test("checkout envia somente seleção e pagador, e encerra polling em todo estado terminal", () => {
   const corpo = corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" });
   assert.deepEqual(Object.keys(corpo).sort(), ["documento", "nome", "planoId", "planoPrecoId", "telefone"]);
+  assert.equal(corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" }, { email: " a@b.co " }).email, "a@b.co");
+  assert.equal("email" in corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" }, { email: "  " }), false);
+  for (const id of ["cortes-start", "cortes-pro", "cortes-ai"]) assert.equal(checkoutSemLoginPermitido(id), true);
+  for (const id of ["basic", "plus", "premium", "gratuito", "", null]) assert.equal(checkoutSemLoginPermitido(id), false);
   for (const status of ["PAGO", "EXPIRADO", "CANCELADO", "ESTORNADO", "REVISAO_MANUAL"]) assert.equal(deveFazerPolling(status), false);
   assert.equal(deveFazerPolling("AGUARDANDO"), true);
   assert.match(mensagemErroCheckout("assinatura_ativa"), /assinatura ativa/);

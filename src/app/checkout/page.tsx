@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import QRCode from "qrcode";
 import {
+  checkoutSemLoginPermitido,
   corpoCriarPedido,
   descricaoDaOperacao,
   deveFazerPolling,
@@ -121,6 +122,7 @@ function CheckoutConteudo() {
   const [nome, setNome] = useState("");
   const [telefone, setTelefone] = useState("");
   const [documento, setDocumento] = useState("");
+  const [email, setEmail] = useState("");
   const [telas, setTelas] = useState(0);
   const [erro, setErro] = useState("");
   const [carregandoCatalogo, setCarregandoCatalogo] = useState(true);
@@ -147,12 +149,14 @@ function CheckoutConteudo() {
 
   const planoId = query.get("planoId");
   const precoDaUrl = query.get("planoPrecoId");
+  // Visitante: compra Cortes sem login. Não chama nada que exija sessão.
+  const visitante = status === "unauthenticated" && checkoutSemLoginPermitido(planoId);
 
   useEffect(() => {
-    if (status === "unauthenticated") {
+    if (status === "unauthenticated" && !checkoutSemLoginPermitido(planoId)) {
       router.replace(destinoDoLoginDoCheckout(query.toString()));
     }
-  }, [status, query, router]);
+  }, [status, planoId, query, router]);
 
   useEffect(() => {
     const nomeDaConta = sessao?.user?.name?.trim();
@@ -198,6 +202,7 @@ function CheckoutConteudo() {
   }, [planoId, precoDaUrl]);
 
   useEffect(() => {
+    if (visitante) setCarregandoPedido(false);
     if (status !== "authenticated") return;
 
     let ativo = true;
@@ -214,10 +219,10 @@ function CheckoutConteudo() {
     return () => {
       ativo = false;
     };
-  }, [status]);
+  }, [status, visitante]);
 
   useEffect(() => {
-    if (!pedido || !(deveFazerPolling(pedido.status) || pedido.emRevisao)) return;
+    if (visitante || !pedido || !(deveFazerPolling(pedido.status) || pedido.emRevisao)) return;
     const intervalo = window.setInterval(
       () =>
         fetch(`/api/billing/orders/${pedido.pedidoId}`, { cache: "no-store" })
@@ -229,15 +234,15 @@ function CheckoutConteudo() {
       pedido.emRevisao ? 30000 : 10000,
     );
     return () => window.clearInterval(intervalo);
-  }, [pedido]);
+  }, [pedido, visitante]);
 
   useEffect(() => {
-    if (pedido?.status !== "PAGO") return;
+    if (visitante || pedido?.status !== "PAGO") return;
     fetch("/api/billing/me", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((dados) => setConfirmado(Boolean(dados?.plano?.id && dados.plano.id === planoId)))
       .catch(() => setConfirmado(false));
-  }, [pedido?.status, planoId]);
+  }, [pedido?.status, planoId, visitante]);
 
   const preco = useMemo(
     () => plano?.precos.find((item) => item.id === precoId) ?? null,
@@ -279,13 +284,13 @@ function CheckoutConteudo() {
             plano.id,
             preco.id,
             { nome, telefone, documento },
-            { telasAdicionais: telas },
+            { telasAdicionais: telas, ...(visitante ? { email } : {}) },
           ),
         ),
       });
       const dados = await resposta.json().catch(() => null);
       if (!resposta.ok) {
-        if (dados?.codigo === "pagamento_em_revisao") {
+        if (dados?.codigo === "pagamento_em_revisao" && !visitante) {
           fetch("/api/billing/orders/pending", { cache: "no-store" })
             .then((r) => (r.ok ? r.json() : null))
             .then((pendente) => {
@@ -320,7 +325,7 @@ function CheckoutConteudo() {
     );
   }
 
-  if (status !== "authenticated" || carregandoCatalogo || carregandoPedido) {
+  if ((status !== "authenticated" && !visitante) || carregandoCatalogo || carregandoPedido) {
     return <main className="min-h-screen bg-[#101014] p-24 text-white">Carregando checkout…</main>;
   }
 
@@ -372,6 +377,11 @@ function CheckoutConteudo() {
                 >
                   Copiar PIX
                 </button>
+                {visitante && (
+                  <p className="mt-5 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-zinc-200">
+                    Depois que o pagamento for confirmado, enviaremos o acesso ao Obaflix Cortes para <strong>{email.trim()}</strong>.
+                  </p>
+                )}
               </div>
             </div>
           ) : (
@@ -541,14 +551,29 @@ function CheckoutConteudo() {
                   />
                 </label>
 
-                <label className="text-sm font-semibold text-zinc-300">
-                  E-mail da conta
-                  <input
-                    value={sessao?.user?.email ?? ""}
-                    readOnly
-                    className="mt-2 w-full cursor-not-allowed rounded-xl border border-white/10 bg-black/15 px-4 py-3 text-zinc-400"
-                  />
-                </label>
+                {visitante ? (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    E-mail para receber o acesso
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      maxLength={254}
+                      required
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-white outline-none focus:border-white/30"
+                    />
+                  </label>
+                ) : (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    E-mail da conta
+                    <input
+                      value={sessao?.user?.email ?? ""}
+                      readOnly
+                      className="mt-2 w-full cursor-not-allowed rounded-xl border border-white/10 bg-black/15 px-4 py-3 text-zinc-400"
+                    />
+                  </label>
+                )}
 
                 <label className="text-sm font-semibold text-zinc-300 sm:col-span-2">
                   Telefone com DDD
