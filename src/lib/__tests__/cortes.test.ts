@@ -123,7 +123,8 @@ for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
   for (const operacao of ["completo", "individual", "lote"] as const) {
     test(`servidor: ${nivel}/${operacao}, plano sem download completo e monetização ligada`, async () => {
       const resolver = (async () => ({ direitos: { cortesNivel: nivel, downloads: false } })) as never;
-      const esperado = operacao !== "completo" && corteAutorizado(nivel, operacao);
+      // Completo: plano tradicional (nenhum) baixa; plano de cortes sem `downloads` não.
+      const esperado = operacao === "completo" ? nivel === "nenhum" : corteAutorizado(nivel, operacao);
       assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, ativa: true, resolver }), esperado);
       assert.equal(await downloadPermitido("u", "forjado" as never, { controleAtivo: true, resolver }), false);
     });
@@ -131,13 +132,13 @@ for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
 }
 
 
-test("controle desligado mantém downloads do plano tradicional com monetização ativa", async () => {
+test("controle desligado: plano tradicional baixa o completo com monetização ativa", async () => {
   const { direitosDoCliente } = await import("../playbackAuthorization");
   for (const downloads of [false, true]) {
     let chamadas = 0;
     const resolver = (async () => { chamadas++; return { direitos: { downloads, cortesNivel: "nenhum" } }; }) as never;
     const direitos = await direitosDoCliente("u", { ativa: true, controleAtivo: false, resolver });
-    assert.equal(direitos.downloads, downloads);
+    assert.equal(direitos.downloads, true);
     assert.equal(direitos.cortesControleAtivo, false);
     assert.equal(chamadas, 1);
   }
@@ -149,4 +150,33 @@ test("anúncio: gratuito com anúncio ativo recebe o aviso; assinante isento nã
   assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: true, resolver: de(true) })).anuncio, true);
   assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: true, resolver: de(false) })).anuncio, false);
   assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: false, resolver: de(true) })).anuncio, false);
+});
+
+describe("matriz: completo/trecho/lote por plano, monetização ligada e desligada", async () => {
+  const P = await import("../planos");
+  const planos = { gratuito: P.PLANO_GRATUITO, basic: P.PLANO_BASIC, plus: P.PLANO_PLUS, premium: P.PLANO_PREMIUM,
+    start: P.PLANO_CORTES_START, pro: P.PLANO_CORTES_PRO, ai: P.PLANO_CORTES_AI };
+  const esperado: Record<string, [boolean, boolean, boolean]> = {
+    gratuito: [true, false, false], basic: [true, false, false], plus: [true, false, false], premium: [true, false, false],
+    start: [false, true, false], pro: [false, true, true], ai: [false, true, true],
+  };
+  for (const ativa of [true, false]) {
+    for (const [nome, plano] of Object.entries(planos)) {
+      test(`${nome} com monetização ${ativa ? "ligada" : "desligada"}`, async () => {
+        const { direitosDoCliente } = await import("../playbackAuthorization");
+        const resolver = (async () => ({ direitos: plano })) as never;
+        const [completo, individual, lote] = esperado[nome];
+        // Desligada: o completo segue liberado a todos, como sempre.
+        const completoEsperado = ativa ? completo : true;
+        const op = (o: "completo" | "individual" | "lote") => downloadPermitido("u", o, { controleAtivo: true, ativa, resolver });
+        assert.equal(await op("completo"), completoEsperado);
+        assert.equal(await op("individual"), individual);
+        assert.equal(await op("lote"), lote);
+        const cliente = await direitosDoCliente("u", { ativa, controleAtivo: true, anuncioAtivo: ativa, resolver });
+        assert.equal(cliente.downloads, completoEsperado);
+        // Anúncio obrigatório do gratuito preservado (só aparece com anúncio ativo).
+        assert.equal(cliente.anuncio, ativa && plano.anunciosObrigatorios === true);
+      });
+    }
+  }
 });

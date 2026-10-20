@@ -10,6 +10,7 @@ import {
 } from "../playbackAuthorization";
 import {
   PLANO_BASIC,
+PLANO_CORTES_PRO,
   PLANO_GRATUITO,
   PLANO_PREMIUM,
   inversoesDeDireito,
@@ -199,7 +200,7 @@ describe("direitosDoCliente", () => {
     assert.equal(chamadas(), 0);
   });
 
-  test("basic não baixa; premium baixa", async () => {
+  test("com monetização: basic e premium baixam o completo", async () => {
     const basic = await direitosDoCliente("u1", {
       ativa: true,
       resolver: resolverFalso(entitlementsDe(PLANO_BASIC)).resolver,
@@ -209,7 +210,7 @@ describe("direitosDoCliente", () => {
       resolver: resolverFalso(entitlementsDe(PLANO_PREMIUM)).resolver,
     });
 
-    assert.deepEqual({ ...basic, anuncio: false }, { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
+    assert.deepEqual({ ...basic, anuncio: false }, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
     assert.deepEqual({ ...premium, anuncio: false }, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
@@ -217,12 +218,12 @@ describe("direitosDoCliente", () => {
   test("resolver que falha nega o download", async () => {
     const { resolver } = resolverFalso(new Error("banco fora"));
 
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
+    assert.equal((await direitosDoCliente("u1", { ativa: true, resolver })).downloads, false);
   });
 
   /** Um direito `undefined` — cache de formato antigo — não vira permissão. */
-  test("downloads ausente não vira true por coerção", async () => {
-    const ent = entitlementsDe(PLANO_PREMIUM);
+  test("downloads ausente não vira true por coerção (plano de cortes)", async () => {
+    const ent = entitlementsDe(PLANO_CORTES_PRO);
     const { resolver } = resolverFalso({
       ...ent,
       direitos: { ...ent.direitos, downloads: undefined as unknown as boolean },
