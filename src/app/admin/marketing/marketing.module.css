@@ -1,0 +1,46 @@
+.page{--red:oklch(56% .22 25);--paper:oklch(97% .005 25);--muted:oklch(72% .01 25);--panel:oklch(18% .006 25);--line:oklch(30% .006 25);background:oklch(13% .006 25);color:var(--paper);min-height:100vh;padding:clamp(20px,4vw,40px);font-family:inherit}
+.head{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between;max-width:1100px;margin:0 auto 28px}
+.head h1{font-size:clamp(26px,4vw,38px);font-weight:800;letter-spacing:-1px;margin:0}
+.head p{color:var(--muted);font-size:13px;margin:8px 0 0;max-width:60ch;line-height:1.6}
+.wrap{max-width:1100px;margin:0 auto}
+.periodo{display:inline-flex;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px}
+.periodo button{min-height:40px;padding:8px 16px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-family:inherit;font-size:13px;font-weight:650;cursor:pointer}
+.periodo button[data-on="true"]{background:var(--red);color:var(--paper)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:24px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+.card small{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;min-height:34px}
+.card b{font-size:34px;font-weight:800;letter-spacing:-1px;display:block}
+.card.accent b{color:var(--red)}
+.rates{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:28px}
+.rate{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--red);border-radius:12px;padding:18px}
+.rate small{display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:8px}
+.rate b{font-size:26px;font-weight:750}
+.rate em{display:block;font-style:normal;color:var(--muted);font-size:11px;margin-top:6px}
+.section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:22px}
+.section h2{font-size:18px;font-weight:700;margin:0 0 4px;letter-spacing:-.4px}
+.section .hint{color:var(--muted);font-size:12px;margin:0 0 18px}
+.chart{display:flex;align-items:flex-end;gap:4px;height:160px;padding-top:10px;overflow-x:auto}
+.col{flex:1 0 14px;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;height:100%;min-width:14px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:100%}
+.bar{flex:1;border-radius:3px 3px 0 0;min-height:2px}
+.bar.view{background:oklch(62% .12 255)}
+.bar.dl{background:var(--red)}
+.col span{font-size:9px;color:var(--muted);text-align:center;white-space:nowrap}
+.legend{display:flex;gap:18px;font-size:12px;color:var(--muted);margin-top:14px}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:middle}
+.tableWrap{overflow-x:auto}
+table.camp{width:100%;border-collapse:collapse;font-size:13px}
+table.camp th,table.camp td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.camp th{color:var(--muted);font-weight:650;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+table.camp td.num,table.camp th.num{text-align:right;font-variant-numeric:tabular-nums}
+table.camp tbody tr:hover{background:oklch(22% .006 25)}
+.gen{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.gen label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)}
+.gen input{min-height:44px;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:oklch(14% .006 25);color:var(--paper);font-family:inherit;font-size:14px}
+.gen input:focus{outline:2px solid var(--red);outline-offset:1px}
+.genOut{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.genOut code{flex:1;min-width:260px;background:oklch(14% .006 25);border:1px solid var(--line);border-radius:9px;padding:12px 14px;font-size:12px;word-break:break-all;color:var(--paper)}
+.copyBtn{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:11px 18px;border-radius:9px;border:0;background:var(--red);color:var(--paper);font-family:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.copyBtn:hover{background:oklch(51% .20 25)}
+.state{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
+.empty{color:var(--muted);font-size:13px;padding:20px 0;text-align:center}

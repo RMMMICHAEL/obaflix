@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+// Preserve the runtime behavior previously inherited from the root layout.
+export const dynamic = "force-dynamic";
 
 // Página de sessão: nunca indexável. Uma URL /parear?c=CODIGO no índice de busca
 // não vaza credencial (o código expira em 10 min e exige login para valer), mas
