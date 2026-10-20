@@ -82,6 +82,14 @@ export function FichaSeoExtra({
         )}
       </div>
 
+      <p className="mt-3 text-sm text-zinc-300">
+        Consulte os{" "}
+        <a href="/termos" className="rounded-sm underline underline-offset-4 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white">
+          Termos de Serviço
+        </a>{" "}
+        antes de instalar.
+      </p>
+
       {generos.length > 0 ? (
         <nav aria-label="Gêneros" className="mt-6">
           <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-500">Gêneros</h3>
