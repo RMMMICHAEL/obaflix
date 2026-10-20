@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown, Play } from "lucide-react";
 import { imgUrl, logoUrl } from "@/lib/tmdb";
+import { heroBackdropSrc, heroBackdropSrcSet } from "@/lib/tmdb-image";
 import { useEstadoPessoal } from "./EstadoPessoal";
 import { MediaHeroActions } from "./MediaHeroActions";
 import { TrailerButton } from "./TrailerButton";
@@ -119,7 +119,6 @@ export function MediaHero({
     ? `/assistir/serie/${conteudoId}/t${continuar!.temporada}/ep${continuar!.numeroEp}`
     : watchHref;
 
-  const bgSrc = backdrop ? imgUrl(backdrop, "original") : "/placeholder-bg.jpg";
   const logoSrc = logoUrl(logo, "w500");
   const podeExpandir = (sinopse?.length ?? 0) > SINOPSE_LONGA;
 
@@ -224,15 +223,33 @@ export function MediaHero({
         ela preenche o hero inteiro.
       */}
       <div className="pointer-events-none absolute inset-x-0 top-0 aspect-[3/2] sm:aspect-video md:inset-0 md:aspect-auto">
-        <Image
-          src={bgSrc}
-          alt=""
-          aria-hidden="true"
-          fill
-          sizes="100vw"
-          priority
-          className="object-cover object-top md:object-center"
-        />
+        {backdrop ? (
+          // Backdrop responsivo num <img> normal (não next/image): com
+          // images.unoptimized global, o next/image serviria o src cru sem
+          // srcset e sem chamar loader. O srcset manual aponta direto para os
+          // tokens do TMDB; com sizes=100vw o browser escolhe por viewport×DPR —
+          // telefone pega w780/w1280, tela grande/4K pega original. fetchPriority
+          // high mantém o backdrop como LCP sem o preload automático do next.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={heroBackdropSrc(backdrop)}
+            srcSet={heroBackdropSrcSet(backdrop)}
+            sizes="100vw"
+            alt=""
+            aria-hidden="true"
+            fetchPriority="high"
+            decoding="async"
+            className="absolute inset-0 h-full w-full object-cover object-top md:object-center"
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src="/placeholder-bg.jpg"
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full object-cover object-top md:object-center"
+          />
+        )}
 
         {/* Degrade inferior: e ele que funde a imagem com o resto da pagina. */}
         <div
