@@ -6,6 +6,7 @@ import { fimDoPeriodo, type Duracao } from "./vigencia";
 import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
 import { confirmadorDeCobranca } from "./simulado";
+import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
 
 type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
@@ -81,7 +82,7 @@ export function planejarAtivacao(
 
 const MAX_TENTATIVAS_TRANSACAO = 3;
 /** Portas estreitas para testes; produção usa os defaults abaixo. */
-export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string)=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; }
+export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string)=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; }
 function conflitoRetryable(erro: unknown) { return typeof erro === "object" && erro !== null && "code" in erro && (erro as {code?:unknown}).code === "P2034"; }
 function conflitoPedidoId(erro: unknown) { const e=erro as {code?:unknown;meta?:{target?:unknown}}; return e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("pedidoId"); }
 async function transacaoComRetry<T>(banco: typeof prisma, fn: (tx: Parameters<typeof prisma.$transaction>[0] extends (arg: infer U) => unknown ? U : never) => Promise<T>): Promise<T> {
@@ -98,15 +99,17 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDeCobranca(); if (!confirmar) return { resultado: "configuracao" };
   const externo = await confirmar(pedido.transacaoId);
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
-  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null;
+  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
+    comprador = null;
     const incluir = { assinatura: true, plano: { select: { cortesNivel: true } } } as const;
     let atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: incluir }); if (!atual) return;
     // Compra sem login: a conta nasce, ou é vinculada pelo e-mail, só com o
     // pagamento confirmado pelo provedor. Conta existente não tem nada alterado
     // (`update: {}`): sem senha nova, sem acesso por informar o e-mail.
     if (!atual.userId && atual.emailComprador && externo.confirmacao.status === "PAID" && atual.transacaoId === externo.confirmacao.transactionId) {
-      const conta = await tx.user.upsert({ where: { email: atual.emailComprador }, create: { email: atual.emailComprador, nome: atual.nomeComprador }, update: {}, select: { id: true } });
+      const conta = await tx.user.upsert({ where: { email: atual.emailComprador }, create: { email: atual.emailComprador, nome: atual.nomeComprador }, update: {}, select: { id: true, senhaHash: true } });
+      comprador = { userId: conta.id, email: atual.emailComprador, semSenha: !conta.senhaHash };
       atual = await tx.pedidoPagamento.update({ where: { id: atual.id }, data: { userId: conta.id }, include: incluir });
       // Revisão aberta antes da conta passa a ser dela: trava, consulta e exclusão de conta a enxergam.
       await tx.revisaoPagamento.updateMany({ where: { pedidoId: atual.id, userId: null }, data: { userId: conta.id } });
@@ -148,6 +151,9 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (reconciliado) await banco.$transaction((tx) => marcarPedidoEmRevisao(tx, { pedidoId, userId: reconciliado.userId, motivo: "reconciliacao_inconsistente" }));
     return {resultado:"inconsistencia"};
   }
+  // Só depois do commit, e uma vez: a conta é vinculada uma única vez. E-mail que falha não desfaz nada.
+  const avisar = comprador as ContaDoComprador | null;
+  if (avisar) try { await (injetadas.notificarPrimeiroAcesso ?? notificarPrimeiroAcesso)(avisar); } catch { audit("email_failed",{userId:avisar.userId,detail:"primeiro_acesso apos_commit"}); }
   if(userParaInvalidar) try { await invalidar(userParaInvalidar); } catch { audit("billing_entitlements_invalidation_failed",{userId:userParaInvalidar,detail:"apos_commit"}); }
   audit(decisao === "ATIVAR" ? "billing_payment_confirmed" : decisao === "ESTORNAR" ? "billing_payment_refunded" : "billing_payment_review",{userId:pedido.userId,detail:`pedido ${pedidoId}`});
   return { resultado:decisao.toLowerCase() };

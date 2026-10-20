@@ -87,7 +87,11 @@ export type AuditEvent =
   // o valor que falhou.
   | "account_delete_requested"
   | "account_delete_completed"
-  | "account_delete_rejected";
+  | "account_delete_rejected"
+  | "email_sent"
+  | "email_failed"
+  | "account_activated"
+  | "account_activation_rejected";
 
 interface AuditMeta {
   userId?: string | null;
