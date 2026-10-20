@@ -473,6 +473,7 @@ export async function POST(req: NextRequest) {
   }
 
   let tmdbId: string | null = null;
+  let imdbId: string | null = null;
   let titulo: string | null = null;
   let urlDub: string | null = null;
   let urlLeg: string | null = null;
@@ -481,12 +482,13 @@ export async function POST(req: NextRequest) {
   if (conteudoTipo === "filme") {
     const filme = await prisma.filme.findUnique({
       where: { id: conteudoId },
-      select: { id: true, titulo: true, tmdbId: true, urlDub: true, urlLeg: true },
+      select: { id: true, titulo: true, tmdbId: true, imdbId: true, urlDub: true, urlLeg: true },
     });
     if (!filme) return NextResponse.json({ error: "Conteúdo não encontrado" }, { status: 404, headers: NO_STORE });
 
     const warez = await buscarWarez2(new URLSearchParams({ item_id: conteudoId }));
     tmdbId = filme.tmdbId;
+    imdbId = filme.imdbId;
     titulo = filme.titulo;
     urlDub = mesclar(warez.br, filme.urlDub);
     urlLeg = mesclar(warez.eng, filme.urlLeg);
@@ -497,7 +499,7 @@ export async function POST(req: NextRequest) {
     const [serie, episodio, linhasCatalogo] = await Promise.all([
       prisma.serie.findUnique({
         where: { id: conteudoId },
-        select: { id: true, titulo: true, tmdbId: true },
+        select: { id: true, titulo: true, tmdbId: true, imdbId: true },
       }),
       prisma.episodio.findFirst({
         where: { serieId: conteudoId, temporada, numeroEp },
@@ -528,6 +530,7 @@ export async function POST(req: NextRequest) {
       : null;
 
     tmdbId = serie.tmdbId;
+    imdbId = serie.imdbId;
     titulo = serie.titulo;
     urlDub = mesclar(redeCanais ? [...warez.br, redeCanais] : warez.br, episodio.urlDub);
     urlLeg = mesclar(warez.eng, episodio.urlLeg);
@@ -561,7 +564,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const sessao = await criarSessaoFontes(userId, ambiente, fontesDaSessao);
+  const sessao = await criarSessaoFontes(userId, ambiente, fontesDaSessao,
+    ambiente === "electron" && finalidade === "reproducao"
+      ? { finalidade, conteudoTipo, imdbId, tmdbId, temporada, numeroEp } : undefined);
 
   // ── Direitos que o cliente precisa conhecer ───────────────────────────────
   //

@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("obaflixDesktop", {
   // Indica que está rodando no app desktop
   isDesktop: true,
 
+  // Apenas o protocolo dos addons conhecidos; sem acesso genérico à rede ou ao IPC.
+  addons: (pedido) => ipcRenderer.invoke("desktop-addons", pedido),
+
   // Extrai stream de player embed (rola3/rola4) via processo principal (sem CORS)
   // Retorna: { stream: string, tipo: "hls"|"mp4" } | { error: string }
   extractStream: (embedUrl) => ipcRenderer.invoke("extract-stream", embedUrl),

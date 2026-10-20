@@ -21,6 +21,7 @@
 
 import crypto from "crypto";
 import { getRedis } from "./redis";
+import type { AlvoDeAddon } from "./playerAddons";
 import {
   resolveEpisodeCoordinates, urlComCoordenada, PROVEDORES_COM_COORDENADA,
   type EpisodeCoordinate, type RegraCoordenada, type estruturaDoCatalogo,
@@ -259,6 +260,7 @@ const chaveSessao = (sessao: string) => `play:fontes:${sessao}`;
 
 interface SessaoArmazenada {
   uid: string;
+  addonAlvo?: AlvoDeAddon;
   /**
    * Ambiente declarado na criação. Uma sessão "web" nunca resolve URL real:
    * o navegador não extrai nada localmente, então não há caso legítimo em que
@@ -283,9 +285,10 @@ export async function criarSessaoFontes(
   userId: string,
   ambiente: Ambiente,
   fontes: FonteReal[],
+  addonAlvo?: AlvoDeAddon,
 ): Promise<string> {
   const sessao = crypto.randomBytes(16).toString("base64url");
-  const payload: SessaoArmazenada = { uid: userId, ambiente, fontes, criadaEm: Date.now() };
+  const payload: SessaoArmazenada = { uid: userId, ambiente, fontes, criadaEm: Date.now(), ...(addonAlvo ? { addonAlvo } : {}) };
   await getRedis().set(chaveSessao(sessao), JSON.stringify(payload), { ex: SESSAO_TTL_SEC });
   diagFonte("criada", {
     sessao: marca(sessao), uid: marca(userId), ambiente,
@@ -386,6 +389,11 @@ export async function lerFontes(sessao: string, userId: string): Promise<FonteRe
 }
 
 /** Ambiente com que a sessão foi aberta. Usado para negar /fonte-nativa na web. */
+export async function alvoAddonDaSessao(sessao: string, userId: string): Promise<AlvoDeAddon | null> {
+  const dados = await lerSessao(sessao, userId);
+  return dados?.ambiente === "electron" && dados.addonAlvo?.finalidade === "reproducao" ? dados.addonAlvo : null;
+}
+
 export async function ambienteDaSessao(sessao: string, userId: string): Promise<Ambiente | null> {
   const dados = await lerSessao(sessao, userId);
   return dados ? dados.ambiente : null;

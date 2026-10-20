@@ -9,6 +9,7 @@ import { fetchComPrazo, PRAZO_FONTES_MS } from "@/lib/androidCast";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { createProgressSaver, PROGRESS_CHECKPOINT_MS } from "@/lib/playerProgress";
+import ElectronAddons from "./ElectronAddons";
 
 // ── Loading dots ───────────────────────────────────────────────────────────────
 function BouncingDots({ size = "md" }: { size?: "sm" | "md" }) {
@@ -133,6 +134,7 @@ interface Fonte {
   videoId?: number;
   /** Opção interna Superflix mantida somente no processo/app local. */
   superflixLocal?: { sessionId: string; optionKey: string; parentId: string; isFile: boolean };
+  addonLocal?: { sourceId: string; sessao: string };
 }
 interface SubtitleTrack { file: string; label?: string; kind?: string; default?: boolean; referer?: string; }
 interface QualityLevel { label?: string; height?: number; width?: number; bitrate?: number; }
@@ -1414,7 +1416,18 @@ export function CustomPlayer({
       // Superflix em duas etapas: o navegador aparece somente para autorização.
       // Assim que o bootstrap legítimo responde, o overlay fecha e estes itens
       // locais substituem o servidor externo no seletor nativo do Obaflix.
-      if (alvo.superflixLocal && desktop?.resolveSuperflix) {
+      if (alvo.addonLocal && desktop?.addons) {
+        if (alvo.addonLocal.sessao !== sessao) throw new Error("Fonte de addon de outra sessão");
+        const data = await desktop.addons({ action: "resolve", sessao, sourceId: alvo.addonLocal.sourceId });
+        if (ctrl.signal.aborted || unmountedRef.current) return;
+        if (data.error || !data.stream) throw new Error(data.error || "Fonte do addon indisponível");
+        tipo = data.tipo;
+        playerUrl = buildElectronProxyUrl(data.stream, data.referer);
+        streamRefererRef.current = data.referer || null;
+        directStreamRef.current = data.stream;
+        streamExpiresAtRef.current = null;
+        setSubtitleTracks([]);
+      } else if (alvo.superflixLocal && desktop?.resolveSuperflix) {
         const data = await desktop.resolveSuperflix(
           alvo.superflixLocal.sessionId,
           alvo.superflixLocal.optionKey,
@@ -1781,10 +1794,11 @@ export function CustomPlayer({
   // o download é tecnicamente possível (app desktop, mídia resolvida, tipo
   // suportado); esta diz se a conta tem direito. Sem ela, `Plano.downloads` era
   // coluna sem consumidor.
-  const podeBaixar = (controleCortes || podeBaixarPeloPlano) && !!desktopBridge?.downloadMedia &&
+  const podeBaixar = (controleCortes || podeBaixarPeloPlano) && !fonte?.addonLocal && !!desktopBridge?.downloadMedia &&
     (ambiente === "electron" || (!!directStreamRef.current && (streamTipo === "hls" || streamTipo === "mp4")));
 
   const prepararDownload = useCallback(async (modo: "completo" | "trecho") => {
+    if (fonte?.addonLocal) return false;
     if (ambiente !== "electron") return !!directStreamRef.current;
     if (preparandoDownloadRef.current || !(modo === "completo" ? podeBaixarPeloPlano : podeCortar)) return false;
     preparandoDownloadRef.current = true;
@@ -2354,7 +2368,14 @@ export function CustomPlayer({
             sessaoFontesRef.current !== sessaoDaExpansao) return;
         if (lista2.length > lista.length) {
           console.log(`[diag/server] alternativas=${lista2.length - lista.length} total=${lista2.length}`);
-          setAllFontes(lista2);
+          // A expansão remota não remove nem desloca a fonte local já escolhida.
+          const locais = allFontesRef.current.filter(item => item.addonLocal);
+          const atual = fonteSelecionadaRef.current;
+          const combinadas = [...lista2, ...locais];
+          allFontesRef.current = combinadas;
+          setAllFontes(combinadas);
+          const indice = combinadas.findIndex(item => item.id === atual);
+          if (indice >= 0) setFonteIdx(indice);
         }
       } catch (e: any) {
         if (e?.name === "AbortError" || ctrl.signal.aborted || !montadoRef.current || unmountedRef.current) return;
@@ -4000,6 +4021,22 @@ export function CustomPlayer({
                 reiniciarAcao={downloadAndroid.reiniciarAcao}
                 variante="player"
               />
+
+              {ambiente === "electron" && typeof desktopBridge?.addons === "function" && (
+                <ElectronAddons bridge={desktopBridge.addons} sessao={sessaoFontes} onSelect={(source, addon, sessao) => {
+                  if (sessao !== sessaoFontesRef.current || !montadoRef.current) return;
+                  const previous = allFontesRef.current;
+                  const entry: Fonte = {
+                    id: "addon:" + source.id, rotulo: addon.name + " · " + source.title,
+                    idioma: null, disponivel: true, nativo: false, iframeDireto: false,
+                    iframeDesafio: false, iframeInvalido: false, semExtrator: false,
+                    addonLocal: { sourceId: source.id, sessao },
+                  };
+                  const index = previous.findIndex(item => item.id === entry.id);
+                  if (index < 0) { allFontesRef.current = [...previous, entry]; setAllFontes(allFontesRef.current); }
+                  switchFonte(index < 0 ? previous.length : index, true);
+                }} />
+              )}
 
               {/* Servidor dropdown */}
               {allFontes.length > 0 && (

@@ -24,6 +24,7 @@ const {
 } = require("./superflix-extractor");
 const { authorizeSuperflixInBrowser, observeEmbedMediaInBrowser } = require("./browser-extractor");
 const politica = require("./window-policy");
+const { createAddonService, registerAddonIpc } = require("./addons");
 
 const SPONSORED_LINK_URL = "https://omg10.com/4/11767843";
 const { baixarMidia, verificarMidia } = require("./media-download");
@@ -181,7 +182,7 @@ async function learnCdnHostsFromPlaylist(url, referer, profundidade = 1, orcamen
 }
 
 /** Registra o stream extraido e descobre todos os hosts que a cadeia HLS vai usar. */
-async function registerPlayerStream(stream, referer) {
+async function registerPlayerStream(stream, referer, { learnHosts = true } = {}) {
   let principal = "";
   try { principal = new URL(stream).hostname; } catch { return; }
 
@@ -200,7 +201,7 @@ async function registerPlayerStream(stream, referer) {
   playerState.embedReferer = referer || null;
   playerState.cdnHostnames = new Set([...anteriores, ...novos]);
 
-  if (PLAYLIST_URL_RE.test(stream)) {
+  if (learnHosts && PLAYLIST_URL_RE.test(stream)) {
     const aprendidos = new Set(novos);
     await learnCdnHostsFromPlaylist(stream, playerState.embedReferer, 1, { restantes: 4 }, aprendidos);
     // Mantém os anteriores, mas com teto: o conjunto não pode crescer sem fim
@@ -1370,6 +1371,33 @@ function isTrustedIpc(event) {
     });
   } catch { return false; }
 }
+
+registerAddonIpc({
+  ipcMain, isTrusted: isTrustedIpc,
+  service: createAddonService({
+    readSettings: () => {
+      try { const value = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "addons.json"), "utf8")); return Array.isArray(value) ? value : []; }
+      catch { return []; }
+    },
+    writeSettings: value => {
+      const file = path.join(app.getPath("userData"), "addons.json");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file + ".tmp", JSON.stringify(value));
+      fs.renameSync(file + ".tmp", file);
+    },
+    authorize: async (event, sessao) => {
+      const response = await event.sender.session.fetch(OBAFLIX_ORIGIN + "/api/player/addons", {
+        method: "POST", credentials: "include", redirect: "error", cache: "no-store",
+        headers: { "Content-Type": "application/json", Origin: OBAFLIX_ORIGIN },
+        body: JSON.stringify({ sessao }), signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error("Reprodução não autorizada");
+      return response.json();
+    },
+  }),
+  // Playlists de addons são dados não confiáveis: não as percorre com fetch do Node.
+  onResolved: result => registerPlayerStream(result.stream, result.referer, { learnHosts: false }),
+});
 
 ipcMain.handle("toggle-fullscreen", (event) => {
   if (!isTrustedIpc(event)) return false;

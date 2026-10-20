@@ -88,6 +88,12 @@ export const getAiringTodayTV = () =>
 export const getOnTheAirTV = () =>
   tmdbFetch<TmdbPage>(`/tv/on_the_air`);
 
+export async function getAddonImdbId(tmdb: string, tipo: "filme" | "serie"): Promise<string | null> {
+  if (!/^[0-9]{1,12}$/.test(tmdb)) return null;
+  const data = await tmdbFetch<{ imdb_id?: string }>(`/${tipo === "filme" ? "movie" : "tv"}/${tmdb}/external_ids`);
+  return data?.imdb_id || null;
+}
+
 // ── Discover ───────────────────────────────────────────────────────────────
 export const discoverMovies = (params: Record<string, string | number>) => {
   const qs = Object.entries(params).map(([k, v]) => `${k}=${v}`).join("&");

@@ -78,7 +78,7 @@ test("seed de Cortes em repositório vazio cria três planos, sem escrita na rep
 });
 
 for (const [indice, plano] of PLANOS_CORTES.entries()) {
-  test(`${plano.nome}: uma assinatura autoriza assistir e cortes, nunca download completo`, async () => {
+  test(`${plano.nome}: uma assinatura autoriza assistir, cortes do nível e download completo`, async () => {
     const ent = resolverEntitlements({ agora, candidatas: [assinatura(plano)], planoPadrao: PLANO_GRATUITO });
     const resolver = async () => ent;
     assert.equal(ent.assinatura.planoId, plano.id);
@@ -87,7 +87,8 @@ for (const [indice, plano] of PLANOS_CORTES.entries()) {
     }
     assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver }), true);
     assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver }), indice > 0);
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver }), false);
+    // Download completo já foi liberado em e04ecc8; cortes seguem o nível contratado.
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver }), true);
     const vencida = { ...assinatura(plano), terminaEm: agora };
     const expirada = resolverEntitlements({ agora, candidatas: [vencida], planoPadrao: PLANO_GRATUITO });
     assert.equal(expirada.assinatura.ativa, false);
