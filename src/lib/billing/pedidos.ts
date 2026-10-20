@@ -36,6 +36,7 @@ import { randomBytes } from "node:crypto";
 
 import { calcularTotal, type PrecosDosAdicionais } from "./precificacao";
 import { classificarOperacao, valorNaoUtilizado, type Duracao, type PeriodoPago } from "./vigencia";
+import { ehPlanoCortes } from "../planos";
 import { SERVIDOR_VIP_AVULSO_OFERTADO, nomePublicoDoPlano } from "./vitrine";
 import type { MotivoDeRevisao as CodigoDeRevisao } from "./revisao";
 
@@ -156,7 +157,7 @@ export interface PrecoDoBanco {
   moeda: string;
   ativo: boolean;
   /** `null` quando a linha veio sem o plano relacionado. */
-  plano: { id: string; nome: string; ativo: boolean; ordem?: number; servidorVip?: boolean } | null;
+  plano: { id: string; nome: string; ativo: boolean; ordem?: number; servidorVip?: boolean; cortesNivel?: string } | null;
 }
 
 /**
@@ -487,7 +488,7 @@ export interface CompraMontada {
  */
 export function montarCompra(entrada: {
   snapshot: SnapshotDeCompra;
-  plano: { ordem: number; servidorVip: boolean };
+  plano: { ordem: number; servidorVip: boolean; cortes?: boolean };
   adicionais: PrecosDosAdicionais;
   telasAdicionais: number;
   servidorVip: boolean;
@@ -518,7 +519,7 @@ export function montarCompra(entrada: {
 
   const operacao = classificarOperacao({
     periodos: entrada.periodos,
-    plano: { id: snapshot.planoId, ordem: entrada.plano.ordem },
+    plano: { id: snapshot.planoId, ordem: entrada.plano.ordem, cortes: entrada.plano.cortes },
     agora: entrada.agora,
   });
 
@@ -660,7 +661,7 @@ export async function criarPedidoPix(
   ]);
   const montagem = montarCompra({
     snapshot: resolucao.snapshot,
-    plano: { ordem: preco?.plano?.ordem ?? 0, servidorVip: preco?.plano?.servidorVip === true },
+    plano: { ordem: preco?.plano?.ordem ?? 0, servidorVip: preco?.plano?.servidorVip === true, cortes: ehPlanoCortes(preco?.plano?.cortesNivel) },
     adicionais,
     telasAdicionais: entrada.telasAdicionais ?? 0,
     servidorVip: entrada.servidorVip === true,

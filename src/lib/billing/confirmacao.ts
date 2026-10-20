@@ -3,6 +3,7 @@ import { invalidarEntitlements } from "@/lib/entitlements";
 import { audit } from "@/lib/auditLog";
 import { criarConfirmadorBlackcat, type ConfirmacaoBlackcat } from "./blackcat";
 import { fimDoPeriodo, type Duracao } from "./vigencia";
+import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
 import { confirmadorDeCobranca } from "./simulado";
 
@@ -99,7 +100,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
   const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
-    const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: { assinatura: true } }); if (!atual) return;
+    const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: { assinatura: true, plano: { select: { cortesNivel: true } } } }); if (!atual) return;
     // Repetição após commit é sucesso idempotente; nunca reabre uma compra paga.
     if (atual.status === "PAGO" && atual.assinatura && externo.confirmacao.status !== "REFUNDED") return;
     const d = decidirConfirmacao(atual, externo.confirmacao, agora);
@@ -118,7 +119,9 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     }
     if (atual.assinatura) { if (atual.status !== "PAGO") await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: "pedido_ja_vinculado" }); return; }
     const extra = atual as typeof atual & { operacao?: string | null; assinaturasSubstituidas?: string[] | null; duracaoMeses?: number | null; telasAdicionais?: number | null; servidorVip?: boolean | null };
-    const abertos=await tx.assinatura.findMany({where:{userId:atual.userId,status:"ATIVA",terminaEm:{gt:agora}},select:{id:true,terminaEm:true}});
+    // Só períodos da mesma família: ativar Cortes nunca encerra o tradicional, e vice-versa.
+    const familia=ehPlanoCortes((atual as { plano?: { cortesNivel?: string } | null }).plano?.cortesNivel) ? { not: "nenhum" } : "nenhum";
+    const abertos=await tx.assinatura.findMany({where:{userId:atual.userId,status:"ATIVA",terminaEm:{gt:agora},plano:{cortesNivel:familia}},select:{id:true,terminaEm:true}});
     const plano=planejarAtivacao({operacao:extra.operacao,assinaturasSubstituidas:extra.assinaturasSubstituidas,duracao:duracaoDoPedido(extra)},abertos,agora);
     if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});

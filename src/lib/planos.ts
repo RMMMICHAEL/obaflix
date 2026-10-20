@@ -37,6 +37,10 @@ export type Resolucao = (typeof RESOLUCOES)[number];
 export type TvNivel = (typeof TV_NIVEIS)[number];
 export type CortesNivel = (typeof CORTES_NIVEIS)[number];
 
+/// Família da assinatura: plano com corte é "Cortes", o resto é tradicional. Uma
+/// conta tem no máximo uma ativa por família, e uma família nunca encerra a outra.
+export const ehPlanoCortes = (nivel: string | null | undefined): boolean => !!nivel && nivel !== "nenhum";
+
 /// O que o cliente pede: corte único ou lote. "completo" (download inteiro) NÃO é
 /// corte — continua governado por `downloads`, não por `cortesNivel`.
 export type ModoCorte = "individual" | "lote";

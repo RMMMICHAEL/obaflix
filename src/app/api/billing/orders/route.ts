@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { ehClientePlay, CODIGO_COMPRAS_INDISPONIVEIS_PLAY } from "@/config/play";
 import { prisma } from "@/lib/prisma";
+import { ehPlanoCortes } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
@@ -127,7 +128,7 @@ const repositorio: RepositorioDePedidos = {
         duracaoMeses: true,
         moeda: true,
         ativo: true,
-        plano: { select: { id: true, nome: true, ativo: true, ordem: true, servidorVip: true } },
+        plano: { select: { id: true, nome: true, ativo: true, ordem: true, servidorVip: true, cortesNivel: true } },
       },
     });
   },
@@ -148,7 +149,7 @@ const repositorio: RepositorioDePedidos = {
       where: { userId, status: "ATIVA", terminaEm: { gt: agora } },
       select: {
         id: true, planoId: true, iniciaEm: true, terminaEm: true,
-        plano: { select: { ordem: true } },
+        plano: { select: { ordem: true, cortesNivel: true } },
         pedido: { select: { valorCentavos: true } },
       },
     });
@@ -157,6 +158,7 @@ const repositorio: RepositorioDePedidos = {
       id: l.id,
       planoId: l.planoId,
       ordemDoPlano: l.plano.ordem,
+      cortes: ehPlanoCortes(l.plano.cortesNivel),
       iniciaEm: l.iniciaEm,
       terminaEm: l.terminaEm,
       valorPagoCentavos: l.pedido?.valorCentavos ?? 0,
