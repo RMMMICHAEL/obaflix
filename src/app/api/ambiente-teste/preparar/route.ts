@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ambienteTesteIsolado } from "@/lib/isolamentoTeste";
-import { PLANO_GRATUITO, PLANOS_COMERCIAIS, PLANOS_CORTES, semearPlano, type RepositorioDePlanos } from "@/lib/planos";
+import { PLANOS_CORTES, semearPlano, type RepositorioDePlanos } from "@/lib/planos";
 import { getFilme, getSerie, getTVSeasonDetails, imgUrl } from "@/lib/tmdb";
 
 // TEMPORÁRIA: preparação única do Neon de TESTE (migration cortesNivel, planos,
@@ -15,7 +15,7 @@ const MIGRATION = "20261019120000_plano_cortes_nivel";
 const CHECKSUM = "af2a2bf7d8d8fc862d8a6f57a0a6f87a5fca3aea346fd28850cdb4c6f7682bae";
 const FILMES = [27205, 157336, 603, 155];
 const SERIES = [1396, 66732];
-const DOMINIO = "@teste.obaflix.invalid";
+const DOMINIO = "@teste.obaflix.invalid"; // só para a conta nova
 
 function tokenValido(recebido: string | null): boolean {
   const esperado = process.env.PREPARO_TOKEN ?? "";
@@ -38,21 +38,10 @@ export async function POST(req: NextRequest) {
 
   const relatorio: Record<string, unknown> = {};
   try {
-    // 1) Marcador e ausência de dados reais, imediatamente antes de escrever.
+    // 1) Marcador do banco de teste, imediatamente antes de escrever. Registros
+    // antigos (inclusive não fictícios) são preservados: nada abaixo os altera.
     const marcador = await prisma.$queryRawUnsafe<{ ambiente: string }[]>(`SELECT "ambiente" FROM "_ObaflixAmbiente"`);
     if (marcador.length !== 1 || marcador[0].ambiente !== "teste") throw new Error("marcador");
-    const [{ fora }] = await prisma.$queryRawUnsafe<{ fora: number }[]>(
-      `SELECT count(*)::int AS fora FROM "User" WHERE email NOT LIKE $1`, `%${DOMINIO}`);
-    const [{ pagos }] = await prisma.$queryRawUnsafe<{ pagos: number }[]>(
-      `SELECT count(*)::int AS pagos FROM "PedidoPagamento" WHERE status = 'PAGO' AND provedor <> 'simulado'`);
-    if (fora > 0 || pagos > 0) {
-      // Só domínios e provedores (sem e-mails), para decidir se é dado real.
-      const dominios = await prisma.$queryRawUnsafe<{ d: string; n: number }[]>(
-        `SELECT split_part(email, '@', 2) AS d, count(*)::int AS n FROM "User" WHERE email NOT LIKE $1 GROUP BY 1`, `%${DOMINIO}`);
-      const provedores = await prisma.$queryRawUnsafe<{ p: string; n: number }[]>(
-        `SELECT provedor AS p, count(*)::int AS n FROM "PedidoPagamento" WHERE status = 'PAGO' AND provedor <> 'simulado' GROUP BY 1`);
-      return NextResponse.json({ ok: false, erro: "dados-reais", fora, pagos, dominios, provedores }, { status: 409, headers: NO_STORE });
-    }
     relatorio.marcador = "teste";
 
     // 2) Migration (mesmo SQL do arquivo, idempotente) + registro no histórico do Prisma.
@@ -71,23 +60,22 @@ export async function POST(req: NextRequest) {
     }
     relatorio.migration = { aplicada: true, historico };
 
-    // 3) Planos: cria se faltar (semearPlano); planos de cortes com o nível do código.
+    // 3) Planos Cortes: só cria se faltar (semearPlano). Plano existente não é tocado.
     const repo: RepositorioDePlanos = {
       buscar: (id) => prisma.plano.findUnique({ where: { id } }) as Promise<Record<string, unknown> | null>,
       criar: async (plano) => { await prisma.plano.create({ data: plano }); },
     };
     const planos: Record<string, string> = {};
-    for (const plano of [PLANO_GRATUITO, ...PLANOS_COMERCIAIS, ...PLANOS_CORTES]) {
-      planos[plano.id] = (await semearPlano(repo, plano)).acao;
-    }
     for (const plano of PLANOS_CORTES) {
-      await prisma.plano.update({ where: { id: plano.id }, data: { cortesNivel: plano.cortesNivel } });
+      const r = await semearPlano(repo, plano);
+      planos[plano.id] = r.acao === "criado" ? "criado" : `mantido:${String(r.existente.cortesNivel)}`;
     }
     relatorio.planos = planos;
 
     // 4) Catálogo mínimo real (TMDB). urlDub marca disponível; as fontes saem do tmdbId.
-    let filmes = 0, episodios = 0;
+    let filmes = 0, series = 0, episodios = 0;
     for (const tmdb of FILMES) {
+      if (await prisma.filme.findFirst({ where: { tmdbId: String(tmdb), NOT: { id: `teste-${tmdb}` } }, select: { id: true } })) continue;
       const f = await getFilme(tmdb);
       if (!f) throw new Error(`tmdb filme ${tmdb}`);
       const dados = {
@@ -100,6 +88,7 @@ export async function POST(req: NextRequest) {
       filmes++;
     }
     for (const tmdb of SERIES) {
+      if (await prisma.serie.findFirst({ where: { tmdbId: String(tmdb), NOT: { id: `teste-${tmdb}` } }, select: { id: true } })) continue;
       const s = await getSerie(tmdb);
       if (!s) throw new Error(`tmdb serie ${tmdb}`);
       const sid = `teste-${tmdb}`;
@@ -110,6 +99,7 @@ export async function POST(req: NextRequest) {
         temporadas: 1, tipo: "serie",
       };
       await prisma.serie.upsert({ where: { id: sid }, create: { id: sid, ...dados }, update: dados });
+      series++;
       const temporada = await getTVSeasonDetails(tmdb, 1);
       if (!temporada) throw new Error(`tmdb temporada ${tmdb}`);
       for (const e of temporada.episodes.slice(0, 3)) {
@@ -122,19 +112,15 @@ export async function POST(req: NextRequest) {
         episodios++;
       }
     }
-    relatorio.catalogo = { filmes, series: SERIES.length, episodios };
+    relatorio.catalogo = { filmes, series, episodios };
 
-    // 5) Conta de teste com UMA assinatura ATIVA de Cortes Pro (cortesia; sem pagamento).
+    // 5) NOVA conta de teste com UMA assinatura ATIVA de Cortes Pro (cortesia; sem
+    // pagamento). Conta já existente não é alterada.
+    if (await prisma.user.findUnique({ where: { email: corpo.email }, select: { id: true } })) throw new Error("conta-ja-existe");
     const senhaHash = await bcrypt.hash(corpo.senha, 10);
-    const user = await prisma.user.upsert({
-      where: { email: corpo.email }, create: { email: corpo.email, nome: "Teste Cortes Pro", senhaHash }, update: { senhaHash },
-    });
-    const assinaturaId = `teste-cortes-pro-${user.id}`;
-    await prisma.assinatura.updateMany({ where: { userId: user.id, status: "ATIVA", NOT: { id: assinaturaId } }, data: { status: "CANCELADA" } });
-    await prisma.assinatura.upsert({
-      where: { id: assinaturaId },
-      create: { id: assinaturaId, userId: user.id, planoId: "cortes-pro", status: "ATIVA", origem: "cortesia", iniciaEm: new Date(), terminaEm: new Date("2027-12-31") },
-      update: { planoId: "cortes-pro", status: "ATIVA", terminaEm: new Date("2027-12-31") },
+    const user = await prisma.user.create({ data: { email: corpo.email, nome: "Teste Cortes Pro", senhaHash } });
+    await prisma.assinatura.create({
+      data: { userId: user.id, planoId: "cortes-pro", status: "ATIVA", origem: "cortesia", iniciaEm: new Date(), terminaEm: new Date("2027-12-31") },
     });
     relatorio.conta = { plano: "cortes-pro", cortesNivel: "lote" };
     return NextResponse.json({ ok: true, ...relatorio }, { headers: NO_STORE });
