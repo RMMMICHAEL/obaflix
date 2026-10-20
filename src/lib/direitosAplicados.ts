@@ -92,8 +92,8 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
     nota:
       "`downloadPermitido` resolve o direito e aplica a escada nenhum<individual<lote<ia; " +
       "POST /api/player/fontes nega a ação (403 `download_nao_autorizado`) antes do " +
-      "anúncio — e gateia TODA operação (completo exige `downloads`), então omitir o tipo " +
-      "não contorna. Atrás de CORTES_CONTROLE_ATIVO e **independente de MONETIZACAO_ATIVA**: " +
+      "anúncio. O completo segue a regra de sempre (só a monetização exige `downloads`); " +
+      "o corte exige o nível. Atrás de CORTES_CONTROLE_ATIVO e **independente de MONETIZACAO_ATIVA**: " +
       "desligado, os planos de hoje seguem cortando; ligado, o recurso novo fica " +
       "indisponível a quem não tem direito. Mesma limitação de `downloads`: o corte roda " +
       "no cliente sobre a mídia já entregue, então é decisão de servidor obedecida no " +

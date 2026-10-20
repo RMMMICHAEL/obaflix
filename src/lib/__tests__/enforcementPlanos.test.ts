@@ -193,9 +193,9 @@ describe("direitosDoCliente", () => {
   test("flag desligada libera download SEM chamar o resolver", async () => {
     const { resolver, chamadas } = resolverFalso(entitlementsDe(PLANO_BASIC));
 
-    const r = await direitosDoCliente("u1", { ativa: false, resolver });
+    const r = await direitosDoCliente("u1", { ativa: false, anuncioAtivo: false, resolver });
 
-    assert.deepEqual(r, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false });
+    assert.deepEqual(r, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
     assert.equal(chamadas(), 0);
   });
 
@@ -209,15 +209,15 @@ describe("direitosDoCliente", () => {
       resolver: resolverFalso(entitlementsDe(PLANO_PREMIUM)).resolver,
     });
 
-    assert.deepEqual(basic, { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false });
-    assert.deepEqual(premium, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false });
+    assert.deepEqual({ ...basic, anuncio: false }, { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
+    assert.deepEqual({ ...premium, anuncio: false }, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
   /** Negar download custa um botão, não a reprodução — fail-closed é barato. */
   test("resolver que falha nega o download", async () => {
     const { resolver } = resolverFalso(new Error("banco fora"));
 
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false });
+    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
   /** Um direito `undefined` — cache de formato antigo — não vira permissão. */
@@ -228,7 +228,7 @@ describe("direitosDoCliente", () => {
       direitos: { ...ent.direitos, downloads: undefined as unknown as boolean },
     });
 
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false });
+    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
   /**
@@ -236,12 +236,12 @@ describe("direitosDoCliente", () => {
    * resposta seria um mapa do que vale a pena atacar, e todo o resto é decidido
    * no servidor de qualquer forma.
    */
-  test("só downloads e direitos de cortes atravessam", async () => {
+  test("só downloads, direitos de cortes e o aviso de anúncio atravessam", async () => {
     const r = await direitosDoCliente("u1", {
       ativa: true,
       resolver: resolverFalso(entitlementsDe(PLANO_PREMIUM)).resolver,
     });
-    assert.deepEqual(Object.keys(r), ["downloads", "cortesNivel", "cortesControleAtivo"]);
+    assert.deepEqual(Object.keys(r), ["downloads", "cortesNivel", "cortesControleAtivo", "anuncio"]);
   });
 });
 

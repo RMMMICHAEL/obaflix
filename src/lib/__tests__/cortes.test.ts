@@ -41,13 +41,15 @@ describe("downloadPermitido: controle desligado preserva; ligado aplica o direit
     assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver: resolver("nenhum") }), false);
   });
 
-  test("ligado: completo exige `downloads` — omitir o tipo não contorna o bloqueio de corte", async () => {
-    // Conta cortes-only (cortesNivel=lote, downloads=false): se tentar baixar como
-    // "completo" (omitindo o corte), é NEGADA — não vira um atalho sem direito.
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver: resolver("lote", false) }), false);
-    // Conta com downloads baixa completo; corte só com cortesNivel.
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver: resolver("nenhum", true) }), true);
-    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver: resolver("nenhum", true) }), false);
+  test("ligado: completo segue a regra de sempre — gratuito/assinante baixa; cortes não liberam por omissão", async () => {
+    // Monetização desligada: completo liberado para qualquer conta (o anúncio vem depois, no fluxo existente).
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", false) }), true);
+    // Monetização ligada: completo volta a exigir `downloads` do plano.
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: true, resolver: resolver("lote", false) }), false);
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: true, resolver: resolver("nenhum", true) }), true);
+    // Ter download completo nunca concede corte.
+    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", true) }), false);
+    assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", true) }), false);
   });
 
   test("ligado: erro ao resolver nega (nunca concede por coerção)", async () => {
@@ -94,8 +96,8 @@ describe("direitos do Electron na resposta existente", () => {
       const { direitosDoCliente } = await import("../playbackAuthorization");
       let chamadas = 0;
       const resolver = (async () => { chamadas++; return { direitos: { downloads: false, cortesNivel: nivel } }; }) as never;
-      assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: true, resolver }), {
-        downloads: false, cortesNivel: nivel, cortesControleAtivo: true,
+      assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: false, resolver }), {
+        downloads: true, cortesNivel: nivel, cortesControleAtivo: true, anuncio: false,
       });
       assert.equal(chamadas, 1);
     });
@@ -103,14 +105,14 @@ describe("direitos do Electron na resposta existente", () => {
   test("flag desligada preserva direitos tradicionais e não consulta sem monetização", async () => {
     const { direitosDoCliente } = await import("../playbackAuthorization");
     const resolver = (async () => { throw new Error("não consultar"); }) as never;
-    assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: false, resolver }), {
-      downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false,
+    assert.deepEqual(await direitosDoCliente("u", { ativa: false, controleAtivo: false, anuncioAtivo: false, resolver }), {
+      downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false,
     });
   });
   test("ausência de direitos e falha negam; operação falsificada não concede", async () => {
     const { direitosDoCliente } = await import("../playbackAuthorization");
     const resolver = (async () => ({ direitos: {} })) as never;
-    assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver })).downloads, false);
+    assert.equal((await direitosDoCliente("u", { ativa: true, controleAtivo: true, resolver })).downloads, false);
     assert.equal(await downloadPermitido("u", "inventado" as never, { controleAtivo: true, resolver }), false);
     const falha = (async () => { throw new Error("indisponível"); }) as never;
     assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver: falha })).cortesNivel, "nenhum");
@@ -119,10 +121,10 @@ describe("direitos do Electron na resposta existente", () => {
 
 for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
   for (const operacao of ["completo", "individual", "lote"] as const) {
-    test(`servidor: ${nivel}/${operacao}, sem download completo`, async () => {
+    test(`servidor: ${nivel}/${operacao}, plano sem download completo e monetização ligada`, async () => {
       const resolver = (async () => ({ direitos: { cortesNivel: nivel, downloads: false } })) as never;
       const esperado = operacao !== "completo" && corteAutorizado(nivel, operacao);
-      assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, resolver }), esperado);
+      assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, ativa: true, resolver }), esperado);
       assert.equal(await downloadPermitido("u", "forjado" as never, { controleAtivo: true, resolver }), false);
     });
   }
@@ -139,4 +141,12 @@ test("controle desligado mantém downloads do plano tradicional com monetizaçã
     assert.equal(direitos.cortesControleAtivo, false);
     assert.equal(chamadas, 1);
   }
+});
+
+test("anúncio: gratuito com anúncio ativo recebe o aviso; assinante isento não", async () => {
+  const { direitosDoCliente } = await import("../playbackAuthorization");
+  const de = (anunciosObrigatorios: boolean) => (async () => ({ direitos: { downloads: true, cortesNivel: "nenhum", anunciosObrigatorios } })) as never;
+  assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: true, resolver: de(true) })).anuncio, true);
+  assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: true, resolver: de(false) })).anuncio, false);
+  assert.equal((await direitosDoCliente("u", { ativa: false, controleAtivo: true, anuncioAtivo: false, resolver: de(true) })).anuncio, false);
 });

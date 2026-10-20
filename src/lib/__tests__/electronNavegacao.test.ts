@@ -68,7 +68,7 @@ function montar() {
     } },
     Date: { now: () => agora },
     setTimeout: (fn: () => void, ms: number) => { eventos.push(`loading:${ms}`); agora += ms; queueMicrotask(fn); },
-    setPodeBaixarPeloPlano: () => eventos.push("direitos"), setControleCortes: () => {}, setNivelCortes: () => {},
+    setPodeBaixarPeloPlano: () => eventos.push("direitos"), setControleCortes: () => {}, setNivelCortes: () => {}, setAnuncioNoDownload: () => {},
     setSessaoFontes: () => eventos.push("sessao"), setAllFontes: () => eventos.push("fontes"),
     setNavegandoEpisodio: () => eventos.push("blackout"),
     jwRef: { current: { pause: () => Promise.reject(new DOMException("cancelado", "AbortError")) } },

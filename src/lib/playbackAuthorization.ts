@@ -340,6 +340,8 @@ export interface DireitosDoCliente {
   downloads: boolean;
   cortesNivel: import("./planos").CortesNivel;
   cortesControleAtivo: boolean;
+  /** Ação no Electron passa por anúncio (só para o texto do botão; o servidor decide). */
+  anuncio: boolean;
 }
 
 /**
@@ -355,23 +357,27 @@ export interface DireitosDoCliente {
  */
 export async function direitosDoCliente(
   userId: string,
-  opcoes: OpcoesDeAutorizacao & { controleAtivo?: boolean } = {},
+  opcoes: OpcoesDeAutorizacao & { controleAtivo?: boolean; anuncioAtivo?: boolean } = {},
 ): Promise<DireitosDoCliente> {
   const ativa = opcoes.ativa ?? monetizacaoAtiva();
   const controle = opcoes.controleAtivo ?? cortesControleAtivo();
-  if (!ativa && !controle) return { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false };
+  const comAnuncio = opcoes.anuncioAtivo ?? (ativa || anuncioElectronAtivo());
+  if (!ativa && !controle && !comAnuncio) return { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
 
   try {
     const entitlements = await resolver(userId);
     return {
-      downloads: entitlements.direitos.downloads === true,
-      cortesNivel: entitlements.direitos.cortesNivel ?? "nenhum",
+      // Download completo segue a regra de sempre: só a monetização o restringe.
+      // O controle de cortes decide apenas trecho e lote.
+      downloads: ativa ? entitlements.direitos.downloads === true : true,
+      cortesNivel: controle ? entitlements.direitos.cortesNivel ?? "nenhum" : "nenhum",
       cortesControleAtivo: controle,
+      anuncio: comAnuncio && entitlements.direitos.anunciosObrigatorios === true,
     };
   } catch {
-    return { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: controle };
+    return { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: controle, anuncio: false };
   }
 }
 
@@ -394,10 +400,14 @@ export async function direitosDoCliente(
 export async function downloadPermitido(
   userId: string,
   operacao: "completo" | ModoCorte,
-  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean } = {},
+  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean; ativa?: boolean } = {},
 ): Promise<boolean> {
   const controle = opcoes.controleAtivo ?? cortesControleAtivo();
   if (!controle) return true;
+  // Completo: mesma regra de `direitosDoCliente` — gratuito e assinantes baixam
+  // (com anúncio quando o plano exige); só a monetização ligada aplica `downloads`.
+  const ativa = opcoes.ativa ?? monetizacaoAtiva();
+  if (operacao === "completo" && !ativa) return true;
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
   try {
     const { direitos } = await resolver(userId);

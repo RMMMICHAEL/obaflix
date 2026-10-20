@@ -36,6 +36,7 @@ import { executarTentativaDownload, executarLoteDownload, type OperacaoDownload,
 import { verificarDownloadAtual, controlarMidia } from "@/lib/prepararDownload";
 import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
 import { BannerDesktop } from "@/components/ads/BannerDesktop";
+import { DownloadModal } from "./DownloadModal";
 import {
   classificarFalha, decidirAcao, backoffMs, sourceIdDe, logFailover, logFonte, LIMITES,
 } from "@/lib/playerFailover";
@@ -404,6 +405,8 @@ export function CustomPlayer({
   const [podeBaixarPeloPlano, setPodeBaixarPeloPlano] = useState(false);
   const [controleCortes, setControleCortes] = useState(false);
   const [nivelCortes, setNivelCortes] = useState("nenhum");
+  const [anuncioNoDownload, setAnuncioNoDownload] = useState(false);
+  const fecharDownload = useCallback(() => setShowDownload(false), []);
   const podeCortar = controleCortes ? ["individual", "lote", "ia"].includes(nivelCortes) : podeBaixarPeloPlano;
   const podeLote = controleCortes ? ["lote", "ia"].includes(nivelCortes) : podeBaixarPeloPlano;
   const orientarPlano = (recurso: string) => setDownloadResultado({ caminho: "", erro: `Para ${recurso}, contrate um plano que inclua esse recurso. Consulte os planos em sua conta.` });
@@ -1861,7 +1864,8 @@ export function CustomPlayer({
   }, [arrastandoAlca]);
 
   /** Abre o recorte já centrado em onde o usuário está assistindo. */
-  const abrirRecorte = useCallback(async () => {
+  const abrirRecorte = useCallback(async (lote = false) => {
+    if (lote && !podeLote) return;
     if (!await prepararDownload("trecho") || !montadoRef.current) return;
     const midiaPreparada = operacaoAtualRef.current("trecho");
     recortePreflightRef.current = {
@@ -1876,10 +1880,10 @@ export function CustomPlayer({
     setRecorteTextos({ inicio: textoDoTempo(intervalo.inicio), fim: textoDoTempo(intervalo.fim) });
     formatoManualRef.current = { inicio: false, fim: false };
     retryDownloadRef.current = null;
-    setMultiCenasAtivo(false);
-    setRecorteAtivo(true);
+    setMultiCenasAtivo(lote);
+    setRecorteAtivo(!lote);
     setShowDownload(false);
-  }, [duration, prepararDownload, progressoRef]);
+  }, [duration, prepararDownload, progressoRef, podeLote]);
 
   /** Pré-visualização: pula para o início do recorte e para no fim. */
   const previsualizarRecorte = useCallback(() => {
@@ -2236,6 +2240,7 @@ export function CustomPlayer({
     setPodeBaixarPeloPlano(data?.direitos?.downloads === true);
     setControleCortes(data?.direitos?.cortesControleAtivo === true);
     setNivelCortes(data?.direitos?.cortesNivel ?? "nenhum");
+    setAnuncioNoDownload(data?.direitos?.anuncio === true);
     sessaoFontesRef.current = data?.sessao ?? null;
     fontesDownloadRef.current = typeof data?.sessao === "string"
       ? { sessao: data.sessao, base: lista.map((f) => ({ ...f })) } : null;
@@ -4062,24 +4067,20 @@ export function CustomPlayer({
                   </button>
 
                   {showDownload && !downloadProgresso && (
-                    <div className="absolute right-0 top-full mt-2 bg-zinc-900/95 border border-white/10 rounded-xl overflow-hidden min-w-[210px] shadow-2xl">
-                      <button
-                        onClick={() => podeBaixarPeloPlano ? iniciarDownload("completo") : orientarPlano("baixar conteúdo completo")}
-                        aria-disabled={!podeBaixarPeloPlano}
-                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
-                      >
-                        Baixar conteúdo completo{!podeBaixarPeloPlano && " · Requer plano com downloads"}
-                      </button>
-                      <div className="border-t border-white/10" />
-                      {/* Verifica somente a fonte que está tocando antes de abrir o editor. */}
-                      <button
-                        onClick={() => podeCortar ? abrirRecorte() : orientarPlano("baixar cortes individuais")}
-                        aria-disabled={!podeCortar}
-                        className="w-full text-left px-4 py-2.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-all"
-                      >
-                        Baixar trecho…{!podeCortar && " · Requer plano de cortes"}
-                      </button>
-                    </div>
+                    // Trecho e lote verificam somente a fonte que está tocando antes de abrir o editor.
+                    <DownloadModal
+                      titulo={titulo}
+                      subtitulo={temporada && numeroEp ? [`T${temporada} · E${numeroEp}`, nomeEpisodio].filter(Boolean).join(" — ") : undefined}
+                      imagem={thumbUrl}
+                      podeCompleto={podeBaixarPeloPlano}
+                      anuncio={anuncioNoDownload}
+                      podeIndividual={podeCortar}
+                      podeLote={podeLote}
+                      onCompleto={() => iniciarDownload("completo")}
+                      onIndividual={() => abrirRecorte()}
+                      onLote={() => abrirRecorte(true)}
+                      onClose={fecharDownload}
+                    />
                   )}
 
                   {preparandoDownload && (
