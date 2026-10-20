@@ -562,11 +562,38 @@ async function lerHtmlComTeto(res: Response): Promise<string> {
 /**
  * Uma falha do MASTER que significa "o upstream ficou velho": grant perdido
  * (401/403 persistente, mesmo depois do arm de `buscarComArm`) ou mídia sumida
- * (404/410). **5xx não entra** — é erro do provider, não obsolescência, e
- * re-resolver não ajudaria; só multiplicaria requisições contra ele.
+ * (404/410). Isto governa **o mapeamento da resposta final** (410 vs 502): um
+ * 5xx continua **fora** daqui — não é obsolescência, e a resposta final de um
+ * 5xx persistente é 502, não 410.
+ *
+ * O **gatilho de re-resolução** é outra coisa e mora em `masterPrecisaReresolver`:
+ * lá o 5xx entra, porque o provider passou a responder 5xx (não mais 403) para
+ * mídia não-armada, e re-resolver arma o grant no IP do Worker. Manter as duas
+ * decisões separadas é de propósito: "quando tentar de novo" e "como reportar a
+ * falha que sobrou" não são a mesma pergunta.
  */
 function upstreamDoMasterFicouObsoleto(status: number): boolean {
   return status === 401 || status === 403 || status === 404 || status === 410;
+}
+
+/** 5xx do upstream: erro de servidor do provider (inclui os 52x da Cloudflare). */
+function ehErroDeServidorUpstream(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
+/**
+ * Quando o MASTER deve re-resolver **uma vez**: armar no IP do Worker (via
+ * `refrescarUpstreamDoMaster`, que busca a página do player) e tentar de novo.
+ *
+ * Cobre o obsoleto (401/403/404/410) **e** o 5xx. O 5xx entrou porque a Fase A
+ * media mídia não-armada como 403, e o provider passou a responder 5xx nesse
+ * caso — sem isto, o gatilho de arm nunca dispararia e o canal ficaria em 502
+ * eterno no egress do Worker. Continua sendo **uma** re-resolução, nunca um
+ * laço: quem chama executa este caminho no máximo uma vez por requisição, e um
+ * 5xx que persistir depois do refresh vira 502 (não re-tenta de novo).
+ */
+function masterPrecisaReresolver(status: number): boolean {
+  return upstreamDoMasterFicouObsoleto(status) || ehErroDeServidorUpstream(status);
 }
 
 /**
@@ -697,12 +724,14 @@ export async function tratarCanal(req: Request, env: EnvCanais): Promise<Respons
   try {
     upstream = await buscarComArm(env, sessaoAtual, alvoEfetivo.toString(), req);
 
-    // Refresh de upstream **só no MASTER** e **só em falha relevante**. Um
-    // segmento velho falha porque o master ficou velho — o certo lá é devolver
-    // 410 e deixar o player recarregar o master, que é quem re-resolve. Aqui,
-    // no master: re-resolve a página do player, descobre a mídia nova, troca na
-    // sessão e tenta o master **uma única vez** com ela. Sem laço.
-    if (ehMaster && upstreamDoMasterFicouObsoleto(upstream.status)) {
+    // Refresh de upstream **só no MASTER** e **só em falha relevante** (obsoleto
+    // ou 5xx). Um segmento velho falha porque o master ficou velho — o certo lá
+    // é devolver 410 e deixar o player recarregar o master, que é quem
+    // re-resolve. Aqui, no master: re-resolve a página do player (o que **arma**
+    // o grant no IP deste Worker), descobre a mídia nova, troca na sessão e tenta
+    // o master **uma única vez** com ela. Sem laço: se o 5xx persistir depois
+    // disto, cai no tratamento final e vira 502.
+    if (ehMaster && masterPrecisaReresolver(upstream.status)) {
       await upstream.body?.cancel().catch(() => {});
       const novo = await refrescarUpstreamDoMaster(env, sessaoAtual);
       if (novo) {
