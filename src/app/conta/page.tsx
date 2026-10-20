@@ -7,6 +7,7 @@ import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { ExcluirConta } from "@/components/conta/ExcluirConta";
 import { ctaAssinaturaConta, ehClientePlayNoNavegador, MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY } from "@/config/play";
+import { classificarLista, classificarPlano } from "@/lib/conta/respostaConta";
 
 export default function ContaPage() {
   const { data: session, status } = useSession();
@@ -32,13 +33,64 @@ export default function ContaPage() {
 
   useEffect(() => {
     if (!session) return;
-    fetch("/api/user/watchlist").then((r) => r.json()).then(setWatchlist);
-    fetch("/api/user/history").then((r) => r.json()).then(setHistorico);
-    fetch("/api/billing/me").then((r) => r.ok ? r.json() : null).then(setComercial);
+    // Concorrência/stale: se a sessão mudar ou a página desmontar, as respostas
+    // tardias são ignoradas e as requisições em voo são abortadas — nada de
+    // `setState` com dados de uma sessão que já não vale.
+    let ativo = true;
+    let encerrando = false;
+    const controller = new AbortController();
+
+    // Sessão revogada/expirada no servidor com sessão ainda em memória (ex.: conta
+    // excluída noutro navegador): encerra com segurança e vai ao login, UMA vez,
+    // sem renderizar dados antigos. Ver `respostaConta.ts`.
+    const encerrarSessaoRevogada = () => {
+      if (!ativo || encerrando) return;
+      encerrando = true;
+      signOut({ callbackUrl: "/login" });
+    };
+
+    const carregarLista = async (url: string, set: (v: any[]) => void) => {
+      let r: Response;
+      try {
+        r = await fetch(url, { signal: controller.signal });
+      } catch {
+        return; // abort/rede: mantém o default seguro ([]), sem quebrar o render.
+      }
+      const resultado = await classificarLista(r);
+      if (!ativo) return;
+      if (resultado.tipo === "revogada") return encerrarSessaoRevogada();
+      set(resultado.tipo === "ok" ? resultado.dados : []);
+    };
+
+    const carregarPlano = async () => {
+      let r: Response;
+      try {
+        r = await fetch("/api/billing/me", { signal: controller.signal });
+      } catch {
+        return; // mantém `comercial` como está (null → "Carregando…").
+      }
+      const resultado = await classificarPlano(r);
+      if (!ativo) return;
+      if (resultado.tipo === "revogada") return encerrarSessaoRevogada();
+      setComercial(resultado.tipo === "ok" ? (resultado.dados as any) : null);
+    };
+
+    carregarLista("/api/user/watchlist", setWatchlist);
+    carregarLista("/api/user/history", setHistorico);
+    carregarPlano();
+
+    return () => {
+      ativo = false;
+      controller.abort();
+    };
   }, [session]);
 
   if (status === "loading") return <div className="min-h-screen flex items-center justify-center"><p className="text-zinc-400">Carregando...</p></div>;
   if (!session) return null;
+
+  // Invariante de render: as listas vêm sempre como array dos efeitos acima, mas
+  // o guard protege contra qualquer regressão futura — nunca `.map` sobre não-array.
+  const lista = Array.isArray(watchlist) ? watchlist : [];
 
   return (
     <div className="pt-20 px-4 md:px-8 pb-16 min-h-screen">
@@ -80,9 +132,9 @@ export default function ContaPage() {
       </section>
 
       <section className="mb-10">
-        <h2 className="text-lg font-semibold text-white mb-4">Minha Lista ({watchlist.length})</h2>
+        <h2 className="text-lg font-semibold text-white mb-4">Minha Lista ({lista.length})</h2>
         <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {watchlist.map((w) => {
+          {lista.map((w) => {
             const item = w.filme ?? w.serie;
             if (!item) return null;
             return (
