@@ -41,15 +41,13 @@ describe("downloadPermitido: controle desligado preserva; ligado aplica o direit
     assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver: resolver("nenhum") }), false);
   });
 
-  test("ligado: completo segue a regra de sempre — gratuito/assinante baixa; cortes não liberam por omissão", async () => {
-    // Monetização desligada: completo liberado para qualquer conta (o anúncio vem depois, no fluxo existente).
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", false) }), true);
-    // Monetização ligada: completo volta a exigir `downloads` do plano.
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: true, resolver: resolver("lote", false) }), false);
-    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, ativa: true, resolver: resolver("nenhum", true) }), true);
-    // Ter download completo nunca concede corte.
-    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", true) }), false);
-    assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, ativa: false, resolver: resolver("nenhum", true) }), false);
+  test("ligado: completo liberado a toda conta, inclusive Cortes; completo nunca concede corte", async () => {
+    let tocou = false;
+    const semResolver = (async () => { tocou = true; throw new Error("não devia resolver"); }) as never;
+    assert.equal(await downloadPermitido("u", "completo", { controleAtivo: true, resolver: semResolver }), true);
+    assert.equal(tocou, false);
+    assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver: resolver("nenhum", true) }), false);
+    assert.equal(await downloadPermitido("u", "individual", { controleAtivo: true, resolver: resolver("nenhum", true) }), false);
   });
 
   test("ligado: erro ao resolver nega (nunca concede por coerção)", async () => {
@@ -112,20 +110,22 @@ describe("direitos do Electron na resposta existente", () => {
   test("ausência de direitos e falha negam; operação falsificada não concede", async () => {
     const { direitosDoCliente } = await import("../playbackAuthorization");
     const resolver = (async () => ({ direitos: {} })) as never;
-    assert.equal((await direitosDoCliente("u", { ativa: true, controleAtivo: true, resolver })).downloads, false);
+    assert.equal((await direitosDoCliente("u", { ativa: true, controleAtivo: true, resolver })).cortesNivel, "nenhum");
     assert.equal(await downloadPermitido("u", "inventado" as never, { controleAtivo: true, resolver }), false);
     const falha = (async () => { throw new Error("indisponível"); }) as never;
-    assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver: falha })).cortesNivel, "nenhum");
+    const negado = await direitosDoCliente("u", { controleAtivo: true, resolver: falha });
+    assert.equal(negado.cortesNivel, "nenhum");
+    assert.equal(negado.downloads, false);
   });
 });
 
 for (const nivel of ["nenhum", "individual", "lote", "ia"] as const) {
   for (const operacao of ["completo", "individual", "lote"] as const) {
-    test(`servidor: ${nivel}/${operacao}, plano sem download completo e monetização ligada`, async () => {
+    test(`servidor: ${nivel}/${operacao}, plano com downloads=false`, async () => {
       const resolver = (async () => ({ direitos: { cortesNivel: nivel, downloads: false } })) as never;
-      // Completo: plano tradicional (nenhum) baixa; plano de cortes sem `downloads` não.
-      const esperado = operacao === "completo" ? nivel === "nenhum" : corteAutorizado(nivel, operacao);
-      assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, ativa: true, resolver }), esperado);
+      // Completo é de toda conta, inclusive Cortes; corte segue a escada.
+      const esperado = operacao === "completo" ? true : corteAutorizado(nivel, operacao);
+      assert.equal(await downloadPermitido("u", operacao, { controleAtivo: true, resolver }), esperado);
       assert.equal(await downloadPermitido("u", "forjado" as never, { controleAtivo: true, resolver }), false);
     });
   }
@@ -158,7 +158,7 @@ describe("matriz: completo/trecho/lote por plano, monetização ligada e desliga
     start: P.PLANO_CORTES_START, pro: P.PLANO_CORTES_PRO, ai: P.PLANO_CORTES_AI };
   const esperado: Record<string, [boolean, boolean, boolean]> = {
     gratuito: [true, false, false], basic: [true, false, false], plus: [true, false, false], premium: [true, false, false],
-    start: [false, true, false], pro: [false, true, true], ai: [false, true, true],
+    start: [true, true, false], pro: [true, true, true], ai: [true, true, true],
   };
   for (const ativa of [true, false]) {
     for (const [nome, plano] of Object.entries(planos)) {
@@ -166,9 +166,8 @@ describe("matriz: completo/trecho/lote por plano, monetização ligada e desliga
         const { direitosDoCliente } = await import("../playbackAuthorization");
         const resolver = (async () => ({ direitos: plano })) as never;
         const [completo, individual, lote] = esperado[nome];
-        // Desligada: o completo segue liberado a todos, como sempre.
-        const completoEsperado = ativa ? completo : true;
-        const op = (o: "completo" | "individual" | "lote") => downloadPermitido("u", o, { controleAtivo: true, ativa, resolver });
+        const completoEsperado = completo;
+        const op = (o: "completo" | "individual" | "lote") => downloadPermitido("u", o, { controleAtivo: true, resolver });
         assert.equal(await op("completo"), completoEsperado);
         assert.equal(await op("individual"), individual);
         assert.equal(await op("lote"), lote);

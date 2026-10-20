@@ -10,7 +10,6 @@ import {
 } from "../playbackAuthorization";
 import {
   PLANO_BASIC,
-PLANO_CORTES_PRO,
   PLANO_GRATUITO,
   PLANO_PREMIUM,
   inversoesDeDireito,
@@ -219,17 +218,6 @@ describe("direitosDoCliente", () => {
     const { resolver } = resolverFalso(new Error("banco fora"));
 
     assert.equal((await direitosDoCliente("u1", { ativa: true, resolver })).downloads, false);
-  });
-
-  /** Um direito `undefined` — cache de formato antigo — não vira permissão. */
-  test("downloads ausente não vira true por coerção (plano de cortes)", async () => {
-    const ent = entitlementsDe(PLANO_CORTES_PRO);
-    const { resolver } = resolverFalso({
-      ...ent,
-      direitos: { ...ent.direitos, downloads: undefined as unknown as boolean },
-    });
-
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
   /**

@@ -369,7 +369,9 @@ export async function direitosDoCliente(
   try {
     const entitlements = await resolver(userId);
     return {
-      downloads: ativa ? completoPermitido(entitlements.direitos) : true,
+      // Download completo é do Obaflix inteiro, inclusive assinantes Cortes; quem
+      // passa por anúncio é decidido no gate de anúncio, não aqui.
+      downloads: true,
       cortesNivel: controle ? entitlements.direitos.cortesNivel ?? "nenhum" : "nenhum",
       cortesControleAtivo: controle,
       anuncio: comAnuncio && entitlements.direitos.anunciosObrigatorios === true,
@@ -387,8 +389,9 @@ export async function direitosDoCliente(
  * ao CDN), então o servidor não distingue a operação pelos bytes — só pelo que o
  * cliente declara. Por isso **todas as operações** são gateadas, não só o corte:
  * se apenas `individual`/`lote` fossem conferidos, bastaria OMITIR o tipo (cair em
- * `completo`) para contornar. Aqui `completo` segue `completoPermitido` e o corte
- * exige a escada de `cortesNivel` — omitir ou falsificar o tipo nunca concede corte. Não é fronteira criptográfica (quem tem os bytes os
+ * `completo`) para contornar. Aqui `completo` é liberado a toda conta (o anúncio
+ * aplicável vem depois, no fluxo existente) e o corte exige a escada de
+ * `cortesNivel` — omitir ou falsificar o tipo nunca concede corte. Não é fronteira criptográfica (quem tem os bytes os
  * tem), mas o parâmetro do cliente deixa de ser prova de autorização.
  *
  * Controle desligado → `true`: os planos de hoje seguem baixando/cortando como
@@ -397,31 +400,18 @@ export async function direitosDoCliente(
 export async function downloadPermitido(
   userId: string,
   operacao: "completo" | ModoCorte,
-  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean; ativa?: boolean } = {},
+  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean } = {},
 ): Promise<boolean> {
   const controle = opcoes.controleAtivo ?? cortesControleAtivo();
   if (!controle) return true;
-  // Completo: mesma regra de `direitosDoCliente` (o anúncio vem depois, no fluxo existente).
-  const ativa = opcoes.ativa ?? monetizacaoAtiva();
-  if (operacao === "completo" && !ativa) return true;
+  // Completo: toda conta, como em `direitosDoCliente`; o anúncio vem depois, no fluxo existente.
+  if (operacao === "completo") return true;
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
   try {
     const { direitos } = await resolver(userId);
-    return operacao === "completo"
-      ? completoPermitido(direitos)
-      : corteAutorizado(direitos.cortesNivel, operacao);
+    return corteAutorizado(direitos.cortesNivel, operacao);
   } catch {
     return false;
   }
 }
 
-/**
- * Download completo com a monetização ligada. Gratuito e Básico/Plus/Premium
- * baixam (anúncio, isenções e limites seguem nos seus próprios gates); o direito
- * `downloads = false` só nega nos planos de cortes, que não incluem o completo.
- * Estrito: só `cortesNivel === "nenhum"` conta como plano tradicional — direito
- * ausente ou corrompido não vira permissão (entitlements sempre preenche o campo).
- */
-export function completoPermitido(direitos: Pick<DireitosDoPlano, "downloads" | "cortesNivel">): boolean {
-  return direitos.downloads === true || direitos.cortesNivel === "nenhum";
-}

@@ -295,7 +295,7 @@ export async function POST(req: NextRequest) {
     // Direito de download/corte no servidor — ANTES do anúncio (ação sem direito
     // não consome anúncio) e independente de MONETIZACAO_ATIVA. **Toda** operação
     // de download é gateada, não só o corte: `completo` segue a regra de sempre
-    // (`completoPermitido`: gratuito e Básico/Plus/Premium baixam, com o anúncio abaixo),
+    // (toda conta, inclusive Cortes, com o anúncio aplicável abaixo),
     // `individual`/`lote` exigem a escada de `cortesNivel`. Só age com o controle
     // comercial ligado; desligado, nada muda para os planos de hoje. Transmissão
     // (cast) não passa por aqui. Bloqueio visual não basta.

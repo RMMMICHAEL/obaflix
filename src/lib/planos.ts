@@ -365,7 +365,7 @@ export const PLANO_CORTES_START: PlanoSemeado = {
   ...PLANO_BASIC,
   id: "cortes-start",
   nome: "Obaflix Cortes Start",
-  descricao: "Filmes e séries com corte individual. Não inclui download completo.",
+  descricao: "Obaflix completo com corte individual.",
   ativo: false,
   filmes: true,
   series: true,
@@ -377,7 +377,7 @@ export const PLANO_CORTES_PRO: PlanoSemeado = {
   ...PLANO_CORTES_START,
   id: "cortes-pro",
   nome: "Obaflix Cortes Pro",
-  descricao: "Filmes e séries com cortes individuais e múltiplos cortes. Não inclui download completo.",
+  descricao: "Obaflix completo com cortes individuais e múltiplos cortes.",
   cortesNivel: "lote",
 };
 
@@ -385,7 +385,7 @@ export const PLANO_CORTES_AI: PlanoSemeado = {
   ...PLANO_CORTES_PRO,
   id: "cortes-ai",
   nome: "Obaflix Cortes AI",
-  descricao: "Filmes e séries com múltiplos cortes e permissão futura de IA, ainda não implementada. Não inclui download completo.",
+  descricao: "Obaflix completo com múltiplos cortes e permissão futura de IA, ainda não implementada.",
   cortesNivel: "ia",
 };
 

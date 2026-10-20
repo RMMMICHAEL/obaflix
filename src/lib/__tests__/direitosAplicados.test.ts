@@ -105,9 +105,9 @@ describe("`aplicado` aponta para código que existe e cita o campo", () => {
  * que é exatamente o momento de atualizar a documentação também.
  */
 describe("o que esta entrega aplica, e o que deixou marcado", () => {
-  test("telasMax e downloads passaram a ser aplicados", () => {
+  test("telasMax aplicado; downloads deixou de negar (completo é de toda conta)", () => {
     assert.equal(APLICACAO_DOS_DIREITOS.telasMax.estado, "aplicado");
-    assert.equal(APLICACAO_DOS_DIREITOS.downloads.estado, "aplicado");
+    assert.equal(APLICACAO_DOS_DIREITOS.downloads.estado, "nao_aplicado");
   });
 
   test("filmes e series continuam aplicados", () => {
