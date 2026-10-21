@@ -23,7 +23,7 @@ function createPlansHandler(deps: any = {}) {
     select: {
       id: true, nome: true, descricao: true, ehPadrao: true,
       filmes: true, series: true, downloads: true, telasMax: true,
-      anunciosObrigatorios: true, canaisNivel: true, resolucaoMax: true,
+      anunciosObrigatorios: true, canaisNivel: true, resolucaoMax: true, cortesNivel: true,
       precos: { where: { ativo: true }, orderBy: { ordem: "asc" }, select: {
         id: true, rotulo: true, duracaoDias: true, duracaoMeses: true, precoCentavos: true, moeda: true,
       } },

@@ -23,7 +23,17 @@
  * e não estiver protegido (`SERVIDOR_VIP_NA_VITRINE`).
  */
 
-export type TemaDoPlano = "azul" | "roxo" | "ambar";
+export type TemaDoPlano = "azul" | "roxo" | "ambar" | "verde" | "ciano" | "rosa";
+
+/** Cor de destaque e cor do texto sobre ela, por tema. Única tabela usada por /planos e /checkout. */
+export const TONS_DOS_TEMAS: Record<TemaDoPlano, { cor: string; texto: string }> = {
+  azul: { cor: "#4C8DFF", texto: "#FFFFFF" },
+  roxo: { cor: "#A66BFF", texto: "#FFFFFF" },
+  ambar: { cor: "#F5B82E", texto: "#1A1206" },
+  verde: { cor: "#34D399", texto: "#052016" },
+  ciano: { cor: "#22D3EE", texto: "#04222A" },
+  rosa: { cor: "#F472B6", texto: "#2A0A1C" },
+};
 
 export interface BeneficioDaVitrine {
   texto: string;
@@ -35,6 +45,8 @@ export interface PlanoDaVitrine {
   nome: string;
   tema: TemaDoPlano | null;
   selo: string | null;
+  /** Cortes é assinatura à parte: vitrine, ordem e upgrade separados dos tradicionais. */
+  familia: "tradicional" | "cortes";
   beneficios: BeneficioDaVitrine[];
 }
 
@@ -49,6 +61,8 @@ export interface LinhaDaVitrine {
   anunciosObrigatorios: boolean;
   downloads: boolean;
   canaisNivel: string;
+  /** "nenhum" (ou ausente) nos planos tradicionais. */
+  cortesNivel?: string | null;
   /** Há preço ativo de tela adicional para este plano. */
   telasAdicionaisDisponiveis?: boolean;
 }
@@ -61,9 +75,32 @@ const NOMES_PUBLICOS: Record<string, string> = {
   premium: "Premium",
 };
 
-const TEMAS: Record<string, TemaDoPlano> = { basic: "azul", plus: "roxo", premium: "ambar" };
+const TEMAS: Record<string, TemaDoPlano> = {
+  basic: "azul", plus: "roxo", premium: "ambar",
+  "cortes-start": "verde", "cortes-pro": "ciano", "cortes-ai": "rosa",
+};
 
-const SELOS: Record<string, string> = { plus: "Mais escolhido", premium: "Experiência completa" };
+const SELOS: Record<string, string> = {
+  plus: "Mais escolhido", premium: "Experiência completa",
+  "cortes-pro": "Cortes em lote", "cortes-ai": "IA em breve",
+};
+
+/** O que cada nível de Cortes libera hoje (playbackAuthorization). IA ainda não opera. */
+const CORTES: Record<string, BeneficioDaVitrine[]> = {
+  individual: [
+    { texto: "Cortes individuais", incluido: true },
+    { texto: "Cortes em lote", incluido: false },
+  ],
+  lote: [
+    { texto: "Cortes individuais", incluido: true },
+    { texto: "Cortes em lote", incluido: true },
+  ],
+  ia: [
+    { texto: "Cortes individuais", incluido: true },
+    { texto: "Cortes em lote", incluido: true },
+    { texto: "Cortes com IA (em breve)", incluido: false },
+  ],
+};
 
 /** Processo de atendimento, não direito técnico. */
 const SUPORTE: Record<string, string> = {
@@ -113,7 +150,8 @@ export function nomePublicoDoPlano(id: string, nomeDoBanco: string): string {
  * anúncios, downloads, canais, suporte — para os cards se alinharem.
  */
 export function vitrineDoPlano(linha: LinhaDaVitrine): PlanoDaVitrine {
-  const beneficios: BeneficioDaVitrine[] = [];
+  const cortes = linha.cortesNivel && linha.cortesNivel !== "nenhum" ? CORTES[linha.cortesNivel] ?? [] : null;
+  const beneficios: BeneficioDaVitrine[] = cortes ? [...cortes] : [];
 
   beneficios.push({
     texto: linha.telasMax === 1 ? "1 tela" : `${linha.telasMax} telas simultâneas`,
@@ -133,10 +171,13 @@ export function vitrineDoPlano(linha: LinhaDaVitrine): PlanoDaVitrine {
       : { texto: "Com anúncios na reprodução", incluido: false },
   );
 
+  // Cortes: download completo vale para todo plano, com anúncio quando o plano não isenta.
   beneficios.push(
     linha.downloads === true
       ? { texto: "Downloads sem anúncios", incluido: true }
-      : { texto: "Sem downloads", incluido: false },
+      : cortes
+        ? { texto: "Download de filmes e séries com anúncios", incluido: true }
+        : { texto: "Sem downloads", incluido: false },
   );
 
   const canais = CANAIS[linha.canaisNivel];
@@ -149,6 +190,7 @@ export function vitrineDoPlano(linha: LinhaDaVitrine): PlanoDaVitrine {
     nome: nomePublicoDoPlano(linha.id, linha.nome),
     tema: TEMAS[linha.id] ?? null,
     selo: SELOS[linha.id] ?? null,
+    familia: cortes ? "cortes" : "tradicional",
     beneficios,
   };
 }

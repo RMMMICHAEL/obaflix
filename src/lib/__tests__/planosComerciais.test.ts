@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { SERVIDOR_VIP_AVULSO_OFERTADO, SERVIDOR_VIP_NA_VITRINE, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
+import { SERVIDOR_VIP_AVULSO_OFERTADO, SERVIDOR_VIP_NA_VITRINE, TONS_DOS_TEMAS, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
 import { validarOpcoesComerciais } from "../billing/opcoes";
 import {
   AJUSTES_DE_PLANO,
@@ -13,7 +13,7 @@ import {
   type EstadoDoCatalogo,
 } from "../billing/catalogoComercial";
 import { videoPermitidoPorVip, servidorVipDaConta } from "../servidorVip";
-import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PLUS, PLANO_PREMIUM } from "../planos";
+import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PLUS, PLANO_PREMIUM, PLANOS_CORTES } from "../planos";
 import type { Entitlements } from "../entitlements";
 import type { PlanoSemeado } from "../planos";
 
@@ -271,5 +271,33 @@ describe("servidor VIP", () => {
 
   test("falha ao resolver o direito não libera VIP", async () => {
     assert.equal(await servidorVipDaConta("u", { ativa: true, resolver: async () => { throw new Error("redis"); } }), false);
+  });
+});
+
+describe("vitrine Cortes", () => {
+  const [start, pro, ai] = PLANOS_CORTES.map((p) => vitrineDoPlano(p));
+  const marcados = (v: ReturnType<typeof vitrineDoPlano>) => v.beneficios.map((b) => `${b.incluido ? "+" : "-"}${b.texto}`);
+
+  test("identidade própria, família Cortes, tema com cor definida", () => {
+    assert.deepEqual([start, pro, ai].map((v) => [v.nome, v.tema, v.selo, v.familia]), [
+      ["Obaflix Cortes Start", "verde", null, "cortes"],
+      ["Obaflix Cortes Pro", "ciano", "Cortes em lote", "cortes"],
+      ["Obaflix Cortes AI", "rosa", "IA em breve", "cortes"],
+    ]);
+    for (const v of [start, pro, ai]) assert.ok(TONS_DOS_TEMAS[v.tema!]);
+    for (const p of [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM]) assert.equal(vitrineDoPlano(p).familia, "tradicional");
+  });
+
+  test("benefícios reais: Start individual, Pro individual e lote, AI sem IA operacional", () => {
+    assert.deepEqual(marcados(start).slice(0, 2), ["+Cortes individuais", "-Cortes em lote"]);
+    assert.deepEqual(marcados(pro).slice(0, 2), ["+Cortes individuais", "+Cortes em lote"]);
+    assert.deepEqual(marcados(ai).slice(0, 3), ["+Cortes individuais", "+Cortes em lote", "-Cortes com IA (em breve)"]);
+  });
+
+  test("download de filmes nunca aparece bloqueado nos Cortes", () => {
+    for (const v of [start, pro, ai]) {
+      assert.equal(v.beneficios.some((b) => /download/i.test(b.texto) && !b.incluido), false, v.nome);
+      assert.ok(v.beneficios.some((b) => b.texto === "Download de filmes e séries com anúncios" && b.incluido), v.nome);
+    }
   });
 });

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { useEffect, useMemo, useState } from "react";
+import { TONS_DOS_TEMAS, type TemaDoPlano } from "@/lib/billing/vitrine";
+import { PLANOS_CORTES } from "@/lib/planos";
 
 type Preco = {
   id: string;
@@ -23,8 +25,9 @@ type Plano = {
   precos: Preco[];
   vitrine: {
     nome: string;
-    tema: "azul" | "roxo" | "ambar" | null;
+    tema: TemaDoPlano | null;
     selo: string | null;
+    familia?: "tradicional" | "cortes";
     beneficios: Beneficio[];
   };
 };
@@ -34,11 +37,9 @@ type Conta = {
   assinatura?: unknown;
 };
 
-const TOM: Record<"azul" | "roxo" | "ambar", { cor: string; texto: string }> = {
-  azul: { cor: "#4C8DFF", texto: "#FFFFFF" },
-  roxo: { cor: "#A66BFF", texto: "#FFFFFF" },
-  ambar: { cor: "#F5B82E", texto: "#1A1206" },
-};
+const TOM = TONS_DOS_TEMAS;
+const ORDEM_CORTES = PLANOS_CORTES.map((plano) => plano.id);
+const ehCortes = (id: string | null | undefined) => !!id && ORDEM_CORTES.includes(id);
 
 function dinheiro(centavos: number, moeda: string) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: moeda }).format(centavos / 100);
@@ -92,9 +93,121 @@ export default function PlanosPage() {
     () => planos.filter((plano) => plano.vitrine?.tema && TOM[plano.vitrine.tema]),
     [planos],
   );
+  // Cortes é assinatura à parte: seção, ordem e upgrade próprios. Ter um plano de
+  // uma família nunca impede assinar a outra.
+  const tradicionais = vitrine.filter((plano) => !ehCortes(plano.id));
+  const cortes = vitrine
+    .filter((plano) => ehCortes(plano.id))
+    .sort((a, b) => ORDEM_CORTES.indexOf(a.id) - ORDEM_CORTES.indexOf(b.id));
+  const contaCortes = ehCortes(conta?.plano?.id);
 
-  const indiceAtual = vitrine.findIndex((plano) => plano.id === conta?.plano?.id);
-  const assinaturaAtiva = Boolean(conta?.assinatura);
+  function secao(lista: Plano[], assinaturaAtiva: boolean) {
+    const indiceAtual = lista.findIndex((plano) => plano.id === conta?.plano?.id);
+    return (
+      <section className="grid items-stretch gap-5 lg:grid-cols-3">
+        {lista.map((plano, indice) => {
+          const tema = TOM[plano.vitrine.tema as keyof typeof TOM];
+          const preco = precoDeEntrada(plano);
+          const atual = indice === indiceAtual;
+          const podeAssinar =
+            plano.compravel &&
+            (!assinaturaAtiva || (indiceAtual >= 0 && indice > indiceAtual));
+          const rotuloAcao =
+            assinaturaAtiva && indiceAtual >= 0 && indice > indiceAtual ? "Fazer upgrade" : "Assinar";
+          const selo = atual ? "Plano atual" : plano.vitrine.selo;
+          const nivel = Math.min(indice + 1, 3);
+
+          return (
+            <article
+              key={plano.id}
+              className="group relative flex min-h-[570px] flex-col overflow-hidden rounded-[22px] border bg-[#18181c] p-6 transition duration-200 hover:-translate-y-1 hover:shadow-2xl"
+              style={{
+                borderColor: atual ? tema.cor : `${tema.cor}66`,
+                backgroundImage: `linear-gradient(180deg, ${tema.cor}2E 0%, rgba(24,24,28,0.97) 48%, #18181c 100%)`,
+                boxShadow: atual ? `0 0 0 1px ${tema.cor}55, 0 22px 70px ${tema.cor}18` : undefined,
+              }}
+            >
+              <div className="mb-7 h-7">
+                {selo && (
+                  <span
+                    className="inline-flex rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide"
+                    style={{
+                      backgroundColor: atual ? "#F4F4F5" : tema.cor,
+                      color: atual ? "#101014" : tema.texto,
+                    }}
+                  >
+                    {selo}
+                  </span>
+                )}
+              </div>
+
+              <div className="mb-3 flex items-center gap-3">
+                <h2 className="text-3xl font-black tracking-tight">{plano.vitrine.nome || plano.nome}</h2>
+                <div className="flex gap-1.5" aria-label={`Nível ${nivel}`}>
+                  {Array.from({ length: nivel }, (_, ponto) => (
+                    <span key={ponto} className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tema.cor }} />
+                  ))}
+                </div>
+              </div>
+
+              {preco ? (
+                <div className="mb-5 flex items-end gap-2">
+                  <strong className="text-3xl font-black" style={{ color: tema.cor }}>
+                    {dinheiro(preco.precoCentavos, preco.moeda)}
+                  </strong>
+                  <span className="pb-1 text-sm text-zinc-400">/ {preco.rotulo}</span>
+                </div>
+              ) : (
+                <p className="mb-5 text-lg text-zinc-500">Sem preço disponível</p>
+              )}
+
+              <div className="mb-5 h-px bg-white/10" />
+
+              <div className="flex-1 space-y-2.5">
+                {plano.vitrine.beneficios.map((beneficio, i) => (
+                  <div key={`${beneficio.texto}-${i}`} className="flex items-start gap-2.5 text-[15px]">
+                    <span
+                      className="w-5 shrink-0 font-black"
+                      style={{ color: beneficio.incluido ? tema.cor : "#71717A" }}
+                    >
+                      {beneficio.incluido ? "✓" : "–"}
+                    </span>
+                    <span className={beneficio.incluido ? "text-zinc-100" : "text-zinc-500"}>
+                      {beneficio.texto}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-7">
+                {podeAssinar ? (
+                  <LinkAssinatura
+                    href={`/checkout?planoId=${encodeURIComponent(plano.id)}`}
+                    className="flex h-12 w-full items-center justify-center rounded-xl text-base font-black transition group-hover:brightness-110"
+                    style={{ backgroundColor: tema.cor, color: tema.texto }}
+                  >
+                    {rotuloAcao}
+                  </LinkAssinatura>
+                ) : atual ? (
+                  <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-400">
+                    Este é o seu plano
+                  </div>
+                ) : assinaturaAtiva ? (
+                  <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-500">
+                    Sem alteração disponível
+                  </div>
+                ) : (
+                  <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-500">
+                    Indisponível no momento
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </section>
+    );
+  }
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#101014] px-5 pb-12 pt-24 text-white md:px-10 xl:px-14">
@@ -136,108 +249,20 @@ export default function PlanosPage() {
         )}
 
         {!carregando && !erro && vitrine.length > 0 && (
-          <section className="grid items-stretch gap-5 lg:grid-cols-3">
-            {vitrine.map((plano, indice) => {
-              const tema = TOM[plano.vitrine.tema as keyof typeof TOM];
-              const preco = precoDeEntrada(plano);
-              const atual = indice === indiceAtual;
-              const podeAssinar =
-                plano.compravel &&
-                (!assinaturaAtiva || (indiceAtual >= 0 && indice > indiceAtual));
-              const rotuloAcao =
-                assinaturaAtiva && indiceAtual >= 0 && indice > indiceAtual ? "Fazer upgrade" : "Assinar";
-              const selo = atual ? "Plano atual" : plano.vitrine.selo;
-              const nivel = Math.min(indice + 1, 3);
-
-              return (
-                <article
-                  key={plano.id}
-                  className="group relative flex min-h-[570px] flex-col overflow-hidden rounded-[22px] border bg-[#18181c] p-6 transition duration-200 hover:-translate-y-1 hover:shadow-2xl"
-                  style={{
-                    borderColor: atual ? tema.cor : `${tema.cor}66`,
-                    backgroundImage: `linear-gradient(180deg, ${tema.cor}2E 0%, rgba(24,24,28,0.97) 48%, #18181c 100%)`,
-                    boxShadow: atual ? `0 0 0 1px ${tema.cor}55, 0 22px 70px ${tema.cor}18` : undefined,
-                  }}
-                >
-                  <div className="mb-7 h-7">
-                    {selo && (
-                      <span
-                        className="inline-flex rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide"
-                        style={{
-                          backgroundColor: atual ? "#F4F4F5" : tema.cor,
-                          color: atual ? "#101014" : tema.texto,
-                        }}
-                      >
-                        {selo}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="mb-3 flex items-center gap-3">
-                    <h2 className="text-3xl font-black tracking-tight">{plano.vitrine.nome || plano.nome}</h2>
-                    <div className="flex gap-1.5" aria-label={`Nível ${nivel}`}>
-                      {Array.from({ length: nivel }, (_, ponto) => (
-                        <span key={ponto} className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tema.cor }} />
-                      ))}
-                    </div>
-                  </div>
-
-                  {preco ? (
-                    <div className="mb-5 flex items-end gap-2">
-                      <strong className="text-3xl font-black" style={{ color: tema.cor }}>
-                        {dinheiro(preco.precoCentavos, preco.moeda)}
-                      </strong>
-                      <span className="pb-1 text-sm text-zinc-400">/ {preco.rotulo}</span>
-                    </div>
-                  ) : (
-                    <p className="mb-5 text-lg text-zinc-500">Sem preço disponível</p>
-                  )}
-
-                  <div className="mb-5 h-px bg-white/10" />
-
-                  <div className="flex-1 space-y-2.5">
-                    {plano.vitrine.beneficios.map((beneficio, i) => (
-                      <div key={`${beneficio.texto}-${i}`} className="flex items-start gap-2.5 text-[15px]">
-                        <span
-                          className="w-5 shrink-0 font-black"
-                          style={{ color: beneficio.incluido ? tema.cor : "#71717A" }}
-                        >
-                          {beneficio.incluido ? "✓" : "–"}
-                        </span>
-                        <span className={beneficio.incluido ? "text-zinc-100" : "text-zinc-500"}>
-                          {beneficio.texto}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="mt-7">
-                    {podeAssinar ? (
-                      <LinkAssinatura
-                        href={`/checkout?planoId=${encodeURIComponent(plano.id)}`}
-                        className="flex h-12 w-full items-center justify-center rounded-xl text-base font-black transition group-hover:brightness-110"
-                        style={{ backgroundColor: tema.cor, color: tema.texto }}
-                      >
-                        {rotuloAcao}
-                      </LinkAssinatura>
-                    ) : atual ? (
-                      <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-400">
-                        Este é o seu plano
-                      </div>
-                    ) : assinaturaAtiva ? (
-                      <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-500">
-                        Sem alteração disponível
-                      </div>
-                    ) : (
-                      <div className="flex h-12 items-center justify-center text-sm font-semibold text-zinc-500">
-                        Indisponível no momento
-                      </div>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </section>
+          <>
+            {tradicionais.length > 0 && secao(tradicionais, Boolean(conta?.assinatura) && !contaCortes)}
+            {cortes.length > 0 && (
+              <div className={tradicionais.length > 0 ? "mt-14" : undefined}>
+                <header className="mb-6">
+                  <h2 className="text-2xl font-black tracking-tight md:text-3xl">Obaflix Cortes</h2>
+                  <p className="mt-2 text-base text-zinc-400">
+                    Assinatura à parte para criar cortes. Pode ser contratada junto com o Básico, Plus ou Premium.
+                  </p>
+                </header>
+                {secao(cortes, Boolean(conta?.assinatura) && contaCortes)}
+              </div>
+            )}
+          </>
         )}
 
         <p className="mt-7 text-center text-xs text-zinc-600">

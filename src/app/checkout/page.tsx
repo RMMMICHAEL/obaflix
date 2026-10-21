@@ -15,6 +15,7 @@ import {
   mensagemErroCheckout,
 } from "@/lib/billing/checkout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
+import { TONS_DOS_TEMAS, type TemaDoPlano } from "@/lib/billing/vitrine";
 
 type Preco = {
   id: string;
@@ -35,7 +36,7 @@ type Plano = {
   };
   vitrine?: {
     nome?: string;
-    tema?: "azul" | "roxo" | "ambar" | null;
+    tema?: TemaDoPlano | null;
     selo?: string | null;
     beneficios?: Array<{ texto: string; incluido: boolean }>;
   };
@@ -60,11 +61,7 @@ type Novo = Pendente & {
 
 type Pedido = Pendente | Novo;
 
-const TOM = {
-  azul: { cor: "#4C8DFF", texto: "#FFFFFF" },
-  roxo: { cor: "#A66BFF", texto: "#FFFFFF" },
-  ambar: { cor: "#F5B82E", texto: "#1A1206" },
-} as const;
+const TOM = TONS_DOS_TEMAS;
 
 const temPix = (pedido: Pedido): pedido is Novo => "pix" in pedido;
 
@@ -259,6 +256,8 @@ function CheckoutConteudo() {
   const limiteTelas = telaMensal !== null ? plano?.adicionais?.telasAdicionaisMax ?? 0 : 0;
   const mesesDeTelas = mesesCobraveisDeTelas(preco) ?? 0;
   const telasPermitidasNestaDuracao = mesesDeTelas > 0 && telaMensal !== null && limiteTelas > 0;
+  // A seção de telas só aparece quando há oferta; a de dados vem logo depois dela.
+  const comSecaoDeTelas = limiteTelas > 0 && telaMensal !== null;
   const promocao = plano && preco ? promocaoDaDuracao(plano, preco) : null;
 
   const subtotal = useMemo(() => {
@@ -482,7 +481,7 @@ function CheckoutConteudo() {
               </div>
             </section>
 
-            {limiteTelas > 0 && telaMensal !== null && (
+            {comSecaoDeTelas && (
               <section className="rounded-3xl border border-white/10 bg-[#18181c]/95 p-6">
                 <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>2. Telas adicionais</p>
                 <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
@@ -524,7 +523,7 @@ function CheckoutConteudo() {
             )}
 
             <section className="rounded-3xl border border-white/10 bg-[#18181c]/95 p-6">
-              <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>3. Dados do pagador</p>
+              <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>{comSecaoDeTelas ? 3 : 2}. Dados do pagador</p>
               <h2 className="mt-1 text-xl font-black">Informações para o pagamento</h2>
 
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
