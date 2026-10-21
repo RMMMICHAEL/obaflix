@@ -38,7 +38,7 @@ export function corpoCriarPedido(
   planoId: string | null,
   planoPrecoId: string | null,
   pagador: { nome: string; telefone: string; documento: string },
-  opcoes: { cupom?: string; telasAdicionais?: number; email?: string } = {},
+  opcoes: { cupom?: string; telasAdicionais?: number; email?: string; nascimento?: string } = {},
 ) {
   const cupom = opcoes.cupom?.trim();
   const email = opcoes.email?.trim();
@@ -47,6 +47,7 @@ export function corpoCriarPedido(
     planoId, planoPrecoId, ...pagador,
     ...(cupom ? { cupom } : {}),
     ...(email ? { email } : {}),
+    ...(opcoes.nascimento ? { nascimento: opcoes.nascimento } : {}),
     ...(typeof telas === "number" && telas > 0 ? { telasAdicionais: telas } : {}),
   };
 }
@@ -102,5 +103,8 @@ export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "credito_maior_que_compra") return "O crédito do seu plano atual é maior que esta compra. Escolha uma duração maior.";
   if (codigo === "duracao_invalida") return "Esta duração não está disponível.";
   if (codigo === "dados_do_pagador_invalidos") return "Confira nome, telefone e CPF/CNPJ.";
+  if (codigo === "nascimento_invalido") return "Confira a data de nascimento. A compra é permitida a partir de 18 anos.";
+  if (codigo === "parametros_invalidos") return "Confira o e-mail e os dados informados.";
+  if (codigo === "muitas_tentativas") return "Muitas tentativas. Aguarde alguns minutos e tente de novo.";
   return "Não foi possível iniciar o pagamento.";
 }

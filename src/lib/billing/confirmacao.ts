@@ -134,7 +134,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
     if (!atual.userId) {
       // Conta existente não tem nada alterado (`update: {}`): sem senha nova, sem acesso por informar o e-mail.
-      const conta = await tx.user.upsert({ where: { email: atual.emailComprador! }, create: { email: atual.emailComprador!, nome: atual.nomeComprador }, update: {}, select: { id: true, senhaHash: true } });
+      const conta = await tx.user.upsert({ where: { email: atual.emailComprador! }, create: { email: atual.emailComprador!, nome: atual.nomeComprador, dataNascimento: atual.nascimentoComprador }, update: {}, select: { id: true, senhaHash: true } });
       comprador = { userId: conta.id, email: atual.emailComprador!, semSenha: !conta.senhaHash };
       userId = conta.id;
       await tx.pedidoPagamento.update({ where: { id: atual.id }, data: { userId } });

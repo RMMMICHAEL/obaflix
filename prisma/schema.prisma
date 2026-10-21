@@ -136,6 +136,8 @@ model User {
   nome         String?
   email        String         @unique
   senhaHash    String?
+  /// Informada na compra sem login (regras por idade). Só a data, sem hora.
+  dataNascimento DateTime? @db.Date
   avatar       String?
   role         String         @default("user")
   createdAt    DateTime       @default(now())
@@ -616,6 +618,8 @@ model PedidoPagamento {
   /// E-mail normalizado e nome de quem comprou sem login. Nunca CPF.
   emailComprador String?
   nomeComprador  String?
+  /// Vai para `User.dataNascimento` quando a conta nasce na confirmação.
+  nascimentoComprador DateTime? @db.Date
 
   /// RESTRICT no banco: plano com pedido não é apagado. Descontinuar é
   /// `ativo = false`, como em `Assinatura`.

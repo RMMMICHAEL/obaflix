@@ -11,6 +11,7 @@ import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
 import {
   emailDoComprador,
+  nascimentoDoComprador,
   identificadorComercial,
   montarPagador,
   type CorpoDoPagador,
@@ -105,6 +106,8 @@ const MENSAGEM_DA_RECUSA: Record<string, string> = {
 interface Corpo extends CorpoDoPagador, CorpoDasOpcoes {
   /** Só sem sessão (compra Cortes sem login). Com sessão, vale o e-mail da conta. */
   email?: unknown;
+  /** Só sem sessão: `AAAA-MM-DD`, para o cadastro que nasce na confirmação. */
+  nascimento?: unknown;
   planoId?: unknown;
   planoPrecoId?: unknown;
 }
@@ -327,6 +330,10 @@ export async function POST(req: NextRequest) {
     if (!userId) audit("auth_failure", { ip, ua, detail: "/billing/orders sem sessão" });
     return erro(401, "acesso_negado", "Acesso negado");
   }
+  // Compra sem login: a data de nascimento vai para o cadastro que nasce na confirmação.
+  const nascimento = userId ? null : nascimentoDoComprador(corpo.nascimento);
+  if (!userId && !nascimento) return erro(400, "nascimento_invalido", "Data de nascimento inválida");
+
   if (!userId) {
     // Sem conta, o e-mail é o sujeito: impede usar a rota para encher a caixa
     // de alguém com cobranças.
@@ -362,7 +369,7 @@ export async function POST(req: NextRequest) {
     resultado = await criarPedidoPix(
       {
         userId, planoId, planoPrecoId, pagador,
-        ...(userId ? {} : { comprador: { email: conta.email, nome: pagador.nome } }),
+        ...(userId ? {} : { comprador: { email: conta.email, nome: pagador.nome, nascimento } }),
         telasAdicionais: opcoes.telasAdicionais,
         servidorVip: opcoes.servidorVip,
       },

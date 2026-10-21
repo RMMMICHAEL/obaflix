@@ -43,6 +43,23 @@ export function emailDoComprador(valor: unknown): string | null {
   return email.length <= 254 && EMAIL_RE.test(email) ? email : null;
 }
 
+/** Idade mínima para comprar: quem paga contrata a assinatura. */
+export const IDADE_MINIMA_COMPRA = 18;
+
+/**
+ * Data de nascimento de quem compra sem login (`AAAA-MM-DD`), como data UTC sem
+ * hora, ou `null`: formato inválido, data inexistente (31/02), futura, acima de
+ * 120 anos ou abaixo da idade mínima.
+ */
+export function nascimentoDoComprador(valor: unknown, agora: Date = new Date()): Date | null {
+  if (typeof valor !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(valor.trim())) return null;
+  const [a, m, d] = valor.trim().split("-").map(Number);
+  const data = new Date(Date.UTC(a, m - 1, d));
+  if (data.getUTCFullYear() !== a || data.getUTCMonth() !== m - 1 || data.getUTCDate() !== d) return null;
+  const idade = agora.getUTCFullYear() - a - (agora.getUTCMonth() < m - 1 || (agora.getUTCMonth() === m - 1 && agora.getUTCDate() < d) ? 1 : 0);
+  return idade >= IDADE_MINIMA_COMPRA && idade <= 120 ? data : null;
+}
+
 /** O que a conta autenticada fornece. Nunca vem do corpo. */
 export interface ContaDoPagador {
   nome: string | null;

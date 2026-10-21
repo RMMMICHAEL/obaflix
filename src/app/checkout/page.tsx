@@ -16,6 +16,7 @@ import {
 } from "@/lib/billing/checkout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 import { TONS_DOS_TEMAS, type TemaDoPlano } from "@/lib/billing/vitrine";
+import { IDADE_MINIMA_COMPRA } from "@/lib/billing/pagador";
 
 type Preco = {
   id: string;
@@ -120,6 +121,13 @@ function CheckoutConteudo() {
   const [telefone, setTelefone] = useState("");
   const [documento, setDocumento] = useState("");
   const [email, setEmail] = useState("");
+  const [nascimento, setNascimento] = useState("");
+  // Compra a partir de 18 anos; o servidor confere de novo.
+  const dataLimiteNascimento = useMemo(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - IDADE_MINIMA_COMPRA);
+    return d.toISOString().slice(0, 10);
+  }, []);
   const [telas, setTelas] = useState(0);
   const [erro, setErro] = useState("");
   const [carregandoCatalogo, setCarregandoCatalogo] = useState(true);
@@ -283,7 +291,7 @@ function CheckoutConteudo() {
             plano.id,
             preco.id,
             { nome, telefone, documento },
-            { telasAdicionais: telas, ...(visitante ? { email } : {}) },
+            { telasAdicionais: telas, ...(visitante ? { email, nascimento } : {}) },
           ),
         ),
       });
@@ -376,9 +384,15 @@ function CheckoutConteudo() {
                 >
                   Copiar PIX
                 </button>
+                <ol className="mt-5 list-decimal space-y-1 pl-5 text-sm text-zinc-300">
+                  <li>Abra o app do seu banco e escolha Pix.</li>
+                  <li>Leia o QR Code ou use o Pix Copia e Cola.</li>
+                  <li>Confira o valor e pague antes do prazo abaixo.</li>
+                </ol>
                 {visitante && (
                   <p className="mt-5 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-zinc-200">
                     Depois que o pagamento for confirmado, enviaremos o acesso ao Obaflix Cortes para <strong>{email.trim()}</strong>.
+                    {" "}Confira também a caixa de spam. Você não precisa ficar nesta página.
                   </p>
                 )}
               </div>
@@ -574,7 +588,23 @@ function CheckoutConteudo() {
                   </label>
                 )}
 
-                <label className="text-sm font-semibold text-zinc-300 sm:col-span-2">
+                {visitante && (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    Data de nascimento
+                    <input
+                      type="date"
+                      value={nascimento}
+                      onChange={(e) => setNascimento(e.target.value)}
+                      max={dataLimiteNascimento}
+                      min="1900-01-01"
+                      autoComplete="bday"
+                      required
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-white outline-none [color-scheme:dark] focus:border-white/30"
+                    />
+                  </label>
+                )}
+
+                <label className={`text-sm font-semibold text-zinc-300 ${visitante ? "" : "sm:col-span-2"}`}>
                   Telefone com DDD
                   <input
                     value={telefone}

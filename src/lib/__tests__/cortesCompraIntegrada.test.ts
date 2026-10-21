@@ -140,7 +140,7 @@ function criarMundo() {
   const comprar = async (email: string, userId: string | null = null) => {
     const r = await criarPedidoPix({
       userId, planoId: "cortes-start", planoPrecoId: "pp-cortes",
-      ...(userId ? {} : { comprador: { email: emailDoComprador(email)!, nome: "Comprador Teste" } }),
+      ...(userId ? {} : { comprador: { email: emailDoComprador(email)!, nome: "Comprador Teste", nascimento: new Date("1990-05-17T00:00:00Z") } }),
       pagador: { nome: "Comprador Teste", email: emailDoComprador(email)!, telefone: "11999999999", documento: { numero: "52998224725", tipo: "cpf" } },
     }, { repo, provedor: criarProvedorSimulado(redis), nomeDoProvedor: "simulado" });
     assert.equal(r.situacao, "criado");
@@ -173,6 +173,7 @@ test("visitante: pedido Cortes → PIX simulado pago → conta criada → Cortes
   assert.equal(m.users.length, 1);
   const [conta] = m.users;
   assert.deepEqual([conta.email, conta.senhaHash], ["visitante@teste.obaflix.invalid", null]);
+  assert.equal((conta as { dataNascimento?: Date }).dataNascimento?.toISOString(), "1990-05-17T00:00:00.000Z");
   assert.equal(pedido.userId, conta.id);
   assert.equal(pedido.status, "PAGO");
   assert.equal(m.assinaturas.length, 1);
@@ -221,6 +222,7 @@ test("quem já tem assinatura tradicional: Cortes (logado ou pelo e-mail) ativa 
   await m2.confirmar(visitante.id);
   assert.equal(m2.users.length, 1);
   assert.equal(m2.users[0].senhaHash, "hash-existente");
+  assert.equal("dataNascimento" in m2.users[0], false, "conta existente não muda");
   assert.equal(visitante.userId, "u-trad");
   assert.equal(JSON.stringify(trad2), fotografia);
   const ativas = m2.assinaturas.filter((a) => a.status === "ATIVA").map((a) => a.planoId).sort();

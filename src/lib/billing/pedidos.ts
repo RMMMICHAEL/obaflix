@@ -437,6 +437,8 @@ export interface NovoPedido extends SnapshotDeCompra {
   userId: string | null;
   emailComprador: string | null;
   nomeComprador: string | null;
+  /** Só em compra sem login; vira `User.dataNascimento` se a conta nascer. */
+  nascimentoComprador: Date | null;
   provedor: ProvedorPagamento;
   status: "CRIADO";
   refExterna: string;
@@ -558,7 +560,7 @@ export interface EntradaDoPedido {
   /** Nulo: compra sem login, aceita só para plano Cortes e com `comprador`. */
   userId: string | null;
   /** E-mail normalizado e nome de quem compra sem login. Nunca CPF. */
-  comprador?: { email: string; nome: string };
+  comprador?: { email: string; nome: string; nascimento?: Date | null };
   planoId: string;
   planoPrecoId: string;
   pagador: DadosDoPagador;
@@ -694,6 +696,7 @@ export async function criarPedidoPix(
     userId: entrada.userId,
     emailComprador: comprador?.email ?? null,
     nomeComprador: comprador?.nome ?? null,
+    nascimentoComprador: comprador?.nascimento ?? null,
     provedor: deps.nomeDoProvedor ?? "blackcat",
     status: "CRIADO",
     refExterna,

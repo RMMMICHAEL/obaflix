@@ -720,7 +720,7 @@ describe("NENHUM caminho ativa assinatura", () => {
 
 // ── Compra Cortes sem login ──────────────────────────────────────────────────
 
-import { emailDoComprador } from "../billing/pagador";
+import { emailDoComprador, nascimentoDoComprador } from "../billing/pagador";
 
 describe("compra Cortes sem login", () => {
   const PRECO_CORTES: PrecoDoBanco = { ...PRECO, id: "preco_cortes", planoId: "cortes-start", plano: { id: "cortes-start", nome: "Cortes Start", ativo: true, cortesNivel: "individual" } };
@@ -729,6 +729,23 @@ describe("compra Cortes sem login", () => {
   test("e-mail do comprador é normalizado e validado", () => {
     assert.equal(emailDoComprador("  Fulano@Example.TEST "), "fulano@example.test");
     for (const ruim of [undefined, 1, "", "sem-arroba", "a@b", `${"a".repeat(250)}@x.com`]) assert.equal(emailDoComprador(ruim), null);
+  });
+
+  test("data de nascimento: AAAA-MM-DD real, não futura, a partir de 18 anos", () => {
+    const hoje = new Date("2026-10-21T12:00:00Z");
+    assert.equal(nascimentoDoComprador("1990-05-17", hoje)?.toISOString(), "1990-05-17T00:00:00.000Z");
+    assert.ok(nascimentoDoComprador("2008-10-21", hoje), "faz 18 hoje");
+    for (const ruim of ["2008-10-22", "2030-01-01", "1990-02-31", "17/05/1990", "1890-01-01", "", 19900517, undefined]) {
+      assert.equal(nascimentoDoComprador(ruim, hoje), null, String(ruim));
+    }
+  });
+
+  test("Cortes sem conta: a data de nascimento vai para o pedido", async () => {
+    const { repo, gravacoes } = repositorioFalso(PRECO_CORTES);
+    const { provedor } = provedorFalso({ ok: true, venda: VENDA_OK });
+    const nascimento = new Date("1990-05-17T00:00:00Z");
+    await criarPedidoPix({ ...SEM_LOGIN, comprador: { ...SEM_LOGIN.comprador, nascimento } }, { repo, provedor });
+    assert.equal(gravacoes[0].dados!.nascimentoComprador, nascimento);
   });
 
   test("Cortes sem conta: pedido nova com e-mail, sem consultar a conta e sem CPF", async () => {

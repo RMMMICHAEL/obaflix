@@ -401,7 +401,7 @@ export async function executarAcaoDeRevisao(
         // Sem login: pagamento e ativação já validados acima; só agora a conta nasce
         // ou é vinculada. Conta existente não tem nada alterado (`update: {}`).
         if (emailSemConta) {
-          const conta = await tx.user.upsert({ where: { email: emailSemConta }, create: { email: emailSemConta, nome: pedido.nomeComprador }, update: {}, select: { id: true, senhaHash: true } });
+          const conta = await tx.user.upsert({ where: { email: emailSemConta }, create: { email: emailSemConta, nome: pedido.nomeComprador, dataNascimento: pedido.nascimentoComprador }, update: {}, select: { id: true, senhaHash: true } });
           if (alvo && conta.id !== alvo) throw new ConflitoDeEstado("conta");
           const v = await tx.pedidoPagamento.updateMany({ where: { id: pedido.id, userId: null }, data: { userId: conta.id } });
           if (v.count !== 1) throw new ConflitoDeEstado("vinculo");
