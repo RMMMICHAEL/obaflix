@@ -829,3 +829,11 @@
   font-size: 13px;
   font-weight: 400;
 }
+/* /planos?familia=cortes: o título da página é h1, com o mesmo estilo dos h2 de seção. */
+.sectionIntro h1 {
+  font-size: clamp(32px, 3.4vw, 49px);
+  line-height: 1.13;
+  letter-spacing: -0.045em;
+  font-weight: 700;
+  margin: 0;
+}

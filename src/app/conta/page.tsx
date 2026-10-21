@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import { PLANOS_CORTES_HREF } from "@/lib/billing/checkout";
 import { ExcluirConta } from "@/components/conta/ExcluirConta";
 import { ctaAssinaturaConta, ehClientePlayNoNavegador, MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY } from "@/config/play";
 
@@ -84,15 +85,11 @@ export default function ContaPage() {
         {cta === "cta" && (
           <div className="mt-4 flex flex-wrap gap-2">
             <LinkAssinatura href="/planos" className="inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</LinkAssinatura>
-            {comercial?.cortes ? (
-              <>
-                <LinkAssinatura href={`/checkout?planoId=${encodeURIComponent(comercial.cortes.plano.id)}`} className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Renovar Cortes</LinkAssinatura>
-                {comercial.cortes.plano.id === "cortes-start" && (
-                  <LinkAssinatura href="/checkout?planoId=cortes-pro" className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Upgrade para Cortes Pro</LinkAssinatura>
-                )}
-              </>
-            ) : comercial && (
-              <LinkAssinatura href="/cortes" className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Conhecer o Obaflix Cortes</LinkAssinatura>
+            {/* Cortes: página própria (abre no navegador externo no app), com renovar/upgrade sob login. */}
+            {comercial && (
+              <LinkAssinatura href={PLANOS_CORTES_HREF} className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">
+                {comercial.cortes ? "Renovar ou fazer upgrade do Cortes" : "Assinar o Obaflix Cortes"}
+              </LinkAssinatura>
             )}
           </div>
         )}

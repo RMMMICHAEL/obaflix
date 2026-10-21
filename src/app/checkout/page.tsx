@@ -8,6 +8,7 @@ import { useSession } from "next-auth/react";
 import QRCode from "qrcode";
 import {
   checkoutSemLoginPermitido,
+  PLANOS_CORTES_HREF,
   corpoCriarPedido,
   descricaoDaOperacao,
   deveFazerPolling,
@@ -155,13 +156,16 @@ function CheckoutConteudo() {
   const planoId = query.get("planoId");
   const precoDaUrl = query.get("planoPrecoId");
   // Visitante: compra Cortes sem login. Não chama nada que exija sessão.
-  const visitante = status === "unauthenticated" && checkoutSemLoginPermitido(planoId);
+  // `conta=1` (renovação/upgrade do Cortes) exige login: nunca vira compra anônima.
+  const semLogin = checkoutSemLoginPermitido(planoId) && query.get("conta") !== "1";
+  const visitante = status === "unauthenticated" && semLogin;
+  const planosHref = checkoutSemLoginPermitido(planoId) ? PLANOS_CORTES_HREF : "/planos";
 
   useEffect(() => {
-    if (status === "unauthenticated" && !checkoutSemLoginPermitido(planoId)) {
+    if (status === "unauthenticated" && !semLogin) {
       router.replace(destinoDoLoginDoCheckout(query.toString()));
     }
-  }, [status, planoId, query, router]);
+  }, [status, semLogin, query, router]);
 
   useEffect(() => {
     const nomeDaConta = sessao?.user?.name?.trim();
@@ -359,7 +363,7 @@ function CheckoutConteudo() {
               >
                 Ir para minha conta
               </Link>
-              <LinkAssinatura href="/planos" className="ml-4 text-sm underline">Ver planos</LinkAssinatura>
+              <LinkAssinatura href={planosHref} className="ml-4 text-sm underline">Ver planos</LinkAssinatura>
             </div>
           ) : temPix(pedido) ? (
             <div className="mt-7 grid gap-6 md:grid-cols-[240px_1fr]">
@@ -416,7 +420,7 @@ function CheckoutConteudo() {
         <div className="mx-auto max-w-3xl rounded-2xl border border-white/10 bg-white/5 p-8">
           <h1 className="text-2xl font-black">Plano indisponível</h1>
           <p className="mt-2 text-zinc-400">Volte à vitrine e escolha um plano disponível.</p>
-          <LinkAssinatura href="/planos" className="mt-5 inline-block underline">Voltar aos planos</LinkAssinatura>
+          <LinkAssinatura href={planosHref} className="mt-5 inline-block underline">Voltar aos planos</LinkAssinatura>
         </div>
       </main>
     );
@@ -425,7 +429,7 @@ function CheckoutConteudo() {
   return (
     <main className="min-h-screen bg-[#101014] px-5 pb-14 pt-20 text-white md:px-8" style={fundo}>
       <div className="mx-auto max-w-6xl">
-        <LinkAssinatura href="/planos" className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</LinkAssinatura>
+        <LinkAssinatura href={planosHref} className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</LinkAssinatura>
 
         <header className="mt-6">
           <div className="flex flex-wrap items-center gap-3">

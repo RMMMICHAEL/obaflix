@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as plansGet } from "../../app/api/billing/plans/route";
 import { GET as meGet } from "../../app/api/billing/me/route";
 import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
-import { acaoComercialDoPlano, checkoutSemLoginPermitido, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
+import { acaoComercialDoPlano, acaoNoPlanoCortes, checkoutSemLoginPermitido, corpoCriarPedido, PLANOS_CORTES_HREF, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
 const createPlansHandler = plansGet.createForTest;
@@ -80,4 +80,16 @@ test("vitrine comercial permite renovar e mudar plano com assinatura ativa", () 
   assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: true }), { disponivel: true, rotulo: "Alterar plano" });
   assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: false }), { disponivel: true, rotulo: "Assinar" });
   assert.deepEqual(acaoComercialDoPlano({ compravel: false, planoAtual: false, assinaturaAtiva: true }), { disponivel: false, rotulo: "Indisponível" });
+});
+
+test("planos Cortes: visitante assina; quem tem Cortes renova ou faz upgrade com login; o menor fica incluído", () => {
+  assert.equal(PLANOS_CORTES_HREF, "/planos?familia=cortes");
+  const visitante = { logado: false, atual: null };
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", visitante), { acao: "assinar", href: "/checkout?planoId=cortes-start" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: false, atual: "cortes-start" }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" }, "sem sessão não sabe do plano");
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: null }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-start" }), { acao: "renovar", href: "/checkout?planoId=cortes-start&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-start" }), { acao: "upgrade", href: "/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-pro" }), { acao: "renovar", href: "/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-pro" }), { acao: "incluido" });
 });

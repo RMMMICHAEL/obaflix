@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { Download, Scissors, Layers, Lock, X } from "lucide-react";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import { PLANOS_CORTES_HREF } from "@/lib/billing/checkout";
 
 /**
  * Escolha do tipo de download no player do Electron.
@@ -154,7 +155,7 @@ export function DownloadModal(p: Props) {
               ))}
             </div>
             <LinkAssinatura
-              href="/planos"
+              href={PLANOS_CORTES_HREF}
               className="mt-4 block w-full rounded-full bg-[#E50914] py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-[#f6121d]"
             >
               Conhecer planos

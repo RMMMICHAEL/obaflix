@@ -57,6 +57,31 @@ export function checkoutSemLoginPermitido(planoId: string | null) {
   return !!planoId && PLANOS_CORTES.some((plano) => plano.id === planoId);
 }
 
+/** Página de planos exclusiva do Cortes (abre no navegador externo pelo Electron, como /planos). */
+export const PLANOS_CORTES_HREF = "/planos?familia=cortes";
+
+const POSICAO_CORTES: Record<string, number> = { "cortes-start": 1, "cortes-pro": 2 };
+
+export type AcaoNoPlanoCortes =
+  | { acao: "assinar" | "renovar" | "upgrade"; href: string }
+  | { acao: "incluido" };
+
+/**
+ * O que oferecer num cartão Cortes, conforme quem está vendo. Sem sessão ou sem
+ * Cortes vigente: assinar (compra nova, sem cadastro antes). Com Cortes: renovar
+ * o mesmo plano ou fazer upgrade para um maior; o menor já está incluído.
+ * Renovação e upgrade levam `conta=1`: o checkout exige login e nunca os trata
+ * como compra anônima (o crédito proporcional do upgrade é calculado lá).
+ */
+export function acaoNoPlanoCortes(planoId: string, situacao: { logado: boolean; atual: string | null }): AcaoNoPlanoCortes {
+  const base = `/checkout?planoId=${encodeURIComponent(planoId)}`;
+  const atual = situacao.logado ? situacao.atual : null;
+  if (!atual || !(atual in POSICAO_CORTES)) return { acao: "assinar", href: base };
+  if (atual === planoId) return { acao: "renovar", href: `${base}&conta=1` };
+  if ((POSICAO_CORTES[planoId] ?? 0) > POSICAO_CORTES[atual]) return { acao: "upgrade", href: `${base}&conta=1` };
+  return { acao: "incluido" };
+}
+
 /** Texto da operação que o servidor decidiu. Informativo; o valor já veio calculado. */
 export function descricaoDaOperacao(pedido: { operacao?: string; creditoCentavos?: number; iniciaEm?: string; moeda?: string }): string | null {
   const data = pedido.iniciaEm ? new Date(pedido.iniciaEm).toLocaleDateString("pt-BR") : null;

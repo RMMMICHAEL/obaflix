@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { PaginaPlanosCortes } from "@/app/cortes/PaginaPlanosCortes";
 import { TONS_DOS_TEMAS, type TemaDoPlano } from "@/lib/billing/vitrine";
 import { PLANOS_CORTES } from "@/lib/planos";
 
@@ -55,7 +57,20 @@ function precoDeEntrada(plano: Plano) {
   return [...plano.precos].sort((a, b) => duracaoAproximada(a) - duracaoAproximada(b))[0] ?? null;
 }
 
+/** `/planos?familia=cortes` é a página exclusiva do Cortes; sem o parâmetro, nada muda. */
 export default function PlanosPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-[#101014]" />}>
+      <EscolhaDaFamilia />
+    </Suspense>
+  );
+}
+
+function EscolhaDaFamilia() {
+  return useSearchParams().get("familia") === "cortes" ? <PaginaPlanosCortes /> : <PlanosTradicionais />;
+}
+
+function PlanosTradicionais() {
   const [planos, setPlanos] = useState<Plano[]>([]);
   const [conta, setConta] = useState<Conta | null>(null);
   const [carregando, setCarregando] = useState(true);

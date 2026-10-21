@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import { acaoNoPlanoCortes } from "@/lib/billing/checkout";
 import styles from "./cortes.module.css";
 
 type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
@@ -22,7 +23,10 @@ const duracao = (p: Preco) => p.duracaoDias ?? (p.duracaoMeses ?? 0) * 30;
  * (`GET /api/billing/plans`). Sem preço ativo, nada é vendido: o cartão diz
  * "em breve". O AI não é vendido.
  */
-export function PlanosCortes() {
+const ROTULO = { assinar: "Assinar", renovar: "Renovar", upgrade: "Fazer upgrade para" } as const;
+
+/** Sem `situacao` (landing): todo cartão oferece compra nova. */
+export function PlanosCortes({ situacao = { logado: false, atual: null } }: { situacao?: { logado: boolean; atual: string | null } }) {
   // null = carregando; depois, os planos Cortes ativos devolvidos pela API.
   const [planos, setPlanos] = useState<Record<string, PlanoDaApi> | null>(null);
 
@@ -43,22 +47,26 @@ export function PlanosCortes() {
       {PLANOS.map(({ id, nome, texto }) => {
         const plano = planos?.[id];
         const preco = plano?.compravel ? [...plano.precos].sort((a, b) => duracao(a) - duracao(b))[0] : null;
+        const decisao = acaoNoPlanoCortes(id, situacao);
+        const atual = situacao.logado && situacao.atual === id;
         return (
-          <article key={id}>
-            <span>OBAFLIX CORTES</span>
+          <article key={id} aria-current={atual ? "true" : undefined}>
+            <span>{atual ? "SEU PLANO ATUAL" : "OBAFLIX CORTES"}</span>
             <h3>{nome}</h3>
             <p>{texto}</p>
-            {preco ? (
+            {decisao.acao === "incluido" ? (
+              <small>Incluído no seu plano atual</small>
+            ) : preco ? (
               <>
                 <p className={styles.planPrice}>
                   {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
                 </p>
                 <LinkAssinatura
-                  href={`/checkout?planoId=${encodeURIComponent(id)}&planoPrecoId=${encodeURIComponent(preco.id)}`}
+                  href={`${decisao.href}&planoPrecoId=${encodeURIComponent(preco.id)}`}
                   className={styles.primary}
-                  data-cortes-cta={`plano-${nome.toLowerCase()}`}
+                  data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
                 >
-                  Assinar {nome} <ArrowUpRight size={17} aria-hidden />
+                  {ROTULO[decisao.acao]} {nome} <ArrowUpRight size={17} aria-hidden />
                 </LinkAssinatura>
               </>
             ) : (
