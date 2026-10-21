@@ -12,7 +12,11 @@ export default function ContaPage() {
   const { data: session, status } = useSession();
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [historico, setHistorico] = useState<any[]>([]);
-  const [comercial, setComercial] = useState<{ plano: { id: string; nome: string }; assinatura: { terminaEm: string } | null } | null>(null);
+  const [comercial, setComercial] = useState<{
+    plano: { id: string; nome: string };
+    assinatura: { terminaEm: string } | null;
+    cortes?: { plano: { id: string; nome: string }; terminaEm: string } | null;
+  } | null>(null);
   // Google Play é consumo apenas: nada de assinar/renovar/upgrade. A leitura é
   // no cliente (shim nativo/UA) e só troca o CTA por uma mensagem neutra — o
   // plano atual (GET /api/billing/me) continua aparecendo. Começa `null`
@@ -68,11 +72,29 @@ export default function ContaPage() {
         <h2 className="text-lg font-semibold text-white">Meu plano</h2>
         <p className="mt-1 text-sm text-zinc-400">Plano atual: {comercial?.plano.nome ?? "Carregando…"}</p>
         {comercial?.assinatura && <p className="mt-1 text-sm text-zinc-400">Válido até {new Date(comercial.assinatura.terminaEm).toLocaleDateString("pt-BR")}</p>}
+        {/* Cortes é assinatura à parte: aparece mesmo quando o plano base é o tradicional. */}
+        {comercial?.cortes && comercial.cortes.plano.id !== comercial.plano.id && (
+          <p className="mt-3 text-sm text-zinc-400">
+            Obaflix Cortes: {comercial.cortes.plano.nome} · válido até {new Date(comercial.cortes.terminaEm).toLocaleDateString("pt-BR")}
+          </p>
+        )}
         {cta === "neutro" && (
           <p className="mt-4 text-sm text-zinc-500">{MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY}</p>
         )}
         {cta === "cta" && (
-          <LinkAssinatura href="/planos" className="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</LinkAssinatura>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <LinkAssinatura href="/planos" className="inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white">Ver planos</LinkAssinatura>
+            {comercial?.cortes ? (
+              <>
+                <LinkAssinatura href={`/checkout?planoId=${encodeURIComponent(comercial.cortes.plano.id)}`} className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Renovar Cortes</LinkAssinatura>
+                {comercial.cortes.plano.id === "cortes-start" && (
+                  <LinkAssinatura href="/checkout?planoId=cortes-pro" className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Upgrade para Cortes Pro</LinkAssinatura>
+                )}
+              </>
+            ) : comercial && (
+              <LinkAssinatura href="/cortes" className="inline-block rounded-lg border border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-100 hover:border-zinc-500">Conhecer o Obaflix Cortes</LinkAssinatura>
+            )}
+          </div>
         )}
         {/* cta === "indefinido": detecção ainda não rodou — nenhum CTA comercial
             (fail-closed). Espaço discreto para não pular o layout. */}

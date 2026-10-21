@@ -31,16 +31,24 @@ test("catálogo comercial só expõe planos ativos, preços ativos e nenhum cana
 test("estado comercial exige sessão e devolve nome comercial sem campos administrativos", async () => {
   const semSessao = createBillingMeHandler({ getUserFromRequest: async () => null });
   assert.equal((await semSessao(req)).status, 401);
-  const handler = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa: true, planoId: "basic" } }), agora: () => new Date("2026-01-01"), prisma: { assinatura: { findFirst: async () => ({ terminaEm: new Date("2026-02-01") }) }, plano: { findUnique: async () => ({ id: "basic", nome: "Basic" }) } } });
+  const handler = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa: true, planoId: "basic" } }), agora: () => new Date("2026-01-01"), prisma: { assinatura: { findMany: async () => [
+    { planoId: "cortes-start", terminaEm: new Date("2026-01-20"), plano: { nome: "Obaflix Cortes Start", cortesNivel: "individual" } },
+    { planoId: "basic", terminaEm: new Date("2026-02-01"), plano: { nome: "Basic", cortesNivel: "nenhum" } },
+  ] }, plano: { findUnique: async () => ({ id: "basic", nome: "Basic" }) } } });
   const body = await (await handler(req)).json();
   assert.deepEqual(body.plano, { id: "basic", nome: "Básico" }); assert.equal(body.assinatura.status, "ATIVA");
+  // Vencimento do tradicional, não do Cortes; e o Cortes aparece à parte.
+  assert.equal(body.assinatura.terminaEm, "2026-02-01T00:00:00.000Z");
+  assert.deepEqual(body.cortes, { plano: { id: "cortes-start", nome: "Obaflix Cortes Start" }, terminaEm: "2026-01-20T00:00:00.000Z" });
   assert.equal(JSON.stringify(body).match(/transaction|pedidoId|planoPreco|origem/i), null);
 });
 
 test("estado comercial gratuito, cancelado e vencido nunca se apresenta como assinatura ativa", async () => {
   for (const ativa of [false, false, false]) {
-    const h = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa, planoId: "gratuito" } }), prisma: { assinatura: { findFirst: async () => assert.fail("não consulta assinatura inativa") }, plano: { findUnique: async () => ({ id: "gratuito", nome: "Gratuito" }) } } });
-    assert.equal((await (await h(req)).json()).assinatura, null);
+    const h = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa, planoId: "gratuito" } }), prisma: { assinatura: { findMany: async () => assert.fail("não consulta assinatura inativa") }, plano: { findUnique: async () => ({ id: "gratuito", nome: "Gratuito" }) } } });
+    const corpo = await (await h(req)).json();
+    assert.equal(corpo.assinatura, null);
+    assert.equal(corpo.cortes, null);
   }
 });
 

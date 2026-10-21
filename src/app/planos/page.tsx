@@ -35,6 +35,8 @@ type Plano = {
 type Conta = {
   plano?: { id?: string | null } | null;
   assinatura?: unknown;
+  /** Assinatura Cortes vigente, também quando o plano base é o tradicional. */
+  cortes?: { plano?: { id?: string | null } | null } | null;
 };
 
 const TOM = TONS_DOS_TEMAS;
@@ -100,9 +102,10 @@ export default function PlanosPage() {
     .filter((plano) => ehCortes(plano.id))
     .sort((a, b) => ORDEM_CORTES.indexOf(a.id) - ORDEM_CORTES.indexOf(b.id));
   const contaCortes = ehCortes(conta?.plano?.id);
+  const idCortesAtual = conta?.cortes?.plano?.id ?? (contaCortes ? conta?.plano?.id : null) ?? null;
 
-  function secao(lista: Plano[], assinaturaAtiva: boolean) {
-    const indiceAtual = lista.findIndex((plano) => plano.id === conta?.plano?.id);
+  function secao(lista: Plano[], idAtual: string | null | undefined, assinaturaAtiva: boolean) {
+    const indiceAtual = lista.findIndex((plano) => plano.id === idAtual);
     return (
       <section className="grid items-stretch gap-5 lg:grid-cols-3">
         {lista.map((plano, indice) => {
@@ -250,7 +253,7 @@ export default function PlanosPage() {
 
         {!carregando && !erro && vitrine.length > 0 && (
           <>
-            {tradicionais.length > 0 && secao(tradicionais, Boolean(conta?.assinatura) && !contaCortes)}
+            {tradicionais.length > 0 && secao(tradicionais, contaCortes ? null : conta?.plano?.id, Boolean(conta?.assinatura) && !contaCortes)}
             {cortes.length > 0 && (
               <div className={tradicionais.length > 0 ? "mt-14" : undefined}>
                 <header className="mb-6">
@@ -259,7 +262,7 @@ export default function PlanosPage() {
                     Assinatura à parte para criar cortes. Pode ser contratada junto com o Básico, Plus ou Premium.
                   </p>
                 </header>
-                {secao(cortes, Boolean(conta?.assinatura) && contaCortes)}
+                {secao(cortes, idCortesAtual, Boolean(idCortesAtual))}
               </div>
             )}
           </>
