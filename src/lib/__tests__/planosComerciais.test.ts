@@ -37,18 +37,19 @@ describe("matriz final na vitrine", () => {
     }
   });
 
-  test("gratuito: 1 tela, com anúncios, sem downloads, sem canais, SD", () => {
+  test("gratuito: 1 tela, com anúncios, downloads com anúncios, sem canais, SD", () => {
     assert.deepEqual(textos(PLANO_GRATUITO), [
-      "1 tela", "Filmes e séries", "Qualidade SD", "Com anúncios na reprodução", "Sem downloads", "Sem canais de TV",
+      "1 tela", "Filmes e séries", "Qualidade SD", "Com anúncios na reprodução", "Downloads com anúncios", "Sem canais de TV",
     ]);
   });
 
-  test("Básico: 2 telas, HD, sem anúncios, sem downloads, sem canais", () => {
+  test("Básico: 2 telas, HD, sem anúncios, downloads com anúncios, sem canais", () => {
     assert.deepEqual(textos(PLANO_BASIC), [
-      "2 telas simultâneas", "Filmes e séries", "Suporte a HD", "Sem anúncios", "Sem downloads", "Sem canais de TV", "Suporte padrão",
+      "2 telas simultâneas", "Filmes e séries", "Suporte a HD", "Sem anúncios", "Downloads com anúncios", "Sem canais de TV", "Suporte padrão",
     ]);
-    assert.equal(incluido(PLANO_BASIC, "Sem downloads"), false);
-    assert.equal(textos(PLANO_BASIC).some((t) => /download/i.test(t) && /anúncio/i.test(t)), false);
+    // Download completo é de todo plano: nunca anunciado como bloqueado.
+    assert.equal(incluido(PLANO_BASIC, "Downloads com anúncios"), true);
+    assert.equal(textos(PLANO_BASIC).includes("Sem downloads"), false);
   });
 
   test("Plus: Full HD, downloads sem anúncios, canais até o nível Plus", () => {
@@ -297,7 +298,7 @@ describe("vitrine Cortes", () => {
   test("download de filmes nunca aparece bloqueado nos Cortes", () => {
     for (const v of [start, pro, ai]) {
       assert.equal(v.beneficios.some((b) => /download/i.test(b.texto) && !b.incluido), false, v.nome);
-      assert.ok(v.beneficios.some((b) => b.texto === "Download de filmes e séries com anúncios" && b.incluido), v.nome);
+      assert.ok(v.beneficios.some((b) => b.texto === "Downloads com anúncios" && b.incluido), v.nome);
     }
   });
 });

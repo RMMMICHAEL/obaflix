@@ -171,13 +171,11 @@ export function vitrineDoPlano(linha: LinhaDaVitrine): PlanoDaVitrine {
       : { texto: "Com anúncios na reprodução", incluido: false },
   );
 
-  // Cortes: download completo vale para todo plano, com anúncio quando o plano não isenta.
+  // Download completo vale para todo plano; `downloads` é a isenção do anúncio nele.
   beneficios.push(
     linha.downloads === true
       ? { texto: "Downloads sem anúncios", incluido: true }
-      : cortes
-        ? { texto: "Download de filmes e séries com anúncios", incluido: true }
-        : { texto: "Sem downloads", incluido: false },
+      : { texto: "Downloads com anúncios", incluido: true },
   );
 
   const canais = CANAIS[linha.canaisNivel];
