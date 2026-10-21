@@ -11,8 +11,8 @@ import { caminhoInternoSeguro, destinoDoLoginDoCheckout, planoEscolhidoDaUrl } f
  * navegador comum; o streaming web continua fechado.
  */
 
-test("navegador comum: planos, checkout e conta abertos", () => {
-  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro"]) {
+test("navegador comum: planos, checkout, conta, página de vendas Cortes e ativação abertos", () => {
+  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro", "/cortes", "/ativar"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "segue" }, rota);
   }
 });
@@ -21,7 +21,7 @@ test("navegador comum: streaming continua fechado", () => {
   // /filmes e /series passaram a ser páginas agregadoras públicas (Fase 2 do
   // SEO); o streaming em si (player, canais, busca, entradas dos apps) segue
   // fechado para o navegador comum.
-  for (const rota of ["/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil"]) {
+  for (const rota of ["/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil", "/cortes-falso", "/ativar-x"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "landing" }, rota);
   }
 });

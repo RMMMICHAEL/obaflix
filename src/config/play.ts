@@ -49,13 +49,13 @@ export function ehClientePlayNoNavegador(): boolean {
 }
 
 /**
- * Rotas comerciais que o cliente Play não pode abrir: catálogo de planos e o
- * checkout. Limite de prefixo, como o `dentroDe` do `site-mode.ts`: bloqueia
- * `/planos`, `/planos/x`, `/planos?x`, `/checkout` e `/checkout?x`, mas nunca
- * `/planos-falso` nem `/conta`.
+ * Rotas comerciais que o cliente Play não pode abrir: catálogo de planos, página
+ * de vendas do Cortes e checkout. Limite de prefixo, como o `dentroDe` do
+ * `site-mode.ts`: bloqueia `/planos`, `/planos/x`, `/planos?x`, `/cortes`,
+ * `/checkout` e `/checkout?x`, mas nunca `/planos-falso` nem `/conta`.
  */
 export function rotaComercialBloqueadaNoPlay(pathname: string): boolean {
-  return /^\/(?:planos|checkout)(?:[/?#]|$)/.test(pathname);
+  return /^\/(?:planos|checkout|cortes)(?:[/?#]|$)/.test(pathname);
 }
 
 /**
