@@ -16,9 +16,11 @@ export default function AtivarPage() {
 
   // O token vem no fragmento (#t=...): não vai ao servidor nem ao Referer. Sai da barra de endereço logo.
   useEffect(() => {
+    // Só grava quando há token: uma segunda execução (efeito repetido) já lê o fragmento limpo.
     const t = new URLSearchParams(window.location.hash.slice(1)).get("t") ?? "";
+    if (!t) return;
     setToken(t);
-    if (t) window.history.replaceState(null, "", window.location.pathname);
+    window.history.replaceState(null, "", window.location.pathname);
   }, []);
 
   const ativar = async (e: React.FormEvent) => {

@@ -75,7 +75,7 @@ export default function ContaPage() {
         {/* Cortes é assinatura à parte: aparece mesmo quando o plano base é o tradicional. */}
         {comercial?.cortes && comercial.cortes.plano.id !== comercial.plano.id && (
           <p className="mt-3 text-sm text-zinc-400">
-            Obaflix Cortes: {comercial.cortes.plano.nome} · válido até {new Date(comercial.cortes.terminaEm).toLocaleDateString("pt-BR")}
+            Também ativo: {comercial.cortes.plano.nome} · válido até {new Date(comercial.cortes.terminaEm).toLocaleDateString("pt-BR")}
           </p>
         )}
         {cta === "neutro" && (
