@@ -4,6 +4,8 @@ import { audit } from "@/lib/auditLog";
 import type { ConfirmacaoBlackcat, FalhaConfirmacaoBlackcat, ResultadoConfirmacaoBlackcat } from "./blackcat";
 import { confirmadorDeCobranca } from "./simulado";
 import { duracaoDoPedido, planejarAtivacao } from "./confirmacao";
+import { ehPlanoCortes } from "../planos";
+import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
 import {
   RESOLUCOES_DE_REVISAO,
   travarContaParaCobranca,
@@ -60,7 +62,8 @@ export type RecusaDeAcao =
 
 export interface PedidoEmRevisao {
   id: string;
-  userId: string;
+  /** Nulo em compra Cortes sem login: a conta só nasce se a ativação for executada. */
+  userId: string | null;
   planoId: string;
   planoPrecoId: string;
   status: string;
@@ -215,6 +218,7 @@ export interface DependenciasDaAcao {
   consultar: ((transacaoId: string) => Promise<ResultadoConfirmacaoBlackcat>) | null;
   invalidar: (userId: string) => Promise<unknown>;
   agora: () => Date;
+  notificarPrimeiroAcesso: (c: ContaDoComprador) => Promise<unknown>;
 }
 
 const CHAVE_VALIDA = /^[A-Za-z0-9_-]{16,100}$/;
@@ -292,14 +296,17 @@ export async function executarAcaoDeRevisao(
 
   const caso = await banco.revisaoPagamento.findUnique({
     where: { id: entrada.revisaoId },
-    select: { id: true, status: true, pedidoId: true, pedido: { select: { userId: true, transacaoId: true } } },
+    select: { id: true, status: true, pedidoId: true, pedido: { select: { userId: true, transacaoId: true, emailComprador: true } } },
   });
   if (!caso) return { ok: false, status: 404, codigo: "revisao_nao_encontrada" };
   if (caso.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" };
-  // Compra sem login ainda sem conta: não há a quem conceder nem de quem
-  // retirar. A conta nasce quando o provedor confirma o pagamento.
-  const userId = caso.pedido.userId;
-  if (!userId) return { ok: false, status: 409, codigo: "pedido_sem_conta" };
+  // Compra sem login ainda sem conta: só a aprovação procede. A conta nasce (ou é
+  // vinculada pelo e-mail) dentro da transação, e só se a ativação for executada.
+  const emailSemConta = caso.pedido.userId ? null : caso.pedido.emailComprador;
+  if (!caso.pedido.userId && (acao !== "ativar" || !emailSemConta)) return { ok: false, status: 409, codigo: "pedido_sem_conta" };
+  // Conta dona do direito ao fim da transação; nula se nada foi concedido a ninguém.
+  let userId: string | null = caso.pedido.userId;
+  let comprador: ContaDoComprador | null = null;
 
   // A consulta ao provedor fica fora da transação: rede não segura trava.
   //
@@ -328,18 +335,29 @@ export async function executarAcaoDeRevisao(
   try {
     resposta = await transacaoComRetry(banco, async (tx) => {
       mudouDireito = false;
-      await travarContaParaCobranca(tx, userId);
+      comprador = null;
+      userId = caso.pedido.userId;
+      if (!userId) await travarContaParaCobranca(tx, `pedido:${caso.pedidoId}`);
+      // Sem login: a conta do e-mail, se existir, só é consultada (e travada) aqui.
+      const existente = emailSemConta ? await tx.user.findUnique({ where: { email: emailSemConta }, select: { id: true } }) : null;
+      const alvo = userId ?? existente?.id ?? null;
+      if (alvo) await travarContaParaCobranca(tx, alvo);
 
       const atual = await tx.revisaoPagamento.findUnique({ where: { id: caso.id }, select: { status: true, pedidoId: true } });
       if (!atual || atual.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" } as const;
 
-      const pedido = await tx.pedidoPagamento.findUnique({ where: { id: atual.pedidoId }, include: { assinatura: true } });
+      const pedido = await tx.pedidoPagamento.findUnique({ where: { id: atual.pedidoId }, include: { assinatura: true, plano: { select: { cortesNivel: true } } } });
       if (!pedido) throw new ConflitoDeEstado("pedido_ausente");
+      if (pedido.userId !== caso.pedido.userId) throw new ConflitoDeEstado("pedido");
 
-      const abertos = await tx.assinatura.findMany({
-        where: { userId, status: "ATIVA", terminaEm: { gt: agora } },
-        select: { id: true, terminaEm: true },
-      });
+      // Só períodos da mesma família: Cortes nunca esbarra no tradicional, e vice-versa.
+      const familia = ehPlanoCortes(pedido.plano?.cortesNivel) ? { not: "nenhum" } : "nenhum";
+      const abertos = alvo
+        ? await tx.assinatura.findMany({
+            where: { userId: alvo, status: "ATIVA", terminaEm: { gt: agora }, plano: { cortesNivel: familia } },
+            select: { id: true, terminaEm: true },
+          })
+        : [];
       const substituidas = pedido.assinaturasSubstituidas.length
         ? await tx.assinatura.findMany({
             where: { id: { in: pedido.assinaturasSubstituidas } },
@@ -348,7 +366,7 @@ export async function executarAcaoDeRevisao(
         : [];
 
       const plano = planejarResolucao({
-        acao, pedido: { ...pedido, userId }, confirmacao, abertos, substituidas, observacao, agora,
+        acao, pedido, confirmacao, abertos, substituidas, observacao, agora,
         assinaturaDoPedido: pedido.assinatura ? { id: pedido.assinatura.id, status: pedido.assinatura.status } : null,
       });
 
@@ -375,6 +393,18 @@ export async function executarAcaoDeRevisao(
           });
           if (r.count !== 1) throw new ConflitoDeEstado("substituicao");
         }
+        // Sem login: pagamento e ativação já validados acima; só agora a conta nasce
+        // ou é vinculada. Conta existente não tem nada alterado (`update: {}`).
+        if (emailSemConta) {
+          const conta = await tx.user.upsert({ where: { email: emailSemConta }, create: { email: emailSemConta, nome: pedido.nomeComprador }, update: {}, select: { id: true, senhaHash: true } });
+          if (alvo && conta.id !== alvo) throw new ConflitoDeEstado("conta");
+          const v = await tx.pedidoPagamento.updateMany({ where: { id: pedido.id, userId: null }, data: { userId: conta.id } });
+          if (v.count !== 1) throw new ConflitoDeEstado("vinculo");
+          await tx.revisaoPagamento.updateMany({ where: { pedidoId: pedido.id, userId: null }, data: { userId: conta.id } });
+          comprador = { userId: conta.id, email: emailSemConta, semSenha: !conta.senhaHash };
+          userId = conta.id;
+        }
+        if (!userId) throw new ConflitoDeEstado("conta");
         // `Assinatura.pedidoId` é único: uma segunda ativação do mesmo pedido falha no banco.
         await tx.assinatura.create({
           data: {
@@ -451,8 +481,13 @@ export async function executarAcaoDeRevisao(
 
   if (resposta.ok) {
     audit("billing_review_action", { userId: userId, detail: `revisao ${caso.id} ${acao} -> ${resposta.resultado}` });
-    if (mudouDireito) {
+    if (mudouDireito && userId) {
       try { await invalidar(userId); } catch { audit("billing_entitlements_invalidation_failed", { userId: userId, detail: "apos_revisao" }); }
+    }
+    // Só após o commit, e uma vez: a conta é vinculada uma única vez. E-mail que falha não desfaz nada.
+    const avisar = comprador as ContaDoComprador | null;
+    if (avisar) {
+      try { await (injetadas.notificarPrimeiroAcesso ?? notificarPrimeiroAcesso)(avisar); } catch { audit("email_failed", { userId: avisar.userId, detail: "primeiro_acesso apos_revisao" }); }
     }
   } else {
     // Diagnóstico autoritativo, só com ids permitidos e a classificação —

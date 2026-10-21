@@ -231,9 +231,10 @@ test("quem já tem assinatura tradicional: Cortes (logado ou pelo e-mail) ativa 
   assert.deepEqual([...m.naRede, ...m2.naRede], []);
 }));
 
-// Impedimento conhecido, documentado aqui e ainda sem solução: a aprovação manual
-// de um pedido sem conta é recusada antes de consultar o provedor ou escrever.
-test("impedimento: aprovação manual de pedido sem conta é recusada (409 pedido_sem_conta)", async () => {
+// A aprovação manual de compra sem login está coberta em billingRevisao.test.ts.
+// Pedido sem conta e sem e-mail de comprador não tem dono possível: recusado antes
+// de consultar o provedor ou escrever.
+test("aprovação manual de pedido sem conta e sem e-mail é recusada (409 pedido_sem_conta)", async () => {
   let consultou = false;
   const r = await executarAcaoDeRevisao(
     { revisaoId: "rev-1", acao: "ativar", chaveIdempotencia: "chave-operador-a-01", ator: "admin-1" },
