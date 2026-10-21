@@ -222,6 +222,8 @@ export interface DependenciasDaAcao {
 }
 
 const CHAVE_VALIDA = /^[A-Za-z0-9_-]{16,100}$/;
+/** Ações possíveis em pedido sem conta. Recompor upgrade não existe sem conta; encerrar exige pedido já fora da revisão. */
+const ACOES_SEM_CONTA: readonly AcaoDeRevisao[] = ["ativar", "reconsultar", "confirmar_nao_pago", "confirmar_estorno"];
 
 /**
  * Por que a consulta autoritativa não trouxe um status, do ponto de vista da
@@ -300,10 +302,13 @@ export async function executarAcaoDeRevisao(
   });
   if (!caso) return { ok: false, status: 404, codigo: "revisao_nao_encontrada" };
   if (caso.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" };
-  // Compra sem login ainda sem conta: só a aprovação procede. A conta nasce (ou é
-  // vinculada pelo e-mail) dentro da transação, e só se a ativação for executada.
+  // Compra sem login ainda sem conta. Aprovar cria (ou vincula pelo e-mail) a conta
+  // dentro da transação, só se a ativação for executada. Reconsultar, encerrar
+  // como não pago e registrar estorno só mexem no pedido e no caso: nenhuma conta.
   const emailSemConta = caso.pedido.userId ? null : caso.pedido.emailComprador;
-  if (!caso.pedido.userId && (acao !== "ativar" || !emailSemConta)) return { ok: false, status: 409, codigo: "pedido_sem_conta" };
+  if (!caso.pedido.userId && (!ACOES_SEM_CONTA.includes(acao) || (acao === "ativar" && !emailSemConta))) {
+    return { ok: false, status: 409, codigo: "pedido_sem_conta" };
+  }
   // Conta dona do direito ao fim da transação; nula se nada foi concedido a ninguém.
   let userId: string | null = caso.pedido.userId;
   let comprador: ContaDoComprador | null = null;
