@@ -59,7 +59,7 @@ const faqs = [
   ],
   [
     "Posso preparar vários cortes?",
-    "No Start, você prepara um trecho de cada vez e repete o processo para os próximos. No Pro, também pode montar uma lista de cenas e baixar todas de uma vez (lote).",
+    "No Start, você prepara um trecho de cada vez e repete o processo para os próximos. No Pro, também pode montar uma lista de cenas e baixar todas de uma vez (lote), na versão Windows com Cortes.",
   ],
   [
     "Ele substitui meu editor de vídeo?",
@@ -249,7 +249,7 @@ export default function CortesPage() {
         </div>
         <p className={styles.note}>
           No Cortes Pro, também é possível montar uma lista de cenas e baixar
-          todas de uma vez (lote). Sugestão de cenas por IA ainda não existe. A
+          todas de uma vez (lote), na versão Windows com Cortes. Sugestão de cenas por IA ainda não existe. A
           exportação depende da fonte e dos componentes disponíveis no
           aplicativo.
         </p>

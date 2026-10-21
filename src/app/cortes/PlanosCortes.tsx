@@ -10,7 +10,7 @@ type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
 
 const PLANOS = [
   { id: "cortes-start", nome: "Start", texto: "Trecho individual: marque início e fim no player e baixe só a cena." },
-  { id: "cortes-pro", nome: "Pro", texto: "Trecho individual e lote: monte uma lista de cenas e baixe todas de uma vez." },
+  { id: "cortes-pro", nome: "Pro", texto: "Trecho individual e lote: monte uma lista de cenas e baixe todas de uma vez. Requer a versão Windows com Cortes." },
 ] as const;
 
 const dinheiro = (centavos: number, moeda: string) =>
