@@ -740,6 +740,23 @@ describe("compra Cortes sem login", () => {
     }
   });
 
+  test("Cortes: Start -> Pro é upgrade, Pro -> Start é downgrade, mesmo com a ordem do Básico herdada", async () => {
+    const { ordemNaFamilia } = await import("../planos");
+    assert.deepEqual(["individual", "lote", "ia"].map((n) => ordemNaFamilia(1, n)), [1, 2, 3]);
+    assert.equal(ordemNaFamilia(3, "nenhum"), 3, "tradicional segue a ordem do banco");
+    const agora = new Date();
+    const periodo = (planoId: string, nivel: string) => ({ id: `a-${planoId}`, planoId, ordemDoPlano: ordemNaFamilia(1, nivel), cortes: true,
+      iniciaEm: new Date(agora.getTime() - 86_400_000), terminaEm: new Date(agora.getTime() + 20 * 86_400_000), valorPagoCentavos: 100 });
+    const precoDo = (id: string, nivel: string): PrecoDoBanco => ({ ...PRECO, id: `preco_${id}`, planoId: id, precoCentavos: 5000, plano: { id, nome: id, ativo: true, ordem: 1, cortesNivel: nivel } });
+    for (const [de, deNivel, para, paraNivel, esperado] of [["cortes-start", "individual", "cortes-pro", "lote", "upgrade"], ["cortes-pro", "lote", "cortes-start", "individual", "downgrade"]]) {
+      const { repo, gravacoes } = repositorioFalso(precoDo(para, paraNivel));
+      repo.periodosEmAberto = async () => [periodo(de, deNivel)];
+      const { provedor } = provedorFalso({ ok: true, venda: { ...VENDA_OK, valorCentavos: undefined as never } });
+      await criarPedidoPix({ ...ENTRADA, planoId: para, planoPrecoId: `preco_${para}` }, { repo, provedor });
+      assert.equal(gravacoes[0]?.dados?.operacao, esperado, `${de} -> ${para}`);
+    }
+  });
+
   test("Cortes sem conta: a data de nascimento vai para o pedido", async () => {
     const { repo, gravacoes } = repositorioFalso(PRECO_CORTES);
     const { provedor } = provedorFalso({ ok: true, venda: VENDA_OK });

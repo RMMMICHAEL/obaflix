@@ -41,6 +41,14 @@ export type CortesNivel = (typeof CORTES_NIVEIS)[number];
 /// conta tem no máximo uma ativa por família, e uma família nunca encerra a outra.
 export const ehPlanoCortes = (nivel: string | null | undefined): boolean => !!nivel && nivel !== "nenhum";
 
+const POSICAO_CORTES: Record<string, number> = { individual: 1, lote: 2, ia: 3 };
+/**
+ * Posição do plano dentro da família, para upgrade/renovação/downgrade. Os Cortes
+ * herdam a `ordem` do Básico (todos iguais), então seguem o nível: Start < Pro < AI.
+ */
+export const ordemNaFamilia = (ordem: number, nivel: string | null | undefined): number =>
+  ehPlanoCortes(nivel) ? POSICAO_CORTES[nivel as string] ?? 0 : ordem;
+
 /// O que o cliente pede: corte único ou lote. "completo" (download inteiro) NÃO é
 /// corte — continua governado por `downloads`, não por `cortesNivel`.
 export type ModoCorte = "individual" | "lote";

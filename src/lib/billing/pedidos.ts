@@ -36,7 +36,7 @@ import { randomBytes } from "node:crypto";
 
 import { calcularTotal, type PrecosDosAdicionais } from "./precificacao";
 import { classificarOperacao, valorNaoUtilizado, type Duracao, type PeriodoPago } from "./vigencia";
-import { ehPlanoCortes } from "../planos";
+import { ehPlanoCortes, ordemNaFamilia } from "../planos";
 import { SERVIDOR_VIP_AVULSO_OFERTADO, nomePublicoDoPlano } from "./vitrine";
 import type { MotivoDeRevisao as CodigoDeRevisao } from "./revisao";
 
@@ -676,7 +676,7 @@ export async function criarPedidoPix(
   ]);
   const montagem = montarCompra({
     snapshot: resolucao.snapshot,
-    plano: { ordem: preco?.plano?.ordem ?? 0, servidorVip: preco?.plano?.servidorVip === true, cortes: ehPlanoCortes(preco?.plano?.cortesNivel) },
+    plano: { ordem: ordemNaFamilia(preco?.plano?.ordem ?? 0, preco?.plano?.cortesNivel), servidorVip: preco?.plano?.servidorVip === true, cortes: ehPlanoCortes(preco?.plano?.cortesNivel) },
     adicionais,
     telasAdicionais: entrada.telasAdicionais ?? 0,
     servidorVip: entrada.servidorVip === true,

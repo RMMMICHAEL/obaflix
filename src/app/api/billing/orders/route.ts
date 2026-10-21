@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/authSession";
 import { ehClientePlay, CODIGO_COMPRAS_INDISPONIVEIS_PLAY } from "@/config/play";
 import { prisma } from "@/lib/prisma";
-import { ehPlanoCortes } from "@/lib/planos";
+import { ehPlanoCortes, ordemNaFamilia } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
@@ -163,7 +163,7 @@ const repositorio: RepositorioDePedidos = {
     return linhas.map((l) => ({
       id: l.id,
       planoId: l.planoId,
-      ordemDoPlano: l.plano.ordem,
+      ordemDoPlano: ordemNaFamilia(l.plano.ordem, l.plano.cortesNivel),
       cortes: ehPlanoCortes(l.plano.cortesNivel),
       iniciaEm: l.iniciaEm,
       terminaEm: l.terminaEm,
