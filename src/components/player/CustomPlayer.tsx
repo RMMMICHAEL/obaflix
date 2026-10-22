@@ -31,7 +31,7 @@ import { classificarEtapa, logEtapa } from "@/lib/playerDiag";
 import { AnuncioIndisponivel, AnuncioRecusado, ModalDeAnuncio, useAnuncio } from "./useAnuncio";
 import { executarFluxoDeAnuncio } from "@/lib/ads/fluxoDoCliente";
 import { AcaoInterrompida, liberarAcao, ehAcaoCancelada, ehAcaoInterrompida } from "@/lib/ads/acaoPatrocinada";
-import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara, parsearCenas } from "@/lib/recorte";
+import { ajustarIntervalo, mascararTempo, segundosDoTexto, textoDoTempo, cursorDaMascara, parsearCenas, parsearSugestoesIA, tituloDeCena } from "@/lib/recorte";
 import { executarTentativaDownload, executarLoteDownload, type OperacaoDownload, type RetryDownload } from "@/lib/downloadElectron";
 import { verificarDownloadAtual, controlarMidia } from "@/lib/prepararDownload";
 import { instalarDiagnosticoNavegacao, observarFaseNavegacao, registrarFaseNavegacao } from "@/lib/playerNavegacaoDiag";
@@ -607,7 +607,7 @@ export function CustomPlayer({
   // ── Múltiplas cenas ───────────────────────────────────────────────────────────
   // Cada cena reaproveita o mesmo recorte/download de uma cena única; o lote só
   // as baixa em sequência, cada uma com a sua própria autorização.
-  type CenaEditor = { id: number; inicio: number; fim: number; tInicio: string; tFim: string };
+  type CenaEditor = { id: number; inicio: number; fim: number; tInicio: string; tFim: string; titulo?: string };
   const [multiCenasAtivo, setMultiCenasAtivo] = useState(false);
   const [cenas, setCenas] = useState<CenaEditor[]>([]);
   const [textoCenas, setTextoCenas] = useState("");
@@ -618,8 +618,8 @@ export function CustomPlayer({
   const [mostrarTutorialCenas, setMostrarTutorialCenas] = useState(false);
   const loteCanceladoRef = useRef(false);
   const cenaIdRef = useRef(0);
-  const novaCena = useCallback((inicio: number, fim: number): CenaEditor => ({
-    id: ++cenaIdRef.current, inicio, fim, tInicio: textoDoTempo(inicio), tFim: textoDoTempo(fim),
+  const novaCena = useCallback((inicio: number, fim: number, titulo?: string): CenaEditor => ({
+    id: ++cenaIdRef.current, inicio, fim, tInicio: textoDoTempo(inicio), tFim: textoDoTempo(fim), titulo,
   }), []);
 
   // A montagem da lista saiu daqui. Ela vivia neste arquivo, e por isso cada
@@ -2004,8 +2004,10 @@ export function CustomPlayer({
   }, [recorteInicio, recorteFim, novaCena]);
 
   const importarTextoCenas = useCallback(() => {
-    const { cenas: novas, ignoradas } = parsearCenas(textoCenas, duration);
-    if (novas.length) setCenas((atual) => [...atual, ...novas.map((c) => novaCena(c.inicio, c.fim))]);
+    // Sugestões da IA (JSON) entram com título; texto mm:ss-mm:ss segue como antes.
+    // Só preenche a lista: revisar, editar, remover e baixar continuam com o usuário.
+    const { cenas: novas, ignoradas } = parsearSugestoesIA(textoCenas, duration) ?? parsearCenas(textoCenas, duration);
+    if (novas.length) setCenas((atual) => [...atual, ...novas.map((c) => novaCena(c.inicio, c.fim, c.titulo))]);
     setTextoCenas("");
     setLoteResultado(null);
     setCenasAviso(
@@ -2034,6 +2036,11 @@ export function CustomPlayer({
       return { ...c, inicio: intervalo.inicio, fim: intervalo.fim, tInicio: textoDoTempo(intervalo.inicio), tFim: textoDoTempo(intervalo.fim) };
     }));
   }, [duration]);
+
+  const editarTituloCena = useCallback((id: number, titulo: string) => {
+    setCenas((atual) => atual.map((c) => (c.id === id ? { ...c, titulo } : c)));
+    setLoteResultado(null);
+  }, []);
 
   const removerCena = useCallback((id: number) => {
     setCenas((atual) => atual.filter((c) => c.id !== id));
@@ -2086,7 +2093,7 @@ export function CustomPlayer({
     const largura = String(cenas.length).length;
     const operacoes: OperacaoDownload[] = cenas.map((c, i) => ({
       ...base, modo: "trecho", inicioSeg: c.inicio, fimSeg: c.fim,
-      titulo: `${String(i + 1).padStart(largura, "0")} - ${base.titulo}`,
+      titulo: [String(i + 1).padStart(largura, "0"), tituloDeCena(c.titulo), base.titulo].filter(Boolean).join(" - "),
     }));
     // A fonte validada pela autorização única só vale enquanto nada disto muda.
     const contextoValido = () =>
@@ -4395,7 +4402,8 @@ export function CustomPlayer({
                         {cenas.length > 0 && (
                           <div className="mt-2 max-h-36 overflow-y-auto flex flex-col divide-y divide-white/5">
                             {cenas.map((cena, i) => (
-                              <div key={cena.id} className="flex items-center gap-1.5 text-[11px] py-1">
+                              <div key={cena.id} className="py-1">
+                              <div className="flex items-center gap-1.5 text-[11px]">
                                 <div className="flex flex-col leading-none">
                                   <button onClick={() => moverCena(cena.id, -1)} disabled={i === 0} title="Subir" className="text-white/40 hover:text-white disabled:opacity-20 text-[9px] leading-none">▲</button>
                                   <button onClick={() => moverCena(cena.id, 1)} disabled={i === cenas.length - 1} title="Descer" className="text-white/40 hover:text-white disabled:opacity-20 text-[9px] leading-none">▼</button>
@@ -4436,6 +4444,18 @@ export function CustomPlayer({
                                 >
                                   ✕
                                 </button>
+                              </div>
+                              {cena.titulo !== undefined && (
+                                <input
+                                  type="text"
+                                  value={cena.titulo}
+                                  maxLength={60}
+                                  onChange={(e) => editarTituloCena(cena.id, e.currentTarget.value)}
+                                  aria-label={`Título do trecho ${i + 1}`}
+                                  placeholder="Título do trecho"
+                                  className="mt-1 ml-[46px] w-[calc(100%-46px)] bg-transparent border border-white/10 rounded px-1.5 py-0.5 text-[11px] text-white/80 placeholder:text-white/30 focus:outline-none focus:border-white/40"
+                                />
+                              )}
                               </div>
                             ))}
                           </div>
