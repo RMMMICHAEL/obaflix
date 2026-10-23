@@ -18,6 +18,7 @@ import {
   promocaoCumprida,
   type NivelDeVerificacao,
 } from "@/lib/ads/concessoes";
+import { limparRecompensa, modoDoDesafio, reciboDoDesafio, recompensaPlayerAtiva } from "@/lib/ads/recompensaLevelPlay";
 
 /**
  * `POST /api/ads/complete` — "o anúncio acabou, libere a reprodução".
@@ -103,6 +104,11 @@ export interface DependenciasDeConclusao {
   isIpBlocked?: typeof isIpBlocked;
   recordAbuseAttempt?: typeof recordAbuseAttempt;
   agora?: () => number;
+  /** Rewarded do player (S2S). Desligado por padrão: com ele off, esta rota se comporta como sempre. */
+  recompensaPlayerAtiva?: () => boolean;
+  modoDoDesafio?: typeof modoDoDesafio;
+  reciboDoDesafio?: typeof reciboDoDesafio;
+  limparRecompensa?: typeof limparRecompensa;
 }
 
 function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
@@ -120,6 +126,10 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const ipBloqueado = deps.isIpBlocked ?? isIpBlocked;
   const registrarAbuso = deps.recordAbuseAttempt ?? recordAbuseAttempt;
   const agora = deps.agora ?? Date.now;
+  const recompensaAtiva = deps.recompensaPlayerAtiva ?? (() => recompensaPlayerAtiva());
+  const modoDe = deps.modoDoDesafio ?? modoDoDesafio;
+  const reciboDe = deps.reciboDoDesafio ?? reciboDoDesafio;
+  const limparDesafio = deps.limparRecompensa ?? limparRecompensa;
 
   return async function POST(req: NextRequest) {
   const ip =
@@ -195,6 +205,26 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     return NextResponse.json({ error: "Parâmetros inválidos" }, { status: 400, headers: NO_STORE });
   }
 
+  // ── Rewarded do player ────────────────────────────────────────────────────
+  //
+  // Um desafio travado no modo Rewarded só vira concessão com o recibo do callback S2S do LevelPlay. Sem o
+  // recibo a resposta é 409 e o desafio **não** é consumido (o cliente consulta `/levelplay/estado` e volta),
+  // e o Interstitial também não consegue usar este desafio: uma ação, um anúncio. O `concluido` do cliente e o
+  // `onAdRewarded` local nunca entram aqui.
+  let porRecompensa = false;
+  if (recompensaAtiva()) {
+    try {
+      if ((await modoDe(desafioId)) === "rewarded") {
+        if (!(await reciboDe(desafioId))) {
+          return NextResponse.json({ error: "Aguardando confirmação", codigo: "recompensa_pendente" }, { status: 409, headers: NO_STORE });
+        }
+        porRecompensa = true;
+      }
+    } catch {
+      return NextResponse.json({ error: "Serviço temporariamente indisponível" }, { status: 503, headers: NO_STORE });
+    }
+  }
+
   const desafio = await consumir(desafioId, userId);
   if (!desafio) {
     // Inexistente, expirado, já usado, ou de outra conta. Uma resposta só para
@@ -230,7 +260,8 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // tentativa custa: quem tentar de novo precisa de um desafio novo.
   const instante = agora();
   const decorrido = instante - desafio.criadoEm;
-  if (decorrido < TEMPO_MINIMO_DE_ANUNCIO_MS) {
+  // O recibo S2S substitui o tempo mínimo: quem confirma que o anúncio terminou é o LevelPlay, não o relógio.
+  if (!porRecompensa && decorrido < TEMPO_MINIMO_DE_ANUNCIO_MS) {
     audit("playback_negado", {
       userId, ip, ua,
       detail: `/ads/complete cedo demais (${decorrido}ms) plataforma:${desafio.plataforma}`,
@@ -291,6 +322,9 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   // servidor→servidor, e a constante não é parametrizável pelo cliente de
   // propósito — um campo no corpo que elevasse o nível seria o próprio buraco.
   const verificacao: NivelDeVerificacao = "soft";
+  // Único caso de "hard": o recibo do callback S2S, em que o provedor confirmou fora de banda. Decidido só
+  // por `porRecompensa`, que vem do armazém do servidor, nunca do corpo.
+  const nivel: NivelDeVerificacao = porRecompensa ? "hard" : verificacao;
 
   // Finalidade e alvo vêm do DESAFIO, gravado pelo servidor quando decidiu cobrar
   // o anúncio — nunca do corpo desta requisição. Um anúncio visto para baixar não
@@ -301,7 +335,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const concessao = await emitir({
     userId,
     finalidade: desafio.finalidade,
-    verificacao,
+    verificacao: nivel,
     alvo: desafio.alvo,
     ttlS: ehPromocaoTv ? TTL_CONCESSAO_PROMOCAO_TV_S : undefined,
   });
@@ -338,9 +372,17 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     }
   }
 
+  if (porRecompensa) {
+    try {
+      await limparDesafio(desafioId, userId);
+    } catch {
+      /* os TTLs apagam; o desafio já foi consumido */
+    }
+  }
+
   audit("play_token_issued", {
     userId, ip, ua,
-    detail: `concessao de anuncio (${verificacao}) finalidade:${desafio.finalidade} plataforma:${desafio.plataforma} tipo:${desafio.tipo}`,
+    detail: `concessao de anuncio (${nivel}) finalidade:${desafio.finalidade} plataforma:${desafio.plataforma} tipo:${desafio.tipo}`,
   });
 
   return NextResponse.json({ concessao }, { headers: NO_STORE });

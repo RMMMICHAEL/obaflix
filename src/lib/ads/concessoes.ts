@@ -346,6 +346,15 @@ export async function consumirDesafio(id: string, userId: string): Promise<Desaf
   return interpretarDesafio(bruto, userId);
 }
 
+/**
+ * Lê o desafio **sem consumir**. Só para quem precisa conferir dono, finalidade e plataforma antes de
+ * decidir (ex.: preparar o Rewarded). Quem libera conteúdo continua sendo `consumirDesafio`.
+ */
+export async function espiarDesafio(id: string, userId: string): Promise<Desafio | null> {
+  const bruto = await getRedis().get(chaveDesafio(id));
+  return bruto ? interpretarDesafio(bruto, userId) : null;
+}
+
 // ── Sessão promocional da TV ─────────────────────────────────────────────────
 //
 // A promoção tem dois momentos que o servidor observa — início e conclusão — e
