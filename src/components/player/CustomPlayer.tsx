@@ -2017,6 +2017,37 @@ export function CustomPlayer({
     );
   }, [textoCenas, duration, novaCena]);
 
+  // Cortes AI: o texto da legenda que o player já carregou vai ao servidor com o
+  // pedido; a resposta entra pelo mesmo importador do JSON. Nada é baixado.
+  const [pedidoIA, setPedidoIA] = useState("");
+  const [pedindoIA, setPedindoIA] = useState(false);
+  const legendaIA = subtitleTracks.find((t) => t.default) ?? subtitleTracks[0];
+  const pedirCortesIA = useCallback(async () => {
+    if (!legendaIA || pedindoIA || pedidoIA.trim().length < 3) return;
+    setPedindoIA(true);
+    setCenasAviso("Cortes AI analisando a legenda…");
+    try {
+      const legenda = await fetch(legendaIA.file).then((r) => (r.ok ? r.text() : Promise.reject(new Error())));
+      const r = await fetch("/api/cortes/ia", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ conteudoId, tema: pedidoIA.trim(), legenda }),
+      });
+      const dados = await r.json().catch(() => null);
+      if (!r.ok) { setCenasAviso(dados?.error ?? "O Cortes AI não respondeu."); return; }
+      const { cenas: novas, ignoradas } = parsearSugestoesIA(JSON.stringify(dados), duration) ?? { cenas: [], ignoradas: 0 };
+      if (novas.length) setCenas((atual) => [...atual, ...novas.map((c) => novaCena(c.inicio, c.fim, c.titulo))]);
+      setLoteResultado(null);
+      setCenasAviso(novas.length
+        ? `Cortes AI: ${novas.length} sugestão(ões) na lista${ignoradas ? `; ${ignoradas} ignorada(s)` : ""}. Revise antes de baixar.`
+        : "Cortes AI não encontrou trechos para esse pedido.");
+    } catch {
+      setCenasAviso("Não foi possível ler a legenda deste título.");
+    } finally {
+      setPedindoIA(false);
+    }
+  }, [legendaIA, pedindoIA, pedidoIA, conteudoId, duration, novaCena]);
+
   const editarCenaTexto = useCallback((id: number, campo: "inicio" | "fim", texto: string) => {
     const mascara = mascararTempo(texto);
     const chave = campo === "inicio" ? "tInicio" : "tFim";
@@ -4355,6 +4386,26 @@ export function CustomPlayer({
                       </div>
                     ) : (
                       <>
+                        {nivelCortes === "ia" && legendaIA && (
+                          <div className="mb-2">
+                            <textarea
+                              value={pedidoIA}
+                              onChange={(e) => setPedidoIA(e.target.value)}
+                              maxLength={1000}
+                              rows={2}
+                              aria-label="Pedido ao Cortes AI"
+                              placeholder="Cortes AI: descreva o roteiro ou os momentos que procura"
+                              className="w-full bg-white/10 border border-white/15 rounded-md px-2.5 py-2 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:border-white/40 resize-y leading-relaxed"
+                            />
+                            <button
+                              onClick={pedirCortesIA}
+                              disabled={pedindoIA || pedidoIA.trim().length < 3}
+                              className="mt-1.5 px-2.5 py-1 rounded bg-[#E50914] text-white text-[11px] hover:bg-[#f6121d] disabled:opacity-40 transition-colors"
+                            >
+                              {pedindoIA ? "Analisando…" : "Sugerir cortes"}
+                            </button>
+                          </div>
+                        )}
                         <textarea
                           value={textoCenas}
                           onChange={(e) => setTextoCenas(e.target.value)}

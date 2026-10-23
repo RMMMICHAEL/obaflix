@@ -28,7 +28,7 @@
     "sync:local:check": "tsx scripts/run-local-syncs.ts --check",
     "episodios:dedupe": "tsx scripts/dedupe-episodios.ts",
     "test:cinevs": "tsx scripts/test-cinevs.ts",
-    "test:web": "node --test --import tsx \"src/lib/__tests__/*.test.ts\" && node --test scripts/player-progress.test.cjs",
+    "test:web": "node --test --experimental-test-module-mocks --import tsx \"src/lib/__tests__/*.test.ts\" && node --test scripts/player-progress.test.cjs",
     "test": "npm run test:extractors && npm run test:web",
     "test:webcine": "tsx scripts/testar-webcine-sessoes.ts"
   },
