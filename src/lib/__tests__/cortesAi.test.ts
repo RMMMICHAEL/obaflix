@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { configCortesAi, cortesAceitos, FalhaCortesAi, comContexto, impressaoDaLegenda, lerLegenda, pedirCortes, validarCorte } from "../cortesAi";
+import type { RedisClient } from "../redis";
+import { comContexto, configCortesAi, cortesAceitos, custoMicroUsd, FalhaCortesAi, gastoDoMes, impressaoDaLegenda, lerLegenda, pedirCortes, registrarGasto, validarCorte } from "../cortesAi";
 import { parsearSugestoesIA } from "../recorte";
 
 /**
@@ -42,6 +43,22 @@ test("corte final ganha contexto, fica entre 20 e 90 s e dentro do vídeo", () =
   assert.deepEqual(comContexto(100, 189, longa, 600), { inicio: 99.5, fim: 189.5 }, "não passa de 90 s");
   const meio = comContexto(12, 40, longa, 600);
   assert.ok(meio.inicio === 9 && meio.fim === 43, JSON.stringify(meio));
+});
+
+test("custo em micro-US$ pela tabela do Gemini e gasto somado por usuário e por mês", async () => {
+  assert.equal(custoMicroUsd({ entrada: 14_809, saida: 704 }), 6203, "a análise real: ~US$ 0,006");
+  assert.equal(configCortesAi({}).tetoMicroUsdMes, 1_000_000);
+  assert.equal(configCortesAi({ CORTES_AI_TETO_USD_MES: "2.5" }).tetoMicroUsdMes, 2_500_000);
+  assert.equal(configCortesAi({ CORTES_AI_TETO_USD_MES: "-1" }).tetoMicroUsdMes, 1_000_000);
+  const kv = new Map<string, string>();
+  const redis = { get: async (k: string) => kv.get(k) ?? null, set: async (k: string, v: string) => (kv.set(k, v), "OK") } as unknown as RedisClient;
+  const out = new Date("2026-10-31T23:00:00Z"), nov = new Date("2026-11-01T00:00:00Z");
+  await registrarGasto(redis, "u1", 6203, out);
+  await registrarGasto(redis, "u1", 100, out);
+  await registrarGasto(redis, "u2", 5, out);
+  assert.equal(await gastoDoMes(redis, "u1", out), 6303);
+  assert.equal(await gastoDoMes(redis, "u2", out), 5);
+  assert.equal(await gastoDoMes(redis, "u1", nov), 0, "mês novo começa do zero");
 });
 
 test("impressão da legenda ignora BOM e CRLF, mas muda com qualquer texto", () => {

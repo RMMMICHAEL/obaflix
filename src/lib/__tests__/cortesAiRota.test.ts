@@ -108,3 +108,21 @@ test("automáticas ligadas não afrouxam o modo com legenda no corpo: texto sem 
   assert.equal(r.status, 403);
   assert.equal(chamadasGemini, g);
 }));
+
+test("teto mensal de gasto atingido → 429 sem chamar o Gemini; o gasto de cada análise é somado", async () => {
+  const { getRedis } = await import("../redis");
+  const { gastoDoMes } = await import("../cortesAi");
+  const antes = await gastoDoMes(getRedis(), "u1");
+  process.env.CORTES_AI_TETO_USD_MES = "0.000001";
+  try {
+    const g = chamadasGemini;
+    await getRedis().set(`cortesai:gasto:u1:${new Date().toISOString().slice(0, 7)}`, "1");
+    const r = await pedir({ conteudoId: "titulo-autorizado", tema: "tensão", legenda: SRT });
+    assert.equal(r.status, 429);
+    assert.equal((await r.json()).codigo, "teto_mensal");
+    assert.equal(chamadasGemini, g);
+  } finally {
+    delete process.env.CORTES_AI_TETO_USD_MES;
+    await getRedis().set(`cortesai:gasto:u1:${new Date().toISOString().slice(0, 7)}`, String(antes));
+  }
+});

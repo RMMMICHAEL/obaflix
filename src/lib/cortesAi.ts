@@ -6,11 +6,12 @@
  * Tudo atrás de configuração do servidor, desligado por padrão:
  *   CORTES_AI_ATIVO=1, GEMINI_API_KEY, CORTES_AI_LEGENDAS_AUTORIZADAS
  *   ("conteudoId:sha256" separados por vírgula — a impressão de cada legenda
- *   própria ou licenciada) e CORTES_AI_LIMITE_DIA.
+ *   própria ou licenciada), CORTES_AI_LIMITE_DIA e CORTES_AI_TETO_USD_MES.
  * A chave só existe no servidor; nunca vai ao cliente nem a log.
  */
 
 import { createHash } from "node:crypto";
+import type { RedisClient } from "./redis";
 
 export const MODELO_CORTES_AI = "gemini-3.5-flash-lite";
 export const MAX_CORTES = 5;
@@ -47,7 +48,33 @@ export function configCortesAi(env: Record<string, string | undefined> = process
       .filter(([id, hash]) => id && /^[0-9a-f]{64}$/.test(hash ?? ""))
       .map(([id, hash]) => [id, hash] as const)),
     limiteDia: Number.isInteger(limite) && limite > 0 ? limite : 5,
+    tetoMicroUsdMes: Math.round((Number(env.CORTES_AI_TETO_USD_MES) > 0 ? Number(env.CORTES_AI_TETO_USD_MES) : 1) * 1_000_000),
   };
+}
+
+// ── Custo ────────────────────────────────────────────────────────────────────
+
+/**
+ * Preço do gemini-3.5-flash-lite na camada paga padrão (ai.google.dev/gemini-api/docs/pricing,
+ * 2026-10): US$ por 1M tokens, que é o mesmo que micro-US$ por token. Mudou o
+ * modelo ou a tabela do Google, mude aqui.
+ */
+const PRECO_MICRO_USD = { entrada: 0.3, saida: 2.5 };
+export const custoMicroUsd = (t: { entrada: number; saida: number }) =>
+  Math.ceil(t.entrada * PRECO_MICRO_USD.entrada + t.saida * PRECO_MICRO_USD.saida);
+
+/** Gasto de cada usuário por mês (UTC), em micro-US$; a chave expira sozinha depois do mês. */
+const chaveGasto = (userId: string, agora: Date) => `cortesai:gasto:${userId}:${agora.toISOString().slice(0, 7)}`;
+
+export async function gastoDoMes(redis: RedisClient, userId: string, agora = new Date()): Promise<number> {
+  return Number(await redis.get(chaveGasto(userId, agora))) || 0;
+}
+
+// shortcut: get+set não é atômico; duas análises simultâneas do mesmo usuário podem
+// contar uma só (o limite diário segura o estrago). Trocar por INCRBY se virar problema.
+export async function registrarGasto(redis: RedisClient, userId: string, microUsd: number, agora = new Date()): Promise<void> {
+  const chave = chaveGasto(userId, agora);
+  await redis.set(chave, String((Number(await redis.get(chave)) || 0) + microUsd), { ex: 35 * 24 * 3600 });
 }
 
 // ── Legenda ──────────────────────────────────────────────────────────────────

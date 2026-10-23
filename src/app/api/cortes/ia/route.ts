@@ -5,7 +5,8 @@ import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
-import { configCortesAi, cortesAceitos, FalhaCortesAi, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes, type Fala } from "@/lib/cortesAi";
+import { configCortesAi, cortesAceitos, custoMicroUsd, FalhaCortesAi, gastoDoMes, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes, registrarGasto, type Fala } from "@/lib/cortesAi";
+import { getRedis } from "@/lib/redis";
 import { buscarLegenda, configLegendasAutomaticas, identificarConteudo, type Alvo, type LegendaEncontrada } from "@/lib/legendasAutomaticas";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
@@ -17,7 +18,7 @@ interface Corpo { conteudoId?: unknown; temporada?: unknown; episodio?: unknown;
 /**
  * POST /api/cortes/ia — sugere cortes a partir do texto de uma legenda. Ordem:
  * configuração → origem → sessão → direito `ia` → pedido → legenda autorizada
- * (SHA-256) ou conteúdo identificado no catálogo → limite diário → busca da
+ * (SHA-256) ou conteúdo identificado no catálogo → teto mensal de gasto → limite diário → busca da
  * legenda no provedor (modo automático) → uma chamada ao Gemini → validação.
  * Nenhuma recusa consome o limite; nenhuma resposta leva a chave ou o corpo do provedor.
  */
@@ -97,6 +98,18 @@ export async function POST(req: NextRequest) {
     if (!alvo) return negar(404, "conteudo_nao_identificado", "Não encontramos este título para buscar a legenda");
   }
 
+  // Teto de gasto do mês, por usuário (CORTES_AI_TETO_USD_MES). Sem leitura, não analisa.
+  let gasto: number;
+  try {
+    gasto = await gastoDoMes(getRedis(), userId);
+  } catch {
+    return negar(503, "limite_indisponivel", "Serviço temporariamente indisponível");
+  }
+  if (gasto >= config.tetoMicroUsdMes) {
+    audit("cortes_ai_negado", { userId, ip, ua, detail: "teto_mensal" });
+    return negar(429, "teto_mensal", "Você atingiu o limite mensal do Cortes AI. Ele volta no próximo mês.");
+  }
+
   let limite: { allowed: boolean };
   try {
     limite = await checkRateLimit(`cortesai:dia:${userId}`, config.limiteDia, 24 * 3600);
@@ -134,9 +147,12 @@ export async function POST(req: NextRequest) {
   try {
     const { cortes, tokens } = await pedirCortes(falas, tema, config.chave);
     const { aceitos, rejeitados } = cortesAceitos(cortes, falas, duracaoVideo);
+    const custo = custoMicroUsd(tokens);
+    // A análise já foi paga: falha ao registrar não tira o resultado do usuário.
+    await registrarGasto(getRedis(), userId, custo).catch(() => audit("cortes_ai_falhou", { userId, ip, ua, detail: "registro_de_gasto" }));
     audit("cortes_ai_analise", {
       userId, ip, ua,
-      detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} ms:${Date.now() - t0}`,
+      detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} usd:${(custo / 1e6).toFixed(4)} ms:${Date.now() - t0}`,
     });
     return NextResponse.json({ cortes: aceitos, rejeitados }, { headers: NO_STORE });
   } catch (e) {
