@@ -5,18 +5,20 @@ import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
-import { configCortesAi, cortesAceitos, FalhaCortesAi, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes } from "@/lib/cortesAi";
+import { configCortesAi, cortesAceitos, FalhaCortesAi, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes, type Fala } from "@/lib/cortesAi";
+import { buscarLegenda, configLegendasAutomaticas, identificarConteudo, type Alvo, type LegendaEncontrada } from "@/lib/legendasAutomaticas";
 
 const NO_STORE = { "Cache-Control": "no-store, no-cache, must-revalidate, private" };
 const negar = (status: number, codigo: string, error: string) =>
   NextResponse.json({ error, codigo }, { status, headers: NO_STORE });
 
-interface Corpo { conteudoId?: unknown; tema?: unknown; legenda?: unknown }
+interface Corpo { conteudoId?: unknown; temporada?: unknown; episodio?: unknown; duracaoVideo?: unknown; tema?: unknown; legenda?: unknown }
 
 /**
- * POST /api/cortes/ia — sugere cortes a partir do texto da legenda que o player
- * já carregou. Ordem: configuração → origem → sessão → direito `ia` → legenda
- * autorizada → corpo válido → limite diário → uma chamada ao Gemini → validação.
+ * POST /api/cortes/ia — sugere cortes a partir do texto de uma legenda. Ordem:
+ * configuração → origem → sessão → direito `ia` → pedido → legenda autorizada
+ * (SHA-256) ou conteúdo identificado no catálogo → limite diário → busca da
+ * legenda no provedor (modo automático) → uma chamada ao Gemini → validação.
  * Nenhuma recusa consome o limite; nenhuma resposta leva a chave ou o corpo do provedor.
  */
 export async function POST(req: NextRequest) {
@@ -59,21 +61,40 @@ export async function POST(req: NextRequest) {
     return negar(400, "corpo_invalido", "Parâmetros inválidos");
   }
   const conteudoId = typeof corpo.conteudoId === "string" ? corpo.conteudoId : "";
-  const legenda = typeof corpo.legenda === "string" ? corpo.legenda : "";
-  // Só legenda própria ou licenciada vai ao Gemini: o texto recebido precisa ser
-  // exatamente a legenda autorizada daquele conteúdo (impressão registrada no servidor).
-  const autorizada = config.legendas.get(conteudoId);
-  if (!autorizada || impressaoDaLegenda(legenda) !== autorizada) {
-    audit("cortes_ai_negado", { userId, ip, ua, detail: "legenda_nao_autorizada" });
-    return negar(403, "legenda_nao_autorizada", "A legenda deste título não está liberada para o Cortes AI");
-  }
   const tema = typeof corpo.tema === "string" ? corpo.tema.trim() : "";
   if (tema.length < LIMITES_CORTES_AI.temaMin || tema.length > LIMITES_CORTES_AI.temaMax) {
     return negar(400, "tema_invalido", `Escreva o pedido com ${LIMITES_CORTES_AI.temaMin} a ${LIMITES_CORTES_AI.temaMax} caracteres`);
   }
-  const falas = lerLegenda(legenda);
-  if (falas.length < LIMITES_CORTES_AI.falasMin || falas.length > LIMITES_CORTES_AI.falasMax) {
-    return negar(422, "legenda_invalida", "A legenda deste título não pôde ser lida");
+
+  // Dois modos. Com `legenda` no corpo: só a legenda própria/licenciada cuja
+  // impressão SHA-256 está registrada no servidor. Sem `legenda`: o servidor
+  // identifica o conteúdo no catálogo e busca a legenda ele mesmo (desligado por
+  // padrão) — o texto nunca vem do cliente.
+  let falas: Fala[] | null = null;
+  let alvo: Alvo | null = null;
+  const automaticas = configLegendasAutomaticas();
+  if (typeof corpo.legenda === "string") {
+    const legenda = corpo.legenda;
+    const autorizada = config.legendas.get(conteudoId);
+    if (!autorizada || impressaoDaLegenda(legenda) !== autorizada) {
+      audit("cortes_ai_negado", { userId, ip, ua, detail: "legenda_nao_autorizada" });
+      return negar(403, "legenda_nao_autorizada", "A legenda deste título não está liberada para o Cortes AI");
+    }
+    falas = lerLegenda(legenda);
+    if (falas.length < LIMITES_CORTES_AI.falasMin || falas.length > LIMITES_CORTES_AI.falasMax) {
+      return negar(422, "legenda_invalida", "A legenda deste título não pôde ser lida");
+    }
+  } else {
+    if (!automaticas.ativo) {
+      audit("cortes_ai_negado", { userId, ip, ua, detail: "legenda_automatica_desligada" });
+      return negar(403, "legenda_nao_autorizada", "A legenda deste título não está liberada para o Cortes AI");
+    }
+    try {
+      alvo = await identificarConteudo(conteudoId, corpo.temporada, corpo.episodio);
+    } catch {
+      return negar(503, "catalogo_indisponivel", "Serviço temporariamente indisponível");
+    }
+    if (!alvo) return negar(404, "conteudo_nao_identificado", "Não encontramos este título para buscar a legenda");
   }
 
   let limite: { allowed: boolean };
@@ -87,13 +108,32 @@ export async function POST(req: NextRequest) {
     return negar(429, "limite_diario", "Você atingiu o limite diário do Cortes AI");
   }
 
+  // Legenda automática: depois do limite, porque cada busca gasta downloads no provedor.
+  let origemLegenda = "enviada";
+  if (alvo && automaticas.base) {
+    const duracaoCliente = Number(corpo.duracaoVideo);
+    // Só para escolher a legenda (filtro de duração), nunca para autorizar.
+    const duracao = alvo.duracaoSeg ?? (duracaoCliente >= 60 && duracaoCliente <= 6 * 3600 ? duracaoCliente : undefined);
+    let encontrada: LegendaEncontrada | null;
+    try {
+      encontrada = await buscarLegenda(alvo, automaticas.base, duracao);
+    } catch {
+      audit("cortes_ai_falhou", { userId, ip, ua, detail: "legenda_provedor" });
+      return negar(502, "legenda_indisponivel", "Não foi possível buscar a legenda agora. Tente de novo mais tarde.");
+    }
+    if (!encontrada) return negar(404, "legenda_nao_encontrada", "Não encontramos uma legenda compatível para este título");
+    falas = encontrada.falas;
+    origemLegenda = `auto sub:${encontrada.subId} idioma:${encontrada.idioma} confiavel:${encontrada.confiavel} sha:${encontrada.impressao.slice(0, 16)} downloads:${encontrada.downloads}`;
+  }
+  if (!falas) return negar(422, "legenda_invalida", "A legenda deste título não pôde ser lida");
+
   const t0 = Date.now();
   try {
     const { cortes, tokens } = await pedirCortes(falas, tema, config.chave);
     const { aceitos, rejeitados } = cortesAceitos(cortes, falas);
     audit("cortes_ai_analise", {
       userId, ip, ua,
-      detail: `conteudo:${conteudoId} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} ms:${Date.now() - t0}`,
+      detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} ms:${Date.now() - t0}`,
     });
     return NextResponse.json({ cortes: aceitos, rejeitados }, { headers: NO_STORE });
   } catch (e) {

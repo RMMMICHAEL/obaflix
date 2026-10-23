@@ -2017,21 +2017,19 @@ export function CustomPlayer({
     );
   }, [textoCenas, duration, novaCena]);
 
-  // Cortes AI: o texto da legenda que o player já carregou vai ao servidor com o
-  // pedido; a resposta entra pelo mesmo importador do JSON. Nada é baixado.
+  // Cortes AI: o player envia só o título, o episódio e o pedido; o servidor
+  // localiza a legenda. A resposta entra pelo mesmo importador do JSON. Nada é baixado.
   const [pedidoIA, setPedidoIA] = useState("");
   const [pedindoIA, setPedindoIA] = useState(false);
-  const legendaIA = subtitleTracks.find((t) => t.default) ?? subtitleTracks[0];
   const pedirCortesIA = useCallback(async () => {
-    if (!legendaIA || pedindoIA || pedidoIA.trim().length < 3) return;
+    if (pedindoIA || pedidoIA.trim().length < 3) return;
     setPedindoIA(true);
     setCenasAviso("Cortes AI analisando a legenda…");
     try {
-      const legenda = await fetch(legendaIA.file).then((r) => (r.ok ? r.text() : Promise.reject(new Error())));
       const r = await fetch("/api/cortes/ia", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ conteudoId, tema: pedidoIA.trim(), legenda }),
+        body: JSON.stringify({ conteudoId, temporada, episodio: numeroEp, duracaoVideo: duration || undefined, tema: pedidoIA.trim() }),
       });
       const dados = await r.json().catch(() => null);
       if (!r.ok) { setCenasAviso(dados?.error ?? "O Cortes AI não respondeu."); return; }
@@ -2042,11 +2040,11 @@ export function CustomPlayer({
         ? `Cortes AI: ${novas.length} sugestão(ões) na lista${ignoradas ? `; ${ignoradas} ignorada(s)` : ""}. Revise antes de baixar.`
         : "Cortes AI não encontrou trechos para esse pedido.");
     } catch {
-      setCenasAviso("Não foi possível ler a legenda deste título.");
+      setCenasAviso("O Cortes AI não respondeu.");
     } finally {
       setPedindoIA(false);
     }
-  }, [legendaIA, pedindoIA, pedidoIA, conteudoId, duration, novaCena]);
+  }, [pedindoIA, pedidoIA, conteudoId, temporada, numeroEp, duration, novaCena]);
 
   const editarCenaTexto = useCallback((id: number, campo: "inicio" | "fim", texto: string) => {
     const mascara = mascararTempo(texto);
@@ -4386,7 +4384,7 @@ export function CustomPlayer({
                       </div>
                     ) : (
                       <>
-                        {nivelCortes === "ia" && legendaIA && (
+                        {nivelCortes === "ia" && (
                           <div className="mb-2">
                             <textarea
                               value={pedidoIA}

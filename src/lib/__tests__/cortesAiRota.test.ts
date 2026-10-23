@@ -14,10 +14,27 @@ mock.module("@/lib/authSession", { namedExports: { getUserFromRequest: async () 
 mock.module("@/lib/entitlements", { namedExports: { entitlementsDoUsuario: async () => ({ direitos: { cortesNivel: nivel } }) } });
 mock.module("@/lib/playTokens", { namedExports: { isIpBlocked: async () => false, recordAbuseAttempt: async () => {} } });
 mock.module("@/lib/auditLog", { namedExports: { audit: () => {} } });
+// Legenda automática: catálogo, TMDB e provedor simulados (nenhuma rede, nenhum download real).
+const pedidosProvedor: string[] = [];
+let geminiRecebeu = "";
+mock.module("@/lib/prisma", { namedExports: { prisma: {
+  filme: { findUnique: async () => null },
+  serie: { findUnique: async ({ where }: { where: { id: string } }) => (where.id === "teste-1396" ? { tmdbId: "1396", imdbId: null } : null) },
+  episodio: { findFirst: async ({ where }: { where: { temporada: number; numeroEp: number } }) => (where.temporada === 1 && where.numeroEp === 3 ? { id: "teste-1396-s1e3" } : null) },
+} } });
+mock.module("@/lib/tmdb", { namedExports: { getIdsExternos: async () => ({ imdb_id: "tt0903747" }) } });
+mock.module("@/lib/ssrf", { namedExports: { safeGet: async (url: string, _i: unknown, _r: unknown, permitido: (u: URL) => boolean) => {
+  assert.ok(permitido(new URL(url)), `host fora da lista: ${url}`);
+  pedidosProvedor.push(url);
+  return url.endsWith(".json")
+    ? new Response(JSON.stringify({ subtitles: [{ sub_id: 77, lang_code: "pt-br", from_trusted: true, url: "https://opensubtitles.stremio.homes/77.srt" }] }))
+    : new Response(SRT);
+} } });
 const fetchReal = globalThis.fetch;
-globalThis.fetch = (async (url: string) => {
+globalThis.fetch = (async (url: string, init?: RequestInit) => {
   assert.match(String(url), /generativelanguage/);
   chamadasGemini++;
+  geminiRecebeu = String(init?.body ?? "");
   const cortes = [{ inicio_segundos: 5, fim_segundos: 14, falas: [2, 3], titulo_sugerido: "Vamos", o_que_e_dito: "", motivo: "", confianca: "alta" }];
   return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ cortes }) }] } }] }));
 }) as typeof fetch;
@@ -52,3 +69,42 @@ test("sem direito IA → 403 antes de tudo", async () => {
   assert.equal(r.status, 403);
   assert.equal((await r.json()).codigo, "cortes_ai_sem_direito");
 });
+
+const BASE_ADDON = "https://opensubtitlesv3-pro.dexter21767.com/eyJjb25maWciOjF9";
+const comAutomaticas = async (ligar: boolean, f: () => Promise<void>) => {
+  if (ligar) { process.env.CORTES_AI_LEGENDAS_AUTOMATICAS = "1"; process.env.CORTES_AI_LEGENDAS_ADDON = BASE_ADDON; }
+  try { await f(); } finally { delete process.env.CORTES_AI_LEGENDAS_AUTOMATICAS; delete process.env.CORTES_AI_LEGENDAS_ADDON; }
+};
+
+test("sem legenda no corpo e automáticas desligadas (padrão) → 403, sem provedor e sem Gemini", async () => {
+  const [p, g] = [pedidosProvedor.length, chamadasGemini];
+  const r = await pedir({ conteudoId: "teste-1396", temporada: 1, episodio: 3, tema: "tensão" });
+  assert.equal(r.status, 403);
+  assert.equal((await r.json()).codigo, "legenda_nao_autorizada");
+  assert.equal(pedidosProvedor.length, p);
+  assert.equal(chamadasGemini, g);
+});
+
+test("automáticas ligadas: o servidor identifica Breaking Bad T1E3 e busca a legenda ele mesmo", () => comAutomaticas(true, async () => {
+  pedidosProvedor.length = 0;
+  const r = await pedir({ conteudoId: "teste-1396", temporada: 1, episodio: 3, tema: "tensão" });
+  assert.equal(r.status, 200);
+  assert.deepEqual((await r.json()).cortes.map((c: { titulo_sugerido: string }) => c.titulo_sugerido), ["Vamos"]);
+  assert.deepEqual(pedidosProvedor, [`${BASE_ADDON}/subtitles/series/tt0903747:1:3.json`, "https://opensubtitles.stremio.homes/77.srt"]);
+  assert.ok(geminiRecebeu.includes("[3] 10.0-14.0 Vamos."), "o Gemini recebe as falas da legenda do provedor");
+}));
+
+test("automáticas ligadas: id fora do catálogo ou episódio inexistente → 404 sem provedor nem Gemini", () => comAutomaticas(true, async () => {
+  const [p, g] = [pedidosProvedor.length, chamadasGemini];
+  assert.equal((await pedir({ conteudoId: "inventado", temporada: 1, episodio: 3, tema: "tensão" })).status, 404);
+  assert.equal((await pedir({ conteudoId: "teste-1396", temporada: 1, episodio: 99, tema: "tensão" })).status, 404);
+  assert.equal(pedidosProvedor.length, p);
+  assert.equal(chamadasGemini, g);
+}));
+
+test("automáticas ligadas não afrouxam o modo com legenda no corpo: texto sem a impressão autorizada → 403", () => comAutomaticas(true, async () => {
+  const g = chamadasGemini;
+  const r = await pedir({ conteudoId: "teste-1396", temporada: 1, episodio: 3, tema: "tensão", legenda: SRT });
+  assert.equal(r.status, 403);
+  assert.equal(chamadasGemini, g);
+}));

@@ -89,7 +89,7 @@ test("falha do Gemini vira código, sem corpo do provedor", async () => {
 test("rota: barreiras na ordem certa, limite só antes da chamada, nada sensível no log", () => {
   const rota = readFileSync(join(process.cwd(), "src/app/api/cortes/ia/route.ts"), "utf8");
   const pos = (s: string) => { const i = rota.indexOf(s); assert.ok(i > 0, s); return i; };
-  const ordem = ["config.ativo", "headerMatchesHost(origin", "getUserFromRequest(req)", 'cortesNivel !== "ia"', "impressaoDaLegenda(legenda) !== autorizada", "lerLegenda(", "checkRateLimit(", "pedirCortes("];
+  const ordem = ["config.ativo", "headerMatchesHost(origin", "getUserFromRequest(req)", 'cortesNivel !== "ia"', "impressaoDaLegenda(legenda) !== autorizada", "lerLegenda(", "identificarConteudo(", "checkRateLimit(", "buscarLegenda(", "pedirCortes("];
   ordem.reduce((ant, s) => { const i = pos(s); assert.ok(i > ant, `${s} fora de ordem`); return i; }, 0);
   assert.ok(!/console\.(log|error)/.test(rota), "sem console na rota");
   assert.ok(!/detail:[^\n]*(tema|legenda|chave)\b/.test(rota), "detail não leva pedido, legenda ou chave");
