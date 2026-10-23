@@ -219,6 +219,47 @@ describe("callback S2S do LevelPlay", () => {
     assert.ok((await callback(s, certa, { env })).ack);
   });
 
+  test("teste sintético do painel: ACK com assinatura válida, sem gravar nada, só onde o id de teste existe", async () => {
+    const s = memoria();
+    const teste = "0123456789abcdef0123456789abcdef";
+    const envT = { ...ENV, LEVELPLAY_APP_KEY: "appchave1", LEVELPLAY_S2S_TESTE_USER_ID: teste };
+    const evento = (over: Record<string, string> = {}, omit: string[] = []) => {
+      const q = query(teste, null, { appKey: "appchave1", ...over }, omit);
+      return q;
+    };
+    s.operacoes.n = 0;
+    const ok = await callback(s, evento(), { env: envT });
+    assert.deepEqual([ok.status, ok.ack, ok.corpo], [200, true, "evt0001:OK"]);
+    assert.equal(ok.motivo, "teste_sintetico_ok");
+    assert.equal(s.operacoes.n, 0, "nenhum acesso ao armazenamento: nada reservado, nenhum recibo");
+    assert.equal(s.dados.size, 0);
+    // assinatura errada, appKey errada, parâmetro ausente, IP fora da lista, timestamp velho
+    assert.equal((await callback(s, evento({ signature: "0".repeat(32) }), { env: envT })).status, 403);
+    assert.equal((await callback(s, evento({ appKey: "outro" }), { env: envT })).status, 400);
+    assert.equal((await callback(s, evento({}, ["timestamp"]), { env: envT })).status, 400);
+    assert.equal((await callback(s, evento(), { env: envT, ip: "1.2.3.4" })).status, 403);
+    assert.equal((await callback(s, evento({ timestamp: ts(AGORA - 30 * 3600_000) }), { env: envT })).status, 400);
+    // sem a variável (Production) o mesmo evento cai no fluxo real e é recusado
+    const real = await callback(s, evento(), { env: { ...envT, LEVELPLAY_S2S_TESTE_USER_ID: undefined } });
+    assert.deepEqual([real.status, real.ack], [400, false]);
+    // outro USER_ID com o id de teste de outra pessoa não ganha o atalho
+    const outro = query("f".repeat(32), null, { appKey: "appchave1" });
+    assert.equal((await callback(s, outro, { env: envT })).ack, false);
+    assert.equal(s.dados.size, 0);
+  });
+
+  test("o id de teste nunca vira recibo, nem com desafio pendente e dynamicUserId válido", async () => {
+    const s = memoria();
+    const a = await conta(s, "u1", "d1");
+    const teste = a.lpUid; // até a identidade real de uma conta, se coincidisse, seria tratada como teste: por isso o id de teste é aleatório e separado
+    const envT = { ...ENV, LEVELPLAY_S2S_TESTE_USER_ID: "abcdef0123456789abcdef0123456789" };
+    // o evento real continua pelo fluxo real
+    const r = await callback(s, query(a.lpUid, a.dynamicUserId), { env: envT });
+    assert.ok(r.ack);
+    assert.ok(await reciboDoDesafio("d1", s));
+    assert.notEqual(teste, envT.LEVELPLAY_S2S_TESTE_USER_ID);
+  });
+
   test("duplicado idêntico: ACK de novo e um recibo só; reentrega tardia, depois de consumido, continua em ACK", async () => {
     const s = memoria();
     const { lpUid, dynamicUserId } = await conta(s, "u1", "d1");

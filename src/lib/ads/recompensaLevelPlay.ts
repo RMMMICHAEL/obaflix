@@ -207,6 +207,19 @@ export interface ResultadoDoCallback {
   /** Corpo da resposta. Só o ACK `EVENT_ID:OK` faz o LevelPlay parar de repetir. */
   corpo: string;
   ack: boolean;
+  /** Código estável para o log (nunca valores recebidos). */
+  motivo?: string;
+}
+
+/**
+ * Identidade fixa do "Callback test" do painel do LevelPlay. Só existe onde `LEVELPLAY_S2S_TESTE_USER_ID` está definida
+ * (hoje: só o Preview desta branch). Um evento com esse USER_ID **não** passa pelo fluxo real: não consulta contas,
+ * não reserva evento e não grava recibo, então nunca pode virar concessão. Continua exigindo assinatura válida, IP oficial
+ * e o App Key; só dispensa o `dynamicUserId` e o desafio, que um teste sintético não tem.
+ */
+export function idDeTesteSintetico(env: Env = process.env): string | null {
+  const id = env.LEVELPLAY_S2S_TESTE_USER_ID;
+  return typeof id === "string" && HEX32.test(id) ? id : null;
 }
 
 const recusa = (status: number, corpo: string): ResultadoDoCallback => ({ status, corpo, ack: false });
@@ -219,6 +232,21 @@ const recusa = (status: number, corpo: string): ResultadoDoCallback => ({ status
 export async function processarCallbackLevelPlay(
   entrada: { query: URLSearchParams; ip: string; agora: number; env?: Env },
   store: ArmazemDeRecompensa = getRedis(),
+): Promise<ResultadoDoCallback> {
+  const r = await decidirCallback(entrada, store);
+  try {
+    // Só nomes de parâmetros e o motivo: nenhum valor (assinatura, ids ou chave) vai para o log.
+    const nomes = Array.from(new Set(Array.from(entrada.query.keys()))).slice(0, 20).map((n) => n.slice(0, 40)).sort();
+    console.log(JSON.stringify({ evento: "levelplay_callback", status: r.status, ack: r.ack, motivo: r.motivo ?? (r.ack ? "ok" : r.corpo), parametros: nomes }));
+  } catch {
+    /* log nunca derruba a resposta */
+  }
+  return r;
+}
+
+async function decidirCallback(
+  entrada: { query: URLSearchParams; ip: string; agora: number; env?: Env },
+  store: ArmazemDeRecompensa,
 ): Promise<ResultadoDoCallback> {
   const env = entrada.env ?? process.env;
   if (!receptorS2sAtivo(env)) return recusa(404, "indisponivel");
@@ -236,6 +264,21 @@ export async function processarCallbackLevelPlay(
   const timestamp = unico("timestamp");
   const signature = unico("signature");
   const dynamicUserId = unico("dynamicUserId");
+  // Teste sintético do painel (ver `idDeTesteSintetico`): assinatura, IP e App Key valem; nada é gravado.
+  const idDeTeste = idDeTesteSintetico(env);
+  if (idDeTeste && lpUid === idDeTeste) {
+    const appKeyDoTeste = appKeyEsperada(env);
+    if (appKeyDoTeste && unico("appKey") !== appKeyDoTeste) return recusa(400, "app desconhecido");
+    if (!eventId || !rewards || !timestamp || !signature) return recusa(400, "teste sintetico: parametros ausentes");
+    if (!/^[A-Za-z0-9]{1,128}$/.test(eventId) || !/^[1-9]\d{0,5}$/.test(rewards)) return recusa(400, "teste sintetico: parametros invalidos");
+    if (!assinaturaConfere(signature, assinaturaDoEvento({ timestamp, eventId, userId: lpUid, rewards }, chave))) {
+      return recusa(403, "assinatura invalida");
+    }
+    const instante = instanteDoTimestamp(timestamp);
+    if (instante === null || Math.abs(entrada.agora - instante) > JANELA_TIMESTAMP_MS) return recusa(400, "timestamp invalido");
+    return { status: 200, corpo: `${eventId}:OK`, ack: true, motivo: "teste_sintetico_ok" };
+  }
+
   if (!lpUid || !eventId || !rewards || !timestamp || !signature || !dynamicUserId) return recusa(400, "parametros invalidos");
   // Opcional (`appKey=[APP_KEY]` na URL do painel): um app ou ambiente que reaproveite este callback é recusado.
   const appKey = appKeyEsperada(env);
