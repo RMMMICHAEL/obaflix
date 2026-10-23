@@ -1,0 +1,17 @@
+Obaflix inclui o FFmpeg, usado só para recortar e juntar vídeos no seu computador.
+
+FFmpeg 6.1.1 (build "essentials" de www.gyan.dev, distribuído pelo pacote ffmpeg-static 5.3.0)
+é software livre, licenciado sob a GNU General Public License versão 3 (GPLv3).
+O texto completo da licença está em LICENSE.txt, nesta pasta. O FFmpeg roda como
+programa separado (ffmpeg.exe); o Obaflix não o modifica.
+
+Código-fonte correspondente:
+  - FFmpeg: https://github.com/FFmpeg/FFmpeg/commit/e38092ef93
+  - Configuração do build e versões das bibliotecas incluídas: README.txt, nesta pasta
+  - Build original: https://www.gyan.dev/ffmpeg/builds/
+
+Por pelo menos três anos a partir desta versão do Obaflix, quem recebeu este programa
+pode pedir uma cópia do código-fonte correspondente completo pelo suporte do Obaflix
+(https://obaflixbr.com), sem custo além do de envio.
+
+FFmpeg é marca registrada de Fabrice Bellard, criador do projeto FFmpeg.

@@ -1,6 +1,6 @@
 {
   "name": "obaflix",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "Obaflix - Aplicativo Desktop",
   "main": "electron/main.js",
   "author": "Obaflix",
@@ -66,6 +66,18 @@
       {
         "from": "node_modules/ffmpeg-static/ffmpeg.exe",
         "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe.LICENSE",
+        "to": "ffmpeg/LICENSE.txt"
+      },
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe.README",
+        "to": "ffmpeg/README.txt"
+      },
+      {
+        "from": "build/ffmpeg-AVISO.txt",
+        "to": "ffmpeg/AVISO.txt"
       }
     ]
   }
