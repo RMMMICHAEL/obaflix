@@ -12,5 +12,6 @@
       "path": "/api/cron/billing-reconcile",
       "schedule": "15 4 * * *"
     }
-  ]
+  ],
+  "ignoreCommand": "exit 0"
 }
