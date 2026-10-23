@@ -12,6 +12,7 @@ type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
 const PLANOS = [
   { id: "cortes-start", nome: "Start", texto: "Trecho individual: marque início e fim no player e baixe só a cena." },
   { id: "cortes-pro", nome: "Pro", texto: "Trecho individual e lote: monte uma lista de cenas e baixe todas de uma vez. Requer a versão Windows com Cortes." },
+  { id: "cortes-ai", nome: "AI", texto: "Tudo do Pro, mais o Cortes AI: escreva o tema ou roteiro e a IA preenche a lista de cortes para você revisar e baixar." },
 ] as const;
 
 const dinheiro = (centavos: number, moeda: string) =>
@@ -19,9 +20,9 @@ const dinheiro = (centavos: number, moeda: string) =>
 const duracao = (p: Preco) => p.duracaoDias ?? (p.duracaoMeses ?? 0) * 30;
 
 /**
- * Start e Pro com preço e disponibilidade da mesma fonte do checkout
+ * Start, Pro e AI com preço e disponibilidade da mesma fonte do checkout
  * (`GET /api/billing/plans`). Sem preço ativo, nada é vendido: o cartão diz
- * "em breve". O AI não é vendido.
+ * "em breve".
  */
 const ROTULO = { assinar: "Assinar", renovar: "Renovar", upgrade: "Fazer upgrade para" } as const;
 
@@ -75,12 +76,6 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
           </article>
         );
       })}
-      <article>
-        <span>OBAFLIX CORTES</span>
-        <h3>AI</h3>
-        <p>Visão de uma modalidade com inteligência artificial, ainda em desenvolvimento.</p>
-        <small>Em breve · IA indisponível atualmente</small>
-      </article>
     </div>
   );
 }

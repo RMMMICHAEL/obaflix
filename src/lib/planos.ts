@@ -397,7 +397,7 @@ export const PLANO_CORTES_AI: PlanoSemeado = {
   ...PLANO_CORTES_PRO,
   id: "cortes-ai",
   nome: "Obaflix Cortes AI",
-  descricao: "Obaflix completo com múltiplos cortes e permissão futura de IA, ainda não implementada.",
+  descricao: "Obaflix completo com múltiplos cortes e sugestões de cortes por IA.",
   cortesNivel: "ia",
 };
 

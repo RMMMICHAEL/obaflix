@@ -82,10 +82,10 @@ const TEMAS: Record<string, TemaDoPlano> = {
 
 const SELOS: Record<string, string> = {
   plus: "Mais escolhido", premium: "Experiência completa",
-  "cortes-pro": "Cortes em lote", "cortes-ai": "IA em breve",
+  "cortes-pro": "Cortes em lote", "cortes-ai": "Cortes com IA",
 };
 
-/** O que cada nível de Cortes libera hoje (playbackAuthorization). IA ainda não opera. */
+/** O que cada nível de Cortes libera hoje (playbackAuthorization e /api/cortes/ia). */
 const CORTES: Record<string, BeneficioDaVitrine[]> = {
   individual: [
     { texto: "Cortes individuais", incluido: true },
@@ -98,7 +98,7 @@ const CORTES: Record<string, BeneficioDaVitrine[]> = {
   ia: [
     { texto: "Cortes individuais", incluido: true },
     { texto: "Cortes em lote", incluido: true },
-    { texto: "Cortes com IA (em breve)", incluido: false },
+    { texto: "Cortes AI: sugestões de cortes por tema", incluido: true },
   ],
 };
 

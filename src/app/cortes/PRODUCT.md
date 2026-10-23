@@ -7,7 +7,7 @@ brand
 Criadores de YouTube, Shorts, Reels e TikTok; canais de análises, recomendações e resumos. Precisam localizar momentos e preparar trechos para edição no Windows.
 
 ## Product Purpose
-Apresentar o fluxo de seleção, prévia e exportação do Electron. A página /cortes explica o produto e vende só Start e Pro pelo checkout existente (preço da API, sem login, Pix, acesso por e-mail); não vende assinaturas tradicionais nem simula checkout. AI não é vendido.
+Apresentar o fluxo de seleção, prévia e exportação do Electron. A página /cortes explica o produto e vende Start, Pro e AI pelo checkout existente (preço da API, sem login, Pix, acesso por e-mail); não vende assinaturas tradicionais nem simula checkout.
 
 ## Brand Personality
 Direta, cinematográfica, prática. Identidade Obaflix existente, com vermelho, superfícies escuras, Inter e Bebas Neue.

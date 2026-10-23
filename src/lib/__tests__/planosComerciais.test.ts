@@ -283,16 +283,16 @@ describe("vitrine Cortes", () => {
     assert.deepEqual([start, pro, ai].map((v) => [v.nome, v.tema, v.selo, v.familia]), [
       ["Obaflix Cortes Start", "verde", null, "cortes"],
       ["Obaflix Cortes Pro", "ciano", "Cortes em lote", "cortes"],
-      ["Obaflix Cortes AI", "rosa", "IA em breve", "cortes"],
+      ["Obaflix Cortes AI", "rosa", "Cortes com IA", "cortes"],
     ]);
     for (const v of [start, pro, ai]) assert.ok(TONS_DOS_TEMAS[v.tema!]);
     for (const p of [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM]) assert.equal(vitrineDoPlano(p).familia, "tradicional");
   });
 
-  test("benefícios reais: Start individual, Pro individual e lote, AI sem IA operacional", () => {
+  test("benefícios reais: Start individual, Pro individual e lote, AI com Cortes AI", () => {
     assert.deepEqual(marcados(start).slice(0, 2), ["+Cortes individuais", "-Cortes em lote"]);
     assert.deepEqual(marcados(pro).slice(0, 2), ["+Cortes individuais", "+Cortes em lote"]);
-    assert.deepEqual(marcados(ai).slice(0, 3), ["+Cortes individuais", "+Cortes em lote", "-Cortes com IA (em breve)"]);
+    assert.deepEqual(marcados(ai).slice(0, 3), ["+Cortes individuais", "+Cortes em lote", "+Cortes AI: sugestões de cortes por tema"]);
   });
 
   test("download de filmes nunca aparece bloqueado nos Cortes", () => {

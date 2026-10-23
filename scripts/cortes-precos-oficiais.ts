@@ -1,22 +1,20 @@
 /**
- * Abre a venda do Cortes Start e do Cortes Pro com os preços OFICIAIS.
+ * Abre a venda do Cortes Start, Pro e AI com os preços OFICIAIS.
  *
- *   npx tsx scripts/cortes-precos-oficiais.ts --start=<centavos> --pro=<centavos> [--dias=30]
+ *   npx tsx scripts/cortes-precos-oficiais.ts --start=<centavos> --pro=<centavos> --ai=<centavos> [--dias=30]
  *   ... --aplicar   grava (sem ele, só mostra o que faria)
  *
- * Nenhum valor tem padrão: preço é decisão comercial. Cortes AI é recusado até a
- * IA existir. Numa transação: cria o preço (ou reativa um igual já existente),
+ * Nenhum valor tem padrão: preço é decisão comercial. Numa transação: cria o preço (ou reativa um igual já existente),
  * desativa os demais preços ativos do plano e ativa o plano. Os registros antigos
  * (inclusive os fictícios de teste) ficam, inativos.
  */
 import { PrismaClient } from "@prisma/client";
 
-export interface PrecoOficial { planoId: "cortes-start" | "cortes-pro"; precoCentavos: number; duracaoDias: number }
+export interface PrecoOficial { planoId: "cortes-start" | "cortes-pro" | "cortes-ai"; precoCentavos: number; duracaoDias: number }
 
 /** Lê e valida os argumentos. Lança com a mensagem do que falta. */
 export function lerPrecosOficiais(argv: string[]): { precos: PrecoOficial[]; aplicar: boolean } {
   const arg = (nome: string) => argv.find((a) => a.startsWith(`--${nome}=`))?.split("=")[1];
-  if (argv.some((a) => a.startsWith("--ai"))) throw new Error("Cortes AI não é comercializado até a IA existir.");
   const inteiro = (nome: string, valor: string | undefined, min: number, max: number) => {
     const n = Number(valor);
     if (!valor || !Number.isInteger(n) || n < min || n > max) throw new Error(`--${nome} obrigatório: inteiro entre ${min} e ${max}.`);
@@ -26,8 +24,10 @@ export function lerPrecosOficiais(argv: string[]): { precos: PrecoOficial[]; apl
   const precos: PrecoOficial[] = [
     { planoId: "cortes-start", precoCentavos: inteiro("start", arg("start"), 100, 100_000), duracaoDias },
     { planoId: "cortes-pro", precoCentavos: inteiro("pro", arg("pro"), 100, 100_000), duracaoDias },
+    { planoId: "cortes-ai", precoCentavos: inteiro("ai", arg("ai"), 100, 100_000), duracaoDias },
   ];
   if (precos[1].precoCentavos <= precos[0].precoCentavos) throw new Error("O Pro (com lote) precisa custar mais que o Start.");
+  if (precos[2].precoCentavos <= precos[1].precoCentavos) throw new Error("O AI (com IA) precisa custar mais que o Pro.");
   return { precos, aplicar: argv.includes("--aplicar") };
 }
 
@@ -49,7 +49,7 @@ async function main() {
         await tx.plano.update({ where: { id: p.planoId }, data: { ativo: true } });
       }
     });
-    console.log("Feito. Cortes AI continua inativo.");
+    console.log("Feito.");
   } finally {
     await prisma.$disconnect();
   }

@@ -71,15 +71,15 @@ const faqs = [
   ],
   [
     "Qual a diferença entre Start, Pro e AI?",
-    "O Start libera o trecho individual. O Pro libera o trecho individual e o lote. O AI está em desenvolvimento e não é vendido. O Cortes é uma assinatura própria: soma ao Básico, Plus ou Premium e não cancela o plano que você já tem.",
+    "O Start libera o trecho individual. O Pro libera o trecho individual e o lote. O AI inclui tudo do Pro e o Cortes AI, que sugere os cortes a partir do seu tema ou roteiro. O Cortes é uma assinatura própria: soma ao Básico, Plus ou Premium e não cancela o plano que você já tem.",
   ],
   [
-    "A inteligência artificial já está disponível?",
-    "Ainda não. Receber um roteiro, sugerir momentos e preencher um painel de cortes é uma visão em desenvolvimento. Não há data de lançamento confirmada nem contratação da IA nesta página.",
+    "Como funciona o Cortes AI?",
+    "No editor de vários trechos da versão Windows, escreva o tema ou roteiro. A IA lê a legenda do título, sugere cortes de cerca de 20 a 90 segundos com título e preenche a lista para você conferir, ajustar e baixar. A IA usa só o texto da legenda, não o vídeo, e há limite de análises por dia e por mês.",
   ],
   [
     "Como contrato? Preciso criar conta antes?",
-    "Escolha Start ou Pro nesta página e pague com Pix; não é preciso criar conta antes. Depois da confirmação do pagamento, você recebe por e-mail o link para criar sua senha. Se o e-mail já tem conta no Obaflix, o plano é adicionado a ela. Enquanto um plano não tiver preço publicado, ele aparece como “em breve”.",
+    "Escolha Start, Pro ou AI nesta página e pague com Pix; não é preciso criar conta antes. Depois da confirmação do pagamento, você recebe por e-mail o link para criar sua senha. Se o e-mail já tem conta no Obaflix, o plano é adicionado a ela. Enquanto um plano não tiver preço publicado, ele aparece como “em breve”.",
   ],
   [
     "A renovação é automática?",
@@ -249,16 +249,16 @@ export default function CortesPage() {
         </div>
         <p className={styles.note}>
           No Cortes Pro, também é possível montar uma lista de cenas e baixar
-          todas de uma vez (lote), na versão Windows com Cortes. Sugestão de cenas por IA ainda não existe. A
+          todas de uma vez (lote), na versão Windows com Cortes. No Cortes AI, a IA sugere as cenas a partir do seu tema. A
           exportação depende da fonte e dos componentes disponíveis no
           aplicativo.
         </p>
       </section>
 
       <aside className={`${styles.section} ${styles.futureNote}`} aria-labelledby="ai-titulo">
-        <span className={styles.future}><Sparkles size={14} aria-hidden /> Em desenvolvimento · indisponível hoje</span>
-        <h2 id="ai-titulo">Mais adiante: Obaflix Cortes AI.</h2>
-        <p>A visão futura é receber seu roteiro no player, sugerir momentos e preencher um painel de cortes para revisão. Essas funções ainda não existem no fluxo atual e não têm data confirmada.</p>
+        <span className={styles.future}><Sparkles size={14} aria-hidden /> Novo · Obaflix Cortes AI</span>
+        <h2 id="ai-titulo">Diga o tema. A IA encontra as cenas.</h2>
+        <p>Escreva o tema ou roteiro no editor de vários trechos. A IA lê a legenda do título, sugere os melhores momentos com horários e títulos e preenche a lista para você revisar, ajustar e baixar em lote.</p>
       </aside>
 
       <section

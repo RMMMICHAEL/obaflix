@@ -92,4 +92,6 @@ test("planos Cortes: visitante assina; quem tem Cortes renova ou faz upgrade com
   assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-start" }), { acao: "upgrade", href: "/checkout?planoId=cortes-pro&conta=1" });
   assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-pro" }), { acao: "renovar", href: "/checkout?planoId=cortes-pro&conta=1" });
   assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-pro" }), { acao: "incluido" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-ai", { logado: true, atual: "cortes-pro" }), { acao: "upgrade", href: "/checkout?planoId=cortes-ai&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-ai" }), { acao: "incluido" });
 });

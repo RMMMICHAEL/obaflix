@@ -60,7 +60,7 @@ export function checkoutSemLoginPermitido(planoId: string | null) {
 /** Página de planos exclusiva do Cortes (abre no navegador externo pelo Electron, como /planos). */
 export const PLANOS_CORTES_HREF = "/planos?familia=cortes";
 
-const POSICAO_CORTES: Record<string, number> = { "cortes-start": 1, "cortes-pro": 2 };
+const POSICAO_CORTES: Record<string, number> = { "cortes-start": 1, "cortes-pro": 2, "cortes-ai": 3 };
 
 export type AcaoNoPlanoCortes =
   | { acao: "assinar" | "renovar" | "upgrade"; href: string }

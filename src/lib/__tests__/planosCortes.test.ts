@@ -148,15 +148,16 @@ for (const plano of PLANOS_CORTES) {
 
 test("preços oficiais dos Cortes: só com valores explícitos, Pro acima do Start, AI recusado, simulação por padrão", async () => {
   const { lerPrecosOficiais } = await import("../../../scripts/cortes-precos-oficiais");
-  assert.deepEqual(lerPrecosOficiais(["--start=1990", "--pro=2990"]), {
+  assert.deepEqual(lerPrecosOficiais(["--start=2700", "--pro=4700", "--ai=19700"]), {
     aplicar: false,
     precos: [
-      { planoId: "cortes-start", precoCentavos: 1990, duracaoDias: 30 },
-      { planoId: "cortes-pro", precoCentavos: 2990, duracaoDias: 30 },
+      { planoId: "cortes-start", precoCentavos: 2700, duracaoDias: 30 },
+      { planoId: "cortes-pro", precoCentavos: 4700, duracaoDias: 30 },
+      { planoId: "cortes-ai", precoCentavos: 19700, duracaoDias: 30 },
     ],
   });
-  assert.equal(lerPrecosOficiais(["--start=1990", "--pro=2990", "--aplicar"]).aplicar, true);
-  for (const ruim of [[], ["--start=1990"], ["--start=0", "--pro=2990"], ["--start=19.9", "--pro=2990"], ["--start=2990", "--pro=1990"], ["--start=1990", "--pro=2990", "--ai=3990"]]) {
+  assert.equal(lerPrecosOficiais(["--start=2700", "--pro=4700", "--ai=19700", "--aplicar"]).aplicar, true);
+  for (const ruim of [[], ["--start=2700"], ["--start=2700", "--pro=4700"], ["--start=0", "--pro=4700", "--ai=19700"], ["--start=27.0", "--pro=4700", "--ai=19700"], ["--start=4700", "--pro=2700", "--ai=19700"], ["--start=2700", "--pro=4700", "--ai=4700"]]) {
     assert.throws(() => lerPrecosOficiais(ruim), JSON.stringify(ruim));
   }
 });
