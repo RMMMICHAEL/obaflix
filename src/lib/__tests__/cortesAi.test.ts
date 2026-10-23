@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { configCortesAi, cortesAceitos, FalhaCortesAi, impressaoDaLegenda, lerLegenda, pedirCortes, validarCorte } from "../cortesAi";
+import { configCortesAi, cortesAceitos, FalhaCortesAi, comContexto, impressaoDaLegenda, lerLegenda, pedirCortes, validarCorte } from "../cortesAi";
 import { parsearSugestoesIA } from "../recorte";
 
 /**
@@ -27,8 +27,21 @@ test("corte só vale se as falas citadas o sustentam", () => {
   assert.match(validarCorte({ ...base, falas: [9] }, falas).join(), /inexistente/);
   assert.match(validarCorte({ ...base, fim_segundos: 6 }, falas).join(), /não cobre/);
   assert.match(validarCorte({ ...base, fim_segundos: 70 }, falas).join(), /fora da legenda/);
-  assert.match(validarCorte({ ...base, fim_segundos: 2 }, falas).join(), /duração/);
+  assert.match(validarCorte({ ...base, fim_segundos: 1.5 }, falas).join(), /duração/);
+  assert.match(validarCorte({ ...base, falas: [1, 3], fim_segundos: 63 }, falas, 60).join(), /fora do vídeo/);
   assert.match(validarCorte({ ...base, titulo_sugerido: " " }, falas).join(), /sem título/);
+});
+
+test("corte final ganha contexto, fica entre 20 e 90 s e dentro do vídeo", () => {
+  // Fala vizinha cortada ao meio entra inteira; curto cresce para os dois lados.
+  const longa = lerLegenda([[10, 14], [30, 34], [36, 40], [44, 50]].map(([a, b], i) => `${i + 1}\n00:00:${a},000 --> 00:00:${b},000\nfala ${i + 1}\n`).join("\n"));
+  assert.deepEqual(comContexto(30, 40, longa, 600), { inicio: 25, fim: 45 });
+  assert.deepEqual(comContexto(36, 40, longa, 600), { inicio: 26.5, fim: 46.5 });
+  assert.deepEqual(comContexto(44, 50, longa, 52), { inicio: 32, fim: 52 }, "não passa do fim do vídeo");
+  assert.deepEqual(comContexto(1, 5, longa, 600), { inicio: 0, fim: 20 }, "não começa antes de zero");
+  assert.deepEqual(comContexto(100, 189, longa, 600), { inicio: 99.5, fim: 189.5 }, "não passa de 90 s");
+  const meio = comContexto(12, 40, longa, 600);
+  assert.ok(meio.inicio === 9 && meio.fim === 43, JSON.stringify(meio));
 });
 
 test("impressão da legenda ignora BOM e CRLF, mas muda com qualquer texto", () => {
@@ -73,7 +86,7 @@ test("uma chamada ao Gemini: chave no header, só texto, aceitos no formato do e
 
   const { aceitos, rejeitados } = cortesAceitos(r.cortes, falas);
   assert.equal(rejeitados, 1);
-  assert.deepEqual(parsearSugestoesIA(JSON.stringify({ cortes: aceitos }), 63), { cenas: [{ inicio: 1, fim: 9, titulo: "Começo" }], ignoradas: 0 });
+  assert.deepEqual(parsearSugestoesIA(JSON.stringify({ cortes: aceitos }), 63), { cenas: [{ inicio: 0, fim: 20, titulo: "Começo" }], ignoradas: 0 });
 });
 
 test("falha do Gemini vira código, sem corpo do provedor", async () => {

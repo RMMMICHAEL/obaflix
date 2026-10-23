@@ -108,12 +108,15 @@ export async function POST(req: NextRequest) {
     return negar(429, "limite_diario", "Você atingiu o limite diário do Cortes AI");
   }
 
+  // Duração real do vídeo no player: só limita os cortes devolvidos, nunca autoriza.
+  const duracaoCliente = Number(corpo.duracaoVideo);
+  const duracaoVideo = duracaoCliente >= 60 && duracaoCliente <= 6 * 3600 ? duracaoCliente : undefined;
+
   // Legenda automática: depois do limite, porque cada busca gasta downloads no provedor.
   let origemLegenda = "enviada";
   if (alvo && automaticas.base) {
-    const duracaoCliente = Number(corpo.duracaoVideo);
     // Só para escolher a legenda (filtro de duração), nunca para autorizar.
-    const duracao = alvo.duracaoSeg ?? (duracaoCliente >= 60 && duracaoCliente <= 6 * 3600 ? duracaoCliente : undefined);
+    const duracao = alvo.duracaoSeg ?? duracaoVideo;
     let encontrada: LegendaEncontrada | null;
     try {
       encontrada = await buscarLegenda(alvo, automaticas.base, duracao);
@@ -130,7 +133,7 @@ export async function POST(req: NextRequest) {
   const t0 = Date.now();
   try {
     const { cortes, tokens } = await pedirCortes(falas, tema, config.chave);
-    const { aceitos, rejeitados } = cortesAceitos(cortes, falas);
+    const { aceitos, rejeitados } = cortesAceitos(cortes, falas, duracaoVideo);
     audit("cortes_ai_analise", {
       userId, ip, ua,
       detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} ms:${Date.now() - t0}`,

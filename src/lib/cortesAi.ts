@@ -14,7 +14,12 @@ import { createHash } from "node:crypto";
 
 export const MODELO_CORTES_AI = "gemini-3.5-flash-lite";
 export const MAX_CORTES = 5;
-const CORTE_MIN_S = 3, CORTE_MAX_S = 180;
+/** Falas citadas pela IA: o corte final ganha contexto em volta (comContexto). */
+const CORTE_MIN_S = 1, CORTE_MAX_S = 90;
+/** Duração do corte entregue ao editor, já com o contexto antes e depois das falas. */
+export const DURACAO_CORTE = { min: 20, max: 90 };
+/** Respiro antes da primeira e depois da última fala citada. */
+const CONTEXTO_S = 3;
 /** Folga entre o horário devolvido e o da fala citada (arredondamento). */
 const FOLGA_S = 1.5;
 export const LIMITES_CORTES_AI = { legendaBytes: 600 * 1024, falasMin: 5, falasMax: 4000, temaMin: 3, temaMax: 1000 };
@@ -88,12 +93,13 @@ export function lerLegenda(conteudo: string): Fala[] {
  * plausível, falas citadas existentes e horários batendo com elas. Um corte sem
  * fala que o sustente é rejeitado (a IA não pode inventar cena que o texto não mostra).
  */
-export function validarCorte(c: Partial<CorteSugerido>, falas: Fala[]): string[] {
+export function validarCorte(c: Partial<CorteSugerido>, falas: Fala[], duracaoVideo?: number): string[] {
   const p: string[] = [];
   const fimLegenda = falas.at(-1)?.fim ?? 0;
   const ini = c.inicio_segundos, fim = c.fim_segundos;
   if (typeof ini !== "number" || typeof fim !== "number" || !Number.isFinite(ini) || !Number.isFinite(fim)) return ["horário ausente ou não numérico"];
   if (ini < 0 || fim > fimLegenda + FOLGA_S) p.push("fora da legenda");
+  if (duracaoVideo && fim > duracaoVideo + FOLGA_S) p.push("fora do vídeo");
   const dur = fim - ini;
   if (dur < CORTE_MIN_S || dur > CORTE_MAX_S) p.push("duração fora do limite");
   const citadas = (Array.isArray(c.falas) ? c.falas : []).map((id) => falas.find((f) => f.id === id));
@@ -107,6 +113,29 @@ export function validarCorte(c: Partial<CorteSugerido>, falas: Fala[]): string[]
   return p;
 }
 
+/**
+ * Corte final: as falas citadas mais um respiro antes e depois; uma fala vizinha
+ * que ficaria cortada ao meio entra inteira; se ainda ficar curto, cresce para os
+ * dois lados até o mínimo. Sempre dentro de [0, limite] e até o máximo quando
+ * as falas citadas cabem nele.
+ */
+export function comContexto(ini: number, fim: number, falas: Fala[], limite: number): { inicio: number; fim: number } {
+  const { min, max } = DURACAO_CORTE;
+  const respiro = Math.max(0, Math.min(CONTEXTO_S, (max - (fim - ini)) / 2));
+  let a = Math.max(0, ini - respiro), b = Math.min(limite, fim + respiro);
+  const cortada = (t: number) => falas.find((f) => f.inicio < t && t < f.fim);
+  const fa = cortada(a);
+  if (fa && b - fa.inicio <= max) a = fa.inicio;
+  const fb = cortada(b);
+  if (fb && fb.fim <= limite && fb.fim - a <= max) b = fb.fim;
+  if (b - a < min) {
+    a = Math.max(0, a - (min - (b - a)) / 2);
+    b = Math.min(limite, a + min);
+    a = Math.max(0, b - min);
+  }
+  return { inicio: a, fim: b };
+}
+
 // ── Pedido ao Gemini ─────────────────────────────────────────────────────────
 
 export function montarPrompt(falas: Fala[], tema: string): string {
@@ -115,10 +144,12 @@ export function montarPrompt(falas: Fala[], tema: string): string {
   return [
     `Tema ou roteiro do criador: "${tema}".`,
     "Abaixo está a legenda de um vídeo, uma fala por linha no formato [número] início-fim(segundos) texto.",
-    `Sugira até ${MAX_CORTES} cortes de ${CORTE_MIN_S} a ${CORTE_MAX_S} segundos que sirvam ao tema.`,
+    `Sugira até ${MAX_CORTES} cortes de ${DURACAO_CORTE.min} a ${DURACAO_CORTE.max} segundos que sirvam ao tema, do mais forte para o mais fraco.`,
+    "Cada corte deve ser um momento completo, que se entenda sozinho: inclua as falas de contexto antes (a situação, a pergunta)",
+    "e depois (a reação, a conclusão), sem começar nem terminar no meio de uma ideia.",
     "Baseie-se SÓ no que está escrito nas falas. Não descreva imagens, ações ou cenários que o texto não confirma;",
     "se algo visual for provável mas não confirmado, diga isso no motivo e use confiança baixa.",
-    "Cada corte deve citar os números das falas que o sustentam; o início é o da primeira fala citada e o fim o da última.",
+    "Cada corte deve citar os números de todas as falas que ele contém; o início é o da primeira fala citada e o fim o da última.",
     "Se nada servir ao tema, devolva a lista vazia.",
     "",
     transcricao,
@@ -193,12 +224,19 @@ export async function pedirCortes(
   }
 }
 
-/** Só os cortes que passam na validação, no formato que o editor importa (parsearSugestoesIA). */
-export function cortesAceitos(cortes: Partial<CorteSugerido>[], falas: Fala[]) {
-  const aceitos = cortes.filter((c) => validarCorte(c, falas).length === 0).map((c) => ({
-    inicio_segundos: c.inicio_segundos!, fim_segundos: c.fim_segundos!, titulo_sugerido: String(c.titulo_sugerido).trim(),
-    o_que_e_dito: typeof c.o_que_e_dito === "string" ? c.o_que_e_dito : "", motivo: typeof c.motivo === "string" ? c.motivo : "",
-    confianca: typeof c.confianca === "string" ? c.confianca : "",
-  }));
+/**
+ * Só os cortes que passam na validação, já com contexto e dentro do vídeo, no
+ * formato que o editor importa (parsearSugestoesIA).
+ */
+export function cortesAceitos(cortes: Partial<CorteSugerido>[], falas: Fala[], duracaoVideo?: number) {
+  const limite = duracaoVideo ?? (falas.at(-1)?.fim ?? 0) + CONTEXTO_S;
+  const aceitos = cortes.filter((c) => validarCorte(c, falas, duracaoVideo).length === 0).map((c) => {
+    const corte = comContexto(c.inicio_segundos!, c.fim_segundos!, falas, limite);
+    return {
+      inicio_segundos: corte.inicio, fim_segundos: corte.fim, titulo_sugerido: String(c.titulo_sugerido).trim(),
+      o_que_e_dito: typeof c.o_que_e_dito === "string" ? c.o_que_e_dito : "", motivo: typeof c.motivo === "string" ? c.motivo : "",
+      confianca: typeof c.confianca === "string" ? c.confianca : "",
+    };
+  });
   return { aceitos, rejeitados: cortes.length - aceitos.length };
 }

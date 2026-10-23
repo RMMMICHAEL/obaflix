@@ -2024,7 +2024,7 @@ export function CustomPlayer({
   const pedirCortesIA = useCallback(async () => {
     if (pedindoIA || pedidoIA.trim().length < 3) return;
     setPedindoIA(true);
-    setCenasAviso("Cortes AI analisando a legenda…");
+    setCenasAviso("Cortes AI analisando…");
     try {
       const r = await fetch("/api/cortes/ia", {
         method: "POST",
