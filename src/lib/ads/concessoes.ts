@@ -195,10 +195,10 @@ export interface Desafio {
   criadoEm: number;
 }
 
-export type PlataformaDeAnuncio = "android" | "electron" | "android_tv";
+export type PlataformaDeAnuncio = "android" | "android_nativo" | "electron" | "android_tv";
 
 export function ehPlataformaDeAnuncio(v: unknown): v is PlataformaDeAnuncio {
-  return v === "android" || v === "electron" || v === "android_tv";
+  return v === "android" || v === "android_nativo" || v === "electron" || v === "android_tv";
 }
 
 /**

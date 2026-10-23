@@ -5,7 +5,7 @@ import { getUserFromRequest } from "@/lib/authSession";
 import { checkRateLimit, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
-import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioAndroidNativoAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import {
   TEMPO_MINIMO_DE_ANUNCIO_MS,
   TTL_CONCESSAO_PROMOCAO_TV_S,
@@ -94,6 +94,7 @@ export interface DependenciasDeConclusao {
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
   anuncioAndroidAtivo?: () => boolean;
+  anuncioAndroidNativoAtivo?: () => boolean;
   anuncioElectronAtivo?: () => boolean;
   checkRateLimit?: typeof checkRateLimit;
   consumirDesafio?: typeof consumirDesafio;
@@ -116,6 +117,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
+  const anuncioNativo = deps.anuncioAndroidNativoAtivo ?? anuncioAndroidNativoAtivo;
   const anuncioElectron = deps.anuncioElectronAtivo ?? anuncioElectronAtivo;
   const limitar = deps.checkRateLimit ?? checkRateLimit;
   const consumir = deps.consumirDesafio ?? consumirDesafio;
@@ -167,8 +169,9 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
   const globalAtiva = flagAtiva();
   const tvAtiva = promoTvAtiva();
   const androidAtiva = anuncioAndroid();
+  const nativoAtiva = anuncioNativo();
   const electronAtiva = anuncioElectron();
-  if (!globalAtiva && !tvAtiva && !androidAtiva && !electronAtiva) {
+  if (!globalAtiva && !tvAtiva && !androidAtiva && !nativoAtiva && !electronAtiva) {
     return NextResponse.json({ error: "Indisponível" }, { status: 404, headers: NO_STORE });
   }
 
@@ -244,6 +247,7 @@ function createAdsCompleteHandler(deps: DependenciasDeConclusao = {}) {
     const plataformaPermitida =
       (tvAtiva && desafio.plataforma === "android_tv") ||
       (androidAtiva && desafio.plataforma === "android") ||
+      (nativoAtiva && desafio.plataforma === "android_nativo") ||
       (electronAtiva && desafio.plataforma === "electron");
     if (!plataformaPermitida) {
       await registrarAbuso(ip);

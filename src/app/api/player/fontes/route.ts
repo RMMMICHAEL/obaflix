@@ -211,7 +211,10 @@ export async function POST(req: NextRequest) {
 
   const ambiente = normalizarAmbiente(corpo.ambiente);
   // Da credencial (nunca do corpo): só a TV reage a PROMOCAO_TV_ATIVA.
-  const plataformaDoAnuncio = plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario);
+  const plataformaDoAnuncio = plataformaDaRequisicao((corpo as { plataforma?: unknown }).plataforma, usuario, {
+    userAgent: ua,
+    headerCliente: req.headers.get(HEADER_CLIENTE),
+  });
   // O player não manda `plataforma` para cá, só `ambiente`. Sem este sinal o
   // Electron cairia em `web` e ANUNCIO_ELECTRON_ATIVO nunca cobraria a concessão.
   const requisicaoElectron = ehRequisicaoElectron({

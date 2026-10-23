@@ -112,6 +112,17 @@ export function promocaoTvAtiva(
  * Mesma leitura estrita de `monetizacaoAtiva`: **só a string exata `"true"`
  * liga**. Sem `NEXT_PUBLIC_`. `env` é injetável para o teste.
  */
+/**
+ * Flag servidor-only do **Android nativo** (o app Kotlin, pacote `com.obaflix.nativelab`), separada de
+ * `ANUNCIO_ANDROID_ATIVO`, que continua sendo só do app WebView publicado. Só vale para a plataforma
+ * `android_nativo` (ver `plataformaDaRequisicao`); ligar uma não liga a outra. Só a string exata `"true"` liga.
+ */
+export function anuncioAndroidNativoAtivo(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.ANUNCIO_ANDROID_NATIVO_ATIVO === "true";
+}
+
 export function anuncioAndroidAtivo(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
