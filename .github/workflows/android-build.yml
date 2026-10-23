@@ -137,6 +137,8 @@ jobs:
           files: android/app/build/outputs/apk/release/app-release.apk
           draft: false
           prerelease: false
+          # "Latest" do repositório é do Windows: o electron-updater lê latest.yml de lá.
+          make_latest: false
           body: |
             ## Obaflix Android APK
 

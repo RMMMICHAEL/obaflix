@@ -336,6 +336,7 @@ jobs:
             "promote/latest.yml" `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:EXPECTED_COMMIT `
+            --latest `
             --title "Obaflix $env:VERSAO" `
             --notes "Obaflix Desktop $env:VERSAO — commit $env:EXPECTED_COMMIT — SHA256 $env:EXE_SHA256 — promovido do run $env:CANDIDATE_RUN_ID sem rebuild."
 
