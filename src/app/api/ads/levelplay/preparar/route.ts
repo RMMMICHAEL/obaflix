@@ -78,7 +78,7 @@ function createPrepararHandler(deps: DependenciasDePreparo = {}) {
 
       const desafio = await espiar(desafioId, usuario.userId);
       // Uma resposta só para inexistente, de outra conta, de outra finalidade ou de outra plataforma.
-      if (!desafio || desafio.finalidade !== "reproducao" || desafio.plataforma !== "android") {
+      if (!desafio || desafio.finalidade !== "reproducao" || (desafio.plataforma !== "android" && desafio.plataforma !== "android_nativo")) {
         await registrarAbuso(ip);
         return NextResponse.json({ error: "Acesso negado" }, { status: 403, headers: NO_STORE });
       }
