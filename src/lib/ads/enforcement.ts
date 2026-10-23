@@ -22,7 +22,7 @@
  */
 
 import { entitlementsDoUsuario } from "../entitlements";
-import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "../playbackAuthorization";
+import { monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioAndroidNativoAtivo, anuncioElectronAtivo } from "../playbackAuthorization";
 import { consumirConcessao, type AlvoDeConcessao, type FinalidadeDeConcessao } from "./concessoes";
 import { exigeAnuncio, type ConteudoDeAnuncio, type PlataformaDeExibicao } from "./politica";
 import type { Entitlements } from "../entitlements";
@@ -46,6 +46,11 @@ export interface OpcoesDeEnforcement {
    * Unity sem ligar o enforcement para Web/Electron/TV. Injetável para o teste.
    */
   anuncioAndroidAtivo?: boolean;
+  /**
+   * `ANUNCIO_ANDROID_NATIVO_ATIVO` já interpretada. Só tem efeito quando `entrada.plataforma === "android_nativo"`:
+   * cobra a concessão do app nativo sem ligar nada para o WebView, a TV, o Electron ou a Web. Injetável para o teste.
+   */
+  anuncioAndroidNativoAtivo?: boolean;
   /**
    * A flag do anúncio do Electron (`ANUNCIO_ELECTRON_ATIVO`) já interpretada. Só
    * tem efeito quando a requisição é do Electron (`entrada.plataforma ===
@@ -110,6 +115,7 @@ export async function autorizarPorAnuncio(
   const global = opcoes.ativa ?? monetizacaoAtiva();
   const tvAtiva = opcoes.promocaoTvAtiva ?? promocaoTvAtiva();
   const androidAtiva = opcoes.anuncioAndroidAtivo ?? anuncioAndroidAtivo();
+  const nativoAtiva = opcoes.anuncioAndroidNativoAtivo ?? anuncioAndroidNativoAtivo();
   const electronAtiva = opcoes.anuncioElectronAtivo ?? anuncioElectronAtivo();
   const daRequisicaoElectron =
     entrada.plataforma !== "android_tv" && (entrada.plataforma === "electron" || entrada.electron === true);
@@ -117,6 +123,7 @@ export async function autorizarPorAnuncio(
     global ||
     (tvAtiva && entrada.plataforma === "android_tv") ||
     (androidAtiva && entrada.plataforma === "android") ||
+    (nativoAtiva && entrada.plataforma === "android_nativo") ||
     (electronAtiva && daRequisicaoElectron);
   if (!ativa) return { liberado: true, via: "flag_desligada" };
 

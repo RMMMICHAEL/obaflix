@@ -195,10 +195,10 @@ export interface Desafio {
   criadoEm: number;
 }
 
-export type PlataformaDeAnuncio = "android" | "electron" | "android_tv";
+export type PlataformaDeAnuncio = "android" | "android_nativo" | "electron" | "android_tv";
 
 export function ehPlataformaDeAnuncio(v: unknown): v is PlataformaDeAnuncio {
-  return v === "android" || v === "electron" || v === "android_tv";
+  return v === "android" || v === "android_nativo" || v === "electron" || v === "android_tv";
 }
 
 /**
@@ -344,6 +344,15 @@ export async function consumirDesafio(id: string, userId: string): Promise<Desaf
   if (removidos !== 1) return null;
 
   return interpretarDesafio(bruto, userId);
+}
+
+/**
+ * Lê o desafio **sem consumir**. Só para quem precisa conferir dono, finalidade e plataforma antes de
+ * decidir (ex.: preparar o Rewarded). Quem libera conteúdo continua sendo `consumirDesafio`.
+ */
+export async function espiarDesafio(id: string, userId: string): Promise<Desafio | null> {
+  const bruto = await getRedis().get(chaveDesafio(id));
+  return bruto ? interpretarDesafio(bruto, userId) : null;
 }
 
 // ── Sessão promocional da TV ─────────────────────────────────────────────────
