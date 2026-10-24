@@ -460,8 +460,11 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     // é o `SET NX` de `registrarEpisodioDistinto` que faz reabrir o mesmo
     // episódio devolver o contador sem somar. Um contador lido antes e escrito
     // depois abriria a janela em que dois pedidos paralelos leem o mesmo valor.
+    // O app nativo cobra todo episódio novo e não usa a cota: nem lê nem escreve o contador, então o que ele faz não
+    // muda a cadência do WebView/Electron na mesma conta.
+    const todoEpisodio = plataforma === "android_nativo";
     let distintos: number | undefined;
-    if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null) {
+    if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null && !todoEpisodio) {
       try {
         distintos = await registrarEpisodio({
           userId, conteudoId, temporada, episodio: numeroEp, direitos,
@@ -480,6 +483,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
       tipo: conteudoTipo,
       temConcessao: false,
       episodiosDistintosNaJanela: distintos,
+      todoEpisodio,
     });
 
     if (decisao.decisao === "permitido") return permitirComPasse(decisao.via);

@@ -185,6 +185,11 @@ export interface FatosDaDecisao {
    * que é quem garante que reabrir o mesmo episódio não incrementa.
    */
   episodiosDistintosNaJanela?: number;
+  /**
+   * O app Android nativo cobra **cada** episódio novo (como um filme), sem a cota de N episódios do plano. A concessão
+   * válida ainda libera (reabrir ou retomar o mesmo episódio). Ausente/falso: a cadência de sempre.
+   */
+  todoEpisodio?: boolean;
 }
 
 /**
@@ -282,7 +287,7 @@ export function decidirAnuncio(fatos: FatosDaDecisao): DecisaoDeAnuncio {
     return { decisao: "permitido", via: "concessao" };
   }
 
-  if (fatos.tipo === "filme" || fatos.tipo === "canal") {
+  if (fatos.tipo === "filme" || fatos.tipo === "canal" || fatos.todoEpisodio === true) {
     return { decisao: "anuncio_necessario" };
   }
 
