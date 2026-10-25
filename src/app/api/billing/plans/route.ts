@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { vitrineDoPlano } from "@/lib/billing/vitrine";
+import { PLANOS_FORA_DA_VITRINE, vitrineDoPlano } from "@/lib/billing/vitrine";
 import { TELAS_ADICIONAIS_MAX } from "@/lib/billing/precificacao";
 
 export const dynamic = "force-dynamic";
@@ -17,8 +17,11 @@ export const dynamic = "force-dynamic";
  */
 function createPlansHandler(deps: any = {}) {
   const banco = deps.prisma ?? prisma;
-  return async function GET() {
-  const planos = await banco.plano.findMany({
+  return async function GET(req?: Request) {
+  // `?oferta=<id>` devolve só aquele plano fora da vitrine; qualquer outro valor cai na lista pública de sempre.
+  const ofertaPedida = req ? new URL(req.url).searchParams.get("oferta") : null;
+  const oferta = ofertaPedida !== null && PLANOS_FORA_DA_VITRINE.has(ofertaPedida) ? ofertaPedida : null;
+  const todos = await banco.plano.findMany({
     where: { ativo: true }, orderBy: { ordem: "asc" },
     select: {
       id: true, nome: true, descricao: true, ehPadrao: true,
@@ -30,6 +33,7 @@ function createPlansHandler(deps: any = {}) {
       adicionais: { where: { ativo: true, tipo: "tela", moeda: "BRL" }, select: { precoMensalCentavos: true } },
     },
   });
+  const planos = todos.filter((p: any) => (oferta ? p.id === oferta : !PLANOS_FORA_DA_VITRINE.has(p.id)));
   return NextResponse.json({
     planos: planos.map((linha: any) => {
       const { adicionais, ...plano } = linha;
