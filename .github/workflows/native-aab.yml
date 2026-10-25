@@ -1,0 +1,74 @@
+name: Native AAB (isolated tag)
+
+# Runs only on pushes of native-aab-* TAGS (no branch, so no Vercel preview). Builds the Android NATIVE app (com.obaflix, Play distribution) and signs
+# it with the existing Obaflix upload key (same secrets as android-build.yml). Never touches main or the old workflow.
+on:
+  push:
+    tags: ['native-aab-*']
+
+permissions:
+  contents: read
+
+jobs:
+  aab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      EXPECTED_SHA256: "BD:F6:4E:BF:3C:C9:F8:41:A0:5D:4A:60:D6:7C:39:BC:95:7F:69:C0:F4:FD:6B:66:C0:46:59:01:F6:A0:DE:04"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Signing configuration (existing upload key)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo "ANDROID_KEYSTORE_B64 ausente"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          {
+            echo "sdk.dir=$ANDROID_HOME"
+            echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/upload.jks"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+          } > local.properties
+
+      - name: Build AAB (playstore, official package)
+        run: |
+          chmod +x gradlew
+          ./gradlew :androidApp:bundlePlaystoreRelease -Pnuvio.android.distribution=playstore \
+            -Dorg.gradle.jvmargs=-Xmx6g -Pkotlin.daemon.jvmargs=-Xmx4g --no-daemon --console=plain
+
+      - name: Verify upload certificate
+        run: |
+          AAB=$(find androidApp/build/outputs/bundle/playstoreRelease -name '*.aab' | head -1)
+          test -n "$AAB" || { echo "AAB nao gerado"; exit 1; }
+          SHA=$(keytool -printcert -jarfile "$AAB" | grep 'SHA256:' | head -1 | sed 's/.*SHA256: //')
+          echo "AAB=$AAB"
+          echo "SHA256 do certificado: $SHA"
+          test "$SHA" = "$EXPECTED_SHA256" || { echo "Certificado diferente do registrado na Play"; exit 1; }
+          sha256sum "$AAB"
+          M=$(find androidApp/build/intermediates/merged_manifests/playstoreRelease -name AndroidManifest.xml | head -1)
+          cp "$M" merged-manifest.xml
+          rm -f "$RUNNER_TEMP/upload.jks" local.properties
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: obaflix-native-aab-${{ github.sha }}
+          path: |
+            androidApp/build/outputs/bundle/playstoreRelease/*.aab
+            merged-manifest.xml
+          if-no-files-found: error

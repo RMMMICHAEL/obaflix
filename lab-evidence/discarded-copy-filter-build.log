@@ -1,0 +1,136 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.4.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+Calculating task graph as no cached configuration is available for tasks: :androidApp:assembleFullDebug
+Type-safe project accessors is an incubating feature.
+
+> Configure project :composeApp
+w: file:///C:/lab/nuvio-build-proof/composeApp/build.gradle.kts:506:36: 'val materialIconsExtended: String' is deprecated. This artifact is pinned to version 1.7.3 and will not receive updates. Either use this version explicitly or migrate to Material Symbols (vector resources). See https://kotlinlang.org/docs/multiplatform/whats-new-compose-180.html.
+w: [33m[1mNative task 'iosSimulatorArm64Test' is disabled[0m[0m
+Task 'iosSimulatorArm64Test' for target 'ios_simulator_arm64' cannot run on the current host (windows-x86_64).
+Reason: simulator tests require macOS
+[32m[1mSolution:[0m[0m
+[32m[3mTo suppress this warning, add 'kotlin.native.ignoreDisabledTargets=true' to gradle.properties.[0m[0m
+
+w: [33m[1mCross Compilation with Cinterop Not Supported in Project 'composeApp'[0m[0m
+In project 'composeApp', cross compilation to target 'iosArm64' has been disabled because it contains cinterops: 'commoncrypto' which cannot be processed on host 'mingw_x64'.
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+[32m[1mSolutions:[0m[0m
+[32m * [3mRemove the cinterop dependencies 'commoncrypto' from target 'iosArm64'[0m[0m
+[32m * [3mBuild on a compatible host platform for this target/cinterop combination[0m[0m
+[32m * [3mTo disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties[0m[0m
+
+w: [33m[1mCross Compilation with Cinterop Not Supported in Project 'composeApp'[0m[0m
+In project 'composeApp', cross compilation to target 'iosSimulatorArm64' has been disabled because it contains cinterops: 'commoncrypto' which cannot be processed on host 'mingw_x64'.
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+[32m[1mSolutions:[0m[0m
+[32m * [3mRemove the cinterop dependencies 'commoncrypto' from target 'iosSimulatorArm64'[0m[0m
+[32m * [3mBuild on a compatible host platform for this target/cinterop combination[0m[0m
+[32m * [3mTo disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties[0m[0m
+
+w: [33m[1mDisabled Kotlin/Native Targets[0m[0m
+The following Kotlin/Native targets cannot be built on this machine and are disabled:
+iosArm64, iosSimulatorArm64
+[32m[1mSolution:[0m[0m
+[32m[3mTo hide this message, add 'kotlin.native.ignoreDisabledTargets=true' to the Gradle properties.[0m[0m
+
+
+> Task :androidApp:preBuild UP-TO-DATE
+> Task :composeApp:androidPreBuild UP-TO-DATE
+> Task :composeApp:preAndroidMainBuild UP-TO-DATE
+> Task :androidApp:preFullDebugBuild UP-TO-DATE
+> Task :androidApp:mergeFullDebugNativeDebugMetadata NO-SOURCE
+> Task :composeApp:copyNonXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:convertXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:prepareComposeResourcesTaskForAndroidMain NO-SOURCE
+> Task :composeApp:generateResourceAccessorsForAndroidMain NO-SOURCE
+> Task :composeApp:kmpPartiallyResolvedDependenciesChecker
+> Task :composeApp:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :androidApp:generateFullDebugAssets UP-TO-DATE
+> Task :composeApp:generateAndroidMainAssets UP-TO-DATE
+> Task :composeApp:generateRuntimeConfigs
+> Task :composeApp:copyNonXmlValueResourcesForCommonMain
+> Task :composeApp:generateAndroidMainEmptyResourceFiles
+> Task :androidApp:javaPreCompileFullDebug
+> Task :composeApp:generateExpectResourceCollectorsForCommonMain
+> Task :composeApp:generateComposeResClass
+> Task :androidApp:generateFullDebugResources
+> Task :androidApp:packageFullDebugResources
+> Task :androidApp:mapFullDebugSourceSetPaths
+> Task :androidApp:createFullDebugCompatibleScreenManifests
+> Task :androidApp:extractDeepLinksFullDebug
+> Task :composeApp:convertXmlValueResourcesForCommonMain
+> Task :composeApp:prepareComposeResourcesTaskForCommonMain
+> Task :composeApp:generateResourceAccessorsForCommonMain
+> Task :composeApp:generateActualResourceCollectorsForAndroidMain
+> Task :composeApp:copyAndroidMainComposeResourcesToAndroidAssets
+> Task :composeApp:packageAndroidMainResources
+> Task :androidApp:generateFullDebugGlobalSynthetics
+> Task :androidApp:l8DexDesugarLibFullDebug
+> Task :composeApp:processAndroidMainManifest
+> Task :androidApp:processFullDebugNavigationResources
+> Task :androidApp:checkFullDebugDuplicateClasses
+> Task :androidApp:desugarFullDebugFileDependencies
+> Task :composeApp:writeAndroidMainAarMetadata
+> Task :composeApp:parseAndroidMainLocalResources
+> Task :composeApp:generateAndroidMainRFile
+> Task :androidApp:parseFullDebugLocalResources
+> Task :composeApp:mergeAndroidMainAssets
+> Task :androidApp:checkFullDebugAarMetadata
+> Task :androidApp:compileFullDebugNavigationResources
+> Task :composeApp:mapAndroidMainSourceSetPaths
+> Task :androidApp:mergeFullDebugAssets
+> Task :composeApp:compileAndroidMainLibraryResources
+> Task :androidApp:mergeFullDebugResources
+> Task :androidApp:generateFullDebugRFile
+> Task :composeApp:mergeAndroidMainJniLibFolders
+> Task :composeApp:mergeAndroidMainNativeLibs NO-SOURCE
+> Task :composeApp:copyAndroidMainJniLibsProjectOnly
+> Task :androidApp:validateSigningFullDebug
+> Task :androidApp:writeFullDebugAppMetadata
+> Task :androidApp:mergeFullDebugJniLibFolders
+> Task :androidApp:writeFullDebugSigningConfigVersions
+> Task :composeApp:compileAndroidMain
+> Task :androidApp:processFullDebugMainManifest
+> Task :androidApp:compressFullDebugAssets
+
+The message received from the daemon indicates that the daemon has disappeared.
+Build request sent: Build{id=73348ce7-f8be-403f-b393-c6134e440388, currentDir=C:\lab\nuvio-build-proof}
+Attempting to read last messages from the daemon log...
+Daemon pid: 27448
+  log file: D:\Android\Gradle\daemon\9.4.1\daemon-27448.out.log
+----- Last 20 lines from daemon log file - daemon-27448.out.log -----
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+Solutions:
+ * Remove the cinterop dependencies 'commoncrypto' from target 'iosArm64'
+ * Build on a compatible host platform for this target/cinterop combination
+ * To disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties
+
+w: Cross Compilation with Cinterop Not Supported in Project 'composeApp'
+In project 'composeApp', cross compilation to target 'iosSimulatorArm64' has been disabled because it contains cinterops: 'commoncrypto' which cannot be processed on host 'mingw_x64'.
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+Solutions:
+ * Remove the cinterop dependencies 'commoncrypto' from target 'iosSimulatorArm64'
+ * Build on a compatible host platform for this target/cinterop combination
+ * To disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties
+
+w: Disabled Kotlin/Native Targets
+The following Kotlin/Native targets cannot be built on this machine and are disabled:
+iosArm64, iosSimulatorArm64
+Solution:
+To hide this message, add 'kotlin.native.ignoreDisabledTargets=true' to the Gradle properties.
+----- End of the daemon log -----
+
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Gradle build daemon disappeared unexpectedly (it may have been killed or may have crashed)
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+> Task :androidApp:mergeExtDexFullDebug
+> Task :androidApp:mergeFullDebugNativeLibs
