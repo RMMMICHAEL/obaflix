@@ -14,6 +14,7 @@
     "seed:planos": "tsx scripts/seed-planos.ts",
     "seed:planos:apply": "tsx scripts/seed-planos.ts --apply",
     "precos:planos": "tsx scripts/precos-planos.ts",
+    "plano:seja-premium": "tsx scripts/seja-premium.ts",
     "planos:gratuito": "tsx scripts/ajustar-plano-gratuito.ts",
     "planos:gratuito:apply": "tsx scripts/ajustar-plano-gratuito.ts --apply",
     "canais:importar": "tsx scripts/importar-canais.ts",

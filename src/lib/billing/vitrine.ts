@@ -59,7 +59,20 @@ const NOMES_PUBLICOS: Record<string, string> = {
   basic: "Básico",
   plus: "Plus",
   premium: "Premium",
+  "seja-premium": "SEJA PREMIUM",
 };
+
+/**
+ * O plano de oferta única do app nativo ("SEJA PREMIUM": direitos do Gratuito, sem anúncios, 30 dias). Compra normal pelo
+ * checkout Pix; o que o diferencia é só não aparecer na vitrine do site e da TV.
+ */
+export const PLANO_SEJA_PREMIUM_ID = "seja-premium";
+
+/**
+ * Planos compráveis que a vitrine pública (`/planos`, TV) nunca lista. Só saem de `/api/billing/plans?oferta=<id>`.
+ * É apresentação, nunca direito: quem decide o que a conta pode é `Plano`, como sempre.
+ */
+export const PLANOS_FORA_DA_VITRINE: ReadonlySet<string> = new Set([PLANO_SEJA_PREMIUM_ID]);
 
 const TEMAS: Record<string, TemaDoPlano> = { basic: "azul", plus: "roxo", premium: "ambar" };
 
