@@ -51,4 +51,5 @@ function createPlansHandler(deps: any = {}) {
   };
 }
 
-export const GET = Object.assign(createPlansHandler(), { createForTest: createPlansHandler });
+// O tipo exportado exige o `Request` que o Next valida; o handler tolera a chamada sem ele (testes).
+export const GET = Object.assign(createPlansHandler() as (req: Request) => Promise<Response>, { createForTest: createPlansHandler });
