@@ -6,7 +6,7 @@ import { headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { prisma } from "@/lib/prisma";
-import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
+import { direitoDeCatalogo, monetizacaoAtiva, promocaoTvAtiva, anuncioAndroidAtivo, anuncioAndroidNativoAtivo, anuncioElectronAtivo } from "@/lib/playbackAuthorization";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
 import {
   abrirDesafio,
@@ -158,6 +158,7 @@ export interface DependenciasDeAutorizacao {
   monetizacaoAtiva?: () => boolean;
   promocaoTvAtiva?: () => boolean;
   anuncioAndroidAtivo?: () => boolean;
+  anuncioAndroidNativoAtivo?: () => boolean;
   anuncioElectronAtivo?: () => boolean;
   entitlementsDoUsuario?: typeof entitlementsDoUsuario;
   registrarEpisodioDistinto?: typeof registrarEpisodioDistinto;
@@ -176,6 +177,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   const flagAtiva = deps.monetizacaoAtiva ?? monetizacaoAtiva;
   const promoTvAtiva = deps.promocaoTvAtiva ?? promocaoTvAtiva;
   const anuncioAndroid = deps.anuncioAndroidAtivo ?? anuncioAndroidAtivo;
+  const anuncioNativo = deps.anuncioAndroidNativoAtivo ?? anuncioAndroidNativoAtivo;
   const anuncioElectron = deps.anuncioElectronAtivo ?? anuncioElectronAtivo;
   const resolverEntitlements = deps.entitlementsDoUsuario ?? entitlementsDoUsuario;
   const registrarEpisodio = deps.registrarEpisodioDistinto ?? registrarEpisodioDistinto;
@@ -247,7 +249,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // `android_tv` vem da credencial; do corpo, só `android` e `electron`.
   // Qualquer outra declaração vira `"web"` — a plataforma sem meio de exibição.
   // O desconhecido cai no caso mais restritivo.
-  const plataforma = plataformaDaRequisicao(corpo.plataforma, usuario);
+  const plataforma = plataformaDaRequisicao(corpo.plataforma, usuario, { userAgent: ua, headerCliente: req.headers.get(HEADER_CLIENTE) });
 
   // ── Flag desligada: permitido, sem consultar nada ──────────────────────────
   //
@@ -264,10 +266,12 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
   // Web segue o bypass de sempre com a global desligada.
   const enforcarPromocaoTv = promoTvAtiva() && plataforma === "android_tv";
   const enforcarAnuncioAndroid = anuncioAndroid() && plataforma === "android";
+  // O app nativo tem a flag própria: ligar `ANUNCIO_ANDROID_ATIVO` (WebView) não o atinge, e o inverso também.
+  const enforcarAnuncioNativo = anuncioNativo() && plataforma === "android_nativo";
   const enforcarAnuncioElectron =
     anuncioElectron() &&
     ehRequisicaoElectron({ plataforma, userAgent: ua, headerCliente: req.headers.get(HEADER_CLIENTE) });
-  if (!flagAtiva() && !enforcarPromocaoTv && !enforcarAnuncioAndroid && !enforcarAnuncioElectron) {
+  if (!flagAtiva() && !enforcarPromocaoTv && !enforcarAnuncioAndroid && !enforcarAnuncioNativo && !enforcarAnuncioElectron) {
     return NextResponse.json({ decisao: "PERMITIDO" }, { headers: NO_STORE });
   }
 
@@ -456,8 +460,11 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     // é o `SET NX` de `registrarEpisodioDistinto` que faz reabrir o mesmo
     // episódio devolver o contador sem somar. Um contador lido antes e escrito
     // depois abriria a janela em que dois pedidos paralelos leem o mesmo valor.
+    // O app nativo cobra todo episódio novo e não usa a cota: nem lê nem escreve o contador, então o que ele faz não
+    // muda a cadência do WebView/Electron na mesma conta.
+    const todoEpisodio = plataforma === "android_nativo";
     let distintos: number | undefined;
-    if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null) {
+    if (conteudoTipo === "serie" && temporada !== null && numeroEp !== null && !todoEpisodio) {
       try {
         distintos = await registrarEpisodio({
           userId, conteudoId, temporada, episodio: numeroEp, direitos,
@@ -476,6 +483,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
       tipo: conteudoTipo,
       temConcessao: false,
       episodiosDistintosNaJanela: distintos,
+      todoEpisodio,
     });
 
     if (decisao.decisao === "permitido") return permitirComPasse(decisao.via);
@@ -520,7 +528,7 @@ function createAuthorizeHandler(deps: DependenciasDeAutorizacao = {}) {
     userId,
     tipo: conteudoTipo,
     // `meio` já provou que é uma das duas plataformas com anúncio externo.
-    plataforma: plataforma === "android" ? "android" : "electron",
+    plataforma: plataforma === "android" ? "android" : plataforma === "android_nativo" ? "android_nativo" : "electron",
     finalidade,
     alvo,
   });

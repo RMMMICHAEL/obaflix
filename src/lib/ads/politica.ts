@@ -45,7 +45,7 @@ export type ConteudoDeAnuncio = "filme" | "serie" | "canal";
  *
  * É o que impede o `ambiente` declarado pelo cliente de virar caminho de fuga.
  */
-export type PlataformaDeExibicao = "android" | "electron" | "android_tv" | "web";
+export type PlataformaDeExibicao = "android" | "android_nativo" | "electron" | "android_tv" | "web";
 
 /**
  * A plataforma que vale para a decisão.
@@ -66,11 +66,35 @@ export type PlataformaDeExibicao = "android" | "electron" | "android_tv" | "web"
 export function plataformaDaRequisicao(
   declarada: unknown,
   credencial: { origem: "cookie" | "bearer"; deviceId: string | null },
+  sinais?: { userAgent?: string | null; headerCliente?: string | null },
 ): PlataformaDeExibicao {
   if (credencial.origem === "bearer" && typeof credencial.deviceId === "string" && credencial.deviceId !== "") {
     return "android_tv";
   }
+  // `android_nativo` só vale quando TRÊS sinais independentes concordam e a sessão é de cookie: a declaração no
+  // corpo, o header do cliente e o User-Agent do app nativo (que não pode ser o do WebView). Qualquer divergência cai
+  // em `web`, a plataforma sem meio de exibição. Esses sinais ainda são do cliente: não provam o binário (isso é
+  // atestação, ex. Play Integrity), mas fazem o app WebView e o nativo nunca se confundirem por engano, e mentir só
+  // pode ADICIONAR obrigação de anúncio a quem mente — nunca remover de outro cliente.
+  if (declarada === "android_nativo") {
+    return credencial.origem === "cookie" && ehSinalDeAppNativo(sinais) ? "android_nativo" : "web";
+  }
   return declarada === "android" || declarada === "electron" ? declarada : "web";
+}
+
+/** Valor do header `x-obaflix-client` que o app Android nativo envia. Distinto de `android` (o WebView). */
+export const CLIENTE_ANDROID_NATIVO = "android-nativo";
+const UA_NATIVO = /ObaflixNative\//i;
+const UA_WEBVIEW = /ObaflixApp\/|ObaflixPlay\//i;
+
+export function ehSinalDeAppNativo(sinais?: { userAgent?: string | null; headerCliente?: string | null }): boolean {
+  if (!sinais) return false;
+  const ua = sinais.userAgent ?? "";
+  return (
+    (sinais.headerCliente ?? "").trim().toLowerCase() === CLIENTE_ANDROID_NATIVO &&
+    UA_NATIVO.test(ua) &&
+    !UA_WEBVIEW.test(ua)
+  );
 }
 
 /**
@@ -131,7 +155,7 @@ export function meioDeExibicao(
   temDirectLink: boolean,
   temPromocaoTv = false,
 ): MeioDeExibicao | null {
-  if (plataforma === "android") return "unity";
+  if (plataforma === "android" || plataforma === "android_nativo") return "unity";
   if (plataforma === "electron") return temDirectLink ? "direct_link" : null;
   if (plataforma === "android_tv") return temPromocaoTv ? "promocao_tv" : null;
   return null;
@@ -161,6 +185,11 @@ export interface FatosDaDecisao {
    * que é quem garante que reabrir o mesmo episódio não incrementa.
    */
   episodiosDistintosNaJanela?: number;
+  /**
+   * O app Android nativo cobra **cada** episódio novo (como um filme), sem a cota de N episódios do plano. A concessão
+   * válida ainda libera (reabrir ou retomar o mesmo episódio). Ausente/falso: a cadência de sempre.
+   */
+  todoEpisodio?: boolean;
 }
 
 /**
@@ -258,7 +287,7 @@ export function decidirAnuncio(fatos: FatosDaDecisao): DecisaoDeAnuncio {
     return { decisao: "permitido", via: "concessao" };
   }
 
-  if (fatos.tipo === "filme" || fatos.tipo === "canal") {
+  if (fatos.tipo === "filme" || fatos.tipo === "canal" || fatos.todoEpisodio === true) {
     return { decisao: "anuncio_necessario" };
   }
 
