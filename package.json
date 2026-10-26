@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "node scripts/patch-next-auth-origin.cjs && prisma generate && next build",
+    "postinstall": "node scripts/patch-next-auth-origin.cjs",
     "start": "next start",
     "lint": "next lint",
     "test:extractors": "node --test \"desktop/electron/__tests__/*.test.js\"",
