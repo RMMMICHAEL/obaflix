@@ -153,7 +153,7 @@ async function vinculoAutorizadoPeloDono(): Promise<string | null> {
 }
 
 /** `RepoUsuarios` sobre o Prisma: `User.email` e `User.googleSub` são únicos no banco, e o vínculo é atômico. */
-const repoUsuariosPrisma: RepoUsuarios = {
+export const repoUsuariosPrisma: RepoUsuarios = {
   porGoogleSub: async (sub) => { const u = await prisma.user.findUnique({ where: { googleSub: sub }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },
   porEmail: async (email) => { const u = await prisma.user.findUnique({ where: { email }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },
   porId: async (id) => { const u = await prisma.user.findUnique({ where: { id }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },

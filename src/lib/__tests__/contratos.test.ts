@@ -34,3 +34,12 @@ test("contrato migrations: todas as migrations Google/aditivas recentes usam IF 
   assert.ok(readdirSync(dir).includes("migration.sql"));
   assert.match(lê(`${dir}/migration.sql`), /IF NOT EXISTS/);
 });
+
+test("contrato Google nativo: rota valida o ID token no servidor e usa o mesmo resolvedor", () => {
+  const rota = lê("src/app/api/desktop-auth/google-native/route.ts");
+  assert.ok(rota.includes("verificarIdTokenGoogle") && rota.includes("resolverContaGoogle"));
+  assert.ok(rota.includes("vinculoAutorizadoPara: null")); // sem vínculo por e-mail a conta com senha
+  assert.ok(rota.indexOf("verificarIdTokenGoogle(") < rota.indexOf("criarTicketDesktopAuth("));
+  const v = lê("src/lib/googleIdToken.ts");
+  for (const c of ["RS256", "audiencias", "nonce", "exp"]) assert.ok(v.includes(c), c);
+});
