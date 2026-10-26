@@ -8,7 +8,7 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
-import { decidirLoginGoogle, registrarRecusaGoogle } from "@/lib/googleSignIn";
+import { registrarAceiteGoogle, registrarRecusaGoogle, resolverContaGoogle, type RepoUsuarios } from "@/lib/googleSignIn";
 import { credencialRevogada, carimboAutenticacaoSeg, SessaoRevogadaError } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
@@ -128,6 +128,16 @@ async function requireAdminSessionOnly(origin: string | null, deps: AdminSession
   return null;
 }
 
+const SELECAO_GOOGLE = { id: true, email: true, nome: true, avatar: true, role: true, googleSub: true } as const;
+
+/** `RepoUsuarios` sobre o Prisma: `User.email` e `User.googleSub` são únicos no banco, e o vínculo é atômico. */
+const repoUsuariosPrisma: RepoUsuarios = {
+  porGoogleSub: (sub) => prisma.user.findUnique({ where: { googleSub: sub }, select: SELECAO_GOOGLE }),
+  porEmail: (email) => prisma.user.findUnique({ where: { email }, select: SELECAO_GOOGLE }),
+  criar: (dados) => prisma.user.create({ data: { ...dados, senhaHash: null }, select: SELECAO_GOOGLE }),
+  vincularSub: async (id, sub) => (await prisma.user.updateMany({ where: { id, googleSub: null }, data: { googleSub: sub } })).count === 1,
+};
+
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt", maxAge: SESSION_MAX_AGE },
   jwt: {
@@ -204,33 +214,27 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account, profile }: any) {
       if (account?.provider !== "google") return true;
 
-      const email = typeof user?.email === "string"
-        ? user.email.normalize("NFKC").toLowerCase().trim()
-        : "";
-      const emailVerificado = profile?.email_verified === true;
-      if (!email || !emailVerificado) {
-        const motivo = !email ? "sem_email" : "email_nao_verificado";
-        registrarRecusaGoogle(motivo);
+      // Login e cadastro em um botão (ver `resolverContaGoogle`): a identidade é o `sub` do Google; o e-mail só encontra
+      // uma conta antiga. Sem e-mail verificado nada acontece.
+      const resultado = await resolverContaGoogle(
+        repoUsuariosPrisma,
+        {
+          sub: typeof profile?.sub === "string" ? profile.sub : "",
+          email: typeof user?.email === "string" ? user.email : "",
+          emailVerificado: profile?.email_verified === true,
+          nome: typeof profile?.name === "string" ? profile.name : null,
+          foto: typeof profile?.picture === "string" ? profile.picture : null,
+          dominioGerenciado: typeof profile?.hd === "string" && profile.hd.length > 0,
+        },
+        getObaflixSurface(),
+      );
+      if (!resultado.ok) {
+        registrarRecusaGoogle(resultado.motivo);
         return false;
       }
+      registrarAceiteGoogle(resultado.acao);
 
-      // Sem adapter OAuth, o id que o Google entrega nao e User.id. O Obaflix
-      // vincula apenas a uma conta que ja existe; login nunca cria ou altera linha.
-      const local = await prisma.user.findUnique({
-        where: { email },
-        select: { id: true, email: true, nome: true, avatar: true, role: true },
-      });
-      const decisao = decidirLoginGoogle({
-        email,
-        emailVerificadoPeloGoogle: emailVerificado,
-        localRole: local ? local.role : null,
-        superficie: getObaflixSurface(),
-      });
-      if (!decisao.ok || !local) {
-        registrarRecusaGoogle(decisao.ok ? "sem_conta_obaflix" : decisao.motivo);
-        return false;
-      }
-
+      const local = resultado.usuario;
       user.id = local.id;
       user.email = local.email;
       user.name = local.nome;
@@ -241,10 +245,14 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user, account }: any) {
       if (account?.provider === "google" && typeof token.email === "string") {
         const email = token.email.normalize("NFKC").toLowerCase().trim();
-        const local = await prisma.user.findUnique({
-          where: { email },
-          select: { id: true, nome: true, avatar: true, role: true },
-        });
+        const select = { id: true, nome: true, avatar: true, role: true } as const;
+        // A conta já foi resolvida em `signIn` (user.id); senão, pelo sub do Google e só por último pelo e-mail.
+        const local =
+          (typeof user?.id === "string" ? await prisma.user.findUnique({ where: { id: user.id }, select }) : null) ??
+          (typeof account.providerAccountId === "string"
+            ? await prisma.user.findUnique({ where: { googleSub: account.providerAccountId }, select })
+            : null) ??
+          (await prisma.user.findUnique({ where: { email }, select }));
         if (local) {
           token.id = local.id;
           token.sub = local.id;
