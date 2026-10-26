@@ -136,6 +136,8 @@ model User {
   nome         String?
   email        String         @unique
   senhaHash    String?
+  /// `sub` do Google (identidade estável do login Google). Único; null para quem nunca entrou com Google.
+  googleSub    String?        @unique
   avatar       String?
   role         String         @default("user")
   createdAt    DateTime       @default(now())

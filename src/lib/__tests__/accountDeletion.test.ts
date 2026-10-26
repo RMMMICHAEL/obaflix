@@ -347,8 +347,12 @@ describe("login pós-exclusão falha por construção", () => {
     assert.ok(auth.includes("prisma.user.findUnique({ where: { email } })"));
     assert.ok(/if \(!user\)[\s\S]{0,120}return null/.test(auth), "sem linha de User, o login retorna null");
   });
-  test("o login Google também exige a conta local", () => {
-    assert.ok(/if \(!local\) return false/.test(auth));
+  test("o login Google resolve a conta por sub/e-mail e só abre conta NOVA (id novo); nunca reaproveita o id apagado", () => {
+    // Decisão de produto (login e cadastro em um botão): a regra "sem conta local => recusa" deixou de existir. O que não
+    // muda: o userId vem sempre do banco (nunca de token ou perfil), então um id excluído não volta; e a sessão antiga
+    // continua revogada pelo cutoff. Prova de comportamento em `googleSignIn.test.ts`.
+    assert.ok(/resolverContaGoogle\(/.test(auth));
+    assert.ok(!/if \(!local\) return false/.test(auth));
   });
 });
 
