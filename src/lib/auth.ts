@@ -8,6 +8,7 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
+import { decidirLoginGoogle, registrarRecusaGoogle } from "@/lib/googleSignIn";
 import { credencialRevogada, carimboAutenticacaoSeg, SessaoRevogadaError } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
@@ -206,7 +207,12 @@ export const authOptions: NextAuthOptions = {
       const email = typeof user?.email === "string"
         ? user.email.normalize("NFKC").toLowerCase().trim()
         : "";
-      if (!email || profile?.email_verified !== true) return false;
+      const emailVerificado = profile?.email_verified === true;
+      if (!email || !emailVerificado) {
+        const motivo = !email ? "sem_email" : "email_nao_verificado";
+        registrarRecusaGoogle(motivo);
+        return false;
+      }
 
       // Sem adapter OAuth, o id que o Google entrega nao e User.id. O Obaflix
       // vincula apenas a uma conta que ja existe; login nunca cria ou altera linha.
@@ -214,8 +220,16 @@ export const authOptions: NextAuthOptions = {
         where: { email },
         select: { id: true, email: true, nome: true, avatar: true, role: true },
       });
-      if (!local) return false;
-      if (!canRoleSignInToSurface(local.role, getObaflixSurface())) return false;
+      const decisao = decidirLoginGoogle({
+        email,
+        emailVerificadoPeloGoogle: emailVerificado,
+        localRole: local ? local.role : null,
+        superficie: getObaflixSurface(),
+      });
+      if (!decisao.ok || !local) {
+        registrarRecusaGoogle(decisao.ok ? "sem_conta_obaflix" : decisao.motivo);
+        return false;
+      }
 
       user.id = local.id;
       user.email = local.email;
