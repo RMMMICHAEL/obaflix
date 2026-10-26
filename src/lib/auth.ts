@@ -8,7 +8,10 @@ import { checkRateLimit, clientIp } from "./requestSecurity";
 import crypto from "crypto";
 import { encode as encodeNextAuthJwt, decode as decodeNextAuthJwt } from "next-auth/jwt";
 import { canRoleSignInToSurface, getObaflixSurface, publicCutoverEnabled } from "@/config/obaflix-surface";
-import { registrarAceiteGoogle, registrarRecusaGoogle, resolverContaGoogle, type RepoUsuarios } from "@/lib/googleSignIn";
+import { registrarAceiteGoogle, registrarRecusaGoogle, resolverContaGoogle, type RepoUsuarios, type UsuarioGoogle } from "@/lib/googleSignIn";
+import { COOKIE_VINCULO_GOOGLE, consumirIntencaoVinculo, lerIntencaoVinculo } from "@/lib/googleLink";
+import { getRedis } from "@/lib/redis";
+import { cookies } from "next/headers";
 import { credencialRevogada, carimboAutenticacaoSeg, SessaoRevogadaError } from "@/lib/sessionRevocation";
 
 const DUMMY_PASSWORD_HASH = bcrypt.hash("not-a-valid-account-password", 10);
@@ -128,13 +131,33 @@ async function requireAdminSessionOnly(origin: string | null, deps: AdminSession
   return null;
 }
 
-const SELECAO_GOOGLE = { id: true, email: true, nome: true, avatar: true, role: true, googleSub: true } as const;
+const SELECAO_GOOGLE = { id: true, email: true, nome: true, avatar: true, role: true, googleSub: true, senhaHash: true } as const;
+
+function paraUsuarioGoogle(u: { id: string; email: string; nome: string | null; avatar: string | null; role: string; googleSub: string | null; senhaHash: string | null }): UsuarioGoogle {
+  const { senhaHash, ...resto } = u;
+  return { ...resto, temSenha: senhaHash !== null && senhaHash !== "" };
+}
+
+/** O dono confirmou a senha e autorizou vincular um Google (cookie assinado, uso único). Qualquer falha = sem vínculo. */
+async function vinculoAutorizadoPeloDono(): Promise<string | null> {
+  try {
+    const bruto = cookies().get(COOKIE_VINCULO_GOOGLE)?.value;
+    const segredo = process.env.NEXTAUTH_SECRET ?? "";
+    if (!bruto || segredo.length < 32) return null;
+    const intencao = lerIntencaoVinculo(bruto, segredo);
+    if (!intencao || !(await consumirIntencaoVinculo(getRedis(), intencao.jti))) return null;
+    return intencao.uid;
+  } catch {
+    return null;
+  }
+}
 
 /** `RepoUsuarios` sobre o Prisma: `User.email` e `User.googleSub` são únicos no banco, e o vínculo é atômico. */
 const repoUsuariosPrisma: RepoUsuarios = {
-  porGoogleSub: (sub) => prisma.user.findUnique({ where: { googleSub: sub }, select: SELECAO_GOOGLE }),
-  porEmail: (email) => prisma.user.findUnique({ where: { email }, select: SELECAO_GOOGLE }),
-  criar: (dados) => prisma.user.create({ data: { ...dados, senhaHash: null }, select: SELECAO_GOOGLE }),
+  porGoogleSub: async (sub) => { const u = await prisma.user.findUnique({ where: { googleSub: sub }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },
+  porEmail: async (email) => { const u = await prisma.user.findUnique({ where: { email }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },
+  porId: async (id) => { const u = await prisma.user.findUnique({ where: { id }, select: SELECAO_GOOGLE }); return u && paraUsuarioGoogle(u); },
+  criar: async (dados) => paraUsuarioGoogle(await prisma.user.create({ data: { ...dados, senhaHash: null }, select: SELECAO_GOOGLE })),
   vincularSub: async (id, sub) => (await prisma.user.updateMany({ where: { id, googleSub: null }, data: { googleSub: sub } })).count === 1,
 };
 
@@ -227,9 +250,12 @@ export const authOptions: NextAuthOptions = {
           dominioGerenciado: typeof profile?.hd === "string" && profile.hd.length > 0,
         },
         getObaflixSurface(),
+        { vinculoAutorizadoPara: await vinculoAutorizadoPeloDono() },
       );
       if (!resultado.ok) {
         registrarRecusaGoogle(resultado.motivo);
+        // Conta com senha e e-mail igual: não vincula sozinho; leva o usuário a entrar por senha e vincular em "Minha conta".
+        if (resultado.motivo === "vincular_exige_senha") return "/login?google=vincular";
         return false;
       }
       registrarAceiteGoogle(resultado.acao);

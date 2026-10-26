@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { LandscapeCard } from "@/components/ui/LandscapeCard";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { ExcluirConta } from "@/components/conta/ExcluirConta";
+import { VincularGoogle } from "@/components/conta/VincularGoogle";
 import { ctaAssinaturaConta, ehClientePlayNoNavegador, MENSAGEM_ASSINATURA_INDISPONIVEL_PLAY } from "@/config/play";
 
 export default function ContaPage() {
@@ -101,6 +102,8 @@ export default function ContaPage() {
           })}
         </div>
       </section>
+
+      <VincularGoogle />
 
       <section className="mb-10">
         <ExcluirConta />
