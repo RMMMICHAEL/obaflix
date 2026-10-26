@@ -21,7 +21,11 @@ function LoginForm() {
     : "/";
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
-  const [erro, setErro] = useState("");
+  const [erro, setErro] = useState(
+    searchParams.get("google") === "vincular"
+      ? "Já existe uma conta com o e-mail deste Google. Entre com e-mail e senha e, em Minha conta, vincule o Google."
+      : "",
+  );
   const [loading, setLoading] = useState(false);
 
   const handleGoogle = async () => {

@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "node scripts/patch-next-auth-origin.cjs && prisma generate && next build",
+    "postinstall": "node scripts/patch-next-auth-origin.cjs",
     "start": "next start",
     "lint": "next lint",
     "test:extractors": "node --test \"desktop/electron/__tests__/*.test.js\"",
@@ -14,6 +15,7 @@
     "seed:planos": "tsx scripts/seed-planos.ts",
     "seed:planos:apply": "tsx scripts/seed-planos.ts --apply",
     "precos:planos": "tsx scripts/precos-planos.ts",
+    "plano:seja-premium": "tsx scripts/seja-premium.ts",
     "planos:gratuito": "tsx scripts/ajustar-plano-gratuito.ts",
     "planos:gratuito:apply": "tsx scripts/ajustar-plano-gratuito.ts --apply",
     "canais:importar": "tsx scripts/importar-canais.ts",

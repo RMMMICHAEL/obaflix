@@ -25,8 +25,11 @@ function createBillingMeHandler(deps: any = {}) {
   const plano = await banco.plano.findUnique({ where: { id: direitos.assinatura.planoId }, select: { id: true, nome: true } });
   if (!plano) return NextResponse.json({ error: "Indisponível" }, { status: 503 });
   // Nome público da vitrine: a TV e a conta mostram "Básico", nunca "Basic".
+  // `anunciosObrigatorios` sai dos direitos EFETIVOS da conta; ausente => true (pede anúncio), como no schema. Campo aditivo.
+  const anunciosObrigatorios = direitos.direitos?.anunciosObrigatorios !== false;
   return NextResponse.json({
     plano: { id: plano.id, nome: nomePublicoDoPlano(plano.id, plano.nome) },
+    anunciosObrigatorios,
     assinatura: assinatura ? { status: "ATIVA", terminaEm: assinatura.terminaEm } : null,
     // Assinatura Cortes vigente, mesmo quando o plano base acima é o tradicional.
     cortes: cortes ? { plano: { id: cortes.planoId, nome: nomePublicoDoPlano(cortes.planoId, cortes.plano.nome) }, terminaEm: cortes.terminaEm } : null,

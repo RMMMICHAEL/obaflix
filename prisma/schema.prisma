@@ -138,6 +138,8 @@ model User {
   senhaHash    String?
   /// Informada na compra sem login (regras por idade). Só a data, sem hora.
   dataNascimento DateTime? @db.Date
+  /// `sub` do Google (identidade estável do login Google). Único; null para quem nunca entrou com Google.
+  googleSub    String?        @unique
   avatar       String?
   role         String         @default("user")
   createdAt    DateTime       @default(now())
