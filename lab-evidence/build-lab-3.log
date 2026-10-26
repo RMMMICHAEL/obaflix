@@ -1,0 +1,82 @@
+Reusing configuration cache.
+> Task :composeApp:androidPreBuild UP-TO-DATE
+> Task :androidApp:preBuild UP-TO-DATE
+> Task :composeApp:preAndroidMainBuild UP-TO-DATE
+> Task :androidApp:preFullDebugBuild UP-TO-DATE
+> Task :composeApp:copyNonXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:generateExpectResourceCollectorsForCommonMain UP-TO-DATE
+> Task :composeApp:generateRuntimeConfigs UP-TO-DATE
+> Task :composeApp:generateAndroidMainEmptyResourceFiles UP-TO-DATE
+> Task :androidApp:javaPreCompileFullDebug UP-TO-DATE
+> Task :androidApp:generateFullDebugAssets UP-TO-DATE
+> Task :composeApp:generateAndroidMainAssets UP-TO-DATE
+> Task :androidApp:generateFullDebugGlobalSynthetics UP-TO-DATE
+> Task :androidApp:l8DexDesugarLibFullDebug UP-TO-DATE
+> Task :composeApp:generateComposeResClass UP-TO-DATE
+> Task :composeApp:kmpPartiallyResolvedDependenciesChecker
+> Task :androidApp:mergeFullDebugNativeDebugMetadata NO-SOURCE
+> Task :composeApp:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :composeApp:convertXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:prepareComposeResourcesTaskForAndroidMain NO-SOURCE
+> Task :composeApp:writeAndroidMainAarMetadata UP-TO-DATE
+> Task :composeApp:generateResourceAccessorsForAndroidMain NO-SOURCE
+> Task :androidApp:createFullDebugCompatibleScreenManifests UP-TO-DATE
+> Task :composeApp:convertXmlValueResourcesForCommonMain UP-TO-DATE
+> Task :androidApp:extractDeepLinksFullDebug UP-TO-DATE
+> Task :androidApp:mapFullDebugSourceSetPaths
+> Task :composeApp:processAndroidMainManifest UP-TO-DATE
+> Task :composeApp:mapAndroidMainSourceSetPaths UP-TO-DATE
+> Task :androidApp:mergeFullDebugJniLibFolders UP-TO-DATE
+> Task :androidApp:checkFullDebugDuplicateClasses UP-TO-DATE
+> Task :androidApp:validateSigningFullDebug UP-TO-DATE
+> Task :composeApp:mergeAndroidMainJniLibFolders UP-TO-DATE
+> Task :androidApp:writeFullDebugAppMetadata UP-TO-DATE
+> Task :composeApp:mergeAndroidMainNativeLibs NO-SOURCE
+> Task :androidApp:writeFullDebugSigningConfigVersions UP-TO-DATE
+> Task :composeApp:copyAndroidMainJniLibsProjectOnly UP-TO-DATE
+> Task :androidApp:desugarFullDebugFileDependencies UP-TO-DATE
+> Task :composeApp:copyNonXmlValueResourcesForCommonMain UP-TO-DATE
+> Task :composeApp:prepareComposeResourcesTaskForCommonMain UP-TO-DATE
+> Task :composeApp:copyAndroidMainComposeResourcesToAndroidAssets UP-TO-DATE
+> Task :composeApp:generateResourceAccessorsForCommonMain UP-TO-DATE
+> Task :composeApp:generateActualResourceCollectorsForAndroidMain UP-TO-DATE
+> Task :androidApp:checkFullDebugAarMetadata UP-TO-DATE
+> Task :composeApp:packageAndroidMainResources UP-TO-DATE
+> Task :composeApp:mergeAndroidMainAssets UP-TO-DATE
+> Task :composeApp:compileAndroidMainLibraryResources UP-TO-DATE
+> Task :composeApp:parseAndroidMainLocalResources UP-TO-DATE
+> Task :composeApp:generateAndroidMainRFile UP-TO-DATE
+> Task :androidApp:mergeExtDexFullDebug UP-TO-DATE
+> Task :androidApp:mergeFullDebugNativeLibs UP-TO-DATE
+> Task :androidApp:mergeFullDebugAssets UP-TO-DATE
+> Task :androidApp:stripFullDebugDebugSymbols UP-TO-DATE
+> Task :androidApp:compressFullDebugAssets UP-TO-DATE
+> Task :androidApp:processFullDebugMainManifest UP-TO-DATE
+> Task :androidApp:processFullDebugManifest UP-TO-DATE
+> Task :androidApp:processFullDebugManifestForPackage UP-TO-DATE
+> Task :androidApp:generateFullDebugResources
+> Task :androidApp:processFullDebugNavigationResources
+> Task :androidApp:compileFullDebugNavigationResources UP-TO-DATE
+> Task :androidApp:packageFullDebugResources
+> Task :composeApp:compileAndroidMain UP-TO-DATE
+> Task :composeApp:bundleLibRuntimeToDirAndroidMain UP-TO-DATE
+> Task :composeApp:bundleAndroidMainClassesToCompileJar UP-TO-DATE
+> Task :composeApp:processAndroidMainJavaRes UP-TO-DATE
+> Task :androidApp:mergeLibDexFullDebug UP-TO-DATE
+> Task :androidApp:parseFullDebugLocalResources
+> Task :androidApp:generateFullDebugRFile UP-TO-DATE
+> Task :androidApp:compileFullDebugKotlin UP-TO-DATE
+> Task :androidApp:compileFullDebugJavaWithJavac NO-SOURCE
+> Task :androidApp:processFullDebugJavaRes UP-TO-DATE
+> Task :androidApp:mergeFullDebugJavaResource UP-TO-DATE
+> Task :androidApp:mergeFullDebugResources
+> Task :androidApp:processFullDebugResources
+> Task :androidApp:dexBuilderFullDebug UP-TO-DATE
+> Task :androidApp:mergeProjectDexFullDebug UP-TO-DATE
+> Task :androidApp:packageFullDebug
+> Task :androidApp:assembleFullDebug
+> Task :androidApp:createFullDebugApkListingFileRedirect UP-TO-DATE
+
+BUILD SUCCESSFUL in 1m 1s
+62 actionable tasks: 9 executed, 53 up-to-date
+Configuration cache entry reused.
