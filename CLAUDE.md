@@ -104,3 +104,8 @@ duração, expiração, rate limit e backend que não devolve o que não precisa
   em andamento do usuário e quebrou o CI.
 - Nunca edite regex via shell (`node -e`, `sed`): os escapes se perdem e o padrão
   passa a aceitar o que deveria recusar. Use ferramenta de edição direta.
+
+## Contratos críticos (leitura obrigatória)
+
+Antes de alterar autenticação/Google, sessões, banco/migrations, planos/Pix/Premium, anúncios Rewarded S2S, reprodução ou distribuição, leia `docs/CONTRATOS_CRITICOS.md`.
+Mudança nessas áreas exige teste (`npm run test:web`, inclui `src/lib/__tests__/contratos.test.ts`) e revisão antes de promover.

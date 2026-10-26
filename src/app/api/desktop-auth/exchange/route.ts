@@ -5,7 +5,8 @@ import {
   USE_SECURE_COOKIES,
   encodeObaflixSession,
 } from "@/lib/auth";
-import { verificarPkce, verificarTicketDesktopAuth } from "@/lib/desktopAuth";
+import { consumirTicketUmaVez, verificarPkce, verificarTicketDesktopAuth } from "@/lib/desktopAuth";
+import { getRedis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,8 @@ export async function POST(request: Request) {
 
   const payload = verificarTicketDesktopAuth(ticket, secret);
   if (!payload || !verificarPkce(verifier, payload.ch)) return resposta("handoff_invalido", 401);
+  // Uso único: a segunda troca do mesmo ticket (replay) é recusada.
+  if (!(await consumirTicketUmaVez(getRedis(), ticket))) return resposta("handoff_invalido", 401);
 
   const user = await prisma.user.findUnique({
     where: { id: payload.sub },

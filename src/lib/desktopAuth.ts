@@ -104,6 +104,22 @@ export function verificarTicketDesktopAuth(ticket: string, secret: string, nowMs
   }
 }
 
+type RedisNx = { set(key: string, value: string, opts: { ex: number; nx: boolean }): Promise<"OK" | null> };
+
+/**
+ * O ticket é assinado e expira em 180 s, mas sem isto podia ser trocado várias vezes nesse prazo. Marca o ticket como
+ * usado (SET NX) e só a primeira troca passa. Falha fechada: sem Redis, nenhuma troca. Chamar DEPOIS do PKCE, para quem
+ * não tem o verifier não conseguir queimar o ticket de outra pessoa.
+ */
+export async function consumirTicketUmaVez(redis: RedisNx, ticket: string): Promise<boolean> {
+  const id = crypto.createHash("sha256").update(ticket).digest("hex");
+  try {
+    return (await redis.set(`desktopauth:ticket:${id}`, "1", { ex: DESKTOP_AUTH_TTL_SECONDS + 60, nx: true })) === "OK";
+  } catch {
+    return false;
+  }
+}
+
 export function verificarPkce(verifier: string, challenge: string) {
   const calculado = desafioPkce(verifier);
   if (!calculado || !validarDesafioPkce(challenge) || calculado.length !== challenge.length) return false;
