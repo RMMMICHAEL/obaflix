@@ -17,3 +17,7 @@ Risco ALTO/CRÍTICO ⇒ teste cobrindo a mudança + revisão antes de promover +
 | Distribuição Android | CRÍTICO | `public/update-manifest.json` (se existir) / manifesto em `app.obaflix.online` | Formato `schemaVersion 1` → `android{versionName,versionCode,url,size,sha256}`; só publicar APK testado; guardar cópia anterior. |
 
 Alterar: 1) ache a linha e o teste; 2) altere; 3) `npm run test:web`; 4) commit "Contrato: <área>"; 5) risco ALTO/CRÍTICO: revisão antes de promover.
+
+## Monetização (2.0) — backend
+
+Plano `seja-premium` (R$ 10 / 30 dias, `preco-seja-premium-30d`, `anunciosObrigatorios=false`) gravado em Production por `scripts/seja-premium.ts` (dry-run primeiro; aditivo; `--apply --banco=<host>`), fora da vitrine (`PLANOS_FORA_DA_VITRINE`) e visível só em `/api/billing/plans?oferta=seja-premium`. Quem decide anúncio é o servidor (`/api/billing/me`, `/api/playback/authorize`); Rewarded só vale com recibo S2S assinado do LevelPlay (`/api/ads/levelplay/*`, `/api/ads/complete`). Flags: `ANUNCIO_ANDROID_NATIVO_ATIVO`, `ANUNCIO_REWARDED_PLAYER_ATIVO`, `LEVELPLAY_S2S_RECEIVER_ENABLED`; o callback do painel LevelPlay deve apontar para `https://obaflix.vercel.app/api/ads/levelplay/callback`. Pix usa `/api/billing/orders` (pedido pendente reaproveitado, sem cobrança duplicada). Rollback: remover as duas linhas do plano e redeploy do deployment anterior.
