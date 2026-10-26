@@ -1,0 +1,11 @@
+{
+  "StartedUtc": "2026-10-21T03:36:37.0624038Z",
+  "FinishedUtc": "2026-10-21T03:42:08.2180658Z",
+  "ExitCode": 1,
+  "Command": ".\\gradlew.bat :androidApp:assembleFullDebug --no-daemon",
+  "Jdk": "17.0.20",
+  "GradleDeclared": "9.4.1",
+  "AgpDeclared": "9.2.0",
+  "Sdk": "D:\\Android\\Sdk",
+  "AutomaticSdkDownload": false
+}

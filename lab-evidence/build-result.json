@@ -1,0 +1,33 @@
+{
+  "status": "SUCESSO",
+  "finishedAt": "2026-10-21T00:56:01",
+  "duration": "13m 1s",
+  "command": ".\\gradlew.bat :androidApp:assembleFullDebug --no-daemon",
+  "apk": "C:\\lab\\nuvio-build-proof\\androidApp\\build\\outputs\\apk\\full\\debug\\androidApp-full-debug.apk",
+  "sizeBytes": 162720459,
+  "sha256": "3CCD8767886960C1570277C6EA42B46E0F7D5F2E97EECE450CC3FAB379955091",
+  "package": "com.nuviodebug.com",
+  "versionName": "0.6.3",
+  "versionCode": 146,
+  "jdk": "Temurin 17.0.20",
+  "gradle": "9.4.1",
+  "agp": "9.2.0",
+  "kotlin": "2.4.10",
+  "compileSdk": 37,
+  "targetSdk": 36,
+  "minSdk": 24,
+  "abis": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86",
+    "x86_64"
+  ],
+  "zipalign16k": "Verification successful (.so compressed)",
+  "elfLoad64bit": "all 0x4000",
+  "elfLoad32bitBelow16k": [
+    "libass",
+    "libasskt",
+    "libc++_shared",
+    "libplayer"
+  ]
+}

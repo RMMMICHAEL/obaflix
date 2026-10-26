@@ -1,0 +1,105 @@
+Calculating task graph as no cached configuration is available for tasks: :composeApp:testAndroidHostTest --tests com.nuvio.app.integration.obaflix.*
+Type-safe project accessors is an incubating feature.
+
+> Configure project :composeApp
+w: Native task 'iosSimulatorArm64Test' is disabled
+Task 'iosSimulatorArm64Test' for target 'ios_simulator_arm64' cannot run on the current host (windows-x86_64).
+Reason: simulator tests require macOS
+Solution: To suppress this warning, add 'kotlin.native.ignoreDisabledTargets=true' to gradle.properties.
+
+w: Cross Compilation with Cinterop Not Supported in Project 'composeApp'
+In project 'composeApp', cross compilation to target 'iosArm64' has been disabled because it contains cinterops: 'commoncrypto' which cannot be processed on host 'mingw_x64'.
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+Solutions:
+ * Remove the cinterop dependencies 'commoncrypto' from target 'iosArm64'
+ * Build on a compatible host platform for this target/cinterop combination
+ * To disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties
+
+w: Cross Compilation with Cinterop Not Supported in Project 'composeApp'
+In project 'composeApp', cross compilation to target 'iosSimulatorArm64' has been disabled because it contains cinterops: 'commoncrypto' which cannot be processed on host 'mingw_x64'.
+Cinterop libraries require platform-specific native toolchains that aren't available on the current host system.
+Solutions:
+ * Remove the cinterop dependencies 'commoncrypto' from target 'iosSimulatorArm64'
+ * Build on a compatible host platform for this target/cinterop combination
+ * To disable klib cross compilation entirely, add 'kotlin.native.enableKlibsCrossCompilation=false' to your Gradle properties
+
+w: Disabled Kotlin/Native Targets
+The following Kotlin/Native targets cannot be built on this machine and are disabled:
+iosArm64, iosSimulatorArm64
+Solution: To hide this message, add 'kotlin.native.ignoreDisabledTargets=true' to the Gradle properties.
+
+
+> Task :composeApp:androidPreBuild UP-TO-DATE
+> Task :composeApp:kmpPartiallyResolvedDependenciesChecker
+> Task :composeApp:preAndroidMainBuild UP-TO-DATE
+> Task :composeApp:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :composeApp:generateAndroidHostTestAssets UP-TO-DATE
+> Task :composeApp:generateAndroidMainAssets UP-TO-DATE
+> Task :composeApp:preAndroidHostTestBuild UP-TO-DATE
+> Task :composeApp:convertXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:copyNonXmlValueResourcesForAndroidMain NO-SOURCE
+> Task :composeApp:prepareComposeResourcesTaskForAndroidMain NO-SOURCE
+> Task :composeApp:generateResourceAccessorsForAndroidMain NO-SOURCE
+> Task :composeApp:generateComposeResClass UP-TO-DATE
+> Task :composeApp:generateExpectResourceCollectorsForCommonMain UP-TO-DATE
+> Task :composeApp:mapAndroidMainSourceSetPaths UP-TO-DATE
+> Task :composeApp:writeAndroidMainAarMetadata UP-TO-DATE
+> Task :composeApp:generateAndroidMainEmptyResourceFiles UP-TO-DATE
+> Task :composeApp:convertXmlValueResourcesForAndroidHostTest NO-SOURCE
+> Task :composeApp:copyNonXmlValueResourcesForAndroidHostTest NO-SOURCE
+> Task :composeApp:processAndroidMainManifest UP-TO-DATE
+> Task :composeApp:prepareComposeResourcesTaskForAndroidHostTest NO-SOURCE
+> Task :composeApp:generateResourceAccessorsForAndroidHostTest NO-SOURCE
+> Task :composeApp:convertXmlValueResourcesForCommonTest NO-SOURCE
+> Task :composeApp:copyNonXmlValueResourcesForCommonTest NO-SOURCE
+> Task :composeApp:prepareComposeResourcesTaskForCommonTest NO-SOURCE
+> Task :composeApp:generateResourceAccessorsForCommonTest NO-SOURCE
+> Task :composeApp:processAndroidHostTestJavaRes NO-SOURCE
+> Task :composeApp:androidJar
+> Task :composeApp:generateRuntimeConfigs
+> Task :composeApp:copyNonXmlValueResourcesForCommonMain
+> Task :composeApp:convertXmlValueResourcesForCommonMain UP-TO-DATE
+> Task :composeApp:mapAndroidHostTestSourceSetPaths
+> Task :composeApp:generateAndroidHostTestResources
+> Task :composeApp:prepareComposeResourcesTaskForCommonMain
+> Task :composeApp:generateResourceAccessorsForCommonMain
+> Task :composeApp:generateActualResourceCollectorsForAndroidMain
+> Task :composeApp:copyAndroidMainComposeResourcesToAndroidAssets
+> Task :composeApp:mergeAndroidMainAssets
+> Task :composeApp:checkAndroidHostTestAarMetadata
+> Task :composeApp:packageAndroidMainResources
+> Task :composeApp:parseAndroidMainLocalResources
+> Task :composeApp:generateAndroidMainRFile UP-TO-DATE
+> Task :composeApp:processAndroidHostTestManifest
+> Task :composeApp:mergeAndroidHostTestAssets
+> Task :composeApp:compileAndroidMainLibraryResources
+> Task :composeApp:mergeAndroidHostTestResources
+> Task :composeApp:compileAndroidMain
+> Task :composeApp:processAndroidHostTestResources
+> Task :composeApp:packageAndroidHostTestForUnitTest
+> Task :composeApp:generateAndroidHostTestConfig
+
+> Task :composeApp:compileAndroidMain
+e: file:///C:/lab/nuvio-build-proof/composeApp/src/commonMain/kotlin/com/nuvio/app/features/watchprogress/WatchProgressRepository.kt:260:87 Unresolved reference 'ObaflixProgressSyncAdapter'.
+e: file:///C:/lab/nuvio-build-proof/composeApp/src/commonMain/kotlin/com/nuvio/app/integration/obaflix/ObaflixCatalogAddon.kt:139:36 Suspension functions can only be called within coroutine body.
+
+> Task :composeApp:compileAndroidMain FAILED
+
+[Incubating] Problems report is available at: file:///C:/lab/nuvio-build-proof/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':composeApp:compileAndroidMain'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.btapi.BuildToolsApiCompilationWork
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 5m
+30 actionable tasks: 22 executed, 8 up-to-date
+Configuration cache entry stored.
