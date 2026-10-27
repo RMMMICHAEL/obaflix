@@ -2021,8 +2021,21 @@ export function CustomPlayer({
   // localiza a legenda. A resposta entra pelo mesmo importador do JSON. Nada é baixado.
   const [pedidoIA, setPedidoIA] = useState("");
   const [pedindoIA, setPedindoIA] = useState(false);
+  const [temAssinaturaIA, setTemAssinaturaIA] = useState(false);
+  const podeUsarIA = nivelCortes === "ia" || temAssinaturaIA;
+  useEffect(() => {
+    setTemAssinaturaIA(false);
+    if (!showDownload || !multiCenasAtivo) return;
+    const controller = new AbortController();
+    // A assinatura AI independe do controle comercial global de cortes.
+    void fetch("/api/billing/me", { cache: "no-store", signal: controller.signal })
+      .then(async (r) => r.ok ? r.json() : null)
+      .then((dados) => { if (!controller.signal.aborted) setTemAssinaturaIA(dados?.cortes?.plano?.id === "cortes-ai"); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [showDownload, multiCenasAtivo, usuarioAtual]);
   const pedirCortesIA = useCallback(async () => {
-    if (pedindoIA || pedidoIA.trim().length < 3) return;
+    if (!podeUsarIA || pedindoIA || pedidoIA.trim().length < 3) return;
     setPedindoIA(true);
     setCenasAviso("Cortes AI analisando…");
     try {
@@ -2044,7 +2057,7 @@ export function CustomPlayer({
     } finally {
       setPedindoIA(false);
     }
-  }, [pedindoIA, pedidoIA, conteudoId, temporada, numeroEp, duration, novaCena]);
+  }, [podeUsarIA, pedindoIA, pedidoIA, conteudoId, temporada, numeroEp, duration, novaCena]);
 
   const editarCenaTexto = useCallback((id: number, campo: "inicio" | "fim", texto: string) => {
     const mascara = mascararTempo(texto);
@@ -4384,9 +4397,12 @@ export function CustomPlayer({
                       </div>
                     ) : (
                       <>
-                        {nivelCortes === "ia" && (
                           <div className="mb-2">
+                            <p className="mb-1 text-[11px] text-white/70">
+                              Cortes AI{!podeUsarIA && " — bloqueado: requer permissão do plano Cortes AI (fora de venda)."}
+                            </p>
                             <textarea
+                              disabled={!podeUsarIA || pedindoIA}
                               value={pedidoIA}
                               onChange={(e) => setPedidoIA(e.target.value)}
                               maxLength={1000}
@@ -4397,13 +4413,12 @@ export function CustomPlayer({
                             />
                             <button
                               onClick={pedirCortesIA}
-                              disabled={pedindoIA || pedidoIA.trim().length < 3}
+                              disabled={!podeUsarIA || pedindoIA || pedidoIA.trim().length < 3}
                               className="mt-1.5 px-2.5 py-1 rounded bg-[#E50914] text-white text-[11px] hover:bg-[#f6121d] disabled:opacity-40 transition-colors"
                             >
                               {pedindoIA ? "Analisando…" : "Sugerir cortes"}
                             </button>
                           </div>
-                        )}
                         <textarea
                           value={textoCenas}
                           onChange={(e) => setTextoCenas(e.target.value)}
