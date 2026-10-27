@@ -5,7 +5,7 @@ import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib
 import { isIpBlocked, recordAbuseAttempt } from "@/lib/playTokens";
 import { audit } from "@/lib/auditLog";
 import { entitlementsDoUsuario } from "@/lib/entitlements";
-import { configCortesAi, cortesAceitos, custoMicroUsd, FalhaCortesAi, gastoDoMes, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes, registrarGasto, type Fala } from "@/lib/cortesAi";
+import { configCortesAi, cortesAceitos, custoMaximoAnalise, custoMicroUsd, FalhaCortesAi, gastoDoMes, impressaoDaLegenda, lerLegenda, LIMITES_CORTES_AI, pedirCortes, reservarGasto, liquidarGasto, type Fala, type ReservaGasto } from "@/lib/cortesAi";
 import { getRedis } from "@/lib/redis";
 import { buscarLegenda, configLegendasAutomaticas, identificarConteudo, type Alvo, type LegendaEncontrada } from "@/lib/legendasAutomaticas";
 
@@ -143,20 +143,30 @@ export async function POST(req: NextRequest) {
   }
   if (!falas) return negar(422, "legenda_invalida", "A legenda deste título não pôde ser lida");
 
+  let reserva: ReservaGasto | null;
+  try {
+    reserva = await reservarGasto(getRedis(), userId, custoMaximoAnalise(falas, tema), config.tetoMicroUsdMes);
+  } catch {
+    return negar(503, "limite_indisponivel", "Serviço temporariamente indisponível");
+  }
+  if (!reserva) return negar(429, "teto_mensal", "Você atingiu o limite mensal do Cortes AI. Ele volta no próximo mês.");
+
   const t0 = Date.now();
   try {
     const { cortes, tokens } = await pedirCortes(falas, tema, config.chave);
     const { aceitos, rejeitados } = cortesAceitos(cortes, falas, duracaoVideo);
-    const custo = custoMicroUsd(tokens);
-    // A análise já foi paga: falha ao registrar não tira o resultado do usuário.
-    await registrarGasto(getRedis(), userId, custo).catch(() => audit("cortes_ai_falhou", { userId, ip, ua, detail: "registro_de_gasto" }));
+    const custo = tokens ? custoMicroUsd(tokens) : reserva.valor;
+    // Sem uso confiável ou sem Redis, a reserva fica debitada: falha nunca libera orçamento incerto.
+    await liquidarGasto(getRedis(), reserva, custo).catch(() => audit("cortes_ai_falhou", { userId, ip, ua, detail: "registro_de_gasto" }));
     audit("cortes_ai_analise", {
       userId, ip, ua,
-      detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens.entrada}+${tokens.saida} usd:${(custo / 1e6).toFixed(4)} ms:${Date.now() - t0}`,
+      detail: `conteudo:${conteudoId} fonte:${origemLegenda} falas:${falas.length} aceitos:${aceitos.length} rejeitados:${rejeitados} tokens:${tokens?.entrada ?? "incerto"}+${tokens?.saida ?? "incerto"} usd:${(custo / 1e6).toFixed(4)} ms:${Date.now() - t0}`,
     });
     return NextResponse.json({ cortes: aceitos, rejeitados }, { headers: NO_STORE });
   } catch (e) {
     const f = e instanceof FalhaCortesAi ? e : null;
+    await liquidarGasto(getRedis(), reserva, f?.tokens ? custoMicroUsd(f.tokens) : reserva.valor)
+      .catch(() => audit("cortes_ai_falhou", { userId, ip, ua, detail: "registro_de_gasto" }));
     audit("cortes_ai_falhou", { userId, ip, ua, detail: `${f?.codigo ?? "erro"}${f?.status ? `:${f.status}` : ""}` });
     return negar(502, "ia_indisponivel", "O Cortes AI não respondeu. Tente de novo mais tarde.");
   }

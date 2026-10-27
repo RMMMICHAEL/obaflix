@@ -40,6 +40,9 @@ export interface RedisClient {
    * adquirido por outra requisição entre os dois comandos.
    */
   compareAndDelete(key: string, expectedValue: string): Promise<number>;
+  /** Reserva e liquida orçamento em operações atômicas; liquidação é idempotente. */
+  reserveBudget(key: string, reservationKey: string, amount: number, limit: number, ttlSeconds: number): Promise<boolean>;
+  settleBudget(key: string, reservationKey: string, actual: number, ttlSeconds: number): Promise<boolean>;
   /**
    * Persiste uma sessão somente enquanto o chamador ainda detém o lock e o
    * estado persistido ainda é a geração que ele leu. As duas verificações e o
@@ -102,6 +105,39 @@ class MemoryStore implements RedisClient {
     if (entry.value !== expectedValue) return 0;
     this.kv.delete(key);
     return 1;
+  }
+
+  async reserveBudget(key: string, reservationKey: string, amount: number, limit: number, ttlSeconds: number): Promise<boolean> {
+    validarOrcamento(amount, limit, ttlSeconds);
+    if (ttlSeconds === 0) throw new Error("TTL inválido");
+    const current = this.kv.get(key);
+    const used = current && !this.isExpired(current) ? Number(current.value || NaN) : 0;
+    validarOrcamento(used);
+    const reservation = this.kv.get(reservationKey);
+    if (reservation && !this.isExpired(reservation)) throw new Error("Reserva duplicada");
+    if (used + amount > limit) return false;
+    const expiresAt = Date.now() + ttlSeconds * 1000;
+    this.kv.set(key, { value: String(used + amount), expiresAt });
+    this.kv.set(reservationKey, { value: String(amount), expiresAt });
+    return true;
+  }
+
+  async settleBudget(key: string, reservationKey: string, actual: number, ttlSeconds: number): Promise<boolean> {
+    validarOrcamento(actual, ttlSeconds);
+    if (ttlSeconds === 0) throw new Error("TTL inválido");
+    const reservation = this.kv.get(reservationKey);
+    if (!reservation || this.isExpired(reservation)) return false;
+    if (reservation.value.startsWith("settled:")) return reservation.value === `settled:${actual}`;
+    const reserved = Number(reservation.value || NaN);
+    const current = this.kv.get(key);
+    if (!current || this.isExpired(current)) return false;
+    const used = Number(current.value || NaN);
+    validarOrcamento(reserved, used);
+    if (actual > reserved || used < reserved) throw new Error("Orçamento inconsistente");
+    const expiresAt = Date.now() + ttlSeconds * 1000;
+    this.kv.set(key, { value: String(used - reserved + actual), expiresAt });
+    this.kv.set(reservationKey, { value: `settled:${actual}`, expiresAt });
+    return true;
   }
 
   async compareLockAndSetSession(input: {
@@ -181,6 +217,10 @@ class MemoryStore implements RedisClient {
 
 // ── Upstash Redis (produção) ──────────────────────────────────────────────────
 
+function validarOrcamento(...values: number[]) {
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new Error("Orçamento inválido");
+}
+
 function buildUpstashClient(): RedisClient | null {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -223,6 +263,37 @@ function buildUpstashClient(): RedisClient | null {
         [key],
         [expectedValue],
       );
+    },
+    async reserveBudget(key, reservationKey, amount, limit, ttlSeconds) {
+      validarOrcamento(amount, limit, ttlSeconds);
+      if (ttlSeconds === 0) throw new Error("TTL inválido");
+      return await client.eval(
+        `local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+         if not used or used < 0 or used ~= math.floor(used) or used > 9007199254740991 then return redis.error_reply('Invalid budget') end
+         if redis.call('EXISTS', KEYS[2]) == 1 then return redis.error_reply('Duplicate reservation') end
+         if used + tonumber(ARGV[1]) > tonumber(ARGV[2]) then return 0 end
+         redis.call('SET', KEYS[1], used + tonumber(ARGV[1]), 'EX', ARGV[3])
+         redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[3])
+         return 1`,
+        [key, reservationKey], [amount, limit, ttlSeconds],
+      ) === 1;
+    },
+    async settleBudget(key, reservationKey, actual, ttlSeconds) {
+      validarOrcamento(actual, ttlSeconds);
+      if (ttlSeconds === 0) throw new Error("TTL inválido");
+      return await client.eval(
+        `local reservation = redis.call('GET', KEYS[2])
+         if not reservation then return 0 end
+         if reservation == 'settled:' .. ARGV[1] then return 1 end
+         local reserved = tonumber(reservation)
+         local used = tonumber(redis.call('GET', KEYS[1]))
+         local actual = tonumber(ARGV[1])
+         if not reserved or not used or reserved < 0 or reserved ~= math.floor(reserved) or reserved > 9007199254740991 or used < reserved or actual > reserved or used ~= math.floor(used) or used > 9007199254740991 then return redis.error_reply('Invalid budget') end
+         redis.call('SET', KEYS[1], used - reserved + actual, 'EX', ARGV[2])
+         redis.call('SET', KEYS[2], 'settled:' .. ARGV[1], 'EX', ARGV[2])
+         return 1`,
+        [key, reservationKey], [actual, ttlSeconds],
+      ) === 1;
     },
     async compareLockAndSetSession(input) {
       const result = await client.eval<[string, string, string, string, string], number>(

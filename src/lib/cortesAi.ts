@@ -10,7 +10,7 @@
  * A chave só existe no servidor; nunca vai ao cliente nem a log.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RedisClient } from "./redis";
 
 export const MODELO_CORTES_AI = "gemini-3.5-flash-lite";
@@ -60,21 +60,32 @@ export function configCortesAi(env: Record<string, string | undefined> = process
  * modelo ou a tabela do Google, mude aqui.
  */
 const PRECO_MICRO_USD = { entrada: 0.3, saida: 2.5 };
-export const custoMicroUsd = (t: { entrada: number; saida: number }) =>
+type Tokens = { entrada: number; saida: number };
+export const custoMicroUsd = (t: Tokens) =>
   Math.ceil(t.entrada * PRECO_MICRO_USD.entrada + t.saida * PRECO_MICRO_USD.saida);
 
 /** Gasto de cada usuário por mês (UTC), em micro-US$; a chave expira sozinha depois do mês. */
 const chaveGasto = (userId: string, agora: Date) => `cortesai:gasto:${userId}:${agora.toISOString().slice(0, 7)}`;
 
 export async function gastoDoMes(redis: RedisClient, userId: string, agora = new Date()): Promise<number> {
-  return Number(await redis.get(chaveGasto(userId, agora))) || 0;
+  const raw = await redis.get(chaveGasto(userId, agora));
+  const valor = raw === null ? 0 : Number(raw || NaN);
+  if (!Number.isSafeInteger(valor) || valor < 0) throw new Error("Orçamento inválido");
+  return valor;
 }
 
-// shortcut: get+set não é atômico; duas análises simultâneas do mesmo usuário podem
-// contar uma só (o limite diário segura o estrago). Trocar por INCRBY se virar problema.
-export async function registrarGasto(redis: RedisClient, userId: string, microUsd: number, agora = new Date()): Promise<void> {
+const TTL_ORCAMENTO = 35 * 24 * 3600;
+export interface ReservaGasto { chave: string; reserva: string; valor: number }
+
+export async function reservarGasto(redis: RedisClient, userId: string, valor: number, teto: number, agora = new Date()): Promise<ReservaGasto | null> {
   const chave = chaveGasto(userId, agora);
-  await redis.set(chave, String((Number(await redis.get(chave)) || 0) + microUsd), { ex: 35 * 24 * 3600 });
+  // O hash tag mantém a reserva no mesmo slot do contador legado, inclusive no Redis Cluster.
+  const reserva = `cortesai:reserva:{${chave}}:${randomUUID()}`;
+  return await redis.reserveBudget(chave, reserva, valor, teto, TTL_ORCAMENTO) ? { chave, reserva, valor } : null;
+}
+
+export async function liquidarGasto(redis: RedisClient, reserva: ReservaGasto, valor: number): Promise<void> {
+  if (!await redis.settleBudget(reserva.chave, reserva.reserva, valor, TTL_ORCAMENTO)) throw new Error("Reserva indisponível");
 }
 
 // ── Legenda ──────────────────────────────────────────────────────────────────
@@ -206,8 +217,32 @@ const ESQUEMA = {
   required: ["cortes"],
 };
 
+const MAX_TOKENS_SAIDA = 4096;
+const corpoGemini = (falas: Fala[], tema: string) => JSON.stringify({
+  contents: [{ parts: [{ text: montarPrompt(falas, tema) }] }],
+  generationConfig: { responseMimeType: "application/json", responseSchema: ESQUEMA, maxOutputTokens: MAX_TOKENS_SAIDA },
+});
+
+/** Bytes do pedido limitam os tokens de entrada; maxOutputTokens inclui raciocínio. */
+export function custoMaximoAnalise(falas: Fala[], tema: string): number {
+  const pedido = corpoGemini(falas, tema);
+  // A normalização do tokenizer pode expandir caracteres; o pedido enviado não é alterado.
+  const entrada = Math.max(Buffer.byteLength(pedido, "utf8"), Buffer.byteLength(pedido.normalize("NFKC"), "utf8"));
+  return custoMicroUsd({ entrada, saida: MAX_TOKENS_SAIDA });
+}
+
+function tokensDoUso(uso?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number }): Tokens | null {
+  if (!uso) return null;
+  const pensamentos = uso.thoughtsTokenCount === undefined ? 0 : uso.thoughtsTokenCount;
+  const contagens = [uso.promptTokenCount, uso.candidatesTokenCount, pensamentos];
+  if (contagens.some((n) => !Number.isSafeInteger(n) || n! < 0)) return null;
+  // candidates não inclui pensamentos; totalTokenCount inclui a entrada e não deve ser somado.
+  const saida = uso.candidatesTokenCount! + pensamentos;
+  return Number.isSafeInteger(saida) ? { entrada: uso.promptTokenCount!, saida } : null;
+}
+
 export class FalhaCortesAi extends Error {
-  constructor(public codigo: "timeout" | "http" | "resposta_invalida", public status?: number) { super(codigo); }
+  constructor(public codigo: "timeout" | "http" | "resposta_invalida", public status?: number, public tokens: Tokens | null = null) { super(codigo); }
 }
 
 /**
@@ -217,37 +252,36 @@ export class FalhaCortesAi extends Error {
 export async function pedirCortes(
   falas: Fala[], tema: string, chave: string,
   opcoes: { fetch?: typeof fetch; prazoMs?: number } = {},
-): Promise<{ cortes: Partial<CorteSugerido>[]; tokens: { entrada: number; saida: number } }> {
+): Promise<{ cortes: Partial<CorteSugerido>[]; tokens: Tokens | null }> {
   const f = opcoes.fetch ?? fetch;
   let r: Response;
   try {
     r = await f(`https://generativelanguage.googleapis.com/v1beta/models/${MODELO_CORTES_AI}:generateContent`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": chave },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: montarPrompt(falas, tema) }] }],
-        generationConfig: { responseMimeType: "application/json", responseSchema: ESQUEMA, maxOutputTokens: 4096 },
-      }),
+      body: corpoGemini(falas, tema),
       signal: AbortSignal.timeout(opcoes.prazoMs ?? 45_000),
     });
   } catch {
     throw new FalhaCortesAi("timeout");
   }
   if (!r.ok) throw new FalhaCortesAi("http", r.status);
+  let tokens: Tokens | null = null;
   try {
     const dados = await r.json() as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
     };
+    tokens = tokensDoUso(dados.usageMetadata);
     const texto = dados.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
     const cortes = (JSON.parse(texto) as { cortes?: unknown }).cortes;
     if (!Array.isArray(cortes)) throw new Error();
     return {
       cortes: cortes.slice(0, MAX_CORTES),
-      tokens: { entrada: dados.usageMetadata?.promptTokenCount ?? 0, saida: dados.usageMetadata?.candidatesTokenCount ?? 0 },
+      tokens,
     };
   } catch {
-    throw new FalhaCortesAi("resposta_invalida");
+    throw new FalhaCortesAi("resposta_invalida", undefined, tokens);
   }
 }
 
