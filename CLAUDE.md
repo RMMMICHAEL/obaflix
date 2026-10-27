@@ -1,5 +1,7 @@
 # Obaflix — instruções do projeto
 
+Antes de qualquer alteração, leia `AGENTS.md` e `docs/CONTRATO_CORTES_AI_E_REGRESSOES.md`; preserve funcionalidades e evidências homologadas.
+
 ## Regra obrigatória: três ambientes oficiais
 
 O Obaflix roda em **três ambientes**, e os três são oficiais:
@@ -98,8 +100,8 @@ duração, expiração, rate limit e backend que não devolve o que não precisa
 
 ## Outras regras
 
-- Depois de commitar, **sempre** `git push` sem perguntar (branch atual → `main`)
-- Mudou `android/` → gera APK. Mudou `desktop/electron/` → gera EXE. Sem perguntar.
+- Use branch isolada e PR. Push na `main`, merge, deploy e alterações em Production exigem autorização explícita do proprietário; nunca são automáticos.
+- Gere APK/AAB ou EXE somente com necessidade comprovada e autorização explícita do proprietário; mudanças web não exigem automaticamente novo instalador.
 - Nunca use `git add -A`: liste os arquivos explicitamente. Já commitou trabalho
   em andamento do usuário e quebrou o CI.
 - Nunca edite regex via shell (`node -e`, `sed`): os escapes se perdem e o padrão
