@@ -122,11 +122,11 @@ export default function CortesPage() {
           <a href="#duvidas">Dúvidas</a>
         </nav>
         <a
-          href="#demonstracao"
+          href="#lancamento"
           className={styles.headerCta}
           data-cortes-cta="header"
         >
-          Como funciona <ArrowUpRight size={16} aria-hidden />
+          Ver planos e preços <ArrowUpRight size={16} aria-hidden />
         </a>
       </header>
 
@@ -144,14 +144,14 @@ export default function CortesPage() {
           </p>
           <div className={styles.actions}>
             <a
-              href="#demonstracao"
+              href="#lancamento"
               className={styles.primary}
               data-cortes-cta="hero"
             >
-              Veja como preparar um corte <ArrowDown size={18} aria-hidden />
+              Conhecer os planos <ArrowDown size={18} aria-hidden />
             </a>
-            <a href="#recursos" className={styles.textLink}>
-              Explore os recursos <ArrowUpRight size={17} aria-hidden />
+            <a href="#demonstracao" className={styles.textLink}>
+              Veja como funciona <ArrowUpRight size={17} aria-hidden />
             </a>
           </div>
           <p className={styles.availability}>

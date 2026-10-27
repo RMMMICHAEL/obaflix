@@ -443,7 +443,11 @@ function CheckoutConteudo() {
               </span>
             )}
           </div>
-          <p className="mt-2 text-zinc-400">Configure sua assinatura e gere o PIX com o valor final calculado pelo servidor.</p>
+          <p className="mt-2 text-zinc-400">
+            {checkoutSemLoginPermitido(planoId)
+              ? "Confira os benefícios, informe seus dados e gere o Pix. O acesso será liberado após a confirmação do pagamento."
+              : "Configure sua assinatura e gere o PIX com o valor final calculado pelo servidor."}
+          </p>
         </header>
 
         <form onSubmit={criarPedido} className="mt-8 grid gap-7 lg:grid-cols-[1.35fr_0.65fr]">
@@ -635,6 +639,19 @@ function CheckoutConteudo() {
               <div className="p-6">
                 <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>Resumo</p>
                 <h2 className="mt-2 text-2xl font-black">{plano.vitrine?.nome || plano.nome}</h2>
+                {checkoutSemLoginPermitido(planoId) && Array.isArray(plano.vitrine?.beneficios) && (
+                  <div className="mt-5 border-y border-white/10 py-4">
+                    <p className="mb-3 text-xs font-bold uppercase tracking-widest text-zinc-400">O que está incluído</p>
+                    <ul className="space-y-2">
+                      {plano.vitrine.beneficios.filter((b) => b.incluido).map((b) => (
+                        <li key={b.texto} className="flex gap-2 text-sm text-zinc-200">
+                          <span aria-hidden className="font-black text-emerald-400">✓</span>
+                          <span>{b.texto}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {preco && (
                   <>
@@ -664,7 +681,7 @@ function CheckoutConteudo() {
                     )}
 
                     <div className="py-5">
-                      <p className="text-xs text-zinc-500">Subtotal antes de créditos ou mudança de plano</p>
+                      <p className="text-xs text-zinc-500">{visitante ? "Total a pagar" : "Subtotal antes de créditos ou mudança de plano"}</p>
                       <p className="mt-1 text-3xl font-black">
                         {subtotal !== null ? dinheiro(subtotal, preco.moeda) : "—"}
                       </p>
@@ -672,6 +689,11 @@ function CheckoutConteudo() {
                   </>
                 )}
 
+                {checkoutSemLoginPermitido(planoId) && (
+                  <p className="mb-4 text-xs leading-relaxed text-zinc-300">
+                    Pagamento único por Pix, sem renovação automática. Você confirma o pagamento no seu banco. Após a confirmação, o acesso é vinculado ao e-mail informado.
+                  </p>
+                )}
                 {erro && (
                   <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">
                     {erro}
@@ -684,8 +706,13 @@ function CheckoutConteudo() {
                   className="flex h-13 w-full items-center justify-center rounded-xl px-5 py-3.5 text-base font-black transition disabled:cursor-not-allowed disabled:opacity-50"
                   style={{ backgroundColor: tema.cor, color: tema.texto }}
                 >
-                  {enviando ? "Gerando PIX…" : "Gerar PIX"}
+                  {enviando ? "Gerando PIX…" : checkoutSemLoginPermitido(planoId) ? "Gerar meu Pix" : "Gerar PIX"}
                 </button>
+                {checkoutSemLoginPermitido(planoId) && (
+                  <p className="mt-3 text-center text-xs leading-relaxed text-zinc-300">
+                    O botão gera o código Pix para pagamento. A compra só é concluída quando o Pix for pago.
+                  </p>
+                )}
 
                 <p className="mt-4 text-xs leading-relaxed text-zinc-500">
                   O servidor recalcula duração, telas, crédito de upgrade e total antes de criar a cobrança. Nenhum valor desta tela é enviado como autoridade.

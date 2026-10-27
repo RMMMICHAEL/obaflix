@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Check } from "lucide-react";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { acaoNoPlanoCortes } from "@/lib/billing/checkout";
 import styles from "./cortes.module.css";
@@ -10,9 +10,21 @@ type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMe
 type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
 
 const PLANOS = [
-  { id: "cortes-start", nome: "Start", texto: "Trecho individual: marque início e fim no player e baixe só a cena." },
-  { id: "cortes-pro", nome: "Pro", texto: "Trecho individual e lote: monte uma lista de cenas e baixe todas de uma vez. Requer a versão Windows com Cortes." },
-  { id: "cortes-ai", nome: "AI", texto: "Tudo do Pro, mais o Cortes AI: escreva o tema ou roteiro e a IA preenche a lista de cortes para você revisar e baixar." },
+  {
+    id: "cortes-start", nome: "Start", destaque: false,
+    texto: "Para quem precisa separar um trecho de cada vez, direto no player.",
+    beneficios: ["Seleção manual de início e fim", "Prévia do trecho antes de exportar", "Exportação de trechos individuais", "No app Obaflix para Windows"],
+  },
+  {
+    id: "cortes-pro", nome: "Pro", destaque: true,
+    texto: "O melhor caminho para quem monta vídeos com várias cenas.",
+    beneficios: ["Tudo do Start", "Lista com vários trechos", "Exportação em lote", "Organize as cenas antes de exportar"],
+  },
+  {
+    id: "cortes-ai", nome: "AI", destaque: false,
+    texto: "Descreva o tema: a IA usa as legendas para sugerir momentos e horários.",
+    beneficios: ["Tudo do Pro", "Sugestões de cortes por tema ou roteiro", "Usa as legendas do episódio com Gemini", "Até 5 análises a cada 24 horas"],
+  },
 ] as const;
 
 const dinheiro = (centavos: number, moeda: string) =>
@@ -45,34 +57,48 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
 
   return (
     <div className={styles.planList} aria-busy={planos === null}>
-      {PLANOS.map(({ id, nome, texto }) => {
+      {PLANOS.map(({ id, nome, texto, destaque, beneficios }) => {
         const plano = planos?.[id];
         const preco = plano?.compravel ? [...plano.precos].sort((a, b) => duracao(a) - duracao(b))[0] : null;
         const decisao = acaoNoPlanoCortes(id, situacao);
         const atual = situacao.logado && situacao.atual === id;
         return (
-          <article key={id} aria-current={atual ? "true" : undefined}>
-            <span>{atual ? "SEU PLANO ATUAL" : "OBAFLIX CORTES"}</span>
+          <article key={id} aria-current={atual ? "true" : undefined} data-destaque={destaque ? "true" : "false"}>
+            <span className={styles.planBadge}>
+              {atual ? "Seu plano atual" : destaque ? "RECOMENDADO" : "OBAFLIX CORTES"}
+            </span>
             <h3>{nome}</h3>
-            <p>{texto}</p>
+            <p className={styles.planPitch}>{texto}</p>
+            {/* Preço só da API: sem preço ativo no banco, o plano não é vendável e nada é exibido como valor. */}
+            {preco && (
+              <p className={styles.planPrice}>
+                {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
+              </p>
+            )}
+            <ul className={styles.planBenefits} aria-label={`Benefícios do Cortes ${nome}`}>
+              {beneficios.map((item) => (
+                <li key={item}>
+                  <Check size={15} aria-hidden />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
             {decisao.acao === "incluido" ? (
-              <small>Incluído no seu plano atual</small>
+              <p className={styles.planUnavail}>Incluído no seu plano atual</p>
             ) : preco ? (
               <>
-                <p className={styles.planPrice}>
-                  {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
-                </p>
                 <LinkAssinatura
                   href={`${decisao.href}&planoPrecoId=${encodeURIComponent(preco.id)}`}
-                  className={styles.primary}
+                  className={`${styles.primary} ${styles.planBuy}`}
                   data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
                 >
                   {ROTULO[decisao.acao]} {nome} <ArrowUpRight size={17} aria-hidden />
                 </LinkAssinatura>
               </>
             ) : (
-              <small>{planos === null ? "Carregando…" : "Preço em breve"}</small>
+              <p className={styles.planUnavail}>{planos === null ? "Verificando disponibilidade…" : "Preço em breve"}</p>
             )}
+            <p className={styles.planFoot}>Pagamento por Pix · sem renovação automática</p>
           </article>
         );
       })}
