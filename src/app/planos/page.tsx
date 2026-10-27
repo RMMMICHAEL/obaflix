@@ -67,7 +67,8 @@ export default function PlanosPage() {
 }
 
 function EscolhaDaFamilia() {
-  return useSearchParams().get("familia") === "cortes" ? <PaginaPlanosCortes /> : <PlanosTradicionais />;
+  const query = useSearchParams();
+  return query.get("familia") === "cortes" || query.has("cortes") ? <PaginaPlanosCortes /> : <PlanosTradicionais />;
 }
 
 function PlanosTradicionais() {

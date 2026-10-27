@@ -837,3 +837,146 @@
   font-weight: 700;
   margin: 0;
 }
+
+/* Vitrine Cortes: o destaque comercial é o Pro, sem alterar os preços reais da API. */
+.planList {
+  border: 0;
+  gap: 18px;
+  align-items: stretch;
+}
+.planList article,
+.planList article:first-child,
+.planList article:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(145deg, oklch(0.23 0.009 25), oklch(0.185 0.009 25));
+}
+.planList article[data-destaque="true"] {
+  border: 2px solid oklch(0.77 0.12 198);
+  box-shadow: 0 16px 50px oklch(0.11 0.035 198 / 45%);
+  transform: translateY(-8px);
+}
+.planList .planBadge {
+  align-self: flex-start;
+  display: inline-block;
+  width: fit-content;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 10px;
+  letter-spacing: 0.045em;
+  font-weight: 750;
+}
+.planList article[data-destaque="true"] .planBadge {
+  background: oklch(0.75 0.12 198);
+  border-color: transparent;
+  color: oklch(0.14 0.03 198);
+}
+.planList h3 {
+  font-size: 60px;
+  margin: 20px 0 8px;
+}
+.planList .planPitch {
+  margin: 0 0 23px;
+  min-height: 66px;
+  max-width: none;
+  line-height: 1.6;
+}
+.planList .planPrice {
+  font-size: 34px !important;
+  margin: 0 0 4px;
+  color: var(--text);
+  max-width: none;
+}
+.planList article[data-destaque="true"] .planPrice {
+  color: oklch(0.83 0.12 198) !important;
+}
+.planBenefits {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 25px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.planBenefits li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.planBenefits li svg {
+  flex: 0 0 15px;
+  margin-top: 2px;
+  color: oklch(0.81 0.12 198);
+}
+.planList .planBuy {
+  margin-top: auto;
+  width: 100%;
+  min-height: 55px;
+  border-radius: 10px;
+  text-align: center;
+}
+/* Só o Pro tem botão cheio; Start e AI ficam com contorno para não competir com ele. */
+.planList article:not([data-destaque="true"]) .planBuy {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.planList article:not([data-destaque="true"]) .planBuy:hover {
+  border-color: var(--text);
+}
+.planList article[data-destaque="true"] .planBuy {
+  background: oklch(0.75 0.12 198);
+  color: oklch(0.14 0.03 198);
+}
+.planList article[data-destaque="true"] .planBuy:hover {
+  background: oklch(0.83 0.12 198);
+}
+.planList .planUnavail {
+  min-height: 55px;
+  margin: auto 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: center;
+}
+.planList .planFoot {
+  min-height: 0;
+  margin: 16px 0 0;
+  max-width: none;
+  text-align: center;
+  font-size: 11px;
+}
+@media (max-width: 1000px) {
+  .planList { gap: 12px; }
+  .planList article,
+  .planList article:first-child,
+  .planList article:last-child { padding: 20px; }
+}
+@media (max-width: 700px) {
+  .planList article,
+  .planList article:first-child,
+  .planList article:last-child {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 24px;
+    border: 1px solid var(--line);
+  }
+  .planList article[data-destaque="true"] { transform: none; }
+  .planList .planPitch { min-height: 0; }
+  .planList h3 { font-size: 56px; }
+  .planList .planPrice { font-size: 32px !important; }
+}
