@@ -2025,7 +2025,7 @@ export function CustomPlayer({
   const podeUsarIA = nivelCortes === "ia" || temAssinaturaIA;
   useEffect(() => {
     setTemAssinaturaIA(false);
-    if (!showDownload || !multiCenasAtivo) return;
+    if (!multiCenasAtivo) return;
     const controller = new AbortController();
     // A assinatura AI independe do controle comercial global de cortes.
     void fetch("/api/billing/me", { cache: "no-store", signal: controller.signal })
@@ -2033,7 +2033,7 @@ export function CustomPlayer({
       .then((dados) => { if (!controller.signal.aborted) setTemAssinaturaIA(dados?.cortes?.plano?.id === "cortes-ai"); })
       .catch(() => {});
     return () => controller.abort();
-  }, [showDownload, multiCenasAtivo, usuarioAtual]);
+  }, [multiCenasAtivo, usuarioAtual]);
   const pedirCortesIA = useCallback(async () => {
     if (!podeUsarIA || pedindoIA || pedidoIA.trim().length < 3) return;
     setPedindoIA(true);

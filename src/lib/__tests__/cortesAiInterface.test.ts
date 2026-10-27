@@ -9,10 +9,11 @@ import ts from "typescript";
 
 const text = readFileSync(new URL("../../components/player/CustomPlayer.tsx", import.meta.url), "utf8");
 const source = ts.createSourceFile("CustomPlayer.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let panel = "", request = "";
+let panel = "", request = "", permissionEffect = "";
 function visit(node: ts.Node) {
   if (ts.isJsxElement(node) && node.openingElement.getText(source) === '<div className="mb-2">' && node.getText(source).includes('aria-label="Pedido ao Cortes AI"')) panel = node.getText(source);
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === "pedirCortesIA" && node.initializer && ts.isCallExpression(node.initializer)) request = node.initializer.arguments[0].getText(source);
+  if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect" && node.arguments[0]?.getText(source).includes('fetch("/api/billing/me"')) permissionEffect = node.arguments[0].getText(source);
   ts.forEachChild(node, visit);
 }
 visit(source);
@@ -38,3 +39,30 @@ for (const level of ["nenhum", "individual", "lote", "ia"]) {
     }
   });
 }
+
+for (const plan of ["cortes-ai", "cortes-start", "cortes-pro"]) {
+  test(`direito ${plan} chega com menu fechado e Vários trechos aberto`, async () => {
+    const values: boolean[] = [];
+    const effect = runInNewContext(`(${permissionEffect})`, {
+      showDownload: false, multiCenasAtivo: true, AbortController,
+      setTemAssinaturaIA(value: boolean) { values.push(value); },
+      fetch: async () => ({ ok: true, json: async () => ({ cortes: { plano: { id: plan } } }) }),
+    });
+    const cleanup = effect();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(values, [false, plan === "cortes-ai"]);
+    cleanup();
+  });
+}
+
+test("editor fechado não consulta nem concede direito AI", () => {
+  let calls = 0;
+  const values: boolean[] = [];
+  const effect = runInNewContext(`(${permissionEffect})`, {
+    multiCenasAtivo: false, setTemAssinaturaIA(value: boolean) { values.push(value); },
+    fetch() { calls++; },
+  });
+  effect();
+  assert.deepEqual(values, [false]);
+  assert.equal(calls, 0);
+});
