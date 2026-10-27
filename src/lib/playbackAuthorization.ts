@@ -32,7 +32,8 @@
 
 import { entitlementsDoUsuario } from "./entitlements";
 import type { Entitlements } from "./entitlements";
-import type { DireitosDoPlano } from "./planos";
+import { corteAutorizado } from "./planos";
+import type { DireitosDoPlano, ModoCorte } from "./planos";
 
 export type ConteudoAutorizavel = "filme" | "serie";
 
@@ -153,6 +154,19 @@ export function anuncioElectronAtivo(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return env.ANUNCIO_ELECTRON_ATIVO === "true";
+}
+
+/**
+ * Controle comercial dos cortes. **Independente de `MONETIZACAO_ATIVA`**: a
+ * separação por direito vale por si. Desligado (default), o servidor não confere
+ * `cortesNivel` — os planos tradicionais seguem exatamente como hoje. Ligado, o
+ * recurso novo fica indisponível para quem não tiver o direito. Leitura estrita
+ * (`"true"`), `env` injetável para o teste.
+ */
+export function cortesControleAtivo(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.CORTES_CONTROLE_ATIVO === "true";
 }
 
 /**
@@ -330,19 +344,21 @@ export async function limiteDeTelas(
  * O subconjunto dos direitos que a interface precisa para não oferecer o que a
  * conta não tem.
  *
- * **Só `downloads`, e só porque o download é feito pelo cliente.** Todo o resto
- * é decidido no servidor, e o cliente não precisa saber — o que ele não sabe ele
- * não tenta contornar, e um objeto de direitos completo na resposta seria um
- * mapa do que vale a pena atacar.
+ * Downloads e cortes são executados pelo cliente; a resposta expõe apenas
+ * os direitos necessários à interface. O servidor revalida cada operação.
  */
 export interface DireitosDoCliente {
   downloads: boolean;
+  cortesNivel: import("./planos").CortesNivel;
+  cortesControleAtivo: boolean;
+  /** Ação no Electron passa por anúncio (só para o texto do botão; o servidor decide). */
+  anuncio: boolean;
 }
 
 /**
  * Resolve o que o cliente pode saber.
  *
- * Com a flag desligada devolve o comportamento de hoje — download liberado —
+ * Com monetização e controle de cortes desligados, mantém download liberado
  * **sem chamar o resolver**, pela mesma razão de `limiteDeTelas`.
  *
  * Falha do resolver devolve `downloads: false`. Fail-closed, e aqui custa pouco:
@@ -352,17 +368,60 @@ export interface DireitosDoCliente {
  */
 export async function direitosDoCliente(
   userId: string,
-  opcoes: OpcoesDeAutorizacao = {},
+  opcoes: OpcoesDeAutorizacao & { controleAtivo?: boolean; anuncioAtivo?: boolean } = {},
 ): Promise<DireitosDoCliente> {
   const ativa = opcoes.ativa ?? monetizacaoAtiva();
-  if (!ativa) return { downloads: true };
+  const controle = opcoes.controleAtivo ?? cortesControleAtivo();
+  const comAnuncio = opcoes.anuncioAtivo ?? (ativa || anuncioElectronAtivo());
+  if (!ativa && !controle && !comAnuncio) return { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false };
 
   const resolver = opcoes.resolver ?? entitlementsDoUsuario;
 
   try {
     const entitlements = await resolver(userId);
-    return { downloads: entitlements.direitos.downloads === true };
+    return {
+      // Download completo é do Obaflix inteiro, inclusive assinantes Cortes; quem
+      // passa por anúncio é decidido no gate de anúncio, não aqui.
+      downloads: true,
+      cortesNivel: controle ? entitlements.direitos.cortesNivel ?? "nenhum" : "nenhum",
+      cortesControleAtivo: controle,
+      anuncio: comAnuncio && entitlements.direitos.anunciosObrigatorios === true,
+    };
   } catch {
-    return { downloads: false };
+    return { downloads: false, cortesNivel: "nenhum", cortesControleAtivo: controle, anuncio: false };
+  }
+}
+
+/**
+ * Uma operação de download está autorizada para este usuário? Mora aqui, não na
+ * rota: decisão de direito vive em playbackAuthorization.
+ *
+ * O download/corte roda no cliente sobre a mídia já entregue (Electron vai direto
+ * ao CDN), então o servidor não distingue a operação pelos bytes — só pelo que o
+ * cliente declara. Por isso **todas as operações** são gateadas, não só o corte:
+ * se apenas `individual`/`lote` fossem conferidos, bastaria OMITIR o tipo (cair em
+ * `completo`) para contornar. Aqui `completo` é liberado a toda conta (o anúncio
+ * aplicável vem depois, no fluxo existente) e o corte exige a escada de
+ * `cortesNivel` — omitir ou falsificar o tipo nunca concede corte. Não é fronteira criptográfica (quem tem os bytes os
+ * tem), mas o parâmetro do cliente deixa de ser prova de autorização.
+ *
+ * Controle desligado → `true`: os planos de hoje seguem baixando/cortando como
+ * sempre. Erro ao resolver nega. `resolver`/`controleAtivo` injetáveis no teste.
+ */
+export async function downloadPermitido(
+  userId: string,
+  operacao: "completo" | ModoCorte,
+  opcoes: { resolver?: typeof entitlementsDoUsuario; controleAtivo?: boolean } = {},
+): Promise<boolean> {
+  const controle = opcoes.controleAtivo ?? cortesControleAtivo();
+  if (!controle) return true;
+  // Completo: toda conta, como em `direitosDoCliente`; o anúncio vem depois, no fluxo existente.
+  if (operacao === "completo") return true;
+  const resolver = opcoes.resolver ?? entitlementsDoUsuario;
+  try {
+    const { direitos } = await resolver(userId);
+    return corteAutorizado(direitos.cortesNivel, operacao);
+  } catch {
+    return false;
   }
 }

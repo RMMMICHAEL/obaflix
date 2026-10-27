@@ -1,3 +1,5 @@
+import { PLANOS_CORTES } from "../planos";
+
 export const STATUS_TERMINAIS_DO_PEDIDO = new Set([
   "PAGO", "EXPIRADO", "CANCELADO", "ESTORNADO", "REVISAO_MANUAL",
 ]);
@@ -36,15 +38,48 @@ export function corpoCriarPedido(
   planoId: string | null,
   planoPrecoId: string | null,
   pagador: { nome: string; telefone: string; documento: string },
-  opcoes: { cupom?: string; telasAdicionais?: number } = {},
+  opcoes: { cupom?: string; telasAdicionais?: number; email?: string; nascimento?: string } = {},
 ) {
   const cupom = opcoes.cupom?.trim();
+  const email = opcoes.email?.trim();
   const telas = opcoes.telasAdicionais;
   return {
     planoId, planoPrecoId, ...pagador,
     ...(cupom ? { cupom } : {}),
+    ...(email ? { email } : {}),
+    ...(opcoes.nascimento ? { nascimento: opcoes.nascimento } : {}),
     ...(typeof telas === "number" && telas > 0 ? { telasAdicionais: telas } : {}),
   };
+}
+
+/** Só Cortes compra sem login; o servidor decide de novo e recusa o resto (401). */
+export function checkoutSemLoginPermitido(planoId: string | null) {
+  return !!planoId && PLANOS_CORTES.some((plano) => plano.id === planoId);
+}
+
+/** Página de planos exclusiva do Cortes (abre no navegador externo pelo Electron, como /planos). */
+export const PLANOS_CORTES_HREF = "/planos?familia=cortes";
+
+const POSICAO_CORTES: Record<string, number> = { "cortes-start": 1, "cortes-pro": 2, "cortes-ai": 3 };
+
+export type AcaoNoPlanoCortes =
+  | { acao: "assinar" | "renovar" | "upgrade"; href: string }
+  | { acao: "incluido" };
+
+/**
+ * O que oferecer num cartão Cortes, conforme quem está vendo. Sem sessão ou sem
+ * Cortes vigente: assinar (compra nova, sem cadastro antes). Com Cortes: renovar
+ * o mesmo plano ou fazer upgrade para um maior; o menor já está incluído.
+ * Renovação e upgrade levam `conta=1`: o checkout exige login e nunca os trata
+ * como compra anônima (o crédito proporcional do upgrade é calculado lá).
+ */
+export function acaoNoPlanoCortes(planoId: string, situacao: { logado: boolean; atual: string | null }): AcaoNoPlanoCortes {
+  const base = `/checkout?planoId=${encodeURIComponent(planoId)}`;
+  const atual = situacao.logado ? situacao.atual : null;
+  if (!atual || !(atual in POSICAO_CORTES)) return { acao: "assinar", href: base };
+  if (atual === planoId) return { acao: "renovar", href: `${base}&conta=1` };
+  if ((POSICAO_CORTES[planoId] ?? 0) > POSICAO_CORTES[atual]) return { acao: "upgrade", href: `${base}&conta=1` };
+  return { acao: "incluido" };
 }
 
 /** Texto da operação que o servidor decidiu. Informativo; o valor já veio calculado. */
@@ -93,5 +128,8 @@ export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "credito_maior_que_compra") return "O crédito do seu plano atual é maior que esta compra. Escolha uma duração maior.";
   if (codigo === "duracao_invalida") return "Esta duração não está disponível.";
   if (codigo === "dados_do_pagador_invalidos") return "Confira nome, telefone e CPF/CNPJ.";
+  if (codigo === "nascimento_invalido") return "Confira a data de nascimento. A compra é permitida a partir de 18 anos.";
+  if (codigo === "parametros_invalidos") return "Confira o e-mail e os dados informados.";
+  if (codigo === "muitas_tentativas") return "Muitas tentativas. Aguarde alguns minutos e tente de novo.";
   return "Não foi possível iniciar o pagamento.";
 }

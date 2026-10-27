@@ -104,9 +104,10 @@ export async function travarContaParaCobranca(tx: TxComTrava, userId: string): P
  */
 export async function abrirRevisao(
   tx: TxDeRevisao,
-  a: { pedidoId: string; userId: string; motivo: MotivoDeRevisao; ator?: string },
+  a: { pedidoId: string; userId: string | null; motivo: MotivoDeRevisao; ator?: string },
 ): Promise<{ revisaoId: string; nova: boolean }> {
-  await travarContaParaCobranca(tx, a.userId);
+  // Pedido sem conta (compra sem login): a trava é do próprio pedido.
+  await travarContaParaCobranca(tx, a.userId ?? `pedido:${a.pedidoId}`);
   const ator = a.ator ?? "sistema";
 
   const aberta = await tx.revisaoPagamento.findFirst({
@@ -133,7 +134,7 @@ export async function abrirRevisao(
 /** Pedido em `REVISAO_MANUAL` e caso aberto, na mesma transação. */
 export async function marcarPedidoEmRevisao(
   tx: TxDeRevisao & Pick<Prisma.TransactionClient, "pedidoPagamento">,
-  a: { pedidoId: string; userId: string; motivo: MotivoDeRevisao },
+  a: { pedidoId: string; userId: string | null; motivo: MotivoDeRevisao },
 ): Promise<void> {
   await tx.pedidoPagamento.update({ where: { id: a.pedidoId }, data: { status: "REVISAO_MANUAL" } });
   await abrirRevisao(tx, a);

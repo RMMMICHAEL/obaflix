@@ -40,6 +40,16 @@ export const INSTALADORES = {
     versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_VERSAO, "Versão 1.0.12"),
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116,4 MB"),
   },
+  /**
+   * Instalador Windows COM as ferramentas de Cortes. Sem padrão de propósito: o
+   * publicado hoje (1.0.12) não tem Cortes. Só preencha depois de homologar o
+   * instalador; vazio, a página de vendas mostra "em preparação".
+   */
+  windowsCortes: {
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES, ""),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_VERSAO, ""),
+    tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_TAMANHO, ""),
+  },
 } satisfies Record<string, Instalador>;
 
 /** Código do app na loja do Downloader (AFTV News), para Android TV / TV Box. */

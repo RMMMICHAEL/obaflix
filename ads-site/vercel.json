@@ -1,5 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "feat/cortes-permissoes": false,
+      "feat/cortes-comercial": false
+    }
+  },
   "framework": null,
   "buildCommand": null,
   "installCommand": null,

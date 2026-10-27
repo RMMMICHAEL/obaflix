@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as plansGet } from "../../app/api/billing/plans/route";
 import { GET as meGet } from "../../app/api/billing/me/route";
 import { GET as pendingGet } from "../../app/api/billing/orders/pending/route";
-import { acaoComercialDoPlano, corpoCriarPedido, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
+import { acaoComercialDoPlano, acaoNoPlanoCortes, checkoutSemLoginPermitido, corpoCriarPedido, PLANOS_CORTES_HREF, deveFazerPolling, mensagemErroCheckout } from "../billing/checkout";
 
 const req = new NextRequest("http://local");
 const createPlansHandler = plansGet.createForTest;
@@ -31,16 +31,24 @@ test("catálogo comercial só expõe planos ativos, preços ativos e nenhum cana
 test("estado comercial exige sessão e devolve nome comercial sem campos administrativos", async () => {
   const semSessao = createBillingMeHandler({ getUserFromRequest: async () => null });
   assert.equal((await semSessao(req)).status, 401);
-  const handler = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa: true, planoId: "basic" } }), agora: () => new Date("2026-01-01"), prisma: { assinatura: { findFirst: async () => ({ terminaEm: new Date("2026-02-01") }) }, plano: { findUnique: async () => ({ id: "basic", nome: "Basic" }) } } });
+  const handler = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa: true, planoId: "basic" } }), agora: () => new Date("2026-01-01"), prisma: { assinatura: { findMany: async () => [
+    { planoId: "cortes-start", terminaEm: new Date("2026-01-20"), plano: { nome: "Obaflix Cortes Start", cortesNivel: "individual" } },
+    { planoId: "basic", terminaEm: new Date("2026-02-01"), plano: { nome: "Basic", cortesNivel: "nenhum" } },
+  ] }, plano: { findUnique: async () => ({ id: "basic", nome: "Basic" }) } } });
   const body = await (await handler(req)).json();
   assert.deepEqual(body.plano, { id: "basic", nome: "Básico" }); assert.equal(body.assinatura.status, "ATIVA");
+  // Vencimento do tradicional, não do Cortes; e o Cortes aparece à parte.
+  assert.equal(body.assinatura.terminaEm, "2026-02-01T00:00:00.000Z");
+  assert.deepEqual(body.cortes, { plano: { id: "cortes-start", nome: "Obaflix Cortes Start" }, terminaEm: "2026-01-20T00:00:00.000Z" });
   assert.equal(JSON.stringify(body).match(/transaction|pedidoId|planoPreco|origem/i), null);
 });
 
 test("estado comercial gratuito, cancelado e vencido nunca se apresenta como assinatura ativa", async () => {
   for (const ativa of [false, false, false]) {
-    const h = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa, planoId: "gratuito" } }), prisma: { assinatura: { findFirst: async () => assert.fail("não consulta assinatura inativa") }, plano: { findUnique: async () => ({ id: "gratuito", nome: "Gratuito" }) } } });
-    assert.equal((await (await h(req)).json()).assinatura, null);
+    const h = createBillingMeHandler({ getUserFromRequest: async () => ({ userId: "u" }), entitlementsDoUsuario: async () => ({ assinatura: { ativa, planoId: "gratuito" } }), prisma: { assinatura: { findMany: async () => assert.fail("não consulta assinatura inativa") }, plano: { findUnique: async () => ({ id: "gratuito", nome: "Gratuito" }) } } });
+    const corpo = await (await h(req)).json();
+    assert.equal(corpo.assinatura, null);
+    assert.equal(corpo.cortes, null);
   }
 });
 
@@ -57,6 +65,10 @@ test("recuperação de pendente é autenticada, do dono, vigente e sem transacti
 test("checkout envia somente seleção e pagador, e encerra polling em todo estado terminal", () => {
   const corpo = corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" });
   assert.deepEqual(Object.keys(corpo).sort(), ["documento", "nome", "planoId", "planoPrecoId", "telefone"]);
+  assert.equal(corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" }, { email: " a@b.co " }).email, "a@b.co");
+  assert.equal("email" in corpoCriarPedido("p", "pp", { nome: "N", telefone: "1", documento: "2" }, { email: "  " }), false);
+  for (const id of ["cortes-start", "cortes-pro", "cortes-ai"]) assert.equal(checkoutSemLoginPermitido(id), true);
+  for (const id of ["basic", "plus", "premium", "gratuito", "", null]) assert.equal(checkoutSemLoginPermitido(id), false);
   for (const status of ["PAGO", "EXPIRADO", "CANCELADO", "ESTORNADO", "REVISAO_MANUAL"]) assert.equal(deveFazerPolling(status), false);
   assert.equal(deveFazerPolling("AGUARDANDO"), true);
   assert.match(mensagemErroCheckout("assinatura_ativa"), /assinatura ativa/);
@@ -68,4 +80,18 @@ test("vitrine comercial permite renovar e mudar plano com assinatura ativa", () 
   assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: true }), { disponivel: true, rotulo: "Alterar plano" });
   assert.deepEqual(acaoComercialDoPlano({ compravel: true, planoAtual: false, assinaturaAtiva: false }), { disponivel: true, rotulo: "Assinar" });
   assert.deepEqual(acaoComercialDoPlano({ compravel: false, planoAtual: false, assinaturaAtiva: true }), { disponivel: false, rotulo: "Indisponível" });
+});
+
+test("planos Cortes: visitante assina; quem tem Cortes renova ou faz upgrade com login; o menor fica incluído", () => {
+  assert.equal(PLANOS_CORTES_HREF, "/planos?familia=cortes");
+  const visitante = { logado: false, atual: null };
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", visitante), { acao: "assinar", href: "/checkout?planoId=cortes-start" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: false, atual: "cortes-start" }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" }, "sem sessão não sabe do plano");
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: null }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-start" }), { acao: "renovar", href: "/checkout?planoId=cortes-start&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-start" }), { acao: "upgrade", href: "/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-pro" }), { acao: "renovar", href: "/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-pro" }), { acao: "incluido" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-ai", { logado: true, atual: "cortes-pro" }), { acao: "upgrade", href: "/checkout?planoId=cortes-ai&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-ai" }), { acao: "incluido" });
 });

@@ -110,6 +110,11 @@ const PUBLICO = [
   "/planos",
   "/checkout",
   "/conta",
+  // Página de vendas do Obaflix Cortes: informação e compra, sem streaming.
+  "/cortes",
+  // Primeiro acesso de quem comprou sem login: abre pelo link do e-mail, no
+  // navegador. Só define a senha com o token de uso único; não é streaming.
+  "/ativar",
   // Exclusão de conta. Pública de propósito: a loja exige uma página de
   // exclusão alcançável fora do app, sem ter o app instalado. Não é interface de
   // streaming — explica o efeito e, para quem não está logado, manda entrar e

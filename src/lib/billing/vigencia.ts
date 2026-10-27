@@ -85,6 +85,8 @@ export interface PeriodoPago {
   planoId: string;
   /** `Plano.ordem`. */
   ordemDoPlano: number;
+  /** Família Cortes (`ehPlanoCortes`). Ausente: tradicional. */
+  cortes?: boolean;
   iniciaEm: Date;
   terminaEm: Date;
   /** O que foi cobrado por este período, adicionais incluídos. */
@@ -109,11 +111,14 @@ export type Operacao =
  */
 export function classificarOperacao(entrada: {
   periodos: PeriodoPago[];
-  plano: { id: string; ordem: number };
+  plano: { id: string; ordem: number; cortes?: boolean };
   agora: Date;
 }): Operacao {
   const { agora, plano } = entrada;
+  // Só a mesma família conta: comprar Cortes nunca renova nem substitui o
+  // tradicional, e vice-versa.
   const abertos = entrada.periodos
+    .filter((p) => (p.cortes === true) === (plano.cortes === true))
     .filter((p) => p.terminaEm.getTime() > agora.getTime())
     .sort((a, b) => a.iniciaEm.getTime() - b.iniciaEm.getTime());
 

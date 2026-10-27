@@ -193,13 +193,13 @@ describe("direitosDoCliente", () => {
   test("flag desligada libera download SEM chamar o resolver", async () => {
     const { resolver, chamadas } = resolverFalso(entitlementsDe(PLANO_BASIC));
 
-    const r = await direitosDoCliente("u1", { ativa: false, resolver });
+    const r = await direitosDoCliente("u1", { ativa: false, anuncioAtivo: false, resolver });
 
-    assert.deepEqual(r, { downloads: true });
+    assert.deepEqual(r, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
     assert.equal(chamadas(), 0);
   });
 
-  test("basic não baixa; premium baixa", async () => {
+  test("com monetização: basic e premium baixam o completo", async () => {
     const basic = await direitosDoCliente("u1", {
       ativa: true,
       resolver: resolverFalso(entitlementsDe(PLANO_BASIC)).resolver,
@@ -209,26 +209,15 @@ describe("direitosDoCliente", () => {
       resolver: resolverFalso(entitlementsDe(PLANO_PREMIUM)).resolver,
     });
 
-    assert.deepEqual(basic, { downloads: false });
-    assert.deepEqual(premium, { downloads: true });
+    assert.deepEqual({ ...basic, anuncio: false }, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
+    assert.deepEqual({ ...premium, anuncio: false }, { downloads: true, cortesNivel: "nenhum", cortesControleAtivo: false, anuncio: false });
   });
 
   /** Negar download custa um botão, não a reprodução — fail-closed é barato. */
   test("resolver que falha nega o download", async () => {
     const { resolver } = resolverFalso(new Error("banco fora"));
 
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false });
-  });
-
-  /** Um direito `undefined` — cache de formato antigo — não vira permissão. */
-  test("downloads ausente não vira true por coerção", async () => {
-    const ent = entitlementsDe(PLANO_PREMIUM);
-    const { resolver } = resolverFalso({
-      ...ent,
-      direitos: { ...ent.direitos, downloads: undefined as unknown as boolean },
-    });
-
-    assert.deepEqual(await direitosDoCliente("u1", { ativa: true, resolver }), { downloads: false });
+    assert.equal((await direitosDoCliente("u1", { ativa: true, resolver })).downloads, false);
   });
 
   /**
@@ -236,12 +225,12 @@ describe("direitosDoCliente", () => {
    * resposta seria um mapa do que vale a pena atacar, e todo o resto é decidido
    * no servidor de qualquer forma.
    */
-  test("nada além de downloads atravessa", async () => {
+  test("só downloads, direitos de cortes e o aviso de anúncio atravessam", async () => {
     const r = await direitosDoCliente("u1", {
       ativa: true,
       resolver: resolverFalso(entitlementsDe(PLANO_PREMIUM)).resolver,
     });
-    assert.deepEqual(Object.keys(r), ["downloads"]);
+    assert.deepEqual(Object.keys(r), ["downloads", "cortesNivel", "cortesControleAtivo", "anuncio"]);
   });
 });
 
@@ -261,9 +250,10 @@ describe("a rota /fontes devolve o direito, e o player obedece", () => {
     // Vem do servidor, com comparação estrita.
     assert.match(codigo, /setPodeBaixarPeloPlano\(data\?\.direitos\?\.downloads === true\)/);
     // Gate da UI.
-    assert.match(codigo, /const podeBaixar = podeBaixarPeloPlano &&/);
+    assert.ok(codigo.includes("const podeBaixar = (controleCortes || podeBaixarPeloPlano) &&"));
     // Gate da ação, para UI desatualizada não disparar o download.
-    assert.match(codigo, /if \(!podeBaixarPeloPlano\) return;/);
+    assert.ok(codigo.includes('if (!(modo === "completo" ? podeBaixarPeloPlano : podeCortar)) return;'));
+    assert.ok(codigo.includes("!podeLote || !cenas.length"));
   });
 
   /**
@@ -272,7 +262,8 @@ describe("a rota /fontes devolve o direito, e o player obedece", () => {
    */
   test("o estado nasce negando", () => {
     const player = readFileSync(join(raiz, "src/components/player/CustomPlayer.tsx"), "utf8");
-    assert.match(player, /useState\(false\);\s*\n\s*const directStreamRef/);
+    assert.ok(player.includes("[podeBaixarPeloPlano, setPodeBaixarPeloPlano] = useState(false)"));
+    assert.ok(player.includes('const [nivelCortes, setNivelCortes] = useState("nenhum")'));
   });
 });
 
@@ -454,7 +445,7 @@ describe("o seed e o script de ajuste, como código", () => {
   test("o ajuste exige --apply e recusa se sobrar inversão", () => {
     assert.ok(ajuste.includes('process.argv.includes("--apply")'));
     assert.match(ajuste, /RECUSADO/);
-    assert.ok(ajuste.includes("inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false })"));
+    assert.ok(ajuste.includes('inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false, cortesNivel: "nenhum" })'));
   });
 
   /** Não toca em ehPadrao: mudar isso poderia deixar o sistema sem plano padrão. */

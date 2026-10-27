@@ -74,16 +74,28 @@ export const APLICACAO_DOS_DIREITOS: Record<keyof DireitosDoPlano, AplicacaoDoDi
   },
 
   downloads: {
+    estado: "nao_aplicado",
+    onde: "",
+    nota:
+      "Download completo é liberado a toda conta (gratuito, tradicionais e Cortes); o que " +
+      "varia é o anúncio, decidido por `anunciosObrigatorios`. A coluna segue gravada para a " +
+      "vitrine. Se voltar a negar algo, lembre: o download do Electron vai do app direto ao " +
+      "CDN, então seria decisão de servidor obedecida no cliente, não fronteira criptográfica.",
+  },
+
+
+  cortesNivel: {
     estado: "aplicado",
     onde: "src/lib/playbackAuthorization.ts",
     nota:
-      "Decidido no servidor e devolvido em POST /api/player/fontes; o player só " +
-      "oferece download quando vem `true`. **É decisão de servidor obedecida no " +
-      "cliente, não uma fronteira criptográfica**: o download do Electron vai do " +
-      "app direto ao CDN, sem passar por nós, então um cliente modificado ainda " +
-      "consegue salvar o que já está reproduzindo. Fechar isso de verdade exigiria " +
-      "gatear o IPC em desktop/electron/main.js — e ainda assim quem tem a mídia " +
-      "tocando tem os bytes. Ver docs/monetizacao-arquitetura.md 5.3.",
+      "`downloadPermitido` resolve o direito e aplica a escada nenhum<individual<lote<ia; " +
+      "POST /api/player/fontes nega a ação (403 `download_nao_autorizado`) antes do " +
+      "anúncio. O completo é liberado a toda conta; " +
+      "o corte exige o nível. Atrás de CORTES_CONTROLE_ATIVO e **independente de MONETIZACAO_ATIVA**: " +
+      "desligado, os planos de hoje seguem cortando; ligado, o recurso novo fica " +
+      "indisponível a quem não tem direito. Mesma limitação de `downloads`: o corte roda " +
+      "no cliente sobre a mídia já entregue, então é decisão de servidor obedecida no " +
+      "cliente, não fronteira criptográfica. Uma autorização por lote, sem requisição por cena.",
   },
 
   canaisNivel: {

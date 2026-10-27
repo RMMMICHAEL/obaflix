@@ -40,7 +40,10 @@ import {
   CANAIS_NIVEIS,
   RESOLUCOES,
   TV_NIVEIS,
+  CORTES_NIVEIS,
+  ehPlanoCortes,
   type CanaisNivel,
+  type CortesNivel,
   type DireitosDoPlano,
   type Resolucao,
   type TvNivel,
@@ -71,7 +74,7 @@ export type MotivoIndefinido =
   | "sem_plano_padrao"
   /** A assinatura válida aponta para um plano que não veio junto. */
   | "plano_da_assinatura_ausente"
-  /** Mais de uma assinatura válida ao mesmo tempo. Ver `resolverEntitlements`. */
+  /** Mais de uma assinatura válida da mesma família. Ver `resolverEntitlements`. */
   | "assinaturas_ambiguas"
   /** Uma coluna de domínio fechado trouxe valor fora do domínio. */
   | "direito_fora_do_dominio";
@@ -141,29 +144,33 @@ export function assinaturaValida(a: AssinaturaCandidata, agora: Date): boolean {
 export function resolverEntitlements(entrada: EntradaDaResolucao): Entitlements {
   const validas = entrada.candidatas.filter((a) => assinaturaValida(a, entrada.agora));
 
-  if (validas.length > 1) {
-    // O schema ainda não impede duas assinaturas válidas ao mesmo tempo — a
-    // trava fica para a fase de renovação/upgrade, junto do fluxo que sabe
-    // encerrar a anterior. Até lá, escolher uma seria inventar regra comercial:
-    // a de maior privilégio favorece quem duplicou; a mais recente favorece
-    // quem recomprou; a mais antiga pune quem fez upgrade. Nenhuma dessas
-    // decisões é minha, e errá-la em silêncio é pior do que parar.
-    throw new EntitlementsIndefinidos(
-      "assinaturas_ambiguas",
-      `${validas.length} válidas: ${validas.map((a) => a.id).join(", ")}`,
-    );
+  const semPlano = validas.find((a) => !a.plano);
+  if (semPlano) {
+    // A FK é RESTRICT, então isto não deveria acontecer. Se acontecer, cair
+    // para o gratuito rebaixaria em silêncio quem pagou — e ninguém saberia.
+    throw new EntitlementsIndefinidos("plano_da_assinatura_ausente", `assinatura ${semPlano.id}`);
   }
+  const comPlano = validas as (AssinaturaCandidata & { plano: PlanoAutorizador })[];
+  const cortes = comPlano.filter((a) => ehPlanoCortes(a.plano.cortesNivel));
+  const tradicionais = comPlano.filter((a) => !ehPlanoCortes(a.plano.cortesNivel));
 
-  if (validas.length === 1) {
-    const assinatura = validas[0];
-    if (!assinatura.plano) {
-      // A FK é RESTRICT, então isto não deveria acontecer. Se acontecer, cair
-      // para o gratuito rebaixaria em silêncio quem pagou — e ninguém saberia.
+  for (const familia of [tradicionais, cortes]) {
+    if (familia.length > 1) {
+      // Duas da mesma família: escolher uma seria inventar regra comercial — a
+      // de maior privilégio favorece quem duplicou; a mais recente favorece
+      // quem recomprou; a mais antiga pune quem fez upgrade. Errar em silêncio
+      // é pior do que parar.
       throw new EntitlementsIndefinidos(
-        "plano_da_assinatura_ausente",
-        `assinatura ${assinatura.id}`,
+        "assinaturas_ambiguas",
+        `${familia.length} válidas: ${familia.map((a) => a.id).join(", ")}`,
       );
     }
+  }
+
+  // Coexistindo, o tradicional responde por tudo o que é compartilhado e o
+  // Cortes só soma `cortesNivel`. Sem tradicional, o Cortes vale sozinho.
+  const assinatura = tradicionais[0] ?? cortes[0];
+  if (assinatura) {
     // `Plano.ativo` NÃO é conferido aqui, e é intencional: `ativo = false`
     // significa "saiu de venda", não "perdeu validade". Quem comprou continua
     // com o plano que comprou até `terminaEm`.
@@ -177,12 +184,12 @@ export function resolverEntitlements(entrada: EntradaDaResolucao): Entitlements 
       direitos.telasMax = direitos.telasMax + extras;
     }
     direitos.servidorVip = direitos.servidorVip === true || assinatura.servidorVip === true;
+    const corte = cortes[0];
+    if (corte && corte !== assinatura) direitos.cortesNivel = corte.plano.cortesNivel;
+    // O primeiro vencimento: o cache não pode sobreviver a nenhuma das duas.
+    const expiraEm = corte && corte.terminaEm < assinatura.terminaEm ? corte.terminaEm : assinatura.terminaEm;
     return {
-      assinatura: {
-        ativa: true,
-        planoId: assinatura.plano.id,
-        expiraEm: assinatura.terminaEm,
-      },
+      assinatura: { ativa: true, planoId: assinatura.plano.id, expiraEm },
       direitos,
     };
   }
@@ -211,6 +218,7 @@ function apenasDireitos(p: DireitosDoPlano): DireitosDoPlano {
     series: p.series,
     canaisNivel: p.canaisNivel,
     downloads: p.downloads,
+    cortesNivel: p.cortesNivel,
     telasMax: p.telasMax,
     perfisMax: p.perfisMax,
     resolucaoMax: p.resolucaoMax,
@@ -247,6 +255,7 @@ interface LinhaDePlano {
   series: boolean;
   canaisNivel: string;
   downloads: boolean;
+  cortesNivel: string;
   telasMax: number;
   perfisMax: number;
   resolucaoMax: string;
@@ -264,6 +273,7 @@ export function planoDaLinha(linha: LinhaDePlano): PlanoAutorizador {
     series: linha.series,
     canaisNivel: emDominio<CanaisNivel>(linha.canaisNivel, CANAIS_NIVEIS, "canaisNivel"),
     downloads: linha.downloads,
+    cortesNivel: emDominio<CortesNivel>(linha.cortesNivel, CORTES_NIVEIS, "cortesNivel"),
     telasMax: linha.telasMax,
     perfisMax: linha.perfisMax,
     resolucaoMax: emDominio<Resolucao>(linha.resolucaoMax, RESOLUCOES, "resolucaoMax"),
@@ -426,6 +436,9 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
   }
 
   if (typeof d.canaisNivel !== "string" || !(CANAIS_NIVEIS as readonly string[]).includes(d.canaisNivel)) return null;
+  // Entrada de cache sem `cortesNivel` é de formato antigo e vira miss — recarrega
+  // do banco, em vez de supor "nenhum" e talvez negar corte a quem tem direito.
+  if (typeof d.cortesNivel !== "string" || !(CORTES_NIVEIS as readonly string[]).includes(d.cortesNivel)) return null;
   if (typeof d.resolucaoMax !== "string" || !(RESOLUCOES as readonly string[]).includes(d.resolucaoMax)) return null;
   if (typeof d.tvNivel !== "string" || !(TV_NIVEIS as readonly string[]).includes(d.tvNivel)) return null;
 
@@ -439,6 +452,7 @@ export function reviverEntitlements(bruto: string): Entitlements | null {
       series: d.series as boolean,
       canaisNivel: d.canaisNivel as CanaisNivel,
       downloads: d.downloads as boolean,
+      cortesNivel: d.cortesNivel as CortesNivel,
       telasMax: d.telasMax as number,
       perfisMax: d.perfisMax as number,
       resolucaoMax: d.resolucaoMax as Resolucao,
@@ -465,6 +479,7 @@ const COLUNAS_DE_PLANO = {
   series: true,
   canaisNivel: true,
   downloads: true,
+  cortesNivel: true,
   telasMax: true,
   perfisMax: true,
   resolucaoMax: true,

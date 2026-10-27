@@ -87,10 +87,19 @@ export type AuditEvent =
   // o valor que falhou.
   | "account_delete_requested"
   | "account_delete_completed"
-  | "account_delete_rejected";
+  | "account_delete_rejected"
+  | "email_sent"
+  | "email_failed"
+  | "account_activated"
+  | "account_activation_rejected"
+  // Cortes AI. `detail` leva só códigos, id do conteúdo, contagens e tokens —
+  // nunca o pedido do usuário, a legenda, a chave ou o corpo do provedor.
+  | "cortes_ai_negado"
+  | "cortes_ai_analise"
+  | "cortes_ai_falhou";
 
 interface AuditMeta {
-  userId?: string;
+  userId?: string | null;
   ip?: string;
   ua?: string;
   detail?: string;

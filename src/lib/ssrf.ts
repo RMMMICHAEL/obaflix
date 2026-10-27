@@ -78,13 +78,22 @@ export async function assertSafeUrl(raw: string): Promise<URL> {
   return parsed;
 }
 
-/** Fetch GET with SSRF validation repeated after every redirect. */
+/**
+ * Fetch GET with SSRF validation repeated after every redirect. `permitido`,
+ * quando passado, também é conferido em cada salto (ex.: lista de hosts).
+ */
 export async function safeGet(
   raw: string,
   init: Omit<RequestInit, "method" | "redirect"> = {},
   maxRedirects = 4,
+  permitido?: (url: URL) => boolean,
 ): Promise<Response> {
-  let current = await assertSafeUrl(raw);
+  const validar = async (url: string) => {
+    const u = await assertSafeUrl(url);
+    if (permitido && !permitido(u)) throw new Error("destino fora da lista permitida");
+    return u;
+  };
+  let current = await validar(raw);
   for (let redirects = 0; ; redirects++) {
     const response = await fetch(current, { ...init, method: "GET", redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
@@ -94,6 +103,6 @@ export async function safeGet(
       throw new Error("redirecionamento não permitido");
     }
     response.body?.cancel().catch(() => {});
-    current = await assertSafeUrl(new URL(location, current).toString());
+    current = await validar(new URL(location, current).toString());
   }
 }

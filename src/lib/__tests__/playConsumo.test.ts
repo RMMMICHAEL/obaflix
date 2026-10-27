@@ -34,13 +34,13 @@ test("ehClientePlay reconhece o app da Play e ninguém mais", () => {
   assert.equal(ehClientePlay(undefined), false);
 });
 
-// ── rotaComercialBloqueadaNoPlay: só /planos e /checkout ───────────────────────
+// ── rotaComercialBloqueadaNoPlay: só /planos, /cortes e /checkout ──────────────
 
-test("rotaComercialBloqueadaNoPlay cobre planos e checkout por prefixo, nada além", () => {
-  for (const p of ["/planos", "/planos/", "/planos?plano=x", "/checkout", "/checkout?planoId=x"]) {
+test("rotaComercialBloqueadaNoPlay cobre planos, página de vendas Cortes e checkout por prefixo, nada além", () => {
+  for (const p of ["/planos", "/planos/", "/planos?plano=x", "/checkout", "/checkout?planoId=x", "/cortes", "/cortes#planos"]) {
     assert.equal(rotaComercialBloqueadaNoPlay(p), true, `${p} deveria bloquear`);
   }
-  for (const p of ["/conta", "/planos-falso", "/checkouts", "/", "/android", "/filme/abc"]) {
+  for (const p of ["/conta", "/planos-falso", "/checkouts", "/cortes-falso", "/ativar", "/", "/android", "/filme/abc"]) {
     assert.equal(rotaComercialBloqueadaNoPlay(p), false, `${p} não deveria bloquear`);
   }
 });

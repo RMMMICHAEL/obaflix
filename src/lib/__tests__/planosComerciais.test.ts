@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { SERVIDOR_VIP_AVULSO_OFERTADO, SERVIDOR_VIP_NA_VITRINE, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
+import { SERVIDOR_VIP_AVULSO_OFERTADO, SERVIDOR_VIP_NA_VITRINE, TONS_DOS_TEMAS, nomePublicoDoPlano, vitrineDoPlano } from "../billing/vitrine";
 import { validarOpcoesComerciais } from "../billing/opcoes";
 import {
   AJUSTES_DE_PLANO,
@@ -13,7 +13,7 @@ import {
   type EstadoDoCatalogo,
 } from "../billing/catalogoComercial";
 import { videoPermitidoPorVip, servidorVipDaConta } from "../servidorVip";
-import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PLUS, PLANO_PREMIUM } from "../planos";
+import { PLANO_BASIC, PLANO_GRATUITO, PLANO_PLUS, PLANO_PREMIUM, PLANOS_CORTES } from "../planos";
 import type { Entitlements } from "../entitlements";
 import type { PlanoSemeado } from "../planos";
 
@@ -37,18 +37,19 @@ describe("matriz final na vitrine", () => {
     }
   });
 
-  test("gratuito: 1 tela, com anúncios, sem downloads, sem canais, SD", () => {
+  test("gratuito: 1 tela, com anúncios, downloads com anúncios, sem canais, SD", () => {
     assert.deepEqual(textos(PLANO_GRATUITO), [
-      "1 tela", "Filmes e séries", "Qualidade SD", "Com anúncios na reprodução", "Sem downloads", "Sem canais de TV",
+      "1 tela", "Filmes e séries", "Qualidade SD", "Com anúncios na reprodução", "Downloads com anúncios", "Sem canais de TV",
     ]);
   });
 
-  test("Básico: 2 telas, HD, sem anúncios, sem downloads, sem canais", () => {
+  test("Básico: 2 telas, HD, sem anúncios, downloads com anúncios, sem canais", () => {
     assert.deepEqual(textos(PLANO_BASIC), [
-      "2 telas simultâneas", "Filmes e séries", "Suporte a HD", "Sem anúncios", "Sem downloads", "Sem canais de TV", "Suporte padrão",
+      "2 telas simultâneas", "Filmes e séries", "Suporte a HD", "Sem anúncios", "Downloads com anúncios", "Sem canais de TV", "Suporte padrão",
     ]);
-    assert.equal(incluido(PLANO_BASIC, "Sem downloads"), false);
-    assert.equal(textos(PLANO_BASIC).some((t) => /download/i.test(t) && /anúncio/i.test(t)), false);
+    // Download completo é de todo plano: nunca anunciado como bloqueado.
+    assert.equal(incluido(PLANO_BASIC, "Downloads com anúncios"), true);
+    assert.equal(textos(PLANO_BASIC).includes("Sem downloads"), false);
   });
 
   test("Plus: Full HD, downloads sem anúncios, canais até o nível Plus", () => {
@@ -271,5 +272,33 @@ describe("servidor VIP", () => {
 
   test("falha ao resolver o direito não libera VIP", async () => {
     assert.equal(await servidorVipDaConta("u", { ativa: true, resolver: async () => { throw new Error("redis"); } }), false);
+  });
+});
+
+describe("vitrine Cortes", () => {
+  const [start, pro, ai] = PLANOS_CORTES.map((p) => vitrineDoPlano(p));
+  const marcados = (v: ReturnType<typeof vitrineDoPlano>) => v.beneficios.map((b) => `${b.incluido ? "+" : "-"}${b.texto}`);
+
+  test("identidade própria, família Cortes, tema com cor definida", () => {
+    assert.deepEqual([start, pro, ai].map((v) => [v.nome, v.tema, v.selo, v.familia]), [
+      ["Obaflix Cortes Start", "verde", null, "cortes"],
+      ["Obaflix Cortes Pro", "ciano", "Cortes em lote", "cortes"],
+      ["Obaflix Cortes AI", "rosa", "Cortes com IA", "cortes"],
+    ]);
+    for (const v of [start, pro, ai]) assert.ok(TONS_DOS_TEMAS[v.tema!]);
+    for (const p of [PLANO_GRATUITO, PLANO_BASIC, PLANO_PLUS, PLANO_PREMIUM]) assert.equal(vitrineDoPlano(p).familia, "tradicional");
+  });
+
+  test("benefícios reais: Start individual, Pro individual e lote, AI com Cortes AI", () => {
+    assert.deepEqual(marcados(start).slice(0, 2), ["+Cortes individuais", "-Cortes em lote"]);
+    assert.deepEqual(marcados(pro).slice(0, 2), ["+Cortes individuais", "+Cortes em lote"]);
+    assert.deepEqual(marcados(ai).slice(0, 3), ["+Cortes individuais", "+Cortes em lote", "+Cortes AI: sugestões de cortes por tema"]);
+  });
+
+  test("download de filmes nunca aparece bloqueado nos Cortes", () => {
+    for (const v of [start, pro, ai]) {
+      assert.equal(v.beneficios.some((b) => /download/i.test(b.texto) && !b.incluido), false, v.nome);
+      assert.ok(v.beneficios.some((b) => b.texto === "Downloads com anúncios" && b.incluido), v.nome);
+    }
   });
 });

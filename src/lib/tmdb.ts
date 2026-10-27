@@ -112,6 +112,10 @@ export const getMovieVideos = (tmdbId: string | number) =>
 export const getTVVideos = (tmdbId: string | number) =>
   tmdbFetch<{ results: TmdbVideo[] }>(`/tv/${tmdbId}/videos`);
 
+/** IMDb de um filme ou série pelo TMDB (para quem não tem `imdbId` no catálogo). */
+export const getIdsExternos = (tipo: "filme" | "serie", tmdbId: string | number) =>
+  tmdbFetch<{ imdb_id?: string | null }>(`/${tipo === "filme" ? "movie" : "tv"}/${tmdbId}/external_ids`);
+
 export const getMovieCredits = (tmdbId: string | number) =>
   tmdbFetch<{ cast: TmdbCast[]; crew: TmdbCast[] }>(`/movie/${tmdbId}/credits`);
 

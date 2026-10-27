@@ -11,8 +11,8 @@ import { caminhoInternoSeguro, destinoDoLoginDoCheckout, planoEscolhidoDaUrl } f
  * navegador comum; o streaming web continua fechado.
  */
 
-test("navegador comum: planos, checkout e conta abertos", () => {
-  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro"]) {
+test("navegador comum: planos, checkout, conta, página de vendas Cortes e ativação abertos", () => {
+  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro", "/cortes", "/ativar"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "segue" }, rota);
   }
 });
@@ -21,7 +21,7 @@ test("navegador comum: streaming continua fechado", () => {
   // /filmes e /series passaram a ser páginas agregadoras públicas (Fase 2 do
   // SEO); o streaming em si (player, canais, busca, entradas dos apps) segue
   // fechado para o navegador comum.
-  for (const rota of ["/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil"]) {
+  for (const rota of ["/assistir/abc", "/canais", "/busca", "/android", "/desktop", "/perfil", "/cortes-falso", "/ativar-x"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "landing" }, rota);
   }
 });
@@ -32,24 +32,14 @@ test("sw.js da verificação de domínio é servido a qualquer ambiente", async 
   }
   assert.deepEqual(decidirRota("/sw.jsx", "navegador"), { tipo: "landing" });
   // Só o arquivo: nenhum código do app registra um service worker.
-  const { spawnSync } = await import("node:child_process");
-  const busca = spawnSync(
-    "git",
-    [
-      "grep",
-      "-l",
-      "serviceWorker",
-      "--",
-      "src",
-      ":(exclude)src/**/__tests__/**",
-    ],
-    { encoding: "utf8" },
-  );
-  assert.ok(
-    busca.status === 0 || busca.status === 1,
-    busca.stderr || `git grep falhou com status ${busca.status}`,
-  );
-  assert.equal(busca.stdout.trim(), "");
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const buscar = (pasta: string): string[] => readdirSync(pasta, { withFileTypes: true }).flatMap(entrada => {
+    const caminho = join(pasta, entrada.name);
+    if (entrada.isDirectory()) return entrada.name === "__tests__" ? [] : buscar(caminho);
+    return readFileSync(caminho, "utf8").includes("serviceWorker") ? [caminho] : [];
+  });
+  assert.deepEqual(buscar("src"), []);
 });
 
 test("prefixo parecido não herda a abertura", () => {

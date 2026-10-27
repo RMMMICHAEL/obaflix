@@ -3,10 +3,12 @@ import { invalidarEntitlements } from "@/lib/entitlements";
 import { audit } from "@/lib/auditLog";
 import { criarConfirmadorBlackcat, type ConfirmacaoBlackcat } from "./blackcat";
 import { fimDoPeriodo, type Duracao } from "./vigencia";
+import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
 import { confirmadorDeCobranca } from "./simulado";
+import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
 
-type Pedido = { id: string; userId: string; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
+type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
 export function decidirConfirmacao(p: Pedido, c: ConfirmacaoBlackcat, agora: Date): Decisao {
   if (p.status === "REVISAO_MANUAL") return "MANTER";
@@ -80,7 +82,7 @@ export function planejarAtivacao(
 
 const MAX_TENTATIVAS_TRANSACAO = 3;
 /** Portas estreitas para testes; produção usa os defaults abaixo. */
-export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string)=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; }
+export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string)=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; }
 function conflitoRetryable(erro: unknown) { return typeof erro === "object" && erro !== null && "code" in erro && (erro as {code?:unknown}).code === "P2034"; }
 function conflitoPedidoId(erro: unknown) { const e=erro as {code?:unknown;meta?:{target?:unknown}}; return e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("pedidoId"); }
 async function transacaoComRetry<T>(banco: typeof prisma, fn: (tx: Parameters<typeof prisma.$transaction>[0] extends (arg: infer U) => unknown ? U : never) => Promise<T>): Promise<T> {
@@ -97,9 +99,11 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDeCobranca(); if (!confirmar) return { resultado: "configuracao" };
   const externo = await confirmar(pedido.transacaoId);
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
-  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null;
+  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
-    const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: { assinatura: true } }); if (!atual) return;
+    comprador = null;
+    const incluir = { assinatura: true, plano: { select: { cortesNivel: true } } } as const;
+    const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: incluir }); if (!atual) return;
     // Repetição após commit é sucesso idempotente; nunca reabre uma compra paga.
     if (atual.status === "PAGO" && atual.assinatura && externo.confirmacao.status !== "REFUNDED") return;
     const d = decidirConfirmacao(atual, externo.confirmacao, agora);
@@ -118,12 +122,29 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     }
     if (atual.assinatura) { if (atual.status !== "PAGO") await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: "pedido_ja_vinculado" }); return; }
     const extra = atual as typeof atual & { operacao?: string | null; assinaturasSubstituidas?: string[] | null; duracaoMeses?: number | null; telasAdicionais?: number | null; servidorVip?: boolean | null };
-    const abertos=await tx.assinatura.findMany({where:{userId:atual.userId,status:"ATIVA",terminaEm:{gt:agora}},select:{id:true,terminaEm:true}});
+    // Só períodos da mesma família: ativar Cortes nunca encerra o tradicional, e vice-versa.
+    const familia=ehPlanoCortes((atual as { plano?: { cortesNivel?: string } | null }).plano?.cortesNivel) ? { not: "nenhum" } : "nenhum";
+    // Compra sem login: a conta é só consultada aqui; nasce ou é vinculada abaixo,
+    // depois que o pagamento validou (ATIVAR) e o período pode ser ativado.
+    if (!atual.userId && !atual.emailComprador) throw new Error("pedido_sem_conta");
+    const existente = atual.userId ? null : await tx.user.findUnique({ where: { email: atual.emailComprador! }, select: { id: true } });
+    let userId = atual.userId ?? existente?.id ?? null;
+    const abertos=userId ? await tx.assinatura.findMany({where:{userId,status:"ATIVA",terminaEm:{gt:agora},plano:{cortesNivel:familia}},select:{id:true,terminaEm:true}}) : [];
     const plano=planejarAtivacao({operacao:extra.operacao,assinaturasSubstituidas:extra.assinaturasSubstituidas,duracao:duracaoDoPedido(extra)},abertos,agora);
     if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
+    if (!atual.userId) {
+      // Conta existente não tem nada alterado (`update: {}`): sem senha nova, sem acesso por informar o e-mail.
+      const conta = await tx.user.upsert({ where: { email: atual.emailComprador! }, create: { email: atual.emailComprador!, nome: atual.nomeComprador, dataNascimento: atual.nascimentoComprador }, update: {}, select: { id: true, senhaHash: true } });
+      comprador = { userId: conta.id, email: atual.emailComprador!, semSenha: !conta.senhaHash };
+      userId = conta.id;
+      await tx.pedidoPagamento.update({ where: { id: atual.id }, data: { userId } });
+      // Revisão anterior do pedido passa a ser da conta: trava, consulta e exclusão de conta a enxergam.
+      await tx.revisaoPagamento.updateMany({ where: { pedidoId: atual.id, userId: null }, data: { userId } });
+    }
+    if (!userId) throw new Error("pedido_sem_conta");
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
-    await tx.assinatura.create({data:{userId:atual.userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
-    await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=atual.userId;
+    await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
+    await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=userId;
   }); } catch (erro) {
     if (!conflitoPedidoId(erro)) throw erro;
     const reconciliado=await banco.pedidoPagamento.findUnique({where:{id:pedidoId},include:{assinatura:true}});
@@ -132,6 +153,9 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (reconciliado) await banco.$transaction((tx) => marcarPedidoEmRevisao(tx, { pedidoId, userId: reconciliado.userId, motivo: "reconciliacao_inconsistente" }));
     return {resultado:"inconsistencia"};
   }
+  // Só depois do commit, e uma vez: a conta é vinculada uma única vez. E-mail que falha não desfaz nada.
+  const avisar = comprador as ContaDoComprador | null;
+  if (avisar) try { await (injetadas.notificarPrimeiroAcesso ?? notificarPrimeiroAcesso)(avisar); } catch { audit("email_failed",{userId:avisar.userId,detail:"primeiro_acesso apos_commit"}); }
   if(userParaInvalidar) try { await invalidar(userParaInvalidar); } catch { audit("billing_entitlements_invalidation_failed",{userId:userParaInvalidar,detail:"apos_commit"}); }
   audit(decisao === "ATIVAR" ? "billing_payment_confirmed" : decisao === "ESTORNAR" ? "billing_payment_refunded" : "billing_payment_review",{userId:pedido.userId,detail:`pedido ${pedidoId}`});
   return { resultado:decisao.toLowerCase() };

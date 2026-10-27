@@ -7,6 +7,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import QRCode from "qrcode";
 import {
+  checkoutSemLoginPermitido,
+  PLANOS_CORTES_HREF,
   corpoCriarPedido,
   descricaoDaOperacao,
   deveFazerPolling,
@@ -14,6 +16,8 @@ import {
   mensagemErroCheckout,
 } from "@/lib/billing/checkout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
+import { TONS_DOS_TEMAS, type TemaDoPlano } from "@/lib/billing/vitrine";
+import { IDADE_MINIMA_COMPRA } from "@/lib/billing/pagador";
 
 type Preco = {
   id: string;
@@ -34,7 +38,7 @@ type Plano = {
   };
   vitrine?: {
     nome?: string;
-    tema?: "azul" | "roxo" | "ambar" | null;
+    tema?: TemaDoPlano | null;
     selo?: string | null;
     beneficios?: Array<{ texto: string; incluido: boolean }>;
   };
@@ -59,11 +63,7 @@ type Novo = Pendente & {
 
 type Pedido = Pendente | Novo;
 
-const TOM = {
-  azul: { cor: "#4C8DFF", texto: "#FFFFFF" },
-  roxo: { cor: "#A66BFF", texto: "#FFFFFF" },
-  ambar: { cor: "#F5B82E", texto: "#1A1206" },
-} as const;
+const TOM = TONS_DOS_TEMAS;
 
 const temPix = (pedido: Pedido): pedido is Novo => "pix" in pedido;
 
@@ -121,6 +121,14 @@ function CheckoutConteudo() {
   const [nome, setNome] = useState("");
   const [telefone, setTelefone] = useState("");
   const [documento, setDocumento] = useState("");
+  const [email, setEmail] = useState("");
+  const [nascimento, setNascimento] = useState("");
+  // Compra a partir de 18 anos; o servidor confere de novo.
+  const dataLimiteNascimento = useMemo(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - IDADE_MINIMA_COMPRA);
+    return d.toISOString().slice(0, 10);
+  }, []);
   const [telas, setTelas] = useState(0);
   const [erro, setErro] = useState("");
   const [carregandoCatalogo, setCarregandoCatalogo] = useState(true);
@@ -147,12 +155,17 @@ function CheckoutConteudo() {
 
   const planoId = query.get("planoId");
   const precoDaUrl = query.get("planoPrecoId");
+  // Visitante: compra Cortes sem login. Não chama nada que exija sessão.
+  // `conta=1` (renovação/upgrade do Cortes) exige login: nunca vira compra anônima.
+  const semLogin = checkoutSemLoginPermitido(planoId) && query.get("conta") !== "1";
+  const visitante = status === "unauthenticated" && semLogin;
+  const planosHref = checkoutSemLoginPermitido(planoId) ? PLANOS_CORTES_HREF : "/planos";
 
   useEffect(() => {
-    if (status === "unauthenticated") {
+    if (status === "unauthenticated" && !semLogin) {
       router.replace(destinoDoLoginDoCheckout(query.toString()));
     }
-  }, [status, query, router]);
+  }, [status, semLogin, query, router]);
 
   useEffect(() => {
     const nomeDaConta = sessao?.user?.name?.trim();
@@ -198,6 +211,7 @@ function CheckoutConteudo() {
   }, [planoId, precoDaUrl]);
 
   useEffect(() => {
+    if (visitante) setCarregandoPedido(false);
     if (status !== "authenticated") return;
 
     let ativo = true;
@@ -214,10 +228,10 @@ function CheckoutConteudo() {
     return () => {
       ativo = false;
     };
-  }, [status]);
+  }, [status, visitante]);
 
   useEffect(() => {
-    if (!pedido || !(deveFazerPolling(pedido.status) || pedido.emRevisao)) return;
+    if (visitante || !pedido || !(deveFazerPolling(pedido.status) || pedido.emRevisao)) return;
     const intervalo = window.setInterval(
       () =>
         fetch(`/api/billing/orders/${pedido.pedidoId}`, { cache: "no-store" })
@@ -229,15 +243,15 @@ function CheckoutConteudo() {
       pedido.emRevisao ? 30000 : 10000,
     );
     return () => window.clearInterval(intervalo);
-  }, [pedido]);
+  }, [pedido, visitante]);
 
   useEffect(() => {
-    if (pedido?.status !== "PAGO") return;
+    if (visitante || pedido?.status !== "PAGO") return;
     fetch("/api/billing/me", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((dados) => setConfirmado(Boolean(dados?.plano?.id && dados.plano.id === planoId)))
       .catch(() => setConfirmado(false));
-  }, [pedido?.status, planoId]);
+  }, [pedido?.status, planoId, visitante]);
 
   const preco = useMemo(
     () => plano?.precos.find((item) => item.id === precoId) ?? null,
@@ -254,6 +268,8 @@ function CheckoutConteudo() {
   const limiteTelas = telaMensal !== null ? plano?.adicionais?.telasAdicionaisMax ?? 0 : 0;
   const mesesDeTelas = mesesCobraveisDeTelas(preco) ?? 0;
   const telasPermitidasNestaDuracao = mesesDeTelas > 0 && telaMensal !== null && limiteTelas > 0;
+  // A seção de telas só aparece quando há oferta; a de dados vem logo depois dela.
+  const comSecaoDeTelas = limiteTelas > 0 && telaMensal !== null;
   const promocao = plano && preco ? promocaoDaDuracao(plano, preco) : null;
 
   const subtotal = useMemo(() => {
@@ -279,13 +295,13 @@ function CheckoutConteudo() {
             plano.id,
             preco.id,
             { nome, telefone, documento },
-            { telasAdicionais: telas },
+            { telasAdicionais: telas, ...(visitante ? { email, nascimento } : {}) },
           ),
         ),
       });
       const dados = await resposta.json().catch(() => null);
       if (!resposta.ok) {
-        if (dados?.codigo === "pagamento_em_revisao") {
+        if (dados?.codigo === "pagamento_em_revisao" && !visitante) {
           fetch("/api/billing/orders/pending", { cache: "no-store" })
             .then((r) => (r.ok ? r.json() : null))
             .then((pendente) => {
@@ -320,7 +336,7 @@ function CheckoutConteudo() {
     );
   }
 
-  if (status !== "authenticated" || carregandoCatalogo || carregandoPedido) {
+  if ((status !== "authenticated" && !visitante) || carregandoCatalogo || carregandoPedido) {
     return <main className="min-h-screen bg-[#101014] p-24 text-white">Carregando checkout…</main>;
   }
 
@@ -347,7 +363,7 @@ function CheckoutConteudo() {
               >
                 Ir para minha conta
               </Link>
-              <LinkAssinatura href="/planos" className="ml-4 text-sm underline">Ver planos</LinkAssinatura>
+              <LinkAssinatura href={planosHref} className="ml-4 text-sm underline">Ver planos</LinkAssinatura>
             </div>
           ) : temPix(pedido) ? (
             <div className="mt-7 grid gap-6 md:grid-cols-[240px_1fr]">
@@ -372,6 +388,17 @@ function CheckoutConteudo() {
                 >
                   Copiar PIX
                 </button>
+                <ol className="mt-5 list-decimal space-y-1 pl-5 text-sm text-zinc-300">
+                  <li>Abra o app do seu banco e escolha Pix.</li>
+                  <li>Leia o QR Code ou use o Pix Copia e Cola.</li>
+                  <li>Confira o valor e pague antes do prazo abaixo.</li>
+                </ol>
+                {visitante && (
+                  <p className="mt-5 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-zinc-200">
+                    Depois que o pagamento for confirmado, enviaremos o acesso ao Obaflix Cortes para <strong>{email.trim()}</strong>.
+                    {" "}Confira também a caixa de spam. Você não precisa ficar nesta página.
+                  </p>
+                )}
               </div>
             </div>
           ) : (
@@ -393,7 +420,7 @@ function CheckoutConteudo() {
         <div className="mx-auto max-w-3xl rounded-2xl border border-white/10 bg-white/5 p-8">
           <h1 className="text-2xl font-black">Plano indisponível</h1>
           <p className="mt-2 text-zinc-400">Volte à vitrine e escolha um plano disponível.</p>
-          <LinkAssinatura href="/planos" className="mt-5 inline-block underline">Voltar aos planos</LinkAssinatura>
+          <LinkAssinatura href={planosHref} className="mt-5 inline-block underline">Voltar aos planos</LinkAssinatura>
         </div>
       </main>
     );
@@ -402,7 +429,7 @@ function CheckoutConteudo() {
   return (
     <main className="min-h-screen bg-[#101014] px-5 pb-14 pt-20 text-white md:px-8" style={fundo}>
       <div className="mx-auto max-w-6xl">
-        <LinkAssinatura href="/planos" className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</LinkAssinatura>
+        <LinkAssinatura href={planosHref} className="text-sm font-semibold text-zinc-400 hover:text-white">← Voltar aos planos</LinkAssinatura>
 
         <header className="mt-6">
           <div className="flex flex-wrap items-center gap-3">
@@ -472,7 +499,7 @@ function CheckoutConteudo() {
               </div>
             </section>
 
-            {limiteTelas > 0 && telaMensal !== null && (
+            {comSecaoDeTelas && (
               <section className="rounded-3xl border border-white/10 bg-[#18181c]/95 p-6">
                 <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>2. Telas adicionais</p>
                 <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
@@ -514,7 +541,7 @@ function CheckoutConteudo() {
             )}
 
             <section className="rounded-3xl border border-white/10 bg-[#18181c]/95 p-6">
-              <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>3. Dados do pagador</p>
+              <p className="text-xs font-black uppercase tracking-[0.18em]" style={{ color: tema.cor }}>{comSecaoDeTelas ? 3 : 2}. Dados do pagador</p>
               <h2 className="mt-1 text-xl font-black">Informações para o pagamento</h2>
 
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -541,16 +568,47 @@ function CheckoutConteudo() {
                   />
                 </label>
 
-                <label className="text-sm font-semibold text-zinc-300">
-                  E-mail da conta
-                  <input
-                    value={sessao?.user?.email ?? ""}
-                    readOnly
-                    className="mt-2 w-full cursor-not-allowed rounded-xl border border-white/10 bg-black/15 px-4 py-3 text-zinc-400"
-                  />
-                </label>
+                {visitante ? (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    E-mail para receber o acesso
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      maxLength={254}
+                      required
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-white outline-none focus:border-white/30"
+                    />
+                  </label>
+                ) : (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    E-mail da conta
+                    <input
+                      value={sessao?.user?.email ?? ""}
+                      readOnly
+                      className="mt-2 w-full cursor-not-allowed rounded-xl border border-white/10 bg-black/15 px-4 py-3 text-zinc-400"
+                    />
+                  </label>
+                )}
 
-                <label className="text-sm font-semibold text-zinc-300 sm:col-span-2">
+                {visitante && (
+                  <label className="text-sm font-semibold text-zinc-300">
+                    Data de nascimento
+                    <input
+                      type="date"
+                      value={nascimento}
+                      onChange={(e) => setNascimento(e.target.value)}
+                      max={dataLimiteNascimento}
+                      min="1900-01-01"
+                      autoComplete="bday"
+                      required
+                      className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-white outline-none [color-scheme:dark] focus:border-white/30"
+                    />
+                  </label>
+                )}
+
+                <label className={`text-sm font-semibold text-zinc-300 ${visitante ? "" : "sm:col-span-2"}`}>
                   Telefone com DDD
                   <input
                     value={telefone}

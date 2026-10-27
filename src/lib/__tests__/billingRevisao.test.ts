@@ -212,7 +212,7 @@ function bancoComTrava() {
     periodosEmAberto: async () => [],
     revisaoPendente: async (userId) => revisoes.has(userId),
     criar: (dados) => comTrava(async () => {
-      if (revisoes.has(dados.userId)) return null;
+      if (dados.userId && revisoes.has(dados.userId)) return null;
       pedidos.push(dados.refExterna);
       return { id: `p-${pedidos.length}` };
     }),
@@ -415,24 +415,34 @@ describe("planejarResolucao", () => {
 
 // ── 4. Execução: idempotência e concorrência ─────────────────────────────────
 
-function bancoDeRevisao(inicial: { pedido: any; assinaturas?: any[] }) {
+function bancoDeRevisao(inicial: { pedido: any; assinaturas?: any[]; usuarios?: any[] }) {
   const estado = {
     revisao: { id: "rev-1", pedidoId: inicial.pedido.id, userId: inicial.pedido.userId, motivo: "confirmacao_divergente", status: "PENDENTE", resolucao: null as string | null, resolvidaEm: null as Date | null },
     pedido: inicial.pedido,
     assinaturas: inicial.assinaturas ?? [] as any[],
     eventos: [] as any[],
+    usuarios: inicial.usuarios ?? [] as any[],
+    travas: [] as string[],
   };
   let fila = Promise.resolve();
   let n = 0;
   const chaveDuplicada = () => Object.assign(new Error("P2002"), { code: "P2002", meta: { target: ["chaveIdempotencia"] } });
 
   const tx: any = {
-    $executeRaw: async () => 1,
+    $executeRaw: async (_partes: TemplateStringsArray, chave: string) => { estado.travas.push(chave); return 1; },
+    user: {
+      findUnique: async ({ where }: any) => estado.usuarios.find((u) => u.email === where.email) ?? null,
+      upsert: async ({ where, create }: any) => {
+        let u = estado.usuarios.find((x) => x.email === where.email);
+        if (!u) { u = { id: `user-${estado.usuarios.length + 1}`, senhaHash: null, ...create }; estado.usuarios.push(u); }
+        return { id: u.id, senhaHash: u.senhaHash ?? null };
+      },
+    },
     revisaoPagamento: {
       findUnique: async () => ({ ...estado.revisao }),
       update: async ({ data }: any) => Object.assign(estado.revisao, data),
       updateMany: async ({ where, data }: any) => {
-        if (estado.revisao.status !== where.status) return { count: 0 };
+        if (Object.entries(where).some(([k, v]) => k !== "id" && (estado.revisao as any)[k] !== v)) return { count: 0 };
         Object.assign(estado.revisao, data);
         return { count: 1 };
       },
@@ -449,13 +459,15 @@ function bancoDeRevisao(inicial: { pedido: any; assinaturas?: any[] }) {
       update: async ({ data }: any) => Object.assign(estado.pedido, data),
       updateMany: async ({ where, data }: any) => {
         if (where.status && estado.pedido.status !== where.status) return { count: 0 };
+        if ("userId" in where && estado.pedido.userId !== where.userId) return { count: 0 };
         Object.assign(estado.pedido, data);
         return { count: 1 };
       },
     },
     assinatura: {
       findMany: async ({ where }: any) => estado.assinaturas.filter((a) =>
-        where.id?.in ? where.id.in.includes(a.id) : a.userId === where.userId && a.status === where.status && a.terminaEm > where.terminaEm.gt),
+        where.id?.in ? where.id.in.includes(a.id) : a.userId === where.userId && a.status === where.status && a.terminaEm > where.terminaEm.gt &&
+          (!where.plano || (typeof where.plano.cortesNivel === "string" ? (a.plano?.cortesNivel ?? "nenhum") === where.plano.cortesNivel : (a.plano?.cortesNivel ?? "nenhum") !== where.plano.cortesNivel.not))),
       create: async ({ data }: any) => {
         if (estado.assinaturas.some((a) => a.pedidoId === data.pedidoId)) throw Object.assign(new Error("P2002"), { code: "P2002", meta: { target: ["pedidoId"] } });
         const a = { id: `nova-${++n}`, observacao: null, ...data };
@@ -478,7 +490,7 @@ function bancoDeRevisao(inicial: { pedido: any; assinaturas?: any[] }) {
       },
     },
     revisaoPagamento: {
-      findUnique: async () => ({ id: estado.revisao.id, status: estado.revisao.status, pedidoId: estado.pedido.id, pedido: { userId: estado.pedido.userId, transacaoId: estado.pedido.transacaoId } }),
+      findUnique: async () => ({ id: estado.revisao.id, status: estado.revisao.status, pedidoId: estado.pedido.id, pedido: { userId: estado.pedido.userId, transacaoId: estado.pedido.transacaoId, emailComprador: estado.pedido.emailComprador ?? null } }),
     },
     // Trava por conta + serializável: uma transação por vez.
     $transaction: (fn: any) => {
@@ -745,5 +757,186 @@ describe("rotas administrativas", () => {
     const r = await recusada(post({}), { params: { id: "rev-1" } });
     assert.equal(r.status, 422);
     assert.equal((await r.json()).codigo, "pagamento_nao_confirmado");
+  });
+});
+
+describe("aprovação manual de compra Cortes sem login", () => {
+  const pedidoSemConta = (over: object = {}) =>
+    pedidoEm({ userId: null, planoId: "cortes-start", ...over, ...({ emailComprador: "novo@teste.obaflix.invalid", nomeComprador: "Novo", plano: { cortesNivel: "individual" } } as object) });
+  const executar = (banco: any, consultar: any, avisos: any[], chave = CHAVE, acao = "ativar", invalidados: string[] = []) =>
+    executarAcaoDeRevisao({ revisaoId: "rev-1", acao, chaveIdempotencia: chave, ator: "admin-1" }, {
+      banco, agora: () => AGORA, invalidar: async (u: string) => { invalidados.push(u); }, consultar,
+      notificarPrimeiroAcesso: async (c: any) => { avisos.push(c); },
+    });
+  const pago = (o: object = {}) => async () => ({ ok: true as const, confirmacao: conf("PAID", o) });
+  const emDias = (dias: number) => new Date(AGORA.getTime() + dias * 86_400_000);
+  const nadaNasce = (estado: any, avisos: any[]) => {
+    assert.equal(estado.usuarios.length, 0);
+    assert.equal(estado.pedido.userId, null);
+    assert.equal(estado.pedido.status, "REVISAO_MANUAL");
+    assert.equal(estado.assinaturas.length, 0);
+    assert.equal(estado.revisao.status, "PENDENTE");
+    assert.equal(avisos.length, 0);
+  };
+
+  test("PAID válido: cria a conta, ativa, resolve e avisa uma vez, só depois do commit", async () => {
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+    const avisos: any[] = [], invalidados: string[] = [];
+    let commitAntesDoAviso = false;
+    const r = await executarAcaoDeRevisao({ revisaoId: "rev-1", acao: "ativar", chaveIdempotencia: CHAVE, ator: "admin-1" }, {
+      banco, agora: () => AGORA, invalidar: async (u: string) => { invalidados.push(u); }, consultar: pago(),
+      notificarPrimeiroAcesso: async (c: any) => { commitAntesDoAviso = estado.revisao.status === "RESOLVIDA" && estado.pedido.status === "PAGO"; avisos.push(c); },
+    });
+    assert.deepEqual(r, { ok: true, resultado: "ativada", repetida: false, revisaoResolvida: true });
+    const [conta] = estado.usuarios;
+    assert.deepEqual([conta.email, conta.nome, conta.senhaHash], ["novo@teste.obaflix.invalid", "Novo", null]);
+    assert.equal(estado.pedido.userId, conta.id);
+    assert.equal(estado.revisao.userId, conta.id);
+    assert.deepEqual([estado.assinaturas.length, estado.assinaturas[0].userId, estado.assinaturas[0].planoId], [1, conta.id, "cortes-start"]);
+    assert.deepEqual(avisos, [{ userId: conta.id, email: "novo@teste.obaflix.invalid", semSenha: true }]);
+    assert.ok(commitAntesDoAviso);
+    assert.deepEqual(invalidados, [conta.id]);
+    assert.ok(estado.travas.includes("cobranca:pedido:p"));
+
+    // Mesma chave e outra chave: nada novo, nenhum e-mail a mais.
+    assert.equal((await executar(banco, pago(), avisos)).ok, true);
+    assert.deepEqual(await executar(banco, pago(), avisos, "chave-operador-b-01"), { ok: false, status: 409, codigo: "revisao_ja_resolvida" });
+    assert.equal(estado.usuarios.length, 1);
+    assert.equal(estado.assinaturas.length, 1);
+    assert.equal(avisos.length, 1);
+  });
+
+  test("não pago, valor divergente, transação divergente ou provedor fora: nenhuma conta, nenhum acesso", async () => {
+    const casos: [any, number, string][] = [
+      [async () => ({ ok: true, confirmacao: conf("PENDING") }), 422, "pagamento_nao_confirmado"],
+      [async () => ({ ok: true, confirmacao: conf("CANCELLED") }), 422, "pagamento_nao_confirmado"],
+      [pago({ amount: 999 }), 422, "valor_divergente"],
+      [pago({ transactionId: "outra" }), 422, "transacao_divergente"],
+      [async () => ({ ok: false, falha: "timeout" }), 503, "provedor_timeout"],
+    ];
+    for (const [consultar, status, codigo] of casos) {
+      const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+      const avisos: any[] = [];
+      assert.deepEqual(await executar(banco, consultar, avisos), { ok: false, status, codigo });
+      nadaNasce(estado, avisos);
+    }
+  });
+
+  test("conta existente com Cortes em aberto: ativação impossível, sem vínculo nem aviso", async () => {
+    const cortes = { id: "c", userId: "u-velho", planoId: "cortes-pro", status: "ATIVA", terminaEm: emDias(10), plano: { cortesNivel: "lote" }, observacao: null };
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta(), assinaturas: [cortes], usuarios: [{ id: "u-velho", email: "novo@teste.obaflix.invalid", senhaHash: "h" }] });
+    const avisos: any[] = [];
+    assert.deepEqual(await executar(banco, pago(), avisos), { ok: false, status: 422, codigo: "ativacao_periodo_em_aberto" });
+    assert.equal(estado.pedido.userId, null);
+    assert.equal(estado.revisao.userId, null);
+    assert.equal(estado.assinaturas.length, 1);
+    assert.equal(cortes.status, "ATIVA");
+    assert.equal(avisos.length, 0);
+  });
+
+  test("conta existente com tradicional ativo: vincula sem tocar senha nem tradicional; orientação de login", async () => {
+    const tradicional = { id: "t", userId: "u-velho", planoId: "plus", status: "ATIVA", terminaEm: emDias(10), plano: { cortesNivel: "nenhum" }, observacao: null };
+    const velho = { id: "u-velho", email: "novo@teste.obaflix.invalid", nome: "Antigo", senhaHash: "hash-antigo" };
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta(), assinaturas: [tradicional], usuarios: [velho] });
+    const avisos: any[] = [];
+    assert.equal((await executar(banco, pago(), avisos)).ok, true);
+    assert.equal(estado.usuarios.length, 1);
+    assert.deepEqual([velho.nome, velho.senhaHash], ["Antigo", "hash-antigo"]);
+    assert.equal(estado.pedido.userId, "u-velho");
+    assert.equal(tradicional.status, "ATIVA");
+    assert.deepEqual(estado.assinaturas.filter((a: any) => a.status === "ATIVA").map((a: any) => a.planoId).sort(), ["cortes-start", "plus"]);
+    assert.deepEqual(avisos, [{ userId: "u-velho", email: "novo@teste.obaflix.invalid", semSenha: false }]);
+    assert.ok(estado.travas.includes("cobranca:u-velho"));
+  });
+
+  test("falha do e-mail não desfaz a aprovação; recompor upgrade sem conta segue recusado", async () => {
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+    const r = await executarAcaoDeRevisao({ revisaoId: "rev-1", acao: "ativar", chaveIdempotencia: CHAVE, ator: "admin-1" }, {
+      banco, agora: () => AGORA, invalidar: async () => {}, consultar: pago(), notificarPrimeiroAcesso: async () => { throw new Error("resend fora"); },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(estado.pedido.status, "PAGO");
+    assert.equal(estado.assinaturas.length, 1);
+
+    const outro = bancoDeRevisao({ pedido: pedidoSemConta() });
+    const avisos: any[] = [];
+    assert.deepEqual(await executar(outro.banco, pago(), avisos, CHAVE, "recompor_upgrade"), { ok: false, status: 409, codigo: "pedido_sem_conta" });
+    nadaNasce(outro.estado, avisos);
+  });
+
+  const consulta = (status: "PENDING" | "PAID" | "CANCELLED" | "REFUNDED", o: object = {}) => {
+    let n = 0;
+    const f = async () => { n++; return { ok: true as const, confirmacao: conf(status, o) }; };
+    return Object.assign(f, { vezes: () => n });
+  };
+  const semContaNemEmail = (estado: any, avisos: any[], invalidados: string[]) => {
+    assert.equal(estado.usuarios.length, 0);
+    assert.equal(estado.pedido.userId, null);
+    assert.equal(estado.assinaturas.length, 0);
+    assert.equal(avisos.length, 0);
+    assert.deepEqual(invalidados, []);
+  };
+
+  test("reconsultar sem conta: registra o status do provedor, sem conta nem e-mail; mesma chave não consulta de novo", async () => {
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+    const avisos: any[] = [], invalidados: string[] = [];
+    const c = consulta("PAID");
+    assert.deepEqual(await executar(banco, c, avisos, CHAVE, "reconsultar", invalidados), { ok: true, resultado: "reconsultar", repetida: false, revisaoResolvida: false });
+    assert.deepEqual(estado.eventos.map((e: any) => e.codigo), ["reconsultar:provedor:PAID"]);
+    assert.equal(estado.pedido.status, "REVISAO_MANUAL");
+    assert.equal(estado.revisao.status, "PENDENTE");
+    assert.equal((await executar(banco, c, avisos, CHAVE, "reconsultar", invalidados)).ok, true);
+    assert.equal(c.vezes(), 1);
+    semContaNemEmail(estado, avisos, invalidados);
+  });
+
+  test("não pago sem conta: CANCELLED cancela e PENDING vencido expira; resolve sem conta nem e-mail", async () => {
+    for (const [status, over, final] of [["CANCELLED", {}, "CANCELADO"], ["PENDING", { expiraEm: new Date(AGORA.getTime() - 60_000) }, "EXPIRADO"]] as const) {
+      const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta(over) });
+      const avisos: any[] = [], invalidados: string[] = [];
+      assert.deepEqual(await executar(banco, consulta(status), avisos, CHAVE, "confirmar_nao_pago", invalidados), { ok: true, resultado: "nao_pago_confirmado", repetida: false, revisaoResolvida: true });
+      assert.equal(estado.pedido.status, final);
+      assert.deepEqual([estado.revisao.status, estado.revisao.resolucao], ["RESOLVIDA", "nao_pago_confirmado"]);
+      semContaNemEmail(estado, avisos, invalidados);
+    }
+  });
+
+  test("não pago sem conta nunca encerra pagamento válido nem PIX ainda no prazo", async () => {
+    for (const [c, codigo] of [[consulta("PAID"), "pedido_em_estado_incompativel"], [consulta("PENDING"), "pagamento_ainda_valido"], [consulta("REFUNDED"), "pedido_em_estado_incompativel"]] as const) {
+      const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+      const avisos: any[] = [], invalidados: string[] = [];
+      assert.deepEqual(await executar(banco, c, avisos, CHAVE, "confirmar_nao_pago", invalidados), { ok: false, status: 422, codigo });
+      assert.equal(estado.pedido.status, "REVISAO_MANUAL");
+      assert.equal(estado.revisao.status, "PENDENTE");
+      assert.deepEqual(estado.eventos.map((e: any) => e.tipo), ["acao_recusada"]);
+      semContaNemEmail(estado, avisos, invalidados);
+    }
+  });
+
+  test("estorno sem conta: só com REFUNDED do mesmo valor; registra ESTORNADO sem conta nem e-mail", async () => {
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoSemConta() });
+    const avisos: any[] = [], invalidados: string[] = [];
+    assert.deepEqual(await executar(banco, consulta("REFUNDED"), avisos, CHAVE, "confirmar_estorno", invalidados), { ok: true, resultado: "estorno_confirmado", repetida: false, revisaoResolvida: true });
+    assert.equal(estado.pedido.status, "ESTORNADO");
+    assert.equal(estado.revisao.status, "RESOLVIDA");
+    semContaNemEmail(estado, avisos, invalidados);
+
+    for (const [c, codigo] of [[consulta("PAID"), "estorno_nao_confirmado"], [consulta("REFUNDED", { amount: 999 }), "valor_divergente"], [consulta("REFUNDED", { transactionId: "outra" }), "transacao_divergente"]] as const) {
+      const r = bancoDeRevisao({ pedido: pedidoSemConta() });
+      const av: any[] = [], inv: string[] = [];
+      assert.deepEqual(await executar(r.banco, c, av, CHAVE, "confirmar_estorno", inv), { ok: false, status: 422, codigo });
+      assert.equal(r.estado.pedido.status, "REVISAO_MANUAL");
+      semContaNemEmail(r.estado, av, inv);
+    }
+  });
+
+  test("usuário cadastrado: Cortes em revisão ativa com tradicional aberto, que fica intacto e sem e-mail", async () => {
+    const tradicional = { id: "t", userId: "u", planoId: "plus", status: "ATIVA", terminaEm: emDias(10), plano: { cortesNivel: "nenhum" }, observacao: null };
+    const { banco, estado } = bancoDeRevisao({ pedido: pedidoEm({ planoId: "cortes-start", ...({ plano: { cortesNivel: "individual" } } as object) }), assinaturas: [tradicional] });
+    const avisos: any[] = [];
+    assert.equal((await executar(banco, pago(), avisos)).ok, true);
+    assert.equal(tradicional.status, "ATIVA");
+    assert.equal(estado.assinaturas.length, 2);
+    assert.equal(avisos.length, 0);
   });
 });

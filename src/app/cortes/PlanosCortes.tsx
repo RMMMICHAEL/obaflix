@@ -1,0 +1,81 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { ArrowUpRight } from "lucide-react";
+import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
+import { acaoNoPlanoCortes } from "@/lib/billing/checkout";
+import styles from "./cortes.module.css";
+
+type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
+type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
+
+const PLANOS = [
+  { id: "cortes-start", nome: "Start", texto: "Trecho individual: marque início e fim no player e baixe só a cena." },
+  { id: "cortes-pro", nome: "Pro", texto: "Trecho individual e lote: monte uma lista de cenas e baixe todas de uma vez. Requer a versão Windows com Cortes." },
+  { id: "cortes-ai", nome: "AI", texto: "Tudo do Pro, mais o Cortes AI: escreva o tema ou roteiro e a IA preenche a lista de cortes para você revisar e baixar." },
+] as const;
+
+const dinheiro = (centavos: number, moeda: string) =>
+  new Intl.NumberFormat("pt-BR", { style: "currency", currency: moeda }).format(centavos / 100);
+const duracao = (p: Preco) => p.duracaoDias ?? (p.duracaoMeses ?? 0) * 30;
+
+/**
+ * Start, Pro e AI com preço e disponibilidade da mesma fonte do checkout
+ * (`GET /api/billing/plans`). Sem preço ativo, nada é vendido: o cartão diz
+ * "em breve".
+ */
+const ROTULO = { assinar: "Assinar", renovar: "Renovar", upgrade: "Fazer upgrade para" } as const;
+
+/** Sem `situacao` (landing): todo cartão oferece compra nova. */
+export function PlanosCortes({ situacao = { logado: false, atual: null } }: { situacao?: { logado: boolean; atual: string | null } }) {
+  // null = carregando; depois, os planos Cortes ativos devolvidos pela API.
+  const [planos, setPlanos] = useState<Record<string, PlanoDaApi> | null>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    fetch("/api/billing/plans", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { planos: [] }))
+      .then((dados) => {
+        const lista: PlanoDaApi[] = Array.isArray(dados?.planos) ? dados.planos : [];
+        if (vivo) setPlanos(Object.fromEntries(lista.map((p) => [p.id, p])));
+      })
+      .catch(() => { if (vivo) setPlanos({}); });
+    return () => { vivo = false; };
+  }, []);
+
+  return (
+    <div className={styles.planList} aria-busy={planos === null}>
+      {PLANOS.map(({ id, nome, texto }) => {
+        const plano = planos?.[id];
+        const preco = plano?.compravel ? [...plano.precos].sort((a, b) => duracao(a) - duracao(b))[0] : null;
+        const decisao = acaoNoPlanoCortes(id, situacao);
+        const atual = situacao.logado && situacao.atual === id;
+        return (
+          <article key={id} aria-current={atual ? "true" : undefined}>
+            <span>{atual ? "SEU PLANO ATUAL" : "OBAFLIX CORTES"}</span>
+            <h3>{nome}</h3>
+            <p>{texto}</p>
+            {decisao.acao === "incluido" ? (
+              <small>Incluído no seu plano atual</small>
+            ) : preco ? (
+              <>
+                <p className={styles.planPrice}>
+                  {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
+                </p>
+                <LinkAssinatura
+                  href={`${decisao.href}&planoPrecoId=${encodeURIComponent(preco.id)}`}
+                  className={styles.primary}
+                  data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
+                >
+                  {ROTULO[decisao.acao]} {nome} <ArrowUpRight size={17} aria-hidden />
+                </LinkAssinatura>
+              </>
+            ) : (
+              <small>{planos === null ? "Carregando…" : "Preço em breve"}</small>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}

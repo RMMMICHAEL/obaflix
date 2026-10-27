@@ -53,9 +53,10 @@ const aplicar = process.argv.includes("--apply");
 /**
  * Só os campos de direito. `id`, `nome`, `ordem`, `ativo` e `ehPadrao` ficam fora.
  * `servidorVip` também: a coluna depende da migration 20260913 e o gratuito já
- * nasce `false` pelo default dela.
+ * nasce `false` pelo default dela. `cortesNivel` idem: depende da migration de
+ * cortes e o gratuito nasce `"nenhum"` pelo default.
  */
-const DIREITOS: Omit<DireitosDoPlano, "servidorVip"> = {
+const DIREITOS: Omit<DireitosDoPlano, "servidorVip" | "cortesNivel"> = {
   anunciosObrigatorios: PLANO_GRATUITO.anunciosObrigatorios,
   episodiosPorAnuncio: PLANO_GRATUITO.episodiosPorAnuncio,
   janelaAnuncioHoras: PLANO_GRATUITO.janelaAnuncioHoras,
@@ -110,7 +111,7 @@ async function main() {
   }
 
   // ── A checagem que impede trocar uma incoerência por outra ────────────────
-  const restantes = inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false });
+  const restantes = inversoesDeDireito({ id: PLANO_GRATUITO.id, ...DIREITOS, servidorVip: false, cortesNivel: "nenhum" });
   if (restantes.length) {
     console.log("\n── RECUSADO ──────────────────────────────────────────────");
     console.log("Depois deste ajuste o gratuito AINDA entregaria mais que um plano pago:\n");

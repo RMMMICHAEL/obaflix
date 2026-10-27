@@ -32,6 +32,7 @@ function direitos(over: Partial<DireitosDoPlano> = {}): DireitosDoPlano {
     series: true,
     canaisNivel: "nenhum",
     downloads: true,
+    cortesNivel: "nenhum",
     telasMax: 5,
     perfisMax: 1,
     resolucaoMax: "4k",

@@ -28,17 +28,20 @@
  *     `preco_inexistente`. Os valores comerciais entram por fluxo próprio,
  *     quando existirem. Semear preço fictício para "destravar" o checkout seria
  *     inventar número que alguém acabaria cobrando.
+ *     Cortes Start/Pro/AI também nascem sem preço, com `ativo: false`.
  *   - não cria nenhuma linha de `Assinatura`. Nenhuma conta é tocada.
  *   - não mexe em `Canal`. A curadoria de `nivelMinimo` é outro fluxo, e este
  *     script não sabe nada sobre canais.
  *   - não mexe em `ehPadrao`. `gratuito` continua sendo o plano de quem não
  *     assina; os três comerciais nascem com `ehPadrao: false`.
+ *     Os três planos Cortes também não são padrão e não substituem os atuais.
  */
 
 import { PrismaClient } from "@prisma/client";
 import {
   PLANO_GRATUITO,
   PLANOS_COMERCIAIS,
+  PLANOS_CORTES,
   diferencas,
   inversoesDeDireito,
   planoDaLinhaCrua,
@@ -94,7 +97,8 @@ async function relatar(plano: PlanoSemeado): Promise<boolean> {
 }
 
 async function main() {
-  const todos = [PLANO_GRATUITO, ...PLANOS_COMERCIAIS];
+  const comerciaisDoSeed = [...PLANOS_COMERCIAIS, ...PLANOS_CORTES];
+  const todos = [PLANO_GRATUITO, ...comerciaisDoSeed];
 
   let faltando = 0;
   for (const plano of todos) {
@@ -102,7 +106,7 @@ async function main() {
   }
 
   if (faltando === 0) {
-    console.log("\nNada a fazer: os quatro planos já existem.\n");
+    console.log(`\nNada a fazer: os ${todos.length} planos já existem.\n`);
     return;
   }
 
@@ -170,7 +174,7 @@ async function main() {
   // O padrão primeiro: é ele que carrega a garantia de plano único com
   // `ehPadrao`, e falhar ali não deve deixar comerciais criados pela metade.
   const padrao = await semearPlanoPadrao(repositorio);
-  const comerciais = await semearPlanosComerciais(repositorio);
+  const comerciais = await semearPlanosComerciais(repositorio, comerciaisDoSeed);
 
   console.log("\nResultado:");
   for (const { plano, resultado } of [{ plano: PLANO_GRATUITO, resultado: padrao }, ...comerciais]) {
@@ -183,7 +187,7 @@ async function main() {
   const [assinaturas, precos, precosComerciais] = await Promise.all([
     prisma.assinatura.count(),
     prisma.planoPreco.count(),
-    prisma.planoPreco.count({ where: { planoId: { in: PLANOS_COMERCIAIS.map((p) => p.id) } } }),
+    prisma.planoPreco.count({ where: { planoId: { in: comerciaisDoSeed.map((p) => p.id) } } }),
   ]);
 
   console.log(`\nAssinaturas no banco: ${assinaturas} (este script não cria nenhuma)`);

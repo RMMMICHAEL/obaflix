@@ -36,6 +36,7 @@ import { randomBytes } from "node:crypto";
 
 import { calcularTotal, type PrecosDosAdicionais } from "./precificacao";
 import { classificarOperacao, valorNaoUtilizado, type Duracao, type PeriodoPago } from "./vigencia";
+import { ehPlanoCortes, ordemNaFamilia } from "../planos";
 import { SERVIDOR_VIP_AVULSO_OFERTADO, nomePublicoDoPlano } from "./vitrine";
 import type { MotivoDeRevisao as CodigoDeRevisao } from "./revisao";
 
@@ -156,7 +157,7 @@ export interface PrecoDoBanco {
   moeda: string;
   ativo: boolean;
   /** `null` quando a linha veio sem o plano relacionado. */
-  plano: { id: string; nome: string; ativo: boolean; ordem?: number; servidorVip?: boolean } | null;
+  plano: { id: string; nome: string; ativo: boolean; ordem?: number; servidorVip?: boolean; cortesNivel?: string } | null;
 }
 
 /**
@@ -432,7 +433,12 @@ export interface RepositorioDePedidos {
 export type OperacaoDoPedido = "nova" | "renovacao" | "upgrade" | "downgrade";
 
 export interface NovoPedido extends SnapshotDeCompra {
-  userId: string;
+  /** Nulo em compra Cortes sem login; aí `emailComprador` identifica o dono. */
+  userId: string | null;
+  emailComprador: string | null;
+  nomeComprador: string | null;
+  /** Só em compra sem login; vira `User.dataNascimento` se a conta nascer. */
+  nascimentoComprador: Date | null;
   provedor: ProvedorPagamento;
   status: "CRIADO";
   refExterna: string;
@@ -487,7 +493,7 @@ export interface CompraMontada {
  */
 export function montarCompra(entrada: {
   snapshot: SnapshotDeCompra;
-  plano: { ordem: number; servidorVip: boolean };
+  plano: { ordem: number; servidorVip: boolean; cortes?: boolean };
   adicionais: PrecosDosAdicionais;
   telasAdicionais: number;
   servidorVip: boolean;
@@ -518,7 +524,7 @@ export function montarCompra(entrada: {
 
   const operacao = classificarOperacao({
     periodos: entrada.periodos,
-    plano: { id: snapshot.planoId, ordem: entrada.plano.ordem },
+    plano: { id: snapshot.planoId, ordem: entrada.plano.ordem, cortes: entrada.plano.cortes },
     agora: entrada.agora,
   });
 
@@ -551,7 +557,10 @@ export function montarCompra(entrada: {
 // ── O serviço ────────────────────────────────────────────────────────────────
 
 export interface EntradaDoPedido {
-  userId: string;
+  /** Nulo: compra sem login, aceita só para plano Cortes e com `comprador`. */
+  userId: string | null;
+  /** E-mail normalizado e nome de quem compra sem login. Nunca CPF. */
+  comprador?: { email: string; nome: string; nascimento?: Date | null };
   planoId: string;
   planoPrecoId: string;
   pagador: DadosDoPagador;
@@ -591,6 +600,8 @@ export type ResultadoDoPedido =
   | { situacao: "compra_recusada"; codigo: CodigoDeCompraRecusada }
   /** Conta com pagamento em revisão: nenhuma compra nova até o caso ser resolvido. */
   | { situacao: "revisao_pendente" }
+  /** Sem conta, só se compra Cortes. */
+  | { situacao: "exige_login" }
   | { situacao: "falha_no_provedor"; falha: FalhaDoProvedor; pedidoId: string }
   | { situacao: "revisao_manual"; pedidoId: string; motivo: MotivoDeRevisao };
 
@@ -645,22 +656,27 @@ export async function criarPedidoPix(
   // Revisão pendente bloqueia qualquer compra da conta: um segundo pagamento
   // enquanto o primeiro está em análise é exatamente o que a mensagem ao
   // comprador pede para não acontecer. `criar` repete a checagem com trava.
-  if (await repo.revisaoPendente(entrada.userId)) return { situacao: "revisao_pendente" };
+  if (entrada.userId && await repo.revisaoPendente(entrada.userId)) return { situacao: "revisao_pendente" };
 
   const preco = await repo.buscarPreco(entrada.planoPrecoId);
   const resolucao = resolverPreco(preco, entrada.planoId);
   if (!resolucao.compravel) {
     return { situacao: "nao_compravel", motivo: resolucao.motivo };
   }
+  // Sem login, só Cortes: o tradicional continua exigindo conta. A compra sem
+  // conta é sempre "nova" — consultar períodos pelo e-mail revelaria na
+  // resposta se aquele e-mail tem assinatura.
+  const comprador = entrada.userId ? null : entrada.comprador;
+  if (!entrada.userId && (!comprador || !ehPlanoCortes(preco?.plano?.cortesNivel))) return { situacao: "exige_login" };
 
   const agora = deps.agora ? deps.agora() : new Date();
   const [adicionais, periodos] = await Promise.all([
     repo.buscarAdicionais(resolucao.snapshot.planoId),
-    repo.periodosEmAberto(entrada.userId, agora),
+    entrada.userId ? repo.periodosEmAberto(entrada.userId, agora) : Promise.resolve([]),
   ]);
   const montagem = montarCompra({
     snapshot: resolucao.snapshot,
-    plano: { ordem: preco?.plano?.ordem ?? 0, servidorVip: preco?.plano?.servidorVip === true },
+    plano: { ordem: ordemNaFamilia(preco?.plano?.ordem ?? 0, preco?.plano?.cortesNivel), servidorVip: preco?.plano?.servidorVip === true, cortes: ehPlanoCortes(preco?.plano?.cortesNivel) },
     adicionais,
     telasAdicionais: entrada.telasAdicionais ?? 0,
     servidorVip: entrada.servidorVip === true,
@@ -678,6 +694,9 @@ export async function criarPedidoPix(
   const criado = await repo.criar({
     ...snapshot,
     userId: entrada.userId,
+    emailComprador: comprador?.email ?? null,
+    nomeComprador: comprador?.nome ?? null,
+    nascimentoComprador: comprador?.nascimento ?? null,
     provedor: deps.nomeDoProvedor ?? "blackcat",
     status: "CRIADO",
     refExterna,

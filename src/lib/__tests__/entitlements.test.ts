@@ -48,6 +48,7 @@ function planoPadraoRestrito(
     series: true,
     canaisNivel: "nenhum",
     downloads: false,
+    cortesNivel: "nenhum",
     telasMax: 1,
     perfisMax: 1,
     resolucaoMax: "hd",
@@ -69,6 +70,7 @@ function planoPago(over: Partial<PlanoAutorizador> = {}): PlanoAutorizador {
     series: true,
     canaisNivel: "plus",
     downloads: true,
+    cortesNivel: "nenhum",
     telasMax: 2,
     perfisMax: 3,
     resolucaoMax: "4k",
@@ -299,7 +301,7 @@ describe("os direitos vêm das colunas, nunca da identidade do plano", () => {
     assert.equal(r.direitos.anunciosObrigatorios, true);
   });
 
-  test("a saída carrega só os doze direitos, sem sobras do Plano", () => {
+  test("a saída carrega só os treze direitos, sem sobras do Plano", () => {
     const r = resolverEntitlements({
       agora: AGORA,
       candidatas: [],
@@ -307,7 +309,7 @@ describe("os direitos vêm das colunas, nunca da identidade do plano", () => {
     });
 
     assert.deepEqual(Object.keys(r.direitos).sort(), [
-      "anunciosObrigatorios", "canaisNivel", "downloads", "episodiosPorAnuncio",
+      "anunciosObrigatorios", "canaisNivel", "cortesNivel", "downloads", "episodiosPorAnuncio",
       "filmes", "janelaAnuncioHoras", "perfisMax", "resolucaoMax", "series",
       "servidorVip", "telasMax", "tvNivel",
     ]);
@@ -325,6 +327,7 @@ describe("planoDaLinha: domínio fechado é conferido, não convertido", () => {
     series: true,
     canaisNivel: "plus",
     downloads: false,
+    cortesNivel: "nenhum",
     telasMax: 1,
     perfisMax: 1,
     resolucaoMax: "hd",
@@ -1115,5 +1118,79 @@ describe("falha operacional do cache continua degradando para o Postgres", () =>
     assert.equal(r.assinatura.ativa, true);
     assert.equal(r.assinatura.planoId, "plus");
     assert.equal(r.direitos.telasMax, 2);
+  });
+});
+
+
+test("Electron: assinatura de cortes vencida usa padrão e nega lote", async () => {
+  const { direitosDoCliente, downloadPermitido } = await import("../playbackAuthorization");
+  const resolvido = resolverEntitlements({
+    agora: AGORA,
+    candidatas: [assinatura({ terminaEm: emMinutos(-1), plano: planoPago({ cortesNivel: "ia" }) })],
+    planoPadrao: planoPadraoRestrito(),
+  });
+  const resolver = (async () => resolvido) as typeof entitlementsDoUsuario;
+  assert.equal((await direitosDoCliente("u", { controleAtivo: true, resolver })).cortesNivel, "nenhum");
+  assert.equal(await downloadPermitido("u", "lote", { controleAtivo: true, resolver }), false);
+});
+
+describe("resolverEntitlements: famílias tradicional e Cortes", () => {
+  const cortesStart = planoPago({ id: "cortes-start", cortesNivel: "individual", telasMax: 2, canaisNivel: "nenhum", anunciosObrigatorios: false });
+  const premium = planoPago({ id: "premium", telasMax: 4, canaisNivel: "premium", anunciosObrigatorios: false });
+
+  test("coexistindo: compartilhado vem do tradicional, cortesNivel do Cortes", () => {
+    const r = resolverEntitlements({
+      agora: AGORA,
+      candidatas: [
+        assinatura({ id: "c", plano: cortesStart, terminaEm: emMinutos(30) }),
+        assinatura({ id: "t", plano: premium, telasAdicionais: 1, terminaEm: emMinutos(90) }),
+      ],
+      planoPadrao: planoPadraoRestrito(),
+    });
+    assert.equal(r.assinatura.planoId, "premium");
+    assert.equal(r.direitos.telasMax, 5);
+    assert.equal(r.direitos.canaisNivel, "premium");
+    assert.equal(r.direitos.cortesNivel, "individual");
+    // O cache não sobrevive ao primeiro vencimento.
+    assert.equal(r.assinatura.expiraEm?.getTime(), emMinutos(30).getTime());
+  });
+
+  test("tradicional com anúncio + Cortes: anúncios seguem o tradicional", () => {
+    const gratuitoPago = planoPago({ id: "basico-ads", anunciosObrigatorios: true, episodiosPorAnuncio: 3 });
+    const r = resolverEntitlements({
+      agora: AGORA,
+      candidatas: [assinatura({ id: "t", plano: gratuitoPago }), assinatura({ id: "c", plano: cortesStart })],
+      planoPadrao: planoPadraoRestrito(),
+    });
+    assert.equal(r.direitos.anunciosObrigatorios, true);
+    assert.equal(r.direitos.cortesNivel, "individual");
+  });
+
+  test("só Cortes: vale o próprio plano, sem exigir tradicional", () => {
+    const r = resolverEntitlements({ agora: AGORA, candidatas: [assinatura({ id: "c", plano: cortesStart })], planoPadrao: planoPadraoRestrito() });
+    assert.equal(r.assinatura.planoId, "cortes-start");
+    const { id: _id, ...direitos } = cortesStart;
+    assert.deepEqual(r.direitos, direitos);
+  });
+
+  test("Cortes cancelado ou vencido não leva o tradicional junto", () => {
+    const r = resolverEntitlements({
+      agora: AGORA,
+      candidatas: [assinatura({ id: "c", status: "CANCELADA", plano: cortesStart }), assinatura({ id: "t", plano: premium })],
+      planoPadrao: planoPadraoRestrito(),
+    });
+    assert.equal(r.assinatura.planoId, "premium");
+    assert.equal(r.direitos.cortesNivel, "nenhum");
+  });
+
+  test("dois Cortes válidos continuam ambíguos", () => {
+    assert.throws(
+      () => resolverEntitlements({
+        agora: AGORA,
+        candidatas: [assinatura({ id: "c1", plano: cortesStart }), assinatura({ id: "c2", plano: planoPago({ id: "cortes-pro", cortesNivel: "lote" }) }), assinatura({ id: "t", plano: premium })],
+        planoPadrao: planoPadraoRestrito(),
+      }),
+      (e: unknown) => e instanceof EntitlementsIndefinidos && e.motivo === "assinaturas_ambiguas" && /c1, c2/.test(e.detalhe ?? ""),
+    );
   });
 });

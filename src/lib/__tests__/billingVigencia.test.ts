@@ -183,3 +183,27 @@ describe("total da compra", () => {
     assert.deepEqual(diasComTela, { ok: false, codigo: "duracao_invalida" });
   });
 });
+
+describe("operação por família (tradicional × Cortes)", () => {
+  const tradicional = periodo({ id: "t", planoId: "premium", ordemDoPlano: 3 });
+  const cortes = periodo({ id: "c", planoId: "cortes-start", ordemDoPlano: 1, cortes: true });
+
+  test("Cortes com tradicional aberto é compra nova, sem substituir", () => {
+    assert.deepEqual(classificarOperacao({ periodos: [tradicional], plano: { id: "cortes-pro", ordem: 9, cortes: true }, agora }), { tipo: "nova", iniciaEm: agora });
+  });
+
+  test("tradicional com Cortes aberto é compra nova, sem substituir", () => {
+    assert.deepEqual(classificarOperacao({ periodos: [cortes], plano: { id: "premium", ordem: 9 }, agora }), { tipo: "nova", iniciaEm: agora });
+  });
+
+  test("upgrade dentro do Cortes substitui só o Cortes", () => {
+    const op = classificarOperacao({ periodos: [tradicional, cortes], plano: { id: "cortes-pro", ordem: 2, cortes: true }, agora });
+    assert.deepEqual(op, { tipo: "upgrade", iniciaEm: agora, substitui: ["c"] });
+  });
+
+  test("renovação do Cortes emenda no fim do Cortes, não do tradicional", () => {
+    const longo = periodo({ id: "t", planoId: "premium", ordemDoPlano: 3, terminaEm: brt("2026-12-01T12:00:00") });
+    const op = classificarOperacao({ periodos: [longo, cortes], plano: { id: "cortes-start", ordem: 1, cortes: true }, agora });
+    assert.deepEqual(op, { tipo: "renovacao", iniciaEm: cortes.terminaEm });
+  });
+});
