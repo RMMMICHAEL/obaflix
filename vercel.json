@@ -1,4 +1,5 @@
 {
+  "git": { "deploymentEnabled": { "codex/obaflix-cortes": false } },
   "crons": [
     {
       "path": "/api/cron/sync",
