@@ -1,6 +1,7 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { impressaoDaLegenda } from "../cortesAi";
+import { custoMaximoAnalise, custoMicroUsd, gastoDoMes, impressaoDaLegenda, lerLegenda } from "../cortesAi";
+import { getRedis } from "../redis";
 
 /**
  * Rota /api/cortes/ia de verdade, com sessão, direitos, Redis e Gemini simulados
@@ -31,18 +32,37 @@ mock.module("@/lib/ssrf", { namedExports: { safeGet: async (url: string, _i: unk
     : new Response(SRT);
 } } });
 const fetchReal = globalThis.fetch;
+let modoGemini: "normal" | "timeout" | "json_invalido" | "sem_uso" = "normal";
+let aguardarGemini: Promise<void> | null = null;
+let avisarGemini: (() => void) | null = null;
 globalThis.fetch = (async (url: string, init?: RequestInit) => {
   assert.match(String(url), /generativelanguage/);
   chamadasGemini++;
+  avisarGemini?.();
+  if (aguardarGemini) await aguardarGemini;
+  if (modoGemini === "timeout") throw new Error("rede simulada");
   geminiRecebeu = String(init?.body ?? "");
   const cortes = [{ inicio_segundos: 5, fim_segundos: 14, falas: [2, 3], titulo_sugerido: "Vamos", o_que_e_dito: "", motivo: "", confianca: "alta" }];
-  return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ cortes }) }] } }] }));
+  return new Response(JSON.stringify({
+    candidates: [{ content: { parts: [{ text: modoGemini === "json_invalido" ? "inválido" : JSON.stringify({ cortes }) }] } }],
+    usageMetadata: modoGemini === "sem_uso" ? undefined : { promptTokenCount: 100, candidatesTokenCount: 20, thoughtsTokenCount: 30 },
+  }));
 }) as typeof fetch;
 test.after(() => { globalThis.fetch = fetchReal; });
 
 process.env.CORTES_AI_ATIVO = "1";
 process.env.GEMINI_API_KEY = "chave-falsa";
 process.env.CORTES_AI_LEGENDAS_AUTORIZADAS = `titulo-autorizado:${impressaoDaLegenda(SRT)}`;
+delete process.env.UPSTASH_REDIS_REST_URL;
+delete process.env.UPSTASH_REDIS_REST_TOKEN;
+(process.env as Record<string, string | undefined>).NODE_ENV = "test";
+test.beforeEach(async () => {
+  await getRedis().del(`cortesai:gasto:u1:${new Date().toISOString().slice(0, 7)}`);
+  await getRedis().del("http:rate:cortesai:dia:u1");
+  modoGemini = "normal";
+  aguardarGemini = null;
+  avisarGemini = null;
+});
 
 const pedir = async (corpo: unknown) => (await import("../../app/api/cortes/ia/route")).POST(new Request("http://localhost/api/cortes/ia", {
   method: "POST", headers: { "content-type": "application/json", host: "localhost", origin: "http://localhost" }, body: JSON.stringify(corpo),
@@ -125,4 +145,69 @@ test("teto mensal de gasto atingido → 429 sem chamar o Gemini; o gasto de cada
     delete process.env.CORTES_AI_TETO_USD_MES;
     await getRedis().set(`cortesai:gasto:u1:${new Date().toISOString().slice(0, 7)}`, String(antes));
   }
+});
+
+const corpoValido = { conteudoId: "titulo-autorizado", tema: "tensão", legenda: SRT };
+const reservaMaxima = () => custoMaximoAnalise(lerLegenda(SRT), corpoValido.tema);
+const chaveMes = () => `cortesai:gasto:u1:${new Date().toISOString().slice(0, 7)}`;
+
+test("duas chamadas simultâneas disputam saldo: só uma chega ao Gemini", async () => {
+  await getRedis().set(chaveMes(), String(1_000_000 - reservaMaxima()));
+  let liberar!: () => void;
+  aguardarGemini = new Promise<void>((resolve) => { liberar = resolve; });
+  const entrou = new Promise<void>((resolve) => { avisarGemini = resolve; });
+  const antes = chamadasGemini;
+  const pedidos = [pedir(corpoValido), pedir(corpoValido)];
+  await entrou;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  liberar();
+  const respostas = await Promise.all(pedidos);
+  assert.deepEqual(respostas.map((r) => r.status).sort(), [200, 429]);
+  assert.equal(chamadasGemini - antes, 1);
+  assert.equal(await gastoDoMes(getRedis(), "u1"), 1_000_000 - reservaMaxima() + 155);
+});
+
+test("falha ao reservar fecha antes do Gemini, mesmo se o Redis tiver debitado", async () => {
+  const redis = getRedis(), original = redis.reserveBudget.bind(redis);
+  redis.reserveBudget = async (...args) => { await original(...args); throw new Error("resposta perdida"); };
+  const antes = chamadasGemini;
+  try {
+    assert.equal((await pedir(corpoValido)).status, 503);
+    assert.equal(chamadasGemini, antes);
+    assert.equal(await gastoDoMes(redis, "u1"), reservaMaxima());
+  } finally { redis.reserveBudget = original; }
+});
+
+test("falha de liquidação mantém reserva, devolve resultado pago e protege chamadas seguintes", async () => {
+  const redis = getRedis(), original = redis.settleBudget.bind(redis);
+  await redis.set(chaveMes(), String(1_000_000 - reservaMaxima()));
+  redis.settleBudget = async () => { throw new Error("Redis indisponível"); };
+  try {
+    assert.equal((await pedir(corpoValido)).status, 200);
+    assert.equal(await gastoDoMes(redis, "u1"), 1_000_000);
+    const antes = chamadasGemini;
+    assert.equal((await pedir(corpoValido)).status, 429);
+    assert.equal(chamadasGemini, antes);
+  } finally { redis.settleBudget = original; }
+});
+
+test("timeout e uso ausente retêm reserva; resposta inválida com uso é cobrada", async () => {
+  for (const modo of ["timeout", "sem_uso", "json_invalido"] as const) {
+    await getRedis().del(chaveMes());
+    modoGemini = modo;
+    const r = await pedir(corpoValido);
+    assert.equal(r.status, modo === "sem_uso" ? 200 : 502);
+    assert.equal(await gastoDoMes(getRedis(), "u1"), modo === "json_invalido" ? custoMicroUsd({ entrada: 100, saida: 50 }) : reservaMaxima());
+  }
+});
+
+test("padrão continua em cinco análises por 24h e um dólar por mês", async () => {
+  const antes = chamadasGemini;
+  for (let i = 0; i < 5; i++) assert.equal((await pedir(corpoValido)).status, 200);
+  const sexta = await pedir(corpoValido);
+  assert.equal(sexta.status, 429);
+  assert.equal((await sexta.json()).codigo, "limite_diario");
+  assert.equal(chamadasGemini - antes, 5);
+  assert.ok(await getRedis().ttl("http:rate:cortesai:dia:u1") > 86_390);
+  assert.equal(await gastoDoMes(getRedis(), "u1"), 5 * 155);
 });
