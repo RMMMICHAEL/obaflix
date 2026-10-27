@@ -21,10 +21,10 @@ BEGIN;
 
 ALTER TABLE "PedidoPagamento" DROP CONSTRAINT IF EXISTS "PedidoPagamento_provedor_check";
 ALTER TABLE "PedidoPagamento" ADD CONSTRAINT "PedidoPagamento_provedor_check"
-    CHECK ("provedor" IN ('blackcat', 'simulado'));
+    CHECK ("provedor" IN ('blackcat', 'simulado', 'cakto'));
 
 ALTER TABLE "EventoPagamento" DROP CONSTRAINT IF EXISTS "EventoPagamento_provedor_check";
 ALTER TABLE "EventoPagamento" ADD CONSTRAINT "EventoPagamento_provedor_check"
-    CHECK ("provedor" IN ('blackcat', 'simulado'));
+    CHECK ("provedor" IN ('blackcat', 'simulado', 'cakto'));
 
 COMMIT;

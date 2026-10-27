@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { invalidarEntitlements } from "@/lib/entitlements";
 import { audit } from "@/lib/auditLog";
 import type { ConfirmacaoBlackcat, FalhaConfirmacaoBlackcat, ResultadoConfirmacaoBlackcat } from "./blackcat";
-import { confirmadorDeCobranca } from "./simulado";
+import { confirmadorDoPedido } from "./simulado";
 import { duracaoDoPedido, planejarAtivacao } from "./confirmacao";
 import { ehPlanoCortes } from "../planos";
 import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
@@ -215,7 +215,7 @@ export type ResultadoDaAcao =
 
 export interface DependenciasDaAcao {
   banco: typeof prisma;
-  consultar: ((transacaoId: string) => Promise<ResultadoConfirmacaoBlackcat>) | null;
+  consultar: ((transacaoId: string, esperado?: { planoId?: string }) => Promise<ResultadoConfirmacaoBlackcat>) | null;
   invalidar: (userId: string) => Promise<unknown>;
   agora: () => Date;
   notificarPrimeiroAcesso: (c: ContaDoComprador) => Promise<unknown>;
@@ -275,7 +275,6 @@ export async function executarAcaoDeRevisao(
   const banco = injetadas.banco ?? prisma;
   const agora = (injetadas.agora ?? (() => new Date()))();
   const invalidar = injetadas.invalidar ?? invalidarEntitlements;
-  const consultar = injetadas.consultar !== undefined ? injetadas.consultar : confirmadorDeCobranca();
 
   if (!ehAcao(entrada.acao)) return { ok: false, status: 400, codigo: "acao_invalida" };
   if (typeof entrada.chaveIdempotencia !== "string" || !CHAVE_VALIDA.test(entrada.chaveIdempotencia)) {
@@ -298,9 +297,11 @@ export async function executarAcaoDeRevisao(
 
   const caso = await banco.revisaoPagamento.findUnique({
     where: { id: entrada.revisaoId },
-    select: { id: true, status: true, pedidoId: true, pedido: { select: { userId: true, transacaoId: true, emailComprador: true } } },
+    select: { id: true, status: true, pedidoId: true, pedido: { select: { userId: true, transacaoId: true, emailComprador: true, provedor: true, planoId: true } } },
   });
   if (!caso) return { ok: false, status: 404, codigo: "revisao_nao_encontrada" };
+  // Consulta no provedor que cobrou o pedido (Blackcat ou Cakto), nunca no outro.
+  const consultar = injetadas.consultar !== undefined ? injetadas.consultar : confirmadorDoPedido(caso.pedido.provedor ?? "blackcat");
   if (caso.status !== "PENDENTE") return { ok: false, status: 409, codigo: "revisao_ja_resolvida" };
   // Compra sem login ainda sem conta. Aprovar cria (ou vincula pelo e-mail) a conta
   // dentro da transação, só se a ativação for executada. Reconsultar, encerrar
@@ -328,7 +329,7 @@ export async function executarAcaoDeRevisao(
       // configuração e a Blackcat nem chega a ser consultada.
       falhaProvedor = "configuracao";
     } else {
-      const externo = await consultar(caso.pedido.transacaoId).catch(() => null);
+      const externo = await consultar(caso.pedido.transacaoId, { planoId: caso.pedido.planoId }).catch(() => null);
       if (externo && externo.ok) confirmacao = externo.confirmacao;
       else if (externo) falhaProvedor = externo.falha;
       else falhaProvedor = "rede"; // consultar lançou apesar de não dever.

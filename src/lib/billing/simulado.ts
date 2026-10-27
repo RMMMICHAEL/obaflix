@@ -1,7 +1,8 @@
 import crypto from "crypto";
 import { getRedis } from "@/lib/redis";
 import { criarConfirmadorBlackcat, criarProvedorBlackcat, type ResultadoConfirmacaoBlackcat, type StatusBlackcat } from "./blackcat";
-import type { ProvedorPix } from "./pedidos";
+import { cobrancaPixAtiva, type ProvedorPix } from "./pedidos";
+import { caktoPixAtivo, criarConfirmadorCakto, criarProvedorCakto, OFERTAS_CAKTO } from "./cakto";
 
 /**
  * Pagamento SIMULADO para o ambiente isolado de testes.
@@ -78,11 +79,22 @@ export async function definirStatusSimulado(
   return true;
 }
 
-/** Provedor usado pela rota de pedidos. */
-export function provedorDeCobranca(env: Record<string, string | undefined> = process.env): { provedor: ProvedorPix | null; nome: "blackcat" | "simulado" } {
+/**
+ * Provedor usado pela rota de pedidos. Cakto só para planos Cortes com oferta e
+ * `CAKTO_PIX_ATIVO=true`; o resto segue Blackcat (ou a simulação), que exige
+ * `BLACKCAT_PIX_ATIVO=true`. Sem provedor ligado para o plano: `null` → 503.
+ */
+export function provedorDeCobranca(env: Record<string, string | undefined> = process.env, planoId?: string): { provedor: ProvedorPix | null; nome: "blackcat" | "simulado" | "cakto" } {
+  if (!simulacaoDePagamentoAtiva(env) && caktoPixAtivo(env) && planoId && OFERTAS_CAKTO[planoId]) return { provedor: criarProvedorCakto(env), nome: "cakto" };
+  if (!cobrancaPixAtiva(env)) return { provedor: null, nome: "blackcat" };
   return simulacaoDePagamentoAtiva(env)
     ? { provedor: criarProvedorSimulado(), nome: "simulado" }
     : { provedor: criarProvedorBlackcat(env), nome: "blackcat" };
+}
+
+/** Confirmador pelo provedor gravado no pedido: pedido Cakto nunca é consultado na Blackcat, e vice-versa. */
+export function confirmadorDoPedido(provedor: string, env: Record<string, string | undefined> = process.env) {
+  return provedor === "cakto" ? criarConfirmadorCakto(env) : confirmadorDeCobranca(env);
 }
 
 /** Confirmador usado pela confirmação, reconciliação e revisão. */
