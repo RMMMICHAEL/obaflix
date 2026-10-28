@@ -124,7 +124,7 @@ test("cron autentica, respeita flag, lote de 25 e isola erros", async () => {
   const chamados: string[] = [];
   const cron = createBillingReconcileHandler({
     env: { CRON_SECRET: "s", BLACKCAT_CONFIRMACAO_ATIVA: "true" },
-    prisma: { pedidoPagamento: { findMany: async (q: any) => { assert.equal(q.take, 25); assert.deepEqual(q.where, { status: "AGUARDANDO", transacaoId: { not: null } }); return [{ id: "webhook-perdido" }, { id: "falha" }, { id: "seguinte" }]; } } },
+    prisma: { pedidoPagamento: { findMany: async (q: any) => { assert.equal(q.take, 25); assert.deepEqual(q.where, { status: "AGUARDANDO", transacaoId: { not: null }, provedor: { in: ["blackcat", "simulado"] } }); return [{ id: "webhook-perdido" }, { id: "falha" }, { id: "seguinte" }]; } } },
     confirmarPedidoPorId: async (id: string) => { chamados.push(id); if (id === "falha") throw new Error("transitório"); },
   });
   const resposta = await cron(new NextRequest("http://local", { headers: { authorization: "Bearer s" } }));

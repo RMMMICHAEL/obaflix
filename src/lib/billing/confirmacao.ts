@@ -5,7 +5,7 @@ import { criarConfirmadorBlackcat, type ConfirmacaoBlackcat } from "./blackcat";
 import { fimDoPeriodo, type Duracao } from "./vigencia";
 import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
-import { confirmadorDeCobranca } from "./simulado";
+import { confirmadorDoPedido } from "./simulado";
 import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
 
 type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
@@ -82,7 +82,7 @@ export function planejarAtivacao(
 
 const MAX_TENTATIVAS_TRANSACAO = 3;
 /** Portas estreitas para testes; produção usa os defaults abaixo. */
-export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string)=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; }
+export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string, esperado?: { planoId?: string })=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; }
 function conflitoRetryable(erro: unknown) { return typeof erro === "object" && erro !== null && "code" in erro && (erro as {code?:unknown}).code === "P2034"; }
 function conflitoPedidoId(erro: unknown) { const e=erro as {code?:unknown;meta?:{target?:unknown}}; return e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("pedidoId"); }
 async function transacaoComRetry<T>(banco: typeof prisma, fn: (tx: Parameters<typeof prisma.$transaction>[0] extends (arg: infer U) => unknown ? U : never) => Promise<T>): Promise<T> {
@@ -93,11 +93,12 @@ async function transacaoComRetry<T>(banco: typeof prisma, fn: (tx: Parameters<ty
 /** Único caminho que altera PAGO/ESTORNADO e cria/cancela uma assinatura. */
 export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<DependenciasConfirmacao> = {}): Promise<{ resultado: string }> {
   const banco=injetadas.prisma ?? prisma; const relogio=injetadas.agora ?? (()=>new Date()); const invalidar=injetadas.invalidarEntitlements ?? invalidarEntitlements;
-  if (process.env.BLACKCAT_CONFIRMACAO_ATIVA !== "true") return { resultado: "desligada" };
-  const pedido = await banco.pedidoPagamento.findUnique({ where: { id: pedidoId }, select: { id:true,userId:true,planoId:true,planoPrecoId:true,status:true,valorCentavos:true,moeda:true,duracaoDias:true,transacaoId:true,expiraEm:true } });
+  const pedido = await banco.pedidoPagamento.findUnique({ where: { id: pedidoId }, select: { id:true,userId:true,planoId:true,planoPrecoId:true,status:true,valorCentavos:true,moeda:true,duracaoDias:true,transacaoId:true,expiraEm:true,provedor:true } });
+  // Blackcat segue atrás de BLACKCAT_CONFIRMACAO_ATIVA; Cakto confirma sempre que configurada (só consulta; nada é cobrado aqui).
+  if ((pedido?.provedor ?? "blackcat") !== "cakto" && process.env.BLACKCAT_CONFIRMACAO_ATIVA !== "true") return { resultado: "desligada" };
   if (!pedido?.transacaoId) return { resultado: "sem_transacao" };
-  const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDeCobranca(); if (!confirmar) return { resultado: "configuracao" };
-  const externo = await confirmar(pedido.transacaoId);
+  const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDoPedido(pedido.provedor ?? "blackcat"); if (!confirmar) return { resultado: "configuracao" };
+  const externo = await confirmar(pedido.transacaoId, { planoId: pedido.planoId });
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
   const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null;
   try { await transacaoComRetry(banco, async (tx) => {

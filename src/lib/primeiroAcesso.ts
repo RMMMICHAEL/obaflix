@@ -15,6 +15,7 @@ import { audit } from "./auditLog";
 import { enviarEmail, type MensagemDeEmail, type ResultadoDoEnvio } from "./email/enviar";
 
 export const VALIDADE_ATIVACAO_SEG = 30 * 60;
+const LINK_DOWNLOAD_WINDOWS = "https://github.com/RMMMICHAEL/obaflix/releases/download/v1.0.16/Obaflix-Setup-1.0.16.exe";
 const FORMATO_DO_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const hashDoToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const chaveDoToken = (hash: string) => `ativacao:token:${hash}`;
@@ -71,16 +72,16 @@ function mensagem(conta: ContaDoComprador, base: string, token: string | null): 
     return {
       para: conta.email,
       assunto: "Ative sua conta Obaflix Cortes",
-      texto: `Seu pagamento foi confirmado.\n\nPara ativar sua conta e criar sua senha, acesse (válido por 30 minutos, uso único):\n${link}\n\nSe você não fez esta compra, ignore este e-mail.`,
-      html: `<p>Seu pagamento foi confirmado.</p><p><a href="${link}">Ativar conta e criar senha</a></p><p>O link vale por 30 minutos e só pode ser usado uma vez. Se você não fez esta compra, ignore este e-mail.</p>`,
+      texto: `Seu pagamento foi confirmado.\n\nPara ativar sua conta e criar sua senha, acesse (válido por 30 minutos, uso único):\n${link}\n\nBaixe o instalador do Obaflix Cortes para Windows:\n${LINK_DOWNLOAD_WINDOWS}\n\nSe você não fez esta compra, ignore este e-mail.`,
+      html: `<p>Seu pagamento foi confirmado.</p><p><a href="${link}">Ativar conta e criar senha</a></p><p>O link vale por 30 minutos e só pode ser usado uma vez.</p><p><a href="${LINK_DOWNLOAD_WINDOWS}">Baixar Obaflix Cortes para Windows</a></p><p>Se você não fez esta compra, ignore este e-mail.</p>`,
     };
   }
   const login = `${base}/login`;
   return {
     para: conta.email,
     assunto: "Seu Obaflix Cortes está ativo",
-    texto: `Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.\n\nEntre normalmente com seu e-mail e sua senha atual:\n${login}`,
-    html: `<p>Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.</p><p><a href="${login}">Entre normalmente</a> com seu e-mail e sua senha atual.</p>`,
+    texto: `Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.\n\nEntre normalmente com seu e-mail e sua senha atual:\n${login}\n\nBaixe o instalador do Obaflix Cortes para Windows:\n${LINK_DOWNLOAD_WINDOWS}`,
+    html: `<p>Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.</p><p><a href="${login}">Entre normalmente</a> com seu e-mail e sua senha atual.</p><p><a href="${LINK_DOWNLOAD_WINDOWS}">Baixar Obaflix Cortes para Windows</a></p>`,
   };
 }
 

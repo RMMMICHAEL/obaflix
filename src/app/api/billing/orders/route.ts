@@ -9,6 +9,7 @@ import { ehPlanoCortes, ordemNaFamilia } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
+import { caktoPixAtivo, pilotoCaktoAutorizado } from "@/lib/billing/cakto";
 import {
   emailDoComprador,
   nascimentoDoComprador,
@@ -93,6 +94,7 @@ const MENSAGEM_DA_RECUSA: Record<string, string> = {
   adicional_indisponivel: "Adicional indisponível",
   servidor_vip_ja_incluso: "O servidor VIP já está incluso neste plano",
   credito_maior_que_compra: "Escolha uma duração que cubra o crédito do seu plano atual",
+  valor_fora_da_oferta: "Upgrade com crédito ainda não está disponível neste pagamento. Aguarde o fim do plano atual ou fale com o suporte.",
   parametros_invalidos: "Parâmetros inválidos",
 };
 
@@ -245,7 +247,7 @@ export async function POST(req: NextRequest) {
   // 1. A flag, antes de tudo. Desligada: nenhuma consulta, nenhum pedido,
   //    nenhuma chamada externa, e a mesma resposta genérica de qualquer outra
   //    indisponibilidade.
-  if (!cobrancaPixAtiva()) return INDISPONIVEL();
+  if (!cobrancaPixAtiva() && !caktoPixAtivo()) return INDISPONIVEL();
 
   const ip = clientIp(req);
   const ua = req.headers.get("user-agent") || "unknown";
@@ -323,6 +325,12 @@ export async function POST(req: NextRequest) {
     return erro(400, "parametros_invalidos", "Parâmetros inválidos");
   }
 
+  // Piloto privado: segredo e regra de liberacao vivem em billing/cakto.ts.
+  if (caktoPixAtivo() && ehPlanoCortes(planoId)
+    && !pilotoCaktoAutorizado(planoId, req.headers.get("x-obaflix-cakto-piloto"))) {
+    return INDISPONIVEL();
+  }
+
   const conta = userId
     ? await prisma.user.findUnique({ where: { id: userId }, select: { nome: true, email: true } })
     : (() => { const email = emailDoComprador(corpo.email); return email ? { nome: null, email } : null; })();
@@ -356,7 +364,7 @@ export async function POST(req: NextRequest) {
   // O provedor é montado ANTES de qualquer escrita: sem chave de API, a resposta
   // é 503 e **nenhum pedido é criado**.
   // Blackcat, ou a simulação — só com as três condições do ambiente isolado.
-  const { provedor, nome: nomeDoProvedor } = provedorDeCobranca();
+  const { provedor, nome: nomeDoProvedor } = provedorDeCobranca(undefined, planoId);
   if (!provedor) {
     audit("billing_order_failed", { userId, ip, ua, detail: "provedor nao configurado" });
     return INDISPONIVEL();

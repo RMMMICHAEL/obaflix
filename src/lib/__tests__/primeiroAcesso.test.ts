@@ -70,10 +70,14 @@ describe("notificarPrimeiroAcesso", () => {
     const enviar = async (m: MensagemDeEmail) => { enviados.push(m); return { ok: true as const, simulado: true }; };
     await notificarPrimeiroAcesso({ userId: "u-4", email: "n@x.co", semSenha: true }, { enviar, base: "https://obaflix.online/" });
     assert.ok(enviados[0].html.includes("https://obaflix.online/ativar#t="));
+    assert.ok(enviados[0].texto.includes("Obaflix-Setup-1.0.16.exe"));
+    assert.ok(enviados[0].html.includes("Obaflix-Setup-1.0.16.exe"));
     assert.equal(await consumirTokenDeAtivacao(tokenDo(enviados[0])), "u-4");
     await notificarPrimeiroAcesso({ userId: "u-5", email: "e@x.co", semSenha: false }, { enviar, base: "https://obaflix.online" });
     assert.equal(tokenDo(enviados[1]), null);
     assert.ok(enviados[1].texto.includes("https://obaflix.online/login"));
+    assert.ok(enviados[1].texto.includes("Obaflix-Setup-1.0.16.exe"));
+    assert.ok(enviados[1].html.includes("Obaflix-Setup-1.0.16.exe"));
     assert.equal(await getRedis().get("ativacao:conta:u-5"), null);
   });
   test("falha de envio ou sem base: ok:false, nunca lança", async () => {

@@ -81,7 +81,7 @@ export const STATUS_DA_FASE_4 = ["CRIADO", "AGUARDANDO", "FALHOU", "REVISAO_MANU
  * Production aceita apenas `blackcat`: um pedido simulado não grava lá nem com a
  * configuração errada.
  */
-export const PROVEDORES_PAGAMENTO = ["blackcat", "simulado"] as const;
+export const PROVEDORES_PAGAMENTO = ["blackcat", "simulado", "cakto"] as const;
 export type ProvedorPagamento = (typeof PROVEDORES_PAGAMENTO)[number];
 
 /**
@@ -327,6 +327,8 @@ export interface DadosDoPagador {
 /** O que o provedor precisa para criar uma venda. */
 export interface PedidoParaProvedor {
   refExterna: string;
+  /** Provedor de oferta fixa (Cakto) escolhe a oferta pelo plano. */
+  planoId?: string;
   valorCentavos: number;
   moeda: string;
   descricao: string;
@@ -379,12 +381,13 @@ export type FalhaDoProvedor =
  * `criarPedidoPix`, é única e vale para todos os motivos:
  *
  *   **transação conhecida ⇒ `REVISAO_MANUAL`. Transação desconhecida ⇒ `FALHOU`.**
+ * Exceção Cakto: criação incerta sem id também fica em revisão, preservando refExterna/sck.
  *
  * Nunca `PAGO`, em nenhum dos dois.
  */
 export type ResultadoCriacaoPix =
   | { ok: true; venda: VendaPixCriada }
-  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date };
+  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date; criacaoIncerta?: boolean };
 
 /**
  * A porta do gateway.
@@ -395,6 +398,8 @@ export type ResultadoCriacaoPix =
  */
 export interface ProvedorPix {
   criarVenda(pedido: PedidoParaProvedor): Promise<ResultadoCriacaoPix>;
+  /** Provedor que só cobra valores fixos recusa o resto antes de existir pedido. */
+  aceitaCompra?(c: { planoId: string; valorCentavos: number; moeda: string }): boolean;
 }
 
 /** O que o banco precisa saber fazer. Implementado sobre o Prisma na rota. */
@@ -461,6 +466,7 @@ export type CodigoDeCompraRecusada =
   | "adicional_indisponivel"
   | "servidor_vip_ja_incluso"
   | "credito_maior_que_compra"
+  | "valor_fora_da_oferta"
   | "parametros_invalidos";
 
 export interface CompraMontada {
@@ -689,6 +695,11 @@ export async function criarPedidoPix(
   // A partir daqui, `snapshot.valorCentavos` é o valor a cobrar (plano +
   // adicionais − crédito), calculado só com dados do servidor.
   const snapshot = compra.snapshot;
+  // Oferta fixa (Cakto): upgrade com crédito ou adicionais mudam o valor e não
+  // podem ser cobrados lá. Recusado aqui, sem pedido e sem chamada externa.
+  if (provedor.aceitaCompra && !provedor.aceitaCompra({ planoId: snapshot.planoId, valorCentavos: snapshot.valorCentavos, moeda: snapshot.moeda })) {
+    return { situacao: "compra_recusada", codigo: "valor_fora_da_oferta" };
+  }
   const refExterna = gerarRef();
 
   const criado = await repo.criar({
@@ -715,6 +726,7 @@ export async function criarPedidoPix(
 
   const resultado = await provedor.criarVenda({
     refExterna,
+    planoId: snapshot.planoId,
     // Do snapshot, sempre. Nunca de `entrada`, que veio do cliente.
     valorCentavos: snapshot.valorCentavos,
     moeda: snapshot.moeda,
@@ -723,6 +735,11 @@ export async function criarPedidoPix(
   });
 
   if (!resultado.ok) {
+    if (deps.nomeDoProvedor === "cakto" && resultado.criacaoIncerta && !resultado.transacaoId) {
+      // Sem retry: a cobrança pode existir; refExterna/sck permitem conciliação manual.
+      await repo.registrarFalha(pedidoId, { status: "REVISAO_MANUAL", motivo: "criacao_resultado_incerto" });
+      return { situacao: "revisao_manual", pedidoId, motivo: resultado.falha };
+    }
     // A regra única: se sabemos o `transactionId`, existe uma venda do outro
     // lado — e ela pode ser pagável. `FALHOU` diria "não há nada lá" e faria a
     // reconciliação da Fase 5 pular justamente a linha que precisa de gente

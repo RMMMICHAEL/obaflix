@@ -165,8 +165,11 @@ describe("CHECKs: código e banco não podem divergir", () => {
   test("o CHECK de provedor de Production é o código sem 'simulado'; o de teste é o código inteiro", async () => {
     const { readFileSync } = await import("node:fs");
     const deProducao = PROVEDORES_PAGAMENTO.filter((p) => p !== "simulado");
-    assert.deepEqual(deProducao, ["blackcat"]);
-    assert.ok(migracaoCodigo.includes(`CHECK ("provedor" ${emSql(deProducao)})`));
+    assert.deepEqual(deProducao, ["blackcat", "cakto"]);
+    // O CHECK de Production vigente é o da migration que acrescentou a Cakto.
+    const cakto = soCodigo(readFileSync("prisma/migrations/20261027120000_provedor_cakto/migration.sql", "utf8"));
+    assert.ok(cakto.includes(`CHECK ("provedor" ${emSql(deProducao)})`));
+    assert.ok(cakto.indexOf("_ObaflixAmbiente") < cakto.indexOf("ALTER TABLE"), "banco de teste pulado antes de alterar");
     const soTeste = readFileSync("scripts/ambiente-teste/03-provedor-simulado-somente-teste.sql", "utf8");
     assert.ok(soTeste.includes(`CHECK ("provedor" ${emSql(PROVEDORES_PAGAMENTO)})`));
   });
