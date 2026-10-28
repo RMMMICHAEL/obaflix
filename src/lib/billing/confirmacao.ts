@@ -103,7 +103,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
     comprador = null;
-    const incluir = { assinatura: true, plano: { select: { cortesNivel: true } } } as const;
+    const incluir = { assinatura: true, plano: { select: { cortesNivel: true, nome: true } } } as const;
     const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: incluir }); if (!atual) return;
     // Repetição após commit é sucesso idempotente; nunca reabre uma compra paga.
     if (atual.status === "PAGO" && atual.assinatura && externo.confirmacao.status !== "REFUNDED") return;
@@ -135,14 +135,19 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (!plano.ok) { await marcarPedidoEmRevisao(tx, { pedidoId: atual.id, userId: atual.userId, motivo: `ativacao_${plano.motivo}` as MotivoDeRevisao }); audit("billing_payment_review",{userId:atual.userId,detail:`ativacao ${plano.motivo}: pedido ${atual.id}`}); return; }
     if (!atual.userId) {
       // Conta existente não tem nada alterado (`update: {}`): sem senha nova, sem acesso por informar o e-mail.
-      const conta = await tx.user.upsert({ where: { email: atual.emailComprador! }, create: { email: atual.emailComprador!, nome: atual.nomeComprador, dataNascimento: atual.nascimentoComprador }, update: {}, select: { id: true, senhaHash: true } });
-      comprador = { userId: conta.id, email: atual.emailComprador!, semSenha: !conta.senhaHash };
+      const conta = await tx.user.upsert({ where: { email: atual.emailComprador! }, create: { email: atual.emailComprador!, nome: atual.nomeComprador, dataNascimento: atual.nascimentoComprador }, update: {}, select: { id: true, senhaHash: true, googleSub: true } });
+      comprador = { userId: conta.id, email: atual.emailComprador!, semSenha: !conta.senhaHash && !conta.googleSub };
       userId = conta.id;
       await tx.pedidoPagamento.update({ where: { id: atual.id }, data: { userId } });
       // Revisão anterior do pedido passa a ser da conta: trava, consulta e exclusão de conta a enxergam.
       await tx.revisaoPagamento.updateMany({ where: { pedidoId: atual.id, userId: null }, data: { userId } });
     }
     if (!userId) throw new Error("pedido_sem_conta");
+    if (!comprador && ehPlanoCortes(atual.plano?.cortesNivel)) {
+      const conta = await tx.user.findUnique({ where: { id: userId }, select: { email: true } });
+      if (conta) comprador = { userId, email: conta.email, semSenha: false };
+    }
+    if (comprador) comprador.compra = { pedidoId: atual.id, plano: atual.plano?.nome ?? atual.planoId, valorCentavos: atual.valorCentavos, moeda: atual.moeda, iniciaEm: plano.iniciaEm, terminaEm: plano.terminaEm };
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
     await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=userId;
@@ -154,7 +159,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     if (reconciliado) await banco.$transaction((tx) => marcarPedidoEmRevisao(tx, { pedidoId, userId: reconciliado.userId, motivo: "reconciliacao_inconsistente" }));
     return {resultado:"inconsistencia"};
   }
-  // Só depois do commit, e uma vez: a conta é vinculada uma única vez. E-mail que falha não desfaz nada.
+  // Só a transação que ativa avisa, após commit. Repetições não enviam; falhas não desfazem a assinatura.
   const avisar = comprador as ContaDoComprador | null;
   if (avisar) try { await (injetadas.notificarPrimeiroAcesso ?? notificarPrimeiroAcesso)(avisar); } catch { audit("email_failed",{userId:avisar.userId,detail:"primeiro_acesso apos_commit"}); }
   if(userParaInvalidar) try { await invalidar(userParaInvalidar); } catch { audit("billing_entitlements_invalidation_failed",{userId:userParaInvalidar,detail:"apos_commit"}); }

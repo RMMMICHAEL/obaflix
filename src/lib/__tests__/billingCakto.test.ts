@@ -324,7 +324,9 @@ test("Cakto: confirmação autenticada ativa uma assinatura; webhook e confirma�
   const pedido = { ...pedidoDoBanco, provedor: "cakto", plano: { cortesNivel: "individual" } };
   const assinaturas: any[] = [];
   const eventos = new Set<string>();
+  let emails = 0;
   const banco: any = {
+    user: { findUnique: async () => ({ email: "comprador@example.test", senhaHash: "h" }) },
     pedidoPagamento: {
       findUnique: async () => ({ ...pedido, assinatura: assinaturas[0] ?? null }),
       findFirst: async () => pedido,
@@ -334,7 +336,7 @@ test("Cakto: confirmação autenticada ativa uma assinatura; webhook e confirma�
     eventoPagamento: { create: async () => { if (eventos.has("aviso")) throw new Error("P2002"); eventos.add("aviso"); } },
     $transaction: async (fn: any) => fn(banco),
   };
-  const confirmar = () => confirmarPedidoPorId(pedido.id, { prisma: banco, consultarStatusBlackcat: consultar({ status: "paid", amount: "27.00" }), invalidarEntitlements: async () => {} });
+  const confirmar = () => confirmarPedidoPorId(pedido.id, { prisma: banco, consultarStatusBlackcat: consultar({ status: "paid", amount: "27.00" }), invalidarEntitlements: async () => {}, notificarPrimeiroAcesso: async () => { emails++; } });
   const handler = webhookCakto.createForTest({ prisma: banco, env: { CAKTO_WEBHOOK_SECRET: SEGREDO }, confirmarPedidoPorId: confirmar });
   await handler(requisicao(APROVADO));
   await handler(requisicao(APROVADO));
@@ -342,6 +344,7 @@ test("Cakto: confirmação autenticada ativa uma assinatura; webhook e confirma�
   assert.equal(pedido.status, "PAGO");
   assert.equal(assinaturas.length, 1);
   assert.equal(assinaturas[0].pedidoId, pedido.id);
+  assert.equal(emails, 1);
 });
 
 // ── Regressão Blackcat ───────────────────────────────────────────────────────

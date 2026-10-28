@@ -6,6 +6,8 @@ import { enviarEmail, type MensagemDeEmail } from "../email/enviar";
 import { consumirTokenDeAtivacao, emitirTokenDeAtivacao, notificarPrimeiroAcesso, senhaValida, VALIDADE_ATIVACAO_SEG } from "../primeiroAcesso";
 import { POST as ativar } from "../../app/api/auth/ativacao/route";
 import { POST as reenviar } from "../../app/api/auth/ativacao/reenviar/route";
+import { INSTALADORES } from "@/config/downloads";
+import { reenviarEmailCompra } from "../billing/reenviarEmailCompra";
 
 const MSG: MensagemDeEmail = { para: "a@b.co", assunto: "s", texto: "t", html: "<p>t</p>" };
 const tokenDo = (m: MensagemDeEmail) => /#t=([A-Za-z0-9_-]{43})/.exec(m.texto)?.[1] ?? null;
@@ -65,6 +67,26 @@ describe("token de ativação", () => {
 });
 
 describe("notificarPrimeiroAcesso", () => {
+  test("recibo HTML/texto usa plano, período, valor do pedido e download central; escapa HTML", async () => {
+    const enviados: MensagemDeEmail[] = [];
+    const compra = { pedidoId: "pedido-email", plano: "Cortes Pro <script>", valorCentavos: 4321, moeda: "BRL", iniciaEm: new Date("2026-10-28T12:00:00Z"), terminaEm: new Date("2026-11-27T12:00:00Z") };
+    for (const semSenha of [true, false]) {
+      const r = await notificarPrimeiroAcesso({ userId: `recibo-${semSenha}`, email: "recibo@example.test", semSenha, compra }, { base: "https://obaflixbr.com", enviar: async m => { enviados.push(m); return { ok: true, simulado: true }; } });
+      assert.equal(r.ok, true);
+    }
+    for (const m of enviados) {
+      assert.match(m.assunto, /Compra confirmada/);
+      assert.match(m.texto, /43,21/);
+      assert.match(m.texto, /28\/10\/2026 a 27\/11\/2026/);
+      assert.ok(m.texto.includes(INSTALADORES.windowsCortes.url));
+      assert.ok(m.html.includes(INSTALADORES.windowsCortes.url));
+      assert.match(m.html, /Cortes Pro &lt;script&gt;/);
+      assert.doesNotMatch(m.html, /<script>|senhaHash|CPF|transacaoId/);
+    }
+    assert.ok(tokenDo(enviados[0]));
+    assert.equal(tokenDo(enviados[1]), null);
+    assert.match(enviados[1].texto, /forma habitual de login/);
+  });
   test("conta sem senha: link de ativação válido; com senha: só orientação de login", async () => {
     const enviados: MensagemDeEmail[] = [];
     const enviar = async (m: MensagemDeEmail) => { enviados.push(m); return { ok: true as const, simulado: true }; };
@@ -85,6 +107,25 @@ describe("notificarPrimeiroAcesso", () => {
     assert.equal(r.ok, false);
     assert.deepEqual(await notificarPrimeiroAcesso({ userId: "u-6", email: "n@x.co", semSenha: true }, { base: "" }), { ok: false, motivo: "configuracao" });
   });
+});
+
+test("reenvio operacional só aceita Cortes pago e vinculado; não altera conta ou assinatura", async () => {
+  const pago = { id: "p-reenvio", status: "PAGO", userId: "u-r", planoId: "cortes-start", planoPrecoId: "preco", valorCentavos: 2700, moeda: "BRL",
+    user: { email: "reenvio@example.test", senhaHash: "h" }, plano: { nome: "Cortes Start", cortesNivel: "individual" },
+    assinatura: { pedidoId: "p-reenvio", userId: "u-r", planoId: "cortes-start", planoPrecoId: "preco", iniciaEm: new Date("2026-10-28"), terminaEm: new Date("2026-11-27") } };
+  const antes = JSON.stringify(pago);
+  const avisos: any[] = [];
+  const notificar = async (c: any) => { avisos.push(c); return { ok: true as const, simulado: true }; };
+  const banco = (p: any): any => ({ pedidoPagamento: { findUnique: async () => p } });
+  for (const p of [null, { ...pago, status: "AGUARDANDO" }, { ...pago, status: "ESTORNADO" }, { ...pago, assinatura: null }, { ...pago, assinatura: { ...pago.assinatura, userId: "outro" } }]) {
+    assert.equal((await reenviarEmailCompra("p-reenvio", { banco: banco(p), notificar })).ok, false);
+  }
+  assert.equal(avisos.length, 0);
+  assert.equal((await reenviarEmailCompra("p-reenvio", { banco: banco(pago), notificar })).ok, true);
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0].compra.valorCentavos, 2700);
+  assert.equal(avisos[0].semSenha, false);
+  assert.equal(JSON.stringify(pago), antes);
 });
 
 describe("POST /api/auth/ativacao", () => {
