@@ -25,6 +25,9 @@ const planos = {
 } as const;
 type Id = keyof typeof planos;
 const dinheiro = (n: number, moeda = "BRL") => new Intl.NumberFormat("pt-BR", { style: "currency", currency: moeda }).format(n / 100);
+// Apenas Start: taxa de servico de R$ 0,99 confirmada na cobranca Pix real.
+const taxaPixStart = (valor: number, id: Id | null) => id === "cortes-start" && valor === 2700 ? 99 : 0;
+const totalPix = (valor: number, id: Id | null) => valor + taxaPixStart(valor, id);
 const prazo = (p: Preco) => p.duracaoMeses ? `${p.duracaoMeses} ${p.duracaoMeses === 1 ? "mês" : "meses"}` : `${p.duracaoDias ?? 0} dias`;
 // Gatilho único para eventuais destinos reais de pós-compra; vazio nesta fase.
 // Nunca usar URL vinda do cliente ou de parâmetros de consulta como destino.
@@ -183,7 +186,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
                 <p className="text-xs uppercase tracking-widest text-red-400">Status do pedido</p>
                 <h2 className="mt-2 text-2xl font-bold">{pedido.status === "PAGO" ? "Pagamento confirmado" : pedido.status === "CONFIRMANDO" ? "Confirmação em andamento" : pedido.status === "REVISAO_MANUAL" || pedido.emRevisao ? "Pagamento em revisão" : pedido.status === "AGUARDANDO" ? "Aguardando pagamento" : "Acompanhe seu pedido"}</h2>
                 <p className="mt-3 text-sm text-zinc-300">{pedido.status === "PAGO" ? "O servidor confirmou a compra. O acesso segue pelo e-mail da compra; confira também o spam." : pedido.status === "REVISAO_MANUAL" || pedido.emRevisao ? MENSAGEM_DE_REVISAO_AO_COMPRADOR : pedido.status === "CONFIRMANDO" ? "Estamos conferindo o pagamento com o provedor. Não gere outro Pix." : "O pagamento só será confirmado após a verificação pelo servidor. Não é necessário deixar esta tela aberta."}</p>
-                <p className="mt-4 text-2xl font-black">{dinheiro(pedido.valorCentavos, pedido.moeda)}</p>
+                <p className="mt-4 text-2xl font-black">{dinheiro(totalPix(pedido.valorCentavos, id), pedido.moeda)}</p>
                 {descricaoDaOperacao(pedido) && <p className="mt-2 text-sm text-zinc-300">{descricaoDaOperacao(pedido)}</p>}
                 {pedido.status === "AGUARDANDO" && pedido.pix?.copiaECola && (
                   <div className="mt-6 grid gap-5 sm:grid-cols-[180px_1fr]">
@@ -197,7 +200,8 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
             ) : (
               <form className="mt-8 space-y-5 rounded-2xl border border-white/15 bg-[#221c1c] p-5 sm:p-7" onSubmit={gerarPix}>
                 <div><p className="text-xs font-semibold uppercase tracking-widest text-red-400">Plano selecionado</p><h2 className="mt-1 text-xl font-bold">Cortes {oferta?.nome ?? ""}</h2><p className="mt-1 text-sm text-zinc-400">{oferta?.subtitulo ?? "Selecione um plano em /cortes."}</p></div>
-                {preco && <p className="text-sm text-zinc-300 lg:hidden"><strong className="text-xl text-white">{dinheiro(preco.precoCentavos, preco.moeda)}</strong> · {prazo(preco)} de acesso</p>}
+                {preco && <p className="text-sm text-zinc-300 lg:hidden"><strong className="text-xl text-white">{dinheiro(totalPix(preco.precoCentavos, id), preco.moeda)}</strong> · {prazo(preco)} de acesso</p>}
+                 {preco && taxaPixStart(preco.precoCentavos, id) > 0 && <p className="text-sm text-zinc-300">Plano {dinheiro(preco.precoCentavos, preco.moeda)} + taxa Cakto {dinheiro(taxaPixStart(preco.precoCentavos, id), preco.moeda)}. Total Pix: {dinheiro(totalPix(preco.precoCentavos, id), preco.moeda)}.</p>}
                 {plano?.precos && plano.precos.length > 1 && <fieldset><legend className="text-sm font-semibold">Duração</legend><div className="mt-2 flex flex-wrap gap-2">{plano.precos.map(p => <button key={p.id} type="button" onClick={() => setPrecoId(p.id)} aria-pressed={precoId === p.id} className={`rounded-lg border px-3 py-2 text-sm ${precoId === p.id ? "border-red-500 bg-red-950/30" : "border-white/15"}`}>{p.rotulo} · {dinheiro(p.precoCentavos, p.moeda)}</button>)}</div></fieldset>}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="text-sm font-semibold sm:col-span-2">Nome completo<input className={classeInput} autoComplete="name" required value={nome} onChange={e => setNome(e.target.value)} maxLength={80} placeholder="Nome e sobrenome" /></label>
@@ -217,7 +221,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
             <div className="rounded-2xl border border-red-900/60 bg-gradient-to-b from-red-950/40 to-[#221c1c] p-6">
               <p className="text-xs font-semibold uppercase tracking-widest text-red-300">Sua escolha</p>
               <h2 className="mt-2 text-3xl font-black">Cortes {oferta?.nome ?? ""}</h2>
-              {preco && <><p className="mt-2 text-4xl font-black">{dinheiro(preco.precoCentavos, preco.moeda)}</p><p className="mt-1 text-sm text-zinc-300">{prazo(preco)} de acesso · pagamento único por Pix</p></>}
+              {preco && <><p className="mt-2 text-4xl font-black">{dinheiro(totalPix(preco.precoCentavos, id), preco.moeda)}</p><p className="mt-1 text-sm text-zinc-300">{prazo(preco)} de acesso · pagamento único por Pix</p>{taxaPixStart(preco.precoCentavos, id) > 0 && <p className="mt-1 text-xs text-zinc-300">Inclui taxa de serviço Cakto de {dinheiro(taxaPixStart(preco.precoCentavos, id), preco.moeda)}; plano {dinheiro(preco.precoCentavos, preco.moeda)}.</p>}</>}
               {carregando && <p className="mt-2 text-sm text-zinc-400">Consultando preço oficial…</p>}
               {!carregando && (!plano?.compravel || !preco) && <p className="mt-3 text-sm text-zinc-300">Oferta temporariamente indisponível; nenhum preço será cobrado.</p>}
               <div className="mt-5 border-t border-white/15 pt-5"><h3 className="font-bold">O que você recebe</h3><ul className="mt-3 space-y-3">{(oferta?.beneficios ?? []).map(b => <li key={b} className="flex gap-3 text-sm text-zinc-200"><Check size={17} className="shrink-0 text-red-400" />{b}</li>)}</ul></div>

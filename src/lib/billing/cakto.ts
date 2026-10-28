@@ -113,6 +113,20 @@ export function criarTokenCakto(config: ConfiguracaoCakto, buscar: typeof fetch 
   };
 }
 
+/** Taxa de serviço observada no Pix Start: oferta R$ 27,00 → total R$ 27,99. */
+export const TAXA_SERVICO_CAKTO_START_CENTAVOS = 99;
+
+/** Mantém a contabilidade do plano no valor base e valida o total Pix exato.
+ * Diferenças inesperadas continuam bloqueadas para revisão manual.
+ */
+export function valorCaktoDoPlano(amount: unknown, baseAmount: unknown, planoId: string, precoCentavos: number): number | null {
+  const total = reaisParaCentavos(amount);
+  if (planoId === "cortes-start" && precoCentavos === OFERTAS_CAKTO["cortes-start"].centavos
+      && total === precoCentavos + TAXA_SERVICO_CAKTO_START_CENTAVOS
+      && reaisParaCentavos(baseAmount) === precoCentavos) return precoCentavos;
+  return total;
+}
+
 /** "2026-04-29 01:30:00+00:00" ou ISO → Date válida no futuro do pedido, ou null. */
 const dataCakto = (v: unknown) => {
   if (typeof v !== "string") return null;
@@ -162,7 +176,7 @@ export function provedorCakto(config: ConfiguracaoCakto, buscar: typeof fetch = 
       const id = typeof j?.id === "string" && j.id.trim() ? j.id.trim() : null;
       if (!id) return { ok: false, falha: "resposta_invalida", criacaoIncerta: true };
       const expiraEm = dataCakto(j?.pix?.expirationDate);
-      const valorCentavos = reaisParaCentavos(j?.amount);
+      const valorCentavos = valorCaktoDoPlano(j?.amount, j?.baseAmount, pedido.planoId ?? "", oferta.centavos);
       // Pedido existe lá, mas não é o que pedimos: revisão manual, nunca uso.
       if (j?.status !== "waiting_payment" || j?.offer?.id !== oferta.oferta || valorCentavos === null) {
         return { ok: false, falha: "estado_externo_inesperado", transacaoId: id, ...(expiraEm ? { expiraEm } : {}) };
@@ -208,9 +222,11 @@ export function confirmadorCakto(config: ConfiguracaoCakto, buscar: typeof fetch
     if (!r.ok) return { ok: false, falha: r.status === 404 ? "nao_encontrada" : [401, 403].includes(r.status) ? "recusada" : "indisponivel" };
     const j = await r.json().catch(() => null) as Record<string, any> | null;
     const status = typeof j?.status === "string" ? STATUS_CAKTO[j.status] : undefined;
-    const centavos = reaisParaCentavos(j?.amount);
-    if (j?.id !== id || !status || centavos === null) return { ok: false, falha: "resposta_invalida" };
     const ofertaEsperada = esperado?.planoId ? OFERTAS_CAKTO[esperado.planoId] : undefined;
+    const centavos = ofertaEsperada && esperado?.planoId
+      ? valorCaktoDoPlano(j?.amount, j?.baseAmount, esperado.planoId, ofertaEsperada.centavos)
+      : reaisParaCentavos(j?.amount);
+    if (j?.id !== id || !status || centavos === null) return { ok: false, falha: "resposta_invalida" };
     const ofertaRecebida = j?.offer?.id ?? j?.offerId;
     let diverge = j?.paymentMethod !== "pix" || j?.type !== "unique" || typeof j?.product?.id !== "string" || !j.product.id
       || (j?.currency != null && j.currency !== "BRL")
