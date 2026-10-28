@@ -29,6 +29,51 @@ test("sem login, valor divergente: revisão, sem conta e sem e-mail",async()=>{c
 test("sem login, pagamento após expirar: revisão, sem conta e sem e-mail; PENDING expirado só expira",async()=>{const avisos:any[]=[];const vencido={expiraEm:new Date(AGORA.getTime()-60000)};const f=criarFake({pedido:pedidoSemLogin(vencido)});await confirmarCom(f,{paidAt:AGORA},avisos);assert.equal(f.estado.pedido.status,"REVISAO_MANUAL");semConta(f,avisos);const g=criarFake({pedido:pedidoSemLogin(vencido)});await confirmarCom(g,{status:"PENDING"},avisos);assert.equal(g.estado.pedido.status,"EXPIRADO");semConta(g,avisos)});
 test("sem login, conta existente com Cortes em aberto: revisão sem vincular nem avisar",async()=>{const avisos:any[]=[];const existente={id:"u-velho",email:"novo@example.test",senhaHash:"h"};const c={id:"c",status:"ATIVA",terminaEm:new Date("2026-12-01"),plano:{cortesNivel:"lote"}};const f=criarFake({pedido:pedidoSemLogin(),usuarios:[existente],ativas:[c]});await confirmarCom(f,{},avisos);assert.equal(f.estado.pedido.status,"REVISAO_MANUAL");assert.equal(f.estado.pedido.userId,null);assert.equal(f.estado.revisoes[0].userId,null);assert.equal(f.estado.pedido.assinatura,null);assert.equal(c.status,"ATIVA");assert.equal(avisos.length,0)});
 test("sem login, válido e duplicado: uma conta, uma assinatura, um e-mail",async()=>{const avisos:any[]=[];const f=criarFake({pedido:pedidoSemLogin()});await confirmarCom(f,{},avisos);const a=f.estado.pedido.assinatura;await confirmarCom(f,{},avisos);await confirmarCom(f,{},avisos);assert.equal(f.estado.usuarios.length,1);assert.equal(f.estado.pedido.status,"PAGO");assert.equal(f.estado.pedido.assinatura,a);assert.equal(a.userId,f.estado.usuarios[0].id);assert.equal(avisos.length,1);assert.deepEqual(f.invalidacoes,[f.estado.usuarios[0].id])});
-test("primeiro acesso: aviso único após o commit; conta com senha recebe orientação",async()=>{const avisos:any[]=[];const avisar=async(c:any)=>{avisos.push(c)};const f=criarFake({pedido:pedidoSemLogin()});await usar(f,"PAID",avisar);await usar(f,"PAID",avisar);assert.equal(avisos.length,1);assert.deepEqual(avisos[0],{userId:f.estado.pedido.userId,email:"novo@example.test",semSenha:true});const g=criarFake({pedido:pedidoSemLogin(),usuarios:[{id:"u-velho",email:"novo@example.test",senhaHash:"h"}]});await usar(g,"PAID",avisar);assert.equal(avisos[1].semSenha,false)});
+test("primeiro acesso: aviso único após o commit; conta com senha recebe orientação",async()=>{const avisos:any[]=[];const avisar=async(c:any)=>{avisos.push(c)};const f=criarFake({pedido:pedidoSemLogin()});await usar(f,"PAID",avisar);await usar(f,"PAID",avisar);assert.equal(avisos.length,1);const {compra,...conta}=avisos[0];assert.deepEqual(conta,{userId:f.estado.pedido.userId,email:"novo@example.test",semSenha:true});assert.equal(compra.valorCentavos,1000);assert.equal(compra.iniciaEm.getTime(),AGORA.getTime());const g=criarFake({pedido:pedidoSemLogin(),usuarios:[{id:"u-velho",email:"novo@example.test",senhaHash:"h"}]});await usar(g,"PAID",avisar);assert.equal(avisos[1].semSenha,false)});
 test("primeiro acesso: falha do e-mail não desfaz o pagamento",async()=>{const f=criarFake({pedido:pedidoSemLogin()});await usar(f,"PAID",async()=>{throw new Error("resend fora")});assert.equal(f.estado.pedido.status,"PAGO");assert.equal(f.estado.pedido.assinatura.status,"ATIVA")});
-test("primeiro acesso: pedido com conta (login) ou não pago não avisa",async()=>{const avisos:any[]=[];const avisar=async(c:any)=>{avisos.push(c)};await usar(criarFake({pedido:pedido()}),"PAID",avisar);await usar(criarFake({pedido:pedidoSemLogin()}),"PENDING",avisar);assert.equal(avisos.length,0)});
+test("primeiro acesso: tradicional com login ou não pago não avisa",async()=>{const avisos:any[]=[];const avisar=async(c:any)=>{avisos.push(c)};await usar(criarFake({pedido:pedido()}),"PAID",avisar);await usar(criarFake({pedido:pedidoSemLogin()}),"PENDING",avisar);assert.equal(avisos.length,0)});
+
+test("Cortes autenticado: e-mail da conta e recibo real após commit, uma única vez", async () => {
+  const usuario = { id: "u", email: "conta@example.test", senhaHash: "inalterado" };
+  const f = criarFake({ pedido: pedidoCortes({ plano: { nome: "Cortes Start", cortesNivel: "individual" }, emailComprador: "outro@example.test" }), usuarios: [usuario] });
+  const avisos: any[] = [];
+  const avisar = async (c: any) => { assert.equal(f.estado.pedido.status, "PAGO"); assert.ok(f.estado.pedido.assinatura); avisos.push(c); };
+  await usar(f, "PAID", avisar); await usar(f, "PAID", avisar); await usar(f, "PAID", avisar);
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0].email, usuario.email);
+  assert.equal(avisos[0].semSenha, false);
+  assert.deepEqual(avisos[0].compra, { pedidoId: "p", plano: "Cortes Start", valorCentavos: 1000, moeda: "BRL", iniciaEm: AGORA, terminaEm: new Date(AGORA.getTime() + 30 * 86400000) });
+  assert.equal(usuario.senhaHash, "inalterado");
+});
+
+test("Cortes autenticado: falha do envio preserva assinatura e não reenvia na reconciliação", async () => {
+  const f = criarFake({ pedido: pedidoCortes(), usuarios: [{ id: "u", email: "conta@example.test", senhaHash: "h" }] });
+  let envios = 0;
+  const avisar = async () => { envios++; throw new Error("email indisponivel"); };
+  await usar(f, "PAID", avisar); await usar(f, "PAID", avisar);
+  assert.equal(f.estado.pedido.status, "PAGO");
+  assert.equal(f.estado.pedido.assinatura.status, "ATIVA");
+  assert.equal(envios, 1);
+});
+
+test("Cortes: confirmações concorrentes só notificam a transação vencedora", async () => {
+  const f = criarFake({ pedido: pedidoCortes({ provedor: "cakto" }), usuarios: [{ id: "u", email: "conta@example.test", senhaHash: "h" }] });
+  // Simula a serialização do banco, não o envio externo dentro da transação.
+  const original = f.banco.$transaction;
+  let fila = Promise.resolve();
+  f.banco.$transaction = (fn: any) => { const r = fila.then(() => original(fn)); fila = r.catch(() => {}); return r; };
+  let envios = 0;
+  const deps = { prisma: f.banco, consultarStatusBlackcat: f.consultar, invalidarEntitlements: f.invalidar, agora: f.agora, notificarPrimeiroAcesso: async () => { envios++; return { ok: false, motivo: "recusado" }; } };
+  await Promise.all([confirmarPedidoPorId("p", deps), confirmarPedidoPorId("p", deps), confirmarPedidoPorId("p", deps)]);
+  assert.equal(envios, 1);
+  assert.equal(f.estado.pedido.status, "PAGO");
+  assert.equal(f.estado.pedido.assinatura.status, "ATIVA");
+});
+
+test("Cortes autenticado por Google recebe login habitual, sem criar senha", async () => {
+  const f = criarFake({ pedido: pedidoCortes(), usuarios: [{ id: "u", email: "google@example.test", senhaHash: null, googleSub: "sub-teste" }] });
+  let aviso: any;
+  await usar(f, "PAID", async (c: any) => { aviso = c; });
+  assert.equal(aviso.semSenha, false);
+  assert.equal(f.estado.usuarios[0].senhaHash, null);
+});

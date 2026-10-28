@@ -1,5 +1,5 @@
 /**
- * Primeiro acesso de quem comprou Cortes sem login.
+ * Confirmação da compra e primeiro acesso do Obaflix Cortes.
  *
  * Conta sem senha recebe um link de ativação: prova que o e-mail é dela e
  * permite criar a senha. Conta com senha só recebe orientação para entrar —
@@ -13,9 +13,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { getRedis, type RedisClient } from "./redis";
 import { audit } from "./auditLog";
 import { enviarEmail, type MensagemDeEmail, type ResultadoDoEnvio } from "./email/enviar";
+import { INSTALADORES } from "@/config/downloads";
 
 export const VALIDADE_ATIVACAO_SEG = 30 * 60;
-const LINK_DOWNLOAD_WINDOWS = "https://github.com/RMMMICHAEL/obaflix/releases/download/v1.0.16/Obaflix-Setup-1.0.16.exe";
 const FORMATO_DO_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const hashDoToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const chaveDoToken = (hash: string) => `ativacao:token:${hash}`;
@@ -58,6 +58,7 @@ export interface ContaDoComprador {
   email: string;
   /** Sem senha: recebe link de ativação. Com senha: só orientação de login. */
   semSenha: boolean;
+  compra?: { pedidoId: string; plano: string; valorCentavos: number; moeda: string; iniciaEm: Date; terminaEm: Date };
 }
 
 export interface DependenciasDoPrimeiroAcesso {
@@ -67,21 +68,20 @@ export interface DependenciasDoPrimeiroAcesso {
 }
 
 function mensagem(conta: ContaDoComprador, base: string, token: string | null): MensagemDeEmail {
-  if (token) {
-    const link = `${base}/ativar#t=${token}`;
-    return {
-      para: conta.email,
-      assunto: "Ative sua conta Obaflix Cortes",
-      texto: `Seu pagamento foi confirmado.\n\nPara ativar sua conta e criar sua senha, acesse (válido por 30 minutos, uso único):\n${link}\n\nBaixe o instalador do Obaflix Cortes para Windows:\n${LINK_DOWNLOAD_WINDOWS}\n\nSe você não fez esta compra, ignore este e-mail.`,
-      html: `<p>Seu pagamento foi confirmado.</p><p><a href="${link}">Ativar conta e criar senha</a></p><p>O link vale por 30 minutos e só pode ser usado uma vez.</p><p><a href="${LINK_DOWNLOAD_WINDOWS}">Baixar Obaflix Cortes para Windows</a></p><p>Se você não fez esta compra, ignore este e-mail.</p>`,
-    };
-  }
-  const login = `${base}/login`;
+  const escapar = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+  const link = token ? `${base}/ativar#t=${token}` : `${base}/login`;
+  const orientacao = token ? "Ative sua conta e crie sua senha. Link individual, válido por 30 minutos e de uso único." : "Entre com o e-mail da compra e sua forma habitual de login. Sua senha existente permanece a mesma.";
+  const compra = conta.compra;
+  const data = (d: Date) => d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const detalhes = compra ? `Plano: ${compra.plano}\nPeríodo: ${data(compra.iniciaEm)} a ${data(compra.terminaEm)}\nValor pago: ${new Intl.NumberFormat("pt-BR", { style: "currency", currency: compra.moeda }).format(compra.valorCentavos / 100)}` : "";
+  const download = INSTALADORES.windowsCortes.url;
+  const urlDownload = new URL(download);
+  if (urlDownload.protocol !== "https:" || urlDownload.username || urlDownload.password) throw new Error("download_invalido");
   return {
     para: conta.email,
-    assunto: "Seu Obaflix Cortes está ativo",
-    texto: `Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.\n\nEntre normalmente com seu e-mail e sua senha atual:\n${login}\n\nBaixe o instalador do Obaflix Cortes para Windows:\n${LINK_DOWNLOAD_WINDOWS}`,
-    html: `<p>Seu pagamento foi confirmado e o Obaflix Cortes já está na sua conta.</p><p><a href="${login}">Entre normalmente</a> com seu e-mail e sua senha atual.</p><p><a href="${LINK_DOWNLOAD_WINDOWS}">Baixar Obaflix Cortes para Windows</a></p>`,
+    assunto: compra ? "Compra confirmada — Obaflix Cortes" : token ? "Ative sua conta Obaflix Cortes" : "Seu Obaflix Cortes está ativo",
+    texto: `OBAFLIX CORTES\n\nSeu pagamento foi confirmado. O acesso respeita o período da compra.\n${detalhes}\n\n${orientacao}\n${link}\n\nBaixe o instalador oficial Obaflix Cortes para Windows:\n${download}\n\nSe você não reconhece esta compra, procure o suporte.`,
+    html: `<div style="background:#171313;color:#f4f4f5;padding:32px;font-family:Arial,sans-serif"><h1 style="color:#ef4444">OBAFLIX CORTES</h1><h2>Compra confirmada</h2><p>Seu pagamento foi confirmado. O acesso respeita o período da compra.</p>${detalhes ? `<p>${escapar(detalhes).replace(/\n/g, "<br>")}</p>` : ""}<p>${escapar(orientacao)}</p><p><a style="color:#f87171" href="${escapar(link)}">${token ? "Ativar conta e criar senha" : "Entrar no Obaflix Cortes"}</a></p><p><a style="color:#f87171" href="${escapar(download)}">Baixar Obaflix Cortes para Windows</a></p><p>Se você não reconhece esta compra, procure o suporte.</p></div>`,
   };
 }
 
@@ -92,7 +92,8 @@ export async function notificarPrimeiroAcesso(
 ): Promise<ResultadoDoEnvio> {
   try {
     const base = (deps.base ?? process.env.NEXTAUTH_URL)?.trim().replace(/\/+$/, "");
-    if (!base) {
+    const urlBase = base ? new URL(base) : null;
+    if (!base || !urlBase || urlBase.protocol !== "https:" || urlBase.username || urlBase.password || urlBase.search || urlBase.hash || urlBase.pathname !== "/") {
       audit("email_failed", { userId: conta.userId, detail: "primeiro_acesso configuracao" });
       return { ok: false, motivo: "configuracao" };
     }
@@ -100,11 +101,11 @@ export async function notificarPrimeiroAcesso(
     const r = await (deps.enviar ?? enviarEmail)(mensagem(conta, base, token));
     audit(r.ok ? "email_sent" : "email_failed", {
       userId: conta.userId,
-      detail: `primeiro_acesso ${token ? "ativacao" : "orientacao"}${r.ok ? (r.simulado ? " simulado" : "") : ` ${r.motivo}`}`,
+      detail: `primeiro_acesso ${token ? "ativacao" : "orientacao"}${conta.compra ? ` pedido:${conta.compra.pedidoId}` : ""}${r.ok ? (r.simulado ? " simulado" : "") : ` ${r.motivo}`}`,
     });
     return r;
   } catch {
-    audit("email_failed", { userId: conta.userId, detail: "primeiro_acesso erro" });
+    audit("email_failed", { userId: conta.userId, detail: `primeiro_acesso erro${conta.compra ? ` pedido:${conta.compra.pedidoId}` : ""}` });
     return { ok: false, motivo: "rede" };
   }
 }

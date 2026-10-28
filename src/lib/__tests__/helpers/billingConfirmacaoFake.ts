@@ -26,7 +26,7 @@ export function criarFake(estado: any, erros: unknown[] = []) {
   const tx:any={
     ...revisao,
     pedidoPagamento:{findUnique:async()=>estado.pedido,update:async({data}:any)=>Object.assign(estado.pedido,data)},
-    user:{findUnique:async({where}:any)=>{ const u=(estado.usuarios??[]).find((x:any)=>x.email===where.email); return u?{id:u.id}:null; },upsert:async({where,create}:any)=>{ estado.usuarios??=[]; let u=estado.usuarios.find((x:any)=>x.email===where.email); if(!u){ u={id:`user-${estado.usuarios.length+1}`,senhaHash:null,...create}; estado.usuarios.push(u); } return {id:u.id,senhaHash:u.senhaHash??null}; }},
+    user:{findUnique:async({where}:any)=>{ return (estado.usuarios??[]).find((x:any)=>where.id ? x.id===where.id : x.email===where.email)??null; },upsert:async({where,create}:any)=>{ estado.usuarios??=[]; let u=estado.usuarios.find((x:any)=>x.email===where.email); if(!u){ u={id:`user-${estado.usuarios.length+1}`,senhaHash:null,...create}; estado.usuarios.push(u); } return {id:u.id,senhaHash:u.senhaHash??null}; }},
     assinatura:{findMany:async({where}:any={})=>{ const f=where?.plano?.cortesNivel; return (estado.ativas??[]).filter((a:any)=>{ const n=a.plano?.cortesNivel??"nenhum"; return f===undefined||(typeof f==="string"?n===f:n!==f.not); }); },create:async({data}:any)=>{ if(estado.conflito) throw estado.conflito; estado.pedido.assinatura={id:"a",...data}; return estado.pedido.assinatura; },update:async({where,data}:any)=>{ const alvo=(estado.ativas??[]).find((a:any)=>a.id===where.id); if(alvo) return Object.assign(alvo,data); return Object.assign(estado.pedido.assinatura,data); }},
   };
   const banco:any={

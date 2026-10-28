@@ -41,13 +41,11 @@ export const INSTALADORES = {
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_TAMANHO, "116,4 MB"),
   },
   /**
-   * Instalador Windows COM as ferramentas de Cortes. Sem padrão de propósito: o
-   * publicado hoje (1.0.12) não tem Cortes. Só preencha depois de homologar o
-   * instalador; vazio, a página de vendas mostra "em preparação".
+   * Instalador Windows Cortes homologado; configuração compartilhada com o e-mail.
    */
   windowsCortes: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES, ""),
-    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_VERSAO, ""),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES, "https://github.com/RMMMICHAEL/obaflix/releases/download/v1.0.16/Obaflix-Setup-1.0.16.exe"),
+    versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_VERSAO, "Versão 1.0.16"),
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_TAMANHO, ""),
   },
 } satisfies Record<string, Instalador>;
