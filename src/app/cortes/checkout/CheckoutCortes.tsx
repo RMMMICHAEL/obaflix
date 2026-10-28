@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import QRCode from "qrcode";
 import { Check, ShieldCheck, Scissors, ArrowRight } from "lucide-react";
 import { corpoCriarPedido, descricaoDaOperacao, deveFazerPolling, mensagemErroCheckout } from "@/lib/billing/checkout";
-import { emailDoComprador, cpfValido, telefoneBrasileiroValido, nomeCompletoValido, IDADE_MINIMA_COMPRA } from "@/lib/billing/pagador";
+import { emailDoComprador, cpfValido, telefoneBrasileiroValido, nomeCompletoValido, IDADE_MINIMA_COMPRA, soDigitos } from "@/lib/billing/pagador";
+import { mascararCheckout } from "@/lib/billing/mascarasCheckout";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 
 type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
@@ -55,6 +56,15 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
   const admin = sessaoStatus === "authenticated" && (sessao?.user as { role?: string } | undefined)?.role === "admin";
   const pilotoAdmin = !vendasPublicas && id === "cortes-start" && admin;
   const podeComprar = vendasPublicas || pilotoAdmin;
+
+  function atualizarMascara(event: ChangeEvent<HTMLInputElement>, campo: "cpf" | "telefone") {
+    const input = event.currentTarget;
+    const resultado = mascararCheckout(campo, input.value, input.selectionStart ?? input.value.length,
+      (event.nativeEvent as InputEvent).inputType, campo === "cpf" ? cpf : telefone);
+    input.value = resultado.valor;
+    input.setSelectionRange(resultado.cursor, resultado.cursor);
+    (campo === "cpf" ? setCpf : setTelefone)(resultado.valor);
+  }
 
   useEffect(() => {
     if (sessaoStatus === "unauthenticated" && conta) {
@@ -130,7 +140,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
     try {
       const r = await fetch("/api/billing/orders", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(corpoCriarPedido(id, preco.id, { nome, telefone, documento: cpf.replace(/\D/g, "") }, visitante ? { email, nascimento } : {})),
+        body: JSON.stringify(corpoCriarPedido(id, preco.id, { nome, telefone: soDigitos(telefone), documento: soDigitos(cpf) }, visitante ? { email, nascimento } : {})),
       });
       const data = await r.json().catch(() => null);
       if (!r.ok) {
@@ -191,8 +201,8 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
                 {plano?.precos && plano.precos.length > 1 && <fieldset><legend className="text-sm font-semibold">Duração</legend><div className="mt-2 flex flex-wrap gap-2">{plano.precos.map(p => <button key={p.id} type="button" onClick={() => setPrecoId(p.id)} aria-pressed={precoId === p.id} className={`rounded-lg border px-3 py-2 text-sm ${precoId === p.id ? "border-red-500 bg-red-950/30" : "border-white/15"}`}>{p.rotulo} · {dinheiro(p.precoCentavos, p.moeda)}</button>)}</div></fieldset>}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="text-sm font-semibold sm:col-span-2">Nome completo<input className={classeInput} autoComplete="name" required value={nome} onChange={e => setNome(e.target.value)} maxLength={80} placeholder="Nome e sobrenome" /></label>
-                  <label className="text-sm font-semibold">CPF<input className={classeInput} inputMode="numeric" autoComplete="off" required value={cpf} onChange={e => setCpf(e.target.value)} maxLength={14} placeholder="000.000.000-00" /></label>
-                  <label className="text-sm font-semibold">Celular com DDD<input className={classeInput} inputMode="tel" autoComplete="tel" required value={telefone} onChange={e => setTelefone(e.target.value)} maxLength={16} placeholder="(00) 00000-0000" /></label>
+                  <label className="text-sm font-semibold">CPF<input className={classeInput} inputMode="numeric" autoComplete="off" required value={cpf} onChange={e => atualizarMascara(e, "cpf")} placeholder="000.000.000-00" /></label>
+                  <label className="text-sm font-semibold">Celular com DDD<input className={classeInput} inputMode="tel" autoComplete="tel" required value={telefone} onChange={e => atualizarMascara(e, "telefone")} placeholder="(00) 00000-0000" /></label>
                   {visitante ? <><label className="text-sm font-semibold sm:col-span-2">E-mail para receber o acesso<input className={classeInput} type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} maxLength={254} /></label><label className="text-sm font-semibold sm:col-span-2">Data de nascimento (18+)<input className={classeInput} type="date" required max={nascimentoMax} min="1900-01-01" value={nascimento} onChange={e => setNascimento(e.target.value)} /></label></> : <p className="self-end text-xs text-zinc-400 sm:col-span-2">A confirmação e o acesso ficam vinculados ao e-mail da sua conta: {sessao?.user?.email}</p>}
                 </div>
                 {erro && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-200">{erro}</p>}
