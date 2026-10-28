@@ -1,7 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { mascararCheckout } from "../billing/mascarasCheckout";
 import { cpfValido, telefoneBrasileiroValido, soDigitos } from "../billing/pagador";
+
+test("input HTML não trunca a colagem com +55 antes da máscara", () => {
+  const fonte = ts.createSourceFile("CheckoutCortes.tsx", readFileSync("src/app/cortes/checkout/CheckoutCortes.tsx", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let telefone: ts.JsxSelfClosingElement | undefined;
+  function visitar(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(fonte) === "input" && node.attributes.properties.some(attr =>
+      ts.isJsxAttribute(attr) && attr.name.getText(fonte) === "value" && attr.initializer?.getText(fonte) === "{telefone}")) telefone = node;
+    ts.forEachChild(node, visitar);
+  }
+  visitar(fonte);
+  assert.ok(telefone, "campo de telefone real do checkout encontrado");
+  assert.equal(telefone.attributes.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText(fonte).toLowerCase() === "maxlength"), false,
+    "maxlength trunca o clipboard no HTML antes do onChange, mesmo que a máscara aceite +55");
+  for (const colagem of ["+55 (11) 98765-4321", "+55 (11) 3456-7890"]) {
+    const resultado = mascararCheckout("telefone", colagem, colagem.length, "insertFromPaste");
+    assert.equal(resultado.valor, colagem.slice(4));
+    assert.equal(soDigitos(resultado.valor).length, colagem.includes("98765") ? 11 : 10);
+    assert.equal(resultado.cursor, resultado.valor.length);
+  }
+});
 
 test("CPF progressivo pontua cada grupo e limita a onze dígitos", () => {
   for (const [entrada, esperado] of [["1", "1"], ["123", "123."], ["123456", "123.456."], ["123456789", "123.456.789-"], ["12345678901234", "123.456.789-01"]]) {
