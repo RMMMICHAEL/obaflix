@@ -87,7 +87,7 @@ describe("notificarPrimeiroAcesso", () => {
     }
     assert.ok(tokenDo(enviados[0]));
     assert.equal(tokenDo(enviados[1]), null);
-    assert.match(enviados[1].texto, /forma habitual de login/);
+    assert.match(enviados[1].texto, /metodo habitual de login/);
   });
   test("conta sem senha: link de ativação válido; com senha: só orientação de login", async () => {
     const enviados: MensagemDeEmail[] = [];
