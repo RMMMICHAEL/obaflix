@@ -38,7 +38,17 @@ function createWebhookCaktoHandler(deps: any = {}) {
       const id = typeof dado?.id === "string" ? dado.id.trim() : "";
       if (!id || !EVENTOS_DE_PEDIDO.includes(evento)) continue;
       const status = typeof dado?.status === "string" ? dado.status.slice(0, 40) : "-";
-      const pedido = await banco.pedidoPagamento.findFirst({ where: { provedor: "cakto", transacaoId: id }, select: { id: true, userId: true } });
+      let pedido = await banco.pedidoPagamento.findFirst({ where: { provedor: "cakto", transacaoId: id }, select: { id: true, userId: true } });
+      const sck = dado?.sck ?? dado?.metadata?.sck;
+      if (!pedido && typeof sck === "string" && sck.length > 0 && sck.length <= 128
+        && (dado?.metadata?.sck === undefined || dado.metadata.sck === sck)) {
+        // Só vincula criação incerta já em revisão. Não reabre, não paga e não cria cobrança.
+        const vinculo = await banco.pedidoPagamento.updateMany({
+          where: { provedor: "cakto", refExterna: sck, transacaoId: null, status: "REVISAO_MANUAL" },
+          data: { transacaoId: id },
+        });
+        if (vinculo.count === 1) pedido = await banco.pedidoPagamento.findFirst({ where: { provedor: "cakto", transacaoId: id }, select: { id: true, userId: true } });
+      }
       try {
         await banco.eventoPagamento.create({ data: { provedor: "cakto", transacaoId: id, evento, statusInformado: status, pedidoId: pedido?.id, resultado: pedido ? "recebido" : "desconhecido" } });
       } catch { continue; } // unique (provedor, transacaoId, evento, status): reenvio já registrado

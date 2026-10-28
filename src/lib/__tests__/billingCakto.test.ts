@@ -45,6 +45,7 @@ test("Cakto: criação usa oferta fixa, token Bearer, idempotência pela refExte
   const corpo = JSON.parse(String(pay.init.body));
   assert.deepEqual(corpo.items, [{ offerId: "5g29gxj", quantity: 1 }]);
   assert.equal(corpo.paymentMethod, "pix");
+  assert.deepEqual(corpo.metadata, { sck: "ref-fixa-1" });
   assert.equal(corpo.customer.phone, "5511987654321");
   assert.match(corpo.customer.fingerprint, /^[0-9a-f]{32}$/);
   assert.equal("amount" in corpo, false); // o valor é o da oferta, nunca enviado
@@ -59,7 +60,7 @@ test("Cakto: conversões estritas de valor e telefone", () => {
   assert.equal(reaisParaCentavos("27.00"), 2700);
   assert.equal(reaisParaCentavos("197"), 19700);
   assert.equal(reaisParaCentavos("4.7"), 470);
-  for (const ruim of ["", "1,00", "-1.00", "1.001", null, "abc"]) assert.equal(reaisParaCentavos(ruim), null);
+  for (const ruim of ["", "1,00", "-1.00", "1.001", 27.001, null, "abc"]) assert.equal(reaisParaCentavos(ruim), null);
   assert.equal(telefoneE164("(11) 98765-4321"), "5511987654321");
   assert.equal(telefoneE164("5511987654321"), "5511987654321");
   assert.equal(telefoneE164("123"), null);
@@ -89,7 +90,7 @@ function repo(periodos: Awaited<ReturnType<RepositorioDePedidos["periodosEmAbert
     async buscarPreco() { return PRECO_PRO; },
     async buscarAdicionais() { return { telaMensalCentavos: null, servidorVipMensalCentavos: null }; },
     async periodosEmAberto() { return periodos; },
-    async revisaoPendente() { return false; },
+    async revisaoPendente() { return log.includes("REVISAO_MANUAL"); },
     async criar(d) { log.push("criar"); criados.push(d); return { id: "ped-1" }; },
     async registrarVenda() { log.push("AGUARDANDO"); },
     async registrarFalha(_id, d) { log.push(d.status); },
@@ -121,6 +122,26 @@ test("Cakto no pedido: valor cobrado divergente vai para revisão manual", async
   assert.deepEqual(log, ["criar", "REVISAO_MANUAL"]);
 });
 
+test("Cakto: timeout, 5xx e resposta ambígua preservam referência em revisão, sem nova cobrança", async () => {
+  for (const modo of ["timeout", "5xx", "sem_id"] as const) {
+    const { r, log, criados } = repo();
+    const { p, chamadas } = provedorPro(() => {
+      if (modo === "timeout") throw Object.assign(new Error("timeout"), { name: "TimeoutError" });
+      return modo === "5xx" ? new Response(null, { status: 503 }) : Response.json({ status: "waiting_payment" });
+    });
+    const entrada = { userId: "u1", planoId: "cortes-pro", planoPrecoId: "pp-pro", pagador: PAGADOR };
+    const deps = { repo: r, provedor: p, nomeDoProvedor: "cakto" as const, gerarRef: () => "referencia-pendente" };
+    assert.equal((await criarPedidoPix(entrada, deps)).situacao, "revisao_manual");
+    assert.equal((await criarPedidoPix(entrada, deps)).situacao, "revisao_pendente");
+    assert.deepEqual(log, ["criar", "REVISAO_MANUAL"]);
+    assert.equal(criados.length, 1);
+    assert.equal(criados[0].refExterna, "referencia-pendente");
+    const pagamentos = chamadas.filter((c) => c.url.endsWith("/payments/"));
+    assert.equal(pagamentos.length, 1);
+    assert.equal(JSON.parse(String(pagamentos[0].init.body)).metadata.sck, criados[0].refExterna);
+  }
+});
+
 test("Cakto no pedido: upgrade com crédito (valor dinâmico) é recusado sem pedido e sem cobrança", async () => {
   const agora = new Date();
   const start = { id: "a1", planoId: "cortes-start", ordemDoPlano: 1, cortes: true, iniciaEm: new Date(agora.getTime() - 10 * 864e5), terminaEm: new Date(agora.getTime() + 20 * 864e5), valorPagoCentavos: 2700 };
@@ -134,20 +155,39 @@ test("Cakto no pedido: upgrade com crédito (valor dinâmico) é recusado sem pe
 
 // ── Confirmação autenticada ──────────────────────────────────────────────────
 const pedidoDoBanco = { id: "ped-1", userId: "u1", planoId: "cortes-start", planoPrecoId: "pp", status: "AGUARDANDO", valorCentavos: 2700, moeda: "BRL", duracaoDias: 30, transacaoId: "ord-uuid-1", expiraEm: new Date(Date.now() + 864e5) };
-const consultar = (corpo: Record<string, unknown>) => confirmadorCakto(CONFIG, fetchFalso({ "/orders/ord-uuid-1/": () => Response.json({ id: "ord-uuid-1", ...corpo }) }).f);
+const OFERTA_START = { product: { id: "produto-start" }, price: "27.00", currency: "BRL", type: "unique" };
+const consultar = (corpo: Record<string, unknown>, oferta: Record<string, unknown> = OFERTA_START) => confirmadorCakto(CONFIG, fetchFalso({
+  "/orders/ord-uuid-1/": () => Response.json({ id: "ord-uuid-1", paymentMethod: "pix", type: "unique", product: { id: "produto-start" }, ...corpo }),
+  "/offers/5g29gxj/": () => Response.json(oferta),
+}).f);
 
 test("Cakto confirmação: paid com valor e moeda certos ativa; divergências vão para revisão", async () => {
-  const pago = await consultar({ status: "paid", amount: "27.00", paidAt: new Date().toISOString(), product: { currency: "BRL" } })("ord-uuid-1", { planoId: "cortes-start" });
+  const pago = await consultar({ status: "paid", amount: "27.00", paidAt: new Date().toISOString() })("ord-uuid-1", { planoId: "cortes-start" });
   assert.ok(pago.ok);
   if (pago.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, pago.confirmacao, new Date()), "ATIVAR");
+  const opcionaisNulos = await consultar({ status: "paid", amount: "27.00", currency: null, offer: null, offerId: null })("ord-uuid-1", { planoId: "cortes-start" });
+  assert.ok(opcionaisNulos.ok);
+  if (opcionaisNulos.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, opcionaisNulos.confirmacao, new Date()), "ATIVAR");
+  assert.deepEqual(await consultar({ status: "paid", amount: null, baseAmount: "27.00" })("ord-uuid-1", { planoId: "cortes-start" }), { ok: false, falha: "resposta_invalida" });
   for (const divergente of [
     { status: "paid", amount: "20.00" },
-    { status: "paid", amount: "27.00", product: { currency: "USD" } },
+    { status: "paid", amount: "27.00", product: { id: "produto-pro" } },
+    { status: "paid", amount: "27.00", paymentMethod: "credit_card" },
+    { status: "paid", amount: "27.00", type: "subscription" },
     { status: "paid", amount: "27.00", offer: { id: "zfuzuex" } },
   ]) {
     const r = await consultar(divergente)("ord-uuid-1", { planoId: "cortes-start" });
     assert.ok(r.ok);
     if (r.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, r.confirmacao, new Date()), "REVISAR", JSON.stringify(divergente));
+  }
+  for (const oferta of [
+    { ...OFERTA_START, currency: "USD" }, { ...OFERTA_START, currency: undefined },
+    { ...OFERTA_START, price: "47.00" }, { ...OFERTA_START, type: "subscription" },
+    { ...OFERTA_START, product: { id: "outro" } },
+  ]) {
+    const r = await consultar({ status: "paid", amount: "27.00" }, oferta)("ord-uuid-1", { planoId: "cortes-start" });
+    assert.ok(r.ok);
+    if (r.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, r.confirmacao, new Date()), "REVISAR");
   }
   const pendente = await consultar({ status: "waiting_payment", amount: "27.00" })("ord-uuid-1");
   if (pendente.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, pendente.confirmacao, new Date()), "MANTER");
@@ -162,6 +202,24 @@ test("Cakto confirmação: reembolso e chargeback estornam; status ambíguo não
   for (const status of ["prechargeback", "refund_requested", "in_protest"]) {
     assert.deepEqual(await consultar({ status, amount: "27.00" })("ord-uuid-1"), { ok: false, falha: "resposta_invalida" });
   }
+});
+
+test("Cakto: consulta sem offer.id/currency usa a oferta oficial uma vez; erro de consulta não ativa", async () => {
+  const { f, chamadas } = fetchFalso({
+    "/orders/ord-uuid-1/": () => Response.json({ id: "ord-uuid-1", status: "paid", amount: "27.00", product: { id: "produto-start" }, paymentMethod: "pix", type: "unique" }),
+    "/offers/5g29gxj/": () => Response.json({ ...OFERTA_START, product: "produto-start" }),
+  });
+  const r = await confirmadorCakto(CONFIG, f)("ord-uuid-1", { planoId: "cortes-start" });
+  assert.ok(r.ok);
+  if (r.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, r.confirmacao, new Date()), "ATIVAR");
+  assert.equal(chamadas.filter((c) => c.url.includes("/offers/")).length, 1);
+  assert.equal(chamadas.filter((c) => c.url.includes("/token/")).length, 1);
+  for (const c of chamadas.filter((c) => !c.url.includes("/token/"))) assert.equal((c.init.headers as Record<string, string>).Authorization, "Bearer tok");
+  const falha = confirmadorCakto(CONFIG, fetchFalso({
+    "/orders/ord-uuid-1/": () => Response.json({ id: "ord-uuid-1", status: "paid", amount: "27.00", product: { id: "produto-start" }, paymentMethod: "pix", type: "unique" }),
+  }).f);
+  assert.deepEqual(await falha("ord-uuid-1", { planoId: "cortes-start" }), { ok: false, falha: "indisponivel" });
+  assert.deepEqual(await consultar({ id: "outra", status: "paid", amount: "27.00" })("ord-uuid-1", { planoId: "cortes-start" }), { ok: false, falha: "resposta_invalida" });
 });
 
 test("Confirmação roteia pelo provedor do pedido: Cakto não depende da chave da Blackcat", async () => {
@@ -219,6 +277,62 @@ test("Webhook Cakto: purchase_approved registra e só pede a consulta autenticad
   const outro = webhook();
   await outro.handler(requisicao(JSON.stringify({ event: "pix_gerado", data: { id: "ord-uuid-1" } })));
   assert.deepEqual([outro.eventos.length, outro.confirmados.length], [0, 0]);
+});
+
+test("Webhook Cakto: sck autenticado vincula só revisão sem transação e não libera acesso", async () => {
+  const sck = "a".repeat(32);
+  const pendente = { ...pedidoDoBanco, status: "REVISAO_MANUAL", transacaoId: null as string | null };
+  let vinculos = 0, consultas = 0;
+  const eventos = new Set<string>();
+  const prisma = {
+    pedidoPagamento: {
+      findFirst: async ({ where }: any) => pendente.transacaoId === where.transacaoId ? pendente : null,
+      updateMany: async ({ where, data }: any) => {
+        assert.deepEqual(where, { provedor: "cakto", refExterna: sck, transacaoId: null, status: "REVISAO_MANUAL" });
+        if (pendente.transacaoId !== null) return { count: 0 };
+        pendente.transacaoId = data.transacaoId; vinculos++; return { count: 1 };
+      },
+    },
+    eventoPagamento: { create: async () => { if (eventos.has("aviso")) throw new Error("P2002"); eventos.add("aviso"); } },
+  };
+  const handler = webhookCakto.createForTest({ prisma, env: { CAKTO_WEBHOOK_SECRET: SEGREDO }, confirmarPedidoPorId: async () => {
+    consultas++;
+    const r = await consultar({ status: "paid", amount: "27.00" })("ord-uuid-1", { planoId: "cortes-start" });
+    assert.ok(r.ok);
+    if (r.ok) assert.equal(decidirConfirmacao(pendente, r.confirmacao, new Date()), "MANTER");
+  } });
+  const corpo = JSON.stringify({ event: "purchase_approved", data: { id: "ord-uuid-1", sck, status: "paid" } });
+  assert.equal((await handler(requisicao(corpo, { assinar: "outro" }))).status, 401);
+  assert.equal(vinculos, 0);
+  await handler(requisicao(corpo));
+  await handler(requisicao(corpo));
+  assert.equal(vinculos, 1);
+  assert.equal(consultas, 1);
+  assert.equal(pendente.status, "REVISAO_MANUAL");
+});
+
+test("Cakto: confirmação autenticada ativa uma assinatura; webhook e confirmação repetidos não duplicam", async () => {
+  const pedido = { ...pedidoDoBanco, provedor: "cakto", plano: { cortesNivel: "individual" } };
+  const assinaturas: any[] = [];
+  const eventos = new Set<string>();
+  const banco: any = {
+    pedidoPagamento: {
+      findUnique: async () => ({ ...pedido, assinatura: assinaturas[0] ?? null }),
+      findFirst: async () => pedido,
+      update: async ({ data }: any) => Object.assign(pedido, data),
+    },
+    assinatura: { findMany: async () => [], create: async ({ data }: any) => { assinaturas.push(data); return data; } },
+    eventoPagamento: { create: async () => { if (eventos.has("aviso")) throw new Error("P2002"); eventos.add("aviso"); } },
+    $transaction: async (fn: any) => fn(banco),
+  };
+  const confirmar = () => confirmarPedidoPorId(pedido.id, { prisma: banco, consultarStatusBlackcat: consultar({ status: "paid", amount: "27.00" }), invalidarEntitlements: async () => {} });
+  const handler = webhookCakto.createForTest({ prisma: banco, env: { CAKTO_WEBHOOK_SECRET: SEGREDO }, confirmarPedidoPorId: confirmar });
+  await handler(requisicao(APROVADO));
+  await handler(requisicao(APROVADO));
+  await confirmar();
+  assert.equal(pedido.status, "PAGO");
+  assert.equal(assinaturas.length, 1);
+  assert.equal(assinaturas[0].pedidoId, pedido.id);
 });
 
 // ── Regressão Blackcat ───────────────────────────────────────────────────────

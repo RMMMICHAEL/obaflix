@@ -16,6 +16,7 @@ import type { ConfirmacaoBlackcat } from "./blackcat";
 export const MOTIVOS_DE_REVISAO = {
   criacao_valor_divergente: "Venda criada no provedor com valor diferente do pedido",
   criacao_falha_com_transacao: "Falha do provedor na criação, com transação conhecida",
+  criacao_resultado_incerto: "Criação sem resposta conclusiva; conciliar a referência antes de nova cobrança",
   confirmacao_divergente: "Transação ou valor informados pelo provedor diferentes do pedido",
   confirmacao_status_desconhecido: "Status do provedor fora dos estados esperados",
   pago_apos_expiracao: "Pagamento confirmado depois do vencimento do PIX",

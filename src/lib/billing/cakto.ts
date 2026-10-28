@@ -44,7 +44,7 @@ export function caktoAceitaCompra(c: { planoId: string; valorCentavos: number; m
 
 /** "49.90" → 4990. Recusa tudo que não for decimal com até 2 casas. */
 export function reaisParaCentavos(valor: unknown): number | null {
-  const s = typeof valor === "number" ? valor.toFixed(2) : typeof valor === "string" ? valor.trim() : "";
+  const s = typeof valor === "number" ? String(valor) : typeof valor === "string" ? valor.trim() : "";
   const m = /^(\d{1,8})(?:\.(\d{1,2}))?$/.exec(s);
   return m ? Number(m[1]) * 100 + Number((m[2] ?? "").padEnd(2, "0")) : null;
 }
@@ -127,15 +127,16 @@ export function provedorCakto(config: ConfiguracaoCakto, buscar: typeof fetch = 
               docNumber: pedido.pagador.documento.numero,
             },
             items: [{ offerId: oferta.oferta, quantity: 1 }],
+            metadata: { sck: pedido.refExterna },
           }),
           cache: "no-store",
           signal: AbortSignal.timeout(TIMEOUT_CAKTO_MS),
         });
-      } catch (e) { return { ok: false, falha: ehTimeout(e) ? "timeout" : "rede" }; }
-      if (!r.ok) return { ok: false, falha: r.status >= 500 || r.status === 429 ? "indisponivel" : "recusado" };
+      } catch (e) { return { ok: false, falha: ehTimeout(e) ? "timeout" : "rede", criacaoIncerta: true }; }
+      if (!r.ok) return { ok: false, falha: r.status >= 500 || r.status === 429 ? "indisponivel" : "recusado", ...(r.status >= 500 || [408, 429].includes(r.status) ? { criacaoIncerta: true } : {}) };
       const j = await r.json().catch(() => null) as Record<string, any> | null;
       const id = typeof j?.id === "string" && j.id.trim() ? j.id.trim() : null;
-      if (!id) return { ok: false, falha: "resposta_invalida" };
+      if (!id) return { ok: false, falha: "resposta_invalida", criacaoIncerta: true };
       const expiraEm = dataCakto(j?.pix?.expirationDate);
       const valorCentavos = reaisParaCentavos(j?.amount);
       // Pedido existe lá, mas não é o que pedimos: revisão manual, nunca uso.
@@ -167,8 +168,8 @@ const STATUS_CAKTO: Record<string, StatusBlackcat> = {
  * Consulta autenticada `GET /orders/{id}/` no formato da confirmação existente.
  * Status sem tradução segura (refund_requested, prechargeback, in_protest…) não
  * vira decisão: devolve `resposta_invalida` e o pedido fica como está.
- * Moeda diferente de BRL ou oferta diferente da esperada forçam divergência
- * (valor NaN) → revisão manual, nunca ativação.
+ * Produto, método, tipo e oferta oficial são conferidos antes de aceitar paid.
+ * A moeda vem da oferta: orders não documenta currency nem offer.id.
  */
 export function confirmadorCakto(config: ConfiguracaoCakto, buscar: typeof fetch = fetch, token = criarTokenCakto(config, buscar)) {
   return async (id: string, esperado?: { planoId?: string }): Promise<ResultadoConfirmacaoBlackcat> => {
@@ -183,13 +184,28 @@ export function confirmadorCakto(config: ConfiguracaoCakto, buscar: typeof fetch
     if (!r.ok) return { ok: false, falha: r.status === 404 ? "nao_encontrada" : [401, 403].includes(r.status) ? "recusada" : "indisponivel" };
     const j = await r.json().catch(() => null) as Record<string, any> | null;
     const status = typeof j?.status === "string" ? STATUS_CAKTO[j.status] : undefined;
-    const centavos = reaisParaCentavos(j?.amount ?? j?.baseAmount);
+    const centavos = reaisParaCentavos(j?.amount);
     if (j?.id !== id || !status || centavos === null) return { ok: false, falha: "resposta_invalida" };
-    const moeda = j?.currency ?? j?.product?.currency;
-    const ofertaEsperada = esperado?.planoId ? OFERTAS_CAKTO[esperado.planoId]?.oferta : undefined;
+    const ofertaEsperada = esperado?.planoId ? OFERTAS_CAKTO[esperado.planoId] : undefined;
     const ofertaRecebida = j?.offer?.id ?? j?.offerId;
-    const diverge = (moeda !== undefined && moeda !== null && moeda !== "BRL")
-      || (ofertaRecebida !== undefined && ofertaRecebida !== ofertaEsperada);
+    let diverge = j?.paymentMethod !== "pix" || j?.type !== "unique" || typeof j?.product?.id !== "string" || !j.product.id
+      || (j?.currency != null && j.currency !== "BRL")
+      || (ofertaRecebida != null && ofertaRecebida !== ofertaEsperada?.oferta);
+    if (status === "PAID" && !diverge) {
+      if (!ofertaEsperada) return { ok: false, falha: "resposta_invalida" };
+      // O banco guarda o plano, não o produto Cakto; uma consulta à oferta oficial resolve o vínculo.
+      let oferta: Response;
+      try {
+        oferta = await buscar(`${BASE_CAKTO}/offers/${encodeURIComponent(ofertaEsperada.oferta)}/`, {
+          headers: { Authorization: `Bearer ${t.token}` }, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_CAKTO_MS),
+        });
+      } catch (e) { return { ok: false, falha: ehTimeout(e) ? "timeout" : "rede" }; }
+      if (!oferta.ok) return { ok: false, falha: "indisponivel" };
+      const o = await oferta.json().catch(() => null) as Record<string, any> | null;
+      const produto = typeof o?.product === "string" ? o.product : o?.product?.id;
+      diverge = !produto || produto !== j.product.id || o?.currency !== "BRL" || o?.type !== "unique"
+        || reaisParaCentavos(o?.price) !== ofertaEsperada.centavos || centavos !== ofertaEsperada.centavos;
+    }
     return { ok: true, confirmacao: { transactionId: id, status, amount: diverge ? Number.NaN : centavos, paidAt: dataCakto(j?.paidAt) } };
   };
 }

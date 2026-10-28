@@ -381,12 +381,13 @@ export type FalhaDoProvedor =
  * `criarPedidoPix`, é única e vale para todos os motivos:
  *
  *   **transação conhecida ⇒ `REVISAO_MANUAL`. Transação desconhecida ⇒ `FALHOU`.**
+ * Exceção Cakto: criação incerta sem id também fica em revisão, preservando refExterna/sck.
  *
  * Nunca `PAGO`, em nenhum dos dois.
  */
 export type ResultadoCriacaoPix =
   | { ok: true; venda: VendaPixCriada }
-  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date };
+  | { ok: false; falha: FalhaDoProvedor; transacaoId?: string; expiraEm?: Date; criacaoIncerta?: boolean };
 
 /**
  * A porta do gateway.
@@ -734,6 +735,11 @@ export async function criarPedidoPix(
   });
 
   if (!resultado.ok) {
+    if (deps.nomeDoProvedor === "cakto" && resultado.criacaoIncerta && !resultado.transacaoId) {
+      // Sem retry: a cobrança pode existir; refExterna/sck permitem conciliação manual.
+      await repo.registrarFalha(pedidoId, { status: "REVISAO_MANUAL", motivo: "criacao_resultado_incerto" });
+      return { situacao: "revisao_manual", pedidoId, motivo: resultado.falha };
+    }
     // A regra única: se sabemos o `transactionId`, existe uma venda do outro
     // lado — e ela pode ser pagável. `FALHOU` diria "não há nada lá" e faria a
     // reconciliação da Fase 5 pular justamente a linha que precisa de gente
