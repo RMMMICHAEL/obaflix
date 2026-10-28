@@ -27,6 +27,15 @@ export function caktoPixAtivo(env: Env = process.env): boolean {
   return env.CAKTO_PIX_ATIVO === "true";
 }
 
+/** Piloto Cakto: somente Start com token privado; sem configuracao, recusa. */
+export function pilotoCaktoAutorizado(planoId: string, tokenRecebido: string | null, env: Env = process.env): boolean {
+  if (env.CAKTO_VENDAS_PUBLICAS === "true") return true;
+  if (planoId !== "cortes-start") return false;
+  const esperado = Buffer.from(env.CAKTO_PILOTO_TOKEN ?? "");
+  const recebido = Buffer.from(tokenRecebido ?? "");
+  return esperado.length >= 32 && esperado.length === recebido.length && crypto.timingSafeEqual(esperado, recebido);
+}
+
 export interface ConfiguracaoCakto { clientId: string; clientSecret: string }
 export function lerConfiguracaoCakto(env: Env = process.env): ConfiguracaoCakto | null {
   const clientId = env.CAKTO_CLIENT_ID?.trim(), clientSecret = env.CAKTO_CLIENT_SECRET?.trim();

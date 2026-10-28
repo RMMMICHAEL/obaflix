@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { NextRequest } from "next/server";
 import {
-  OFERTAS_CAKTO, assinaturaWebhookValida, confirmadorCakto, provedorCakto, reaisParaCentavos, telefoneE164,
+  OFERTAS_CAKTO, assinaturaWebhookValida, confirmadorCakto, provedorCakto, reaisParaCentavos, telefoneE164, pilotoCaktoAutorizado,
 } from "../billing/cakto";
 import { criarPedidoPix, type NovoPedido, type PedidoParaProvedor, type PrecoDoBanco, type RepositorioDePedidos } from "../billing/pedidos";
 import { confirmarPedidoPorId, decidirConfirmacao } from "../billing/confirmacao";
@@ -11,6 +11,15 @@ import { confirmadorDoPedido, provedorDeCobranca } from "../billing/simulado";
 import { POST as webhookCakto } from "../../app/api/billing/webhook/cakto/route";
 
 const CONFIG = { clientId: "cid", clientSecret: "csecret" };
+
+test("Cakto: piloto Start falha fechado sem token e recusa Pro/AI", () => {
+  const token = "t".repeat(40);
+  assert.equal(pilotoCaktoAutorizado("cortes-start", token, {}), false);
+  assert.equal(pilotoCaktoAutorizado("cortes-start", "errado", { CAKTO_PILOTO_TOKEN: token }), false);
+  assert.equal(pilotoCaktoAutorizado("cortes-start", token, { CAKTO_PILOTO_TOKEN: token }), true);
+  assert.equal(pilotoCaktoAutorizado("cortes-pro", token, { CAKTO_PILOTO_TOKEN: token }), false);
+  assert.equal(pilotoCaktoAutorizado("cortes-ai", token, { CAKTO_PILOTO_TOKEN: token }), false);
+});
 const PAGADOR = { nome: "Comprador Teste", email: "c@teste.invalid", telefone: "11987654321", documento: { numero: "12345678909", tipo: "cpf" as const } };
 
 /** fetch falso: token OAuth + respostas por rota, registrando cada chamada. */
