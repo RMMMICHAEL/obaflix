@@ -36,6 +36,21 @@ export function pilotoCaktoAutorizado(planoId: string, tokenRecebido: string | n
   return esperado.length >= 32 && esperado.length === recebido.length && crypto.timingSafeEqual(esperado, recebido);
 }
 
+/** Piloto do checkout web: admin de sessão por cookie E papel confirmado no banco.
+ * O token privado permanece exclusivo do servidor; nenhuma credencial vai para JS ou URL.
+ * Não libera visitantes, Pro ou AI, e não interfere no modo público (controlado pela flag).
+ */
+export function pilotoCaktoAdminPermitido(
+  planoId: string,
+  usuario: { origem?: string; role?: string } | null,
+  roleBanco: string | null | undefined,
+  env: Env = process.env,
+): boolean {
+  return planoId === "cortes-start" && env.CAKTO_VENDAS_PUBLICAS !== "true" &&
+    (env.CAKTO_PILOTO_TOKEN?.length ?? 0) >= 32 &&
+    usuario?.origem === "cookie" && usuario.role === "admin" && roleBanco === "admin";
+}
+
 export interface ConfiguracaoCakto { clientId: string; clientSecret: string }
 export function lerConfiguracaoCakto(env: Env = process.env): ConfiguracaoCakto | null {
   const clientId = env.CAKTO_CLIENT_ID?.trim(), clientSecret = env.CAKTO_CLIENT_SECRET?.trim();

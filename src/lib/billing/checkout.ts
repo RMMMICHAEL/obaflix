@@ -74,7 +74,7 @@ export type AcaoNoPlanoCortes =
  * como compra anônima (o crédito proporcional do upgrade é calculado lá).
  */
 export function acaoNoPlanoCortes(planoId: string, situacao: { logado: boolean; atual: string | null }): AcaoNoPlanoCortes {
-  const base = `/checkout?planoId=${encodeURIComponent(planoId)}`;
+  const base = `/cortes/checkout?planoId=${encodeURIComponent(planoId)}`;
   const atual = situacao.logado ? situacao.atual : null;
   if (!atual || !(atual in POSICAO_CORTES)) return { acao: "assinar", href: base };
   if (atual === planoId) return { acao: "renovar", href: `${base}&conta=1` };
@@ -127,9 +127,10 @@ export function mensagemErroCheckout(codigo?: string) {
   if (codigo === "servidor_vip_ja_incluso") return "O servidor VIP já está incluso neste plano.";
   if (codigo === "credito_maior_que_compra") return "O crédito do seu plano atual é maior que esta compra. Escolha uma duração maior.";
   if (codigo === "duracao_invalida") return "Esta duração não está disponível.";
-  if (codigo === "dados_do_pagador_invalidos") return "Confira nome, telefone e CPF/CNPJ.";
+  if (codigo === "dados_do_pagador_invalidos") return "Confira o nome completo, CPF válido e telefone com DDD.";
   if (codigo === "nascimento_invalido") return "Confira a data de nascimento. A compra é permitida a partir de 18 anos.";
   if (codigo === "parametros_invalidos") return "Confira o e-mail e os dados informados.";
   if (codigo === "muitas_tentativas") return "Muitas tentativas. Aguarde alguns minutos e tente de novo.";
+  if (codigo === "cobranca_indisponivel" || codigo === "pagamento_indisponivel") return "Não conseguimos gerar o Pix agora. Não repita a compra em caso de dúvida; procure o suporte.";
   return "Não foi possível iniciar o pagamento.";
 }

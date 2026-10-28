@@ -98,9 +98,10 @@ export interface CorpoDoPagador {
 export function montarPagador(
   conta: ContaDoPagador,
   corpo: CorpoDoPagador,
+  opcoes: { preferirNomeInformado?: boolean } = {},
 ): DadosDoPagador | null {
   const doCorpo = typeof corpo.nome === "string" ? corpo.nome.trim() : "";
-  const nome = (conta.nome?.trim() || doCorpo).slice(0, 80);
+  const nome = ((opcoes.preferirNomeInformado ? (doCorpo || conta.nome?.trim()) : (conta.nome?.trim() || doCorpo)) || "").slice(0, 80);
   if (nome.length < 2) return null;
 
   const email = conta.email.trim();
@@ -115,4 +116,50 @@ export function montarPagador(
   if (!tipo) return null;
 
   return { nome, email, telefone, documento: { numero, tipo } };
+}
+
+/** Validação de CPF com dígitos verificadores; evita chamar o gateway sem chance de sucesso. */
+export function cpfValido(valor: unknown): boolean {
+  const d = soDigitos(valor);
+  if (!/^\d{11}$/.test(d) || /^(\d)\1{10}$/.test(d)) return false;
+  const dv = (base: string, pesoInicial: number) => {
+    const soma = [...base].reduce((s, c, i) => s + Number(c) * (pesoInicial - i), 0);
+    const resto = (soma * 10) % 11;
+    return resto === 10 ? 0 : resto;
+  };
+  return dv(d.slice(0, 9), 10) === Number(d[9]) && dv(d.slice(0, 10), 11) === Number(d[10]);
+}
+
+/** CNPJ com dígitos verificadores, conservado para compradores empresariais legados. */
+export function cnpjValido(valor: unknown): boolean {
+  const d = soDigitos(valor);
+  if (!/^\d{14}$/.test(d) || /^(\d)\1{13}$/.test(d)) return false;
+  const digito = (s: string, pesos: number[]) => {
+    const resto = [...s].reduce((acc, c, i) => acc + Number(c) * pesos[i], 0) % 11;
+    return resto < 2 ? 0 : 11 - resto;
+  };
+  return digito(d.slice(0, 12), [5,4,3,2,9,8,7,6,5,4,3,2]) === Number(d[12]) &&
+    digito(d.slice(0, 13), [6,5,4,3,2,9,8,7,6,5,4,3,2]) === Number(d[13]);
+}
+
+export function nomeCompletoValido(valor: unknown): boolean {
+  if (typeof valor !== "string") return false;
+  const p = valor.trim().replace(/\s+/g, " ");
+  return p.length >= 5 && p.length <= 80 && /^[\p{L}][\p{L}'’. -]*[\p{L}]$/u.test(p) &&
+    p.split(" ").filter(s => s.replace(/[^\p{L}]/gu, "").length >= 2).length >= 2;
+}
+
+export function telefoneBrasileiroValido(valor: unknown): boolean {
+  const d = soDigitos(valor);
+  if (!/^\d{10,11}$/.test(d)) return false;
+  const ddd = Number(d.slice(0, 2));
+  if (ddd < 11 || ddd > 99 || d[2] === "0") return false;
+  // Não inventa obrigatoriedade de celular: números fixos com DDD continuam possíveis.
+  return true;
+}
+
+export function pagadorCaktoValido(pagador: DadosDoPagador): boolean {
+  const numero = pagador.documento.numero;
+  return nomeCompletoValido(pagador.nome) && telefoneBrasileiroValido(pagador.telefone) &&
+    (pagador.documento.tipo === "cpf" ? cpfValido(numero) : cnpjValido(numero));
 }

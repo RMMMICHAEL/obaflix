@@ -48,6 +48,10 @@ export type AuditEvent =
   // do motivo bastam para investigar, e `pedidoId` é identificador nosso.
   | "billing_order_created"
   | "billing_order_failed"
+  // Funil Cortes: agregados, sem parâmetros pessoais.
+  | "cortes_checkout_view"
+  | "cortes_checkout_attempt"
+  | "cortes_checkout_pix_created"
   // Canais ao vivo. Eventos próprios pelo mesmo motivo de todos os anteriores:
   // `canal_resolucao_falhou` mede a saúde do provider e `canal_negado` mede
   // recusa comercial. Somados a `stream_rejected`, que mede token, os três
