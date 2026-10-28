@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { getUserFromRequest } from "@/lib/authSession";
 import { ehClientePlay, CODIGO_COMPRAS_INDISPONIVEIS_PLAY } from "@/config/play";
 import { prisma } from "@/lib/prisma";
@@ -323,6 +324,16 @@ export async function POST(req: NextRequest) {
   const planoPrecoId = identificadorComercial(corpo.planoPrecoId);
   if (!planoId || !planoPrecoId) {
     return erro(400, "parametros_invalidos", "Parâmetros inválidos");
+  }
+
+  // Piloto Cakto: o servidor aceita somente Start + token privado do proprietario.
+  // Sem token configurado falha fechado; nao afeta Blackcat nem outros produtos.
+  if (caktoPixAtivo() && ehPlanoCortes(planoId) && process.env.CAKTO_VENDAS_PUBLICAS !== "true") {
+    const esperado = Buffer.from(process.env.CAKTO_PILOTO_TOKEN ?? "");
+    const recebido = Buffer.from(req.headers.get("x-obaflix-cakto-piloto") ?? "");
+    if (planoId !== "cortes-start" || esperado.length < 32 || esperado.length !== recebido.length || !timingSafeEqual(esperado, recebido)) {
+      return INDISPONIVEL();
+    }
   }
 
   const conta = userId
