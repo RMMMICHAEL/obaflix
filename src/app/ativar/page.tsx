@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { INSTALADORES } from "@/config/downloads";
 
 const CAMPO = "bg-zinc-800 text-white text-sm px-4 py-2.5 rounded outline-none focus:ring-2 focus:ring-red-600";
 
@@ -53,11 +54,17 @@ export default function AtivarPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-zinc-900 rounded-xl p-8 shadow-2xl">
-        <h1 className="text-2xl font-bold text-white mb-6 text-center">Ativar conta</h1>
+        <p className="text-red-400 text-xs font-bold uppercase tracking-wider text-center mb-2">Obaflix Cortes</p>
+        <h1 className="text-2xl font-bold text-white mb-3 text-center">Ativar seu acesso</h1>
+        <p className="text-zinc-400 text-sm text-center mb-6">Confirme seu e-mail da compra criando uma senha. Depois, baixe o aplicativo para Windows.</p>
         {estado === "ativada" ? (
-          <p className="text-zinc-300 text-sm text-center">
-            Senha criada. <Link href="/login" className="text-red-400 hover:text-red-300">Entrar</Link>
-          </p>
+          <div className="space-y-4 text-center">
+            <p className="text-green-400 font-semibold">Conta ativada! Sua senha foi criada.</p>
+            <p className="text-zinc-300 text-sm">O seu acesso ja esta pronto. Se estiver no computador, baixe o aplicativo Windows:</p>
+            <a href={INSTALADORES.windowsCortes.url} target="_blank" rel="noopener noreferrer" className="block bg-red-600 text-white font-bold py-3 rounded-lg hover:bg-red-700">Baixar Obaflix para Windows</a>
+            <Link href="/login" className="block rounded-lg border border-zinc-600 p-3 text-sm text-white hover:bg-zinc-800">Ja tenho o aplicativo: entrar</Link>
+            <p className="text-zinc-400 text-xs leading-relaxed">Se ja instalou no PC, abra o Obaflix e entre com o e-mail da compra e a senha que acabou de criar.</p>
+          </div>
         ) : estado === "reenviado" ? (
           <p className="text-zinc-300 text-sm text-center">Se houver uma conta aguardando ativação para este e-mail, enviamos um novo link.</p>
         ) : token ? (

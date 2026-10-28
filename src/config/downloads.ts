@@ -44,7 +44,7 @@ export const INSTALADORES = {
    * Instalador Windows Cortes homologado; configuração compartilhada com o e-mail.
    */
   windowsCortes: {
-    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES, "https://github.com/RMMMICHAEL/obaflix/releases/download/v1.0.16/Obaflix-Setup-1.0.16.exe"),
+    url: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES, "https://app.obaflix.online/Obaflix-Setup-1.0.16.exe"),
     versao: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_VERSAO, "Versão 1.0.16"),
     tamanho: ou(process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS_CORTES_TAMANHO, ""),
   },
