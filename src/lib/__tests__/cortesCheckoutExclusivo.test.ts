@@ -78,3 +78,15 @@ test("consulta de visitante permanece autorizavel apos vincular usuario na confi
   assert.match(fonte, /emailComprador:\s*\{\s*not:\s*null\s*\}/);
   assert.doesNotMatch(fonte, /userId:\s*null/);
 });
+test("CTA Cortes: compra visivel, checkout com total Pix e acessibilidade", () => {
+  const planos = readFileSync("src/app/cortes/PlanosCortes.tsx", "utf8");
+  const estilos = readFileSync("src/app/cortes/cortes.module.css", "utf8");
+  const checkout = readFileSync("src/app/cortes/checkout/CheckoutCortes.tsx", "utf8");
+  assert.match(planos, /Quero o/);
+  assert.match(planos, /data-cortes-cta/);
+  assert.match(estilos, /\.planList \.planBuy \{/);
+  assert.match(estilos, /\.planBuy:focus-visible/);
+  assert.match(checkout, /Gerar Pix de/);
+  assert.match(checkout, /dinheiro\(totalPix\(preco\.precoCentavos, id\), preco\.moeda\)/);
+  assert.match(checkout, /disabled=\{!!bloqueado/);
+});

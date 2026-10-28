@@ -36,7 +36,7 @@ const duracao = (p: Preco) => p.duracaoDias ?? (p.duracaoMeses ?? 0) * 30;
  * (`GET /api/billing/plans`). Sem preço ativo, nada é vendido: o cartão diz
  * "em breve".
  */
-const ROTULO = { assinar: "Assinar", renovar: "Renovar", upgrade: "Fazer upgrade para" } as const;
+const ROTULO = { assinar: "Quero o", renovar: "Renovar", upgrade: "Fazer upgrade para" } as const;
 
 /** Sem `situacao` (landing): todo cartão oferece compra nova. */
 export function PlanosCortes({ situacao = { logado: false, atual: null } }: { situacao?: { logado: boolean; atual: string | null } }) {
@@ -92,7 +92,7 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
                   className={`${styles.primary} ${styles.planBuy}`}
                   data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
                 >
-                  {ROTULO[decisao.acao]} {nome} <ArrowUpRight size={17} aria-hidden />
+                  {ROTULO[decisao.acao]} Cortes {nome} <ArrowUpRight size={19} aria-hidden />
                 </LinkAssinatura>
               </>
             ) : (
