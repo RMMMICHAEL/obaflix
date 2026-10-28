@@ -69,13 +69,15 @@ describe("token de ativação", () => {
 describe("notificarPrimeiroAcesso", () => {
   test("recibo HTML/texto usa plano, período, valor do pedido e download central; escapa HTML", async () => {
     const enviados: MensagemDeEmail[] = [];
-    const compra = { pedidoId: "pedido-email", plano: "Cortes Pro <script>", valorCentavos: 4321, moeda: "BRL", iniciaEm: new Date("2026-10-28T12:00:00Z"), terminaEm: new Date("2026-11-27T12:00:00Z") };
+    const compra = { pedidoId: "pedido-email", plano: "Cortes Pro <script>", valorCentavos: 4321, valorTotalCentavos: 4420, moeda: "BRL", iniciaEm: new Date("2026-10-28T12:00:00Z"), terminaEm: new Date("2026-11-27T12:00:00Z") };
     for (const semSenha of [true, false]) {
       const r = await notificarPrimeiroAcesso({ userId: `recibo-${semSenha}`, email: "recibo@example.test", semSenha, compra }, { base: "https://obaflixbr.com", enviar: async m => { enviados.push(m); return { ok: true, simulado: true }; } });
       assert.equal(r.ok, true);
     }
     for (const m of enviados) {
-      assert.match(m.assunto, /Compra confirmada/);
+            assert.match(m.assunto, /Obaflix Cortes/);
+      assert.match(m.texto, /44,20/);
+      assert.match(m.html, /Ativar conta e criar senha|Entrar no Obaflix/);
       assert.match(m.texto, /43,21/);
       assert.match(m.texto, /28\/10\/2026 a 27\/11\/2026/);
       assert.ok(m.texto.includes(INSTALADORES.windowsCortes.url));

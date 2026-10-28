@@ -7,6 +7,7 @@ import { ehPlanoCortes } from "../planos";
 import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDeRevisao } from "./revisao";
 import { confirmadorDoPedido } from "./simulado";
 import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
+import { OFERTAS_CAKTO, TAXA_SERVICO_CAKTO_CENTAVOS } from "./cakto";
 
 type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
@@ -147,7 +148,13 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
       const conta = await tx.user.findUnique({ where: { id: userId }, select: { email: true } });
       if (conta) comprador = { userId, email: conta.email, semSenha: false };
     }
-    if (comprador) comprador.compra = { pedidoId: atual.id, plano: atual.plano?.nome ?? atual.planoId, valorCentavos: atual.valorCentavos, moeda: atual.moeda, iniciaEm: plano.iniciaEm, terminaEm: plano.terminaEm };
+    if (comprador) comprador.compra = {
+      pedidoId: atual.id, plano: atual.plano?.nome ?? atual.planoId,
+      valorCentavos: atual.valorCentavos, moeda: atual.moeda,
+      iniciaEm: plano.iniciaEm, terminaEm: plano.terminaEm,
+      ...(atual.provedor === "cakto" && OFERTAS_CAKTO[atual.planoId]?.centavos === atual.valorCentavos
+        ? { valorTotalCentavos: atual.valorCentavos + TAXA_SERVICO_CAKTO_CENTAVOS } : {}),
+    };
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
     await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=userId;

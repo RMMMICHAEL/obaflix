@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { ehPlanoCortes } from "../planos";
 import { notificarPrimeiroAcesso } from "../primeiroAcesso";
+import { OFERTAS_CAKTO, TAXA_SERVICO_CAKTO_CENTAVOS } from "./cakto";
 
 /** Uso operacional: reenvia só um recibo já pago, sem consultar gateway ou alterar assinatura. */
 export async function reenviarEmailCompra(pedidoId: string, deps: {
@@ -8,7 +9,7 @@ export async function reenviarEmailCompra(pedidoId: string, deps: {
   notificar?: typeof notificarPrimeiroAcesso;
 } = {}) {
   const p = await (deps.banco ?? prisma).pedidoPagamento.findUnique({ where: { id: pedidoId }, select: {
-    id: true, status: true, userId: true, planoId: true, planoPrecoId: true, valorCentavos: true, moeda: true,
+    id: true, status: true, userId: true, planoId: true, planoPrecoId: true, valorCentavos: true, moeda: true, provedor: true,
     user: { select: { email: true, senhaHash: true, googleSub: true } },
     plano: { select: { nome: true, cortesNivel: true } },
     assinatura: { select: { pedidoId: true, userId: true, planoId: true, planoPrecoId: true, iniciaEm: true, terminaEm: true } },
@@ -18,6 +19,9 @@ export async function reenviarEmailCompra(pedidoId: string, deps: {
     return { ok: false as const, motivo: "pedido_nao_confirmado" };
   }
   return (deps.notificar ?? notificarPrimeiroAcesso)({ userId: p.userId, email: p.user.email, semSenha: !p.user.senhaHash && !p.user.googleSub,
-    compra: { pedidoId: p.id, plano: p.plano.nome, valorCentavos: p.valorCentavos, moeda: p.moeda, iniciaEm: a.iniciaEm, terminaEm: a.terminaEm },
+    compra: { pedidoId: p.id, plano: p.plano.nome, valorCentavos: p.valorCentavos, moeda: p.moeda, iniciaEm: a.iniciaEm, terminaEm: a.terminaEm,
+      ...(p.provedor === "cakto" && OFERTAS_CAKTO[p.planoId]?.centavos === p.valorCentavos
+        ? { valorTotalCentavos: p.valorCentavos + TAXA_SERVICO_CAKTO_CENTAVOS } : {}),
+    },
   });
 }

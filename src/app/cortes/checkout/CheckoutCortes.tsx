@@ -186,7 +186,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
               <div className="mt-8 rounded-2xl border border-white/15 bg-[#221c1c] p-6" aria-live="polite">
                 <p className="text-xs uppercase tracking-widest text-red-400">Status do pedido</p>
                 <h2 className="mt-2 text-2xl font-bold">{pedido.status === "PAGO" ? "Pagamento confirmado" : pedido.status === "CONFIRMANDO" ? "Confirmação em andamento" : pedido.status === "REVISAO_MANUAL" || pedido.emRevisao ? "Pagamento em revisão" : pedido.status === "AGUARDANDO" ? "Aguardando pagamento" : "Acompanhe seu pedido"}</h2>
-                <p className="mt-3 text-sm text-zinc-300">{pedido.status === "PAGO" ? "O servidor confirmou a compra. O acesso segue pelo e-mail da compra; confira também o spam." : pedido.status === "REVISAO_MANUAL" || pedido.emRevisao ? MENSAGEM_DE_REVISAO_AO_COMPRADOR : pedido.status === "CONFIRMANDO" ? "Estamos conferindo o pagamento com o provedor. Não gere outro Pix." : "O pagamento só será confirmado após a verificação pelo servidor. Não é necessário deixar esta tela aberta."}</p>
+                <p className="mt-3 text-sm text-zinc-300">{pedido.status === "PAGO" ? "O pagamento foi confirmado e o download ja esta liberado abaixo. O acesso tambem e enviado ao e-mail da compra; confira o spam." : pedido.status === "REVISAO_MANUAL" || pedido.emRevisao ? MENSAGEM_DE_REVISAO_AO_COMPRADOR : pedido.status === "CONFIRMANDO" ? "Estamos conferindo o pagamento com o provedor. Não gere outro Pix." : "O pagamento só será confirmado após a verificação pelo servidor. Não é necessário deixar esta tela aberta."}</p>
                 <p className="mt-4 text-2xl font-black">{dinheiro(totalPix(pedido.valorCentavos, id), pedido.moeda)}</p>
                 {descricaoDaOperacao(pedido) && <p className="mt-2 text-sm text-zinc-300">{descricaoDaOperacao(pedido)}</p>}
                 {pedido.status === "AGUARDANDO" && pedido.pix?.copiaECola && (
@@ -197,6 +197,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
                 )}
                 {pedido.status === "AGUARDANDO" && <p className="mt-4 text-xs text-zinc-400">Vencimento do Pix: {new Date(pedido.expiraEm).toLocaleString("pt-BR")}. Abra o aplicativo do banco, escolha Pix e confira o destinatário e valor.</p>}
                 {pedido.status === "PAGO" && (instaladorUrl ? <a className="mt-5 inline-flex items-center gap-2 rounded-xl bg-red-600 px-5 py-3 font-bold" href={instaladorUrl} rel="noopener noreferrer">Baixar aplicativo Windows <ArrowRight size={16} /></a> : <p className="mt-4 text-sm text-zinc-300">O instalador Windows com Cortes está em preparação. Acompanhe a disponibilidade na página do produto.</p>)}
+                {pedido.status === "PAGO" && <p className="mt-3 text-xs text-zinc-300">Vai usar no PC depois? Confira o e-mail da compra. Se o link nao chegar, <a href="/ativar" className="text-red-300 underline">solicite um novo link de ativacao</a>.</p>}
               </div>
             ) : (
               <form className="mt-8 space-y-5 rounded-2xl border border-white/15 bg-[#221c1c] p-5 sm:p-7" onSubmit={gerarPix}>
