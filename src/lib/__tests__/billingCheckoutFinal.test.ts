@@ -85,13 +85,13 @@ test("vitrine comercial permite renovar e mudar plano com assinatura ativa", () 
 test("planos Cortes: visitante assina; quem tem Cortes renova ou faz upgrade com login; o menor fica incluído", () => {
   assert.equal(PLANOS_CORTES_HREF, "/planos?familia=cortes");
   const visitante = { logado: false, atual: null };
-  assert.deepEqual(acaoNoPlanoCortes("cortes-start", visitante), { acao: "assinar", href: "/checkout?planoId=cortes-start" });
-  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: false, atual: "cortes-start" }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" }, "sem sessão não sabe do plano");
-  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: null }), { acao: "assinar", href: "/checkout?planoId=cortes-pro" });
-  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-start" }), { acao: "renovar", href: "/checkout?planoId=cortes-start&conta=1" });
-  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-start" }), { acao: "upgrade", href: "/checkout?planoId=cortes-pro&conta=1" });
-  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-pro" }), { acao: "renovar", href: "/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", visitante), { acao: "assinar", href: "/cortes/checkout?planoId=cortes-start" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: false, atual: "cortes-start" }), { acao: "assinar", href: "/cortes/checkout?planoId=cortes-pro" }, "sem sessão não sabe do plano");
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: null }), { acao: "assinar", href: "/cortes/checkout?planoId=cortes-pro" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-start" }), { acao: "renovar", href: "/cortes/checkout?planoId=cortes-start&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-start" }), { acao: "upgrade", href: "/cortes/checkout?planoId=cortes-pro&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-pro" }), { acao: "renovar", href: "/cortes/checkout?planoId=cortes-pro&conta=1" });
   assert.deepEqual(acaoNoPlanoCortes("cortes-start", { logado: true, atual: "cortes-pro" }), { acao: "incluido" });
-  assert.deepEqual(acaoNoPlanoCortes("cortes-ai", { logado: true, atual: "cortes-pro" }), { acao: "upgrade", href: "/checkout?planoId=cortes-ai&conta=1" });
+  assert.deepEqual(acaoNoPlanoCortes("cortes-ai", { logado: true, atual: "cortes-pro" }), { acao: "upgrade", href: "/cortes/checkout?planoId=cortes-ai&conta=1" });
   assert.deepEqual(acaoNoPlanoCortes("cortes-pro", { logado: true, atual: "cortes-ai" }), { acao: "incluido" });
 });

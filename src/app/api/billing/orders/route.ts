@@ -9,16 +9,17 @@ import { ehPlanoCortes, ordemNaFamilia } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
-import { caktoPixAtivo, pilotoCaktoAutorizado } from "@/lib/billing/cakto";
+import { caktoPixAtivo, pilotoCaktoAutorizado, pilotoCaktoAdminPermitido } from "@/lib/billing/cakto";
 import {
   emailDoComprador,
   nascimentoDoComprador,
   identificadorComercial,
-  montarPagador,
+  montarPagador, pagadorCaktoValido,
   type CorpoDoPagador,
 } from "@/lib/billing/pagador";
 import { validarOpcoesComerciais, type CorpoDasOpcoes } from "@/lib/billing/opcoes";
 import { abrirRevisao, travarContaParaCobranca, MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
+import { emitirConsultaVisitante } from "@/lib/billing/statusVisitante";
 import {
   campoFinanceiroNoCorpo,
   cobrancaPixAtiva,
@@ -325,19 +326,18 @@ export async function POST(req: NextRequest) {
     return erro(400, "parametros_invalidos", "Parâmetros inválidos");
   }
 
-  // Piloto privado: segredo e regra de liberacao vivem em billing/cakto.ts.
-  if (caktoPixAtivo() && ehPlanoCortes(planoId)
-    && !pilotoCaktoAutorizado(planoId, req.headers.get("x-obaflix-cakto-piloto"))) {
-    return INDISPONIVEL();
-  }
-
   const conta = userId
-    ? await prisma.user.findUnique({ where: { id: userId }, select: { nome: true, email: true } })
-    : (() => { const email = emailDoComprador(corpo.email); return email ? { nome: null, email } : null; })();
+    ? await prisma.user.findUnique({ where: { id: userId }, select: { nome: true, email: true, role: true } })
+    : (() => { const email = emailDoComprador(corpo.email); return email ? { nome: null, email, role: null } : null; })();
   if (!conta) {
     if (!userId) audit("auth_failure", { ip, ua, detail: "/billing/orders sem sessão" });
     return erro(401, "acesso_negado", "Acesso negado");
   }
+  // Duas formas privadas: cabeçalho usado pelo operador via terminal, ou conta
+  // administrativa reconfirmada no banco. Nenhuma página recebe o token privado.
+  if (caktoPixAtivo() && ehPlanoCortes(planoId) &&
+      !pilotoCaktoAutorizado(planoId, req.headers.get("x-obaflix-cakto-piloto")) &&
+      !pilotoCaktoAdminPermitido(planoId, usuario, conta.role)) return INDISPONIVEL();
   // Compra sem login: a data de nascimento vai para o cadastro que nasce na confirmação.
   const nascimento = userId ? null : nascimentoDoComprador(corpo.nascimento);
   if (!userId && !nascimento) return erro(400, "nascimento_invalido", "Data de nascimento inválida");
@@ -356,10 +356,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const pagador = montarPagador(conta, corpo);
-  if (!pagador) {
+  const pagador = montarPagador(conta, corpo, { preferirNomeInformado: caktoPixAtivo() && ehPlanoCortes(planoId) });
+  if (!pagador || (caktoPixAtivo() && ehPlanoCortes(planoId) && !pagadorCaktoValido(pagador))) {
     return erro(400, "dados_do_pagador_invalidos", "Dados de pagamento inválidos");
   }
+
+  if (ehPlanoCortes(planoId)) audit("cortes_checkout_attempt", { detail: planoId });
 
   // O provedor é montado ANTES de qualquer escrita: sem chave de API, a resposta
   // é 503 e **nenhum pedido é criado**.
@@ -429,6 +431,7 @@ export async function POST(req: NextRequest) {
     userId, ip, ua,
     detail: `pedido ${resultado.pedidoId} operacao:${resultado.operacao}`,
   });
+  if (ehPlanoCortes(planoId)) audit("cortes_checkout_pix_created", { detail: planoId });
 
   // 9. A resposta, no nosso contrato. O QR e o copia-e-cola não são persistidos
   //    nem logados. `operacao`, `creditoCentavos` e `iniciaEm` explicam o valor;
@@ -443,6 +446,7 @@ export async function POST(req: NextRequest) {
       operacao: resultado.operacao,
       creditoCentavos: resultado.creditoCentavos,
       iniciaEm: resultado.iniciaEmPrevisto.toISOString(),
+      ...(!userId && ehPlanoCortes(planoId) ? { tokenConsulta: emitirConsultaVisitante(resultado.pedidoId) } : {}),
       pix: {
         qrCode: resultado.pix.qrCode,
         qrCodeBase64: resultado.pix.qrCodeBase64,
