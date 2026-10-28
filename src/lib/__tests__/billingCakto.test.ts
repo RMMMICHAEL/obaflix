@@ -84,6 +84,23 @@ test("Cakto: Start aceita somente taxa adicional de R$ 0,99 com base correta", a
   }
 });
 
+test("Cakto: Pro e AI aceitam taxa de servico de R$ 0,99 no Pix", async () => {
+  for (const c of [
+    { planoId: "cortes-pro", base: "47.00", total: "47.99", oferta: "zfuzuex", centavos: 4700 },
+    { planoId: "cortes-ai", base: "197.00", total: "197.99", oferta: "33bgxsx", centavos: 19700 },
+  ]) {
+    const criar = (amount: string, baseAmount: string) => provedorCakto(CONFIG, fetchFalso({
+      "/payments/": () => pagamento({ amount, baseAmount, offer: { id: c.oferta } }),
+    }).f).criarVenda({ ...pedidoStart(), planoId: c.planoId, valorCentavos: c.centavos });
+    const valido = await criar(c.total, c.base);
+    assert.ok(valido.ok, c.planoId);
+    if (valido.ok) assert.equal(valido.venda.valorCentavos, c.centavos);
+    const divergente = await criar((c.centavos / 100 + 1.99).toFixed(2), c.base);
+    assert.ok(divergente.ok);
+    if (divergente.ok) assert.notEqual(divergente.venda.valorCentavos, c.centavos);
+  }
+});
+
 test("Cakto: conversões estritas de valor e telefone", () => {
   assert.equal(reaisParaCentavos("27.00"), 2700);
   assert.equal(reaisParaCentavos("197"), 19700);
@@ -201,6 +218,29 @@ test("Cakto confirmação: taxa Start de R$ 0,99 concilia e valor inesperado fic
     const invalido = await consultar(dados)("ord-uuid-1", { planoId: "cortes-start" });
     assert.ok(invalido.ok);
     if (invalido.ok) assert.equal(decidirConfirmacao(pedidoDoBanco, invalido.confirmacao, new Date()), "REVISAR");
+  }
+});
+
+test("Cakto: confirmacao de Pro e AI aceita somente taxa esperada", async () => {
+  for (const c of [
+    { planoId: "cortes-pro", base: "47.00", total: "47.99", oferta: "zfuzuex", centavos: 4700 },
+    { planoId: "cortes-ai", base: "197.00", total: "197.99", oferta: "33bgxsx", centavos: 19700 },
+  ]) {
+    const consultarCom = (baseAmount: string, amount: string) => confirmadorCakto(CONFIG, fetchFalso({
+      "/orders/ord-uuid-1/": () => Response.json({
+        id: "ord-uuid-1", status: "paid", amount, baseAmount, paymentMethod: "pix",
+        type: "unique", product: { id: "produto-teste" }, offer: { id: c.oferta },
+      }),
+      ["/offers/" + c.oferta + "/"]: () => Response.json({
+        price: c.base, currency: "BRL", type: "unique", product: { id: "produto-teste" },
+      }),
+    }).f)("ord-uuid-1", { planoId: c.planoId });
+    const valido = await consultarCom(c.base, c.total);
+    assert.ok(valido.ok, c.planoId);
+    if (valido.ok) assert.equal(valido.confirmacao.amount, c.centavos);
+    const divergente = await consultarCom(c.base, (c.centavos / 100 + 1.99).toFixed(2));
+    assert.ok(divergente.ok);
+    if (divergente.ok) assert.notEqual(divergente.confirmacao.amount, c.centavos);
   }
 });
 

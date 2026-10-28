@@ -113,16 +113,17 @@ export function criarTokenCakto(config: ConfiguracaoCakto, buscar: typeof fetch 
   };
 }
 
-/** Taxa de serviço observada no Pix Start: oferta R$ 27,00 → total R$ 27,99. */
-export const TAXA_SERVICO_CAKTO_START_CENTAVOS = 99;
+/** Taxa de serviço Pix cobrada além do valor base nos três planos Cortes. */
+export const TAXA_SERVICO_CAKTO_CENTAVOS = 99;
 
 /** Mantém a contabilidade do plano no valor base e valida o total Pix exato.
  * Diferenças inesperadas continuam bloqueadas para revisão manual.
  */
 export function valorCaktoDoPlano(amount: unknown, baseAmount: unknown, planoId: string, precoCentavos: number): number | null {
   const total = reaisParaCentavos(amount);
-  if (planoId === "cortes-start" && precoCentavos === OFERTAS_CAKTO["cortes-start"].centavos
-      && total === precoCentavos + TAXA_SERVICO_CAKTO_START_CENTAVOS
+  const oferta = OFERTAS_CAKTO[planoId];
+  if (oferta && precoCentavos === oferta.centavos
+      && total === precoCentavos + TAXA_SERVICO_CAKTO_CENTAVOS
       && reaisParaCentavos(baseAmount) === precoCentavos) return precoCentavos;
   return total;
 }
