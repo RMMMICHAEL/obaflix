@@ -162,7 +162,7 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     // Purchase no servidor: só compra Cortes Cakto recém-ativada, com consentimento registrado no pedido e sem envio anterior.
     if (atual.provedor === "cakto" && ehPlanoCortes(atual.plano?.cortesNivel) && atual.consentimentoAnunciosEm && !atual.metaPurchaseEnviadoEm) {
       const comTaxa = OFERTAS_CAKTO[atual.planoId]?.centavos === atual.valorCentavos;
-      compraMeta = { pedidoId: atual.id, planoId: atual.planoId, valorTotalCentavos: atual.valorCentavos + (comTaxa ? TAXA_SERVICO_CAKTO_CENTAVOS : 0), fbp: atual.metaFbp, fbc: atual.metaFbc, em: agora };
+      compraMeta = { pedidoId: atual.id, planoId: atual.planoId, valorTotalCentavos: atual.valorCentavos + (comTaxa ? TAXA_SERVICO_CAKTO_CENTAVOS : 0), fbp: atual.metaFbp, fbc: atual.metaFbc, userAgent: atual.metaUserAgent, em: agora };
     }
   }); } catch (erro) {
     if (!conflitoPedidoId(erro)) throw erro;

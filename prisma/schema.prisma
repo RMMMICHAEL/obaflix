@@ -645,6 +645,8 @@ model PedidoPagamento {
   /// Identificadores do Pixel (_fbp/_fbc), só com consentimento.
   metaFbp String?
   metaFbc String?
+  /// User agent do navegador na criação do pedido, só com consentimento (exigido pela Meta para action_source website).
+  metaUserAgent String?
   /// Purchase aceito pela Meta; evita reenviar.
   metaPurchaseEnviadoEm DateTime?
 

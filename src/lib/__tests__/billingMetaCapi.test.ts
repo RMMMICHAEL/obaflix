@@ -3,7 +3,7 @@ import test from "node:test";
 import { confirmarPedidoPorId } from "../billing/confirmacao";
 import { criarFake, pedido } from "./helpers/billingConfirmacaoFake";
 
-const cakto = (over: any = {}) => ({ ...pedido(), provedor: "cakto", planoId: "cortes-start", valorCentavos: 2700, plano: { cortesNivel: "individual", nome: "Start" }, consentimentoAnunciosEm: new Date("2026-10-29"), metaFbp: "fb.1.1700000000000.1234567890", metaFbc: null, metaPurchaseEnviadoEm: null, ...over });
+const cakto = (over: any = {}) => ({ ...pedido(), provedor: "cakto", planoId: "cortes-start", valorCentavos: 2700, plano: { cortesNivel: "individual", nome: "Start" }, consentimentoAnunciosEm: new Date("2026-10-29"), metaFbp: "fb.1.1700000000000.1234567890", metaFbc: null, metaUserAgent: "Mozilla/5.0 (Teste)", metaPurchaseEnviadoEm: null, ...over });
 
 async function confirmar(f: any, o: { status?: string; meta?: any; avisar?: any } = {}) {
   const enviados: any[] = [];
@@ -24,7 +24,7 @@ test("PAGO + ativado + consentimento: um Purchase com event_id do pedido e total
   const f = criarFake({ pedido: cakto() });
   const e = await confirmar(f);
   assert.equal(e.length, 1);
-  assert.deepEqual([e[0].pedidoId, e[0].valorTotalCentavos, e[0].fbp], ["p", 2799, "fb.1.1700000000000.1234567890"]);
+  assert.deepEqual([e[0].pedidoId, e[0].valorTotalCentavos, e[0].fbp, e[0].userAgent], ["p", 2799, "fb.1.1700000000000.1234567890", "Mozilla/5.0 (Teste)"]);
   assert.ok(f.estado.pedido.metaPurchaseEnviadoEm);
   assert.equal((await confirmar(f)).length, 0); // repetição não reenvia
 });
@@ -38,7 +38,7 @@ test("não envia sem consentimento, fora do Cortes/Cakto, ou sem pagamento confi
 });
 
 test("falha ou exceção da Meta não desfaz o pagamento nem impede o e-mail", async () => {
-  for (const meta of [async () => ({ ok: false as const, motivo: "indisponivel" as const }), async () => { throw new Error("meta fora"); }]) {
+  for (const meta of [async () => ({ ok: false as const, motivo: "sem_confirmacao" as const }), async () => ({ ok: false as const, motivo: "indisponivel" as const }), async () => { throw new Error("meta fora"); }]) {
     const avisos: any[] = [];
     const f = criarFake({ pedido: cakto() });
     await confirmar(f, { meta, avisar: async (c: any) => { avisos.push(c); } });

@@ -13,7 +13,9 @@ const PRAZO_MS = 4000;
 export const COOKIE_CONSENTIMENTO_ANUNCIOS = "obaflix_ads";
 const FBP = /^fb\.[0-2]\.\d{10,13}\.\d{5,20}$/;
 const FBC = /^fb\.[0-2]\.\d{10,13}\.[A-Za-z0-9_-]{1,200}$/;
-const ORIGEM = "https://obaflix.online/cortes";
+const URL_PURCHASE = "https://obaflixbr.com/cortes/checkout";
+const URL_TESTE = "https://obaflixbr.com/cortes";
+const USER_AGENT_VALIDO = /^[\x20-\x7E]{1,512}$/;
 
 export interface CompraParaMeta {
   pedidoId: string;
@@ -22,11 +24,13 @@ export interface CompraParaMeta {
   valorTotalCentavos: number;
   fbp?: string | null;
   fbc?: string | null;
+  /** User agent do navegador na criação do pedido (só com consentimento). */
+  userAgent?: string | null;
   /** Instante da confirmação. */
   em: Date;
 }
 
-export type ResultadoMeta = { ok: true; recebidos: number } | { ok: false; motivo: "configuracao" | "rede" | "recusado" | "indisponivel" };
+export type ResultadoMeta = { ok: true; recebidos: number } | { ok: false; motivo: "configuracao" | "rede" | "recusado" | "indisponivel" | "sem_confirmacao" };
 
 type Fetch = typeof fetch;
 export interface DependenciasMeta { fetch?: Fetch; token?: string | undefined }
@@ -34,11 +38,11 @@ export interface DependenciasMeta { fetch?: Fetch; token?: string | undefined }
 const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
 
 /** Consentimento e identificadores do Pixel vindos dos cookies da requisição de compra. Sem o cookie de aceite, null. */
-export function marketingDosCookies(cookies: { get(nome: string): { value: string } | undefined }): { fbp: string | null; fbc: string | null } | null {
+export function marketingDosCookies(cookies: { get(nome: string): { value: string } | undefined }, userAgent?: string | null): { fbp: string | null; fbc: string | null; userAgent: string | null } | null {
   if (cookies.get(COOKIE_CONSENTIMENTO_ANUNCIOS)?.value !== "1") return null;
   const fbp = cookies.get("_fbp")?.value ?? "";
   const fbc = cookies.get("_fbc")?.value ?? "";
-  return { fbp: FBP.test(fbp) ? fbp : null, fbc: FBC.test(fbc) ? fbc : null };
+  return { fbp: FBP.test(fbp) ? fbp : null, fbc: FBC.test(fbc) ? fbc : null, userAgent: userAgent && USER_AGENT_VALIDO.test(userAgent) ? userAgent : null };
 }
 
 async function postar(corpo: Record<string, unknown>, deps: DependenciasMeta): Promise<ResultadoMeta> {
@@ -56,7 +60,9 @@ async function postar(corpo: Record<string, unknown>, deps: DependenciasMeta): P
       });
       if (r.ok) {
         const j = await r.json().catch(() => null) as { events_received?: unknown } | null;
-        return { ok: true, recebidos: typeof j?.events_received === "number" ? j.events_received : 0 };
+        // HTTP 200 sem events_received >= 1 não é entrega: não conta como enviado.
+        const recebidos = typeof j?.events_received === "number" ? j.events_received : 0;
+        return recebidos >= 1 ? { ok: true, recebidos } : { ok: false, motivo: "sem_confirmacao" };
       }
       if (r.status < 500 && r.status !== 429) return { ok: false, motivo: "recusado" };
     } catch { /* tenta de novo uma vez */ }
@@ -71,9 +77,10 @@ function eventoPurchase(c: CompraParaMeta) {
     // Mesmo identificador que o Pixel do navegador usa (CheckoutCortes): deduplicação na Meta.
     event_id: c.pedidoId,
     action_source: "website",
-    event_source_url: ORIGEM,
+    event_source_url: URL_PURCHASE,
     user_data: {
       external_id: [sha256(c.pedidoId)],
+      ...(c.userAgent ? { client_user_agent: c.userAgent } : {}),
       ...(c.fbp ? { fbp: c.fbp } : {}),
       ...(c.fbc ? { fbc: c.fbc } : {}),
     },
@@ -99,8 +106,8 @@ export function enviarEventoTesteMeta(testEventCode: string, deps: DependenciasM
       event_time: Math.floor(Date.now() / 1000),
       event_id: `capi-teste-${randomUUID()}`,
       action_source: "website",
-      event_source_url: ORIGEM,
-      user_data: { external_id: [sha256("capi-teste")] },
+      event_source_url: URL_TESTE,
+      user_data: { external_id: [sha256("capi-teste")], client_user_agent: "Obaflix-CAPI-Teste" },
     }],
   }, deps);
 }

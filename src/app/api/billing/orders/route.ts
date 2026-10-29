@@ -434,11 +434,11 @@ export async function POST(req: NextRequest) {
   });
   if (ehPlanoCortes(planoId)) audit("cortes_checkout_pix_created", { detail: planoId });
   // Consentimento de publicidade verificável no pedido (para a Meta CAPI). Sem o cookie de aceite, nada é gravado.
-  const marketing = ehPlanoCortes(planoId) ? marketingDosCookies(req.cookies) : null;
+  const marketing = ehPlanoCortes(planoId) ? marketingDosCookies(req.cookies, req.headers.get("user-agent")) : null;
   if (marketing) {
     await prisma.pedidoPagamento.update({
       where: { id: resultado.pedidoId },
-      data: { consentimentoAnunciosEm: new Date(), metaFbp: marketing.fbp, metaFbc: marketing.fbc },
+      data: { consentimentoAnunciosEm: new Date(), metaFbp: marketing.fbp, metaFbc: marketing.fbc, metaUserAgent: marketing.userAgent },
     }).catch(() => { /* sem registro, sem envio: falha segura */ });
   }
 
