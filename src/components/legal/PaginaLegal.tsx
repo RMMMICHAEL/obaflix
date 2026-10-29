@@ -1,16 +1,16 @@
 import Link from "next/link";
 
-/** Página legal simples. `pendencias` lista o que depende de aprovação do responsável; nada aqui é dado oficial inventado. */
-export function PaginaLegal({ titulo, children, pendencias }: { titulo: string; children: React.ReactNode; pendencias: string[] }) {
+/** Interface das informações comerciais e legais do Obaflix Cortes. */
+export function PaginaLegal({ titulo, children }: { titulo: string; children: React.ReactNode }) {
   return (
-    <main style={{ maxWidth: 760, margin: "0 auto", padding: "48px 20px", color: "#e4e4e7", lineHeight: 1.7 }}>
+    <article style={{ maxWidth: 800, margin: "0 auto", padding: "48px 20px 72px", color: "#e4e4e7", lineHeight: 1.75 }}>
       <Link href="/cortes" style={{ fontSize: 13, textDecoration: "underline" }}>← Obaflix Cortes</Link>
       <h1 style={{ fontSize: 30, fontWeight: 700, margin: "16px 0 24px" }}>{titulo}</h1>
-      <div style={{ display: "grid", gap: 14 }}>{children}</div>
-      <aside style={{ marginTop: 32, padding: 14, border: "1px solid #78350f", borderRadius: 10, fontSize: 13, color: "#fcd34d" }}>
-        <strong>Rascunho em revisão, sem validade como documento final.</strong> Dados oficiais ainda não informados: {pendencias.join("; ")}.
-      </aside>
-    </main>
+      <div style={{ display: "grid", gap: 16 }}>{children}</div>
+      <p style={{ marginTop: 34, paddingTop: 18, borderTop: "1px solid #3f3f46", fontSize: 13, color: "#a1a1aa" }}>
+        Obaflix Cortes · Atendimento: <a style={{ textDecoration: "underline", color: "#e4e4e7" }} href="mailto:obaflixsuporte@gmail.com">obaflixsuporte@gmail.com</a>
+      </p>
+    </article>
   );
 }
 

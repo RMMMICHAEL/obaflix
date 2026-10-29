@@ -77,7 +77,7 @@ const faqs = [
   ],
   [
     "Como funciona o Cortes AI?",
-    "No editor de vários trechos da versão Windows, escreva o tema ou roteiro. A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo. Ela sugere cenas e horários, de cerca de 20 a 90 segundos, com base no tema ou roteiro que você escreve, e preenche a lista para você conferir, ajustar e baixar. A IA não processa o vídeo visualmente, e há limite de análises por dia e por mês.",
+    "No editor de vários trechos da versão Windows, escreva o tema ou roteiro. A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo. Ela sugere cenas e horários, de cerca de 20 a 90 segundos, com base no tema ou roteiro que você escreve, e preenche a lista para você conferir, ajustar e baixar. Há limites de análises por dia e por mês.",
   ],
   [
     "Como contrato? Preciso criar conta antes?",
