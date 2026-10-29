@@ -5,8 +5,10 @@ import { ArrowUpRight, Check } from "lucide-react";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { acaoNoPlanoCortes } from "@/lib/billing/checkout";
 import styles from "./cortes.module.css";
+import { enviarEventoMeta, totalPixCentavos } from "@/lib/metaPixelCortes";
+import { ofertaDePor } from "@/lib/ofertaCortes";
 
-type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
+type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; precoOriginalCentavos?: number | null; moeda: string };
 type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
 
 const PLANOS = [
@@ -22,8 +24,8 @@ const PLANOS = [
   },
   {
     id: "cortes-ai", nome: "AI", destaque: false,
-    texto: "Descreva o tema: a IA usa as legendas para sugerir momentos e horários.",
-    beneficios: ["Tudo do Pro", "Sugestões de cortes por tema ou roteiro", "Usa as legendas do episódio com Gemini", "Até 5 análises a cada 24 horas"],
+    texto: "A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo.",
+    beneficios: ["Tudo do Pro", "Sugestões de cenas e horários a partir do tema ou roteiro", "Você revisa e ajusta antes de baixar", "Até 5 análises a cada 24 horas"],
   },
 ] as const;
 
@@ -70,11 +72,22 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
             <h3>{nome}</h3>
             <p className={styles.planPitch}>{texto}</p>
             {/* Preço só da API: sem preço ativo no banco, o plano não é vendável e nada é exibido como valor. */}
-            {preco && (
-              <p className={styles.planPrice}>
-                {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
-              </p>
-            )}
+            {preco && (() => {
+              const dePor = ofertaDePor(preco.precoCentavos, preco.precoOriginalCentavos);
+              const total = totalPixCentavos(id, preco.precoCentavos);
+              return (
+                <>
+                  {dePor && <p className={styles.planDe}>De <s>{dinheiro(dePor.deCentavos, preco.moeda)}</s> por</p>}
+                  <p className={styles.planPrice}>
+                    {dinheiro(preco.precoCentavos, preco.moeda)} <span>/ {preco.rotulo}</span>
+                  </p>
+                  {dePor && <p className={styles.planEconomia}>Economia de {dinheiro(dePor.economiaCentavos, preco.moeda)}</p>}
+                  {total > preco.precoCentavos && (
+                    <p className={styles.planTaxa}>+ taxa Cakto de R$ 0,99 · total no Pix {dinheiro(total, preco.moeda)}</p>
+                  )}
+                </>
+              );
+            })()}
             <ul className={styles.planBenefits} aria-label={`Benefícios do Cortes ${nome}`}>
               {beneficios.map((item) => (
                 <li key={item}>
@@ -91,6 +104,10 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
                   href={`${decisao.href}&planoPrecoId=${encodeURIComponent(preco.id)}`}
                   className={`${styles.primary} ${styles.planBuy}`}
                   data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
+                  onClick={() => enviarEventoMeta("InitiateCheckout", {
+                    content_ids: [id], content_type: "product", currency: "BRL",
+                    value: totalPixCentavos(id, preco.precoCentavos) / 100, num_items: 1,
+                  })}
                 >
                   {ROTULO[decisao.acao]} Cortes {nome} <ArrowUpRight size={19} aria-hidden />
                 </LinkAssinatura>

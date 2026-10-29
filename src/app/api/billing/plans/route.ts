@@ -28,7 +28,7 @@ function createPlansHandler(deps: any = {}) {
       filmes: true, series: true, downloads: true, telasMax: true,
       anunciosObrigatorios: true, canaisNivel: true, resolucaoMax: true, cortesNivel: true,
       precos: { where: { ativo: true }, orderBy: { ordem: "asc" }, select: {
-        id: true, rotulo: true, duracaoDias: true, duracaoMeses: true, precoCentavos: true, moeda: true,
+        id: true, rotulo: true, duracaoDias: true, duracaoMeses: true, precoCentavos: true, precoOriginalCentavos: true, moeda: true,
       } },
       adicionais: { where: { ativo: true, tipo: "tela", moeda: "BRL" }, select: { precoMensalCentavos: true } },
     },

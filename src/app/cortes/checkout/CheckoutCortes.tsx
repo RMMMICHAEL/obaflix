@@ -9,6 +9,7 @@ import { Check, ShieldCheck, Scissors, ArrowRight } from "lucide-react";
 import { corpoCriarPedido, descricaoDaOperacao, deveFazerPolling, mensagemErroCheckout } from "@/lib/billing/checkout";
 import { emailDoComprador, cpfValido, telefoneBrasileiroValido, nomeCompletoValido, IDADE_MINIMA_COMPRA, soDigitos } from "@/lib/billing/pagador";
 import { mascararCheckout } from "@/lib/billing/mascarasCheckout";
+import { EVENTO_PIXEL_PRONTO, enviarEventoMeta, pixelPronto, totalPixCentavos } from "@/lib/metaPixelCortes";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 
 type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
@@ -21,7 +22,7 @@ type Pedido = {
 const planos = {
   "cortes-start": { nome: "Start", subtitulo: "Encontre a cena, marque início e fim e exporte um trecho de cada vez.", beneficios: ["Marcação de início e fim no player", "Prévia para revisar antes de exportar", "Exportação de trechos individuais", "Aplicativo Windows"] },
   "cortes-pro": { nome: "Pro", subtitulo: "Organize uma sequência de cenas para a edição.", beneficios: ["Tudo do Start", "Lista de múltiplos trechos", "Exportação em lote", "Aplicativo Windows"] },
-  "cortes-ai": { nome: "AI", subtitulo: "Receba sugestões de momentos a partir das legendas e do tema.", beneficios: ["Tudo do Pro", "Sugestões por tema ou roteiro", "Revisão dos trechos sugeridos", "Limites de análises previstos no plano"] },
+  "cortes-ai": { nome: "AI", subtitulo: "A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo.", beneficios: ["Tudo do Pro", "Sugestões de cenas e horários a partir do tema ou roteiro", "Revisão dos trechos sugeridos", "Limites de análises previstos no plano"] },
 } as const;
 type Id = keyof typeof planos;
 const dinheiro = (n: number, moeda = "BRL") => new Intl.NumberFormat("pt-BR", { style: "currency", currency: moeda }).format(n / 100);
@@ -153,12 +154,30 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
         return;
       }
       setPedido(data);
+      if (data?.pix?.copiaECola) enviarEventoMeta("AddPaymentInfo", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: totalPixCentavos(id ?? "", data.valorCentavos) / 100 }, "pix_" + data.pedidoId);
     } catch {
       // Rede incerta: o servidor pode ter criado o Pix, então não tentar novamente sem consulta.
       setErro("Não foi possível verificar se o Pix foi criado. Não tente de novo agora; entre em contato com o suporte.");
       setTravarNovaTentativa(true);
     } finally { envioEmCurso.current = false; setEnviando(false); }
   }
+
+  // Purchase só com PAGO vindo do backend. Só marca como enviado se o Pixel recebeu; sem consentimento/Pixel, tenta de novo quando ele ficar pronto.
+  // eventID=pedidoId deduplica no lado da Meta.
+  const [pixelOk, setPixelOk] = useState(false);
+  useEffect(() => {
+    setPixelOk(pixelPronto());
+    const f = () => setPixelOk(true);
+    window.addEventListener(EVENTO_PIXEL_PRONTO, f);
+    return () => window.removeEventListener(EVENTO_PIXEL_PRONTO, f);
+  }, []);
+  useEffect(() => {
+    if (pedido?.status !== "PAGO" || !pixelOk) return;
+    const marca = "meta_purchase_" + pedido.pedidoId;
+    try { if (localStorage.getItem(marca)) return; } catch {}
+    if (!enviarEventoMeta("Purchase", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: totalPixCentavos(id ?? "", pedido.valorCentavos) / 100 }, pedido.pedidoId)) return;
+    try { localStorage.setItem(marca, "1"); } catch {}
+  }, [pedido?.status, pedido?.pedidoId, pedido?.valorCentavos, id, pixelOk]);
 
   useEffect(() => {
     if (pedido?.status !== "PAGO" || !id) return;
