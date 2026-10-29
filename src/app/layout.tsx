@@ -9,6 +9,7 @@ import { DesktopUpdateBanner } from "@/components/ui/DesktopUpdateBanner";
 import { DesktopVersionGate } from "@/components/ui/DesktopVersionGate";
 import { CliqueDesktop } from "@/components/ads/CliqueDesktop";
 import { PlayerWakeLock } from "@/components/player/PlayerWakeLock";
+import { MetaPixelConsent } from "@/components/analytics/MetaPixelConsent";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { absoluteUrl, DEFAULT_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 import { getObaflixSurface } from "@/config/obaflix-surface";
@@ -109,6 +110,7 @@ export default function RootLayout({
             },
           ]}
         />}
+        {!adminSurface && <MetaPixelConsent />}
         <Providers>
           {adminSurface ? <main>{children}</main> : <AppModeProvider>
             <PlayerWakeLock />

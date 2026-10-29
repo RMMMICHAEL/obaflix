@@ -5,6 +5,7 @@ import { ArrowUpRight, Check } from "lucide-react";
 import { LinkAssinatura } from "@/components/ui/LinkAssinatura";
 import { acaoNoPlanoCortes } from "@/lib/billing/checkout";
 import styles from "./cortes.module.css";
+import { enviarEventoMeta } from "@/lib/metaPixelCortes";
 
 type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
 type PlanoDaApi = { id: string; compravel: boolean; precos: Preco[] };
@@ -91,6 +92,10 @@ export function PlanosCortes({ situacao = { logado: false, atual: null } }: { si
                   href={`${decisao.href}&planoPrecoId=${encodeURIComponent(preco.id)}`}
                   className={`${styles.primary} ${styles.planBuy}`}
                   data-cortes-cta={`plano-${nome.toLowerCase()}-${decisao.acao}`}
+                  onClick={() => enviarEventoMeta("InitiateCheckout", {
+                    content_ids: [id], content_type: "product", currency: "BRL",
+                    value: (preco.precoCentavos + 99) / 100, num_items: 1,
+                  })}
                 >
                   {ROTULO[decisao.acao]} Cortes {nome} <ArrowUpRight size={19} aria-hidden />
                 </LinkAssinatura>

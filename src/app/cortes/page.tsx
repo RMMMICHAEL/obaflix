@@ -8,7 +8,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { INSTALADORES } from "@/config/downloads";
+import { VideoVslCortes } from "./VideoVslCortes";
+import { FooterLegalCortes } from "./FooterLegalCortes";
 import { PlanosCortes } from "./PlanosCortes";
 import styles from "./cortes.module.css";
 
@@ -91,8 +92,6 @@ const faqs = [
   ],
 ];
 
-const instalador = INSTALADORES.windowsCortes;
-
 export default function CortesPage() {
   return (
     <div
@@ -130,6 +129,7 @@ export default function CortesPage() {
         </a>
       </header>
 
+      <VideoVslCortes />
       <section className={styles.hero} id="conteudo" aria-labelledby="titulo">
         <div className={styles.heroCopy}>
           <p className={styles.kicker}>
@@ -159,15 +159,11 @@ export default function CortesPage() {
             Compra por Pix, sem cadastro prévio
           </p>
         </div>
-        <aside className={styles.recording} aria-labelledby="gravacao-titulo">
-          <div className={styles.recordingScreen}>
-            <Monitor size={36} aria-hidden />
-            <span>APLICATIVO WINDOWS</span>
-            <h2 id="gravacao-titulo">Veja o corte acontecer.</h2>
-            <p>Uma gravação real mostrará a cena em reprodução, a seleção no player e o trecho exportado.</p>
-            <small>Gravação ainda não disponível.</small>
-          </div>
-          <p className={styles.recordingCaption}>Demonstração real do aplicativo, sem simulação de telas.</p>
+        <aside className={styles.futureNote}>
+          <p className={styles.overline}>O jeito mais simples de preparar cenas</p>
+          <h2>Selecione. Confira. Exporte.</h2>
+          <p>Conheça os recursos no vídeo acima e escolha o plano ideal para seu fluxo de edição.</p>
+          <a href="#lancamento" className={styles.primary}>Ver os planos <ArrowUpRight size={18} /></a>
         </aside>
       </section>
       <div className={styles.audience}>
@@ -304,17 +300,6 @@ export default function CortesPage() {
           <li><span>03 / INSTALAÇÃO</span><h3>Instale o app Windows.</h3><p>Baixe o instalador, siga a instalação e abra o Obaflix.</p></li>
           <li><span>04 / NO PLAYER</span><h3>Entre e corte.</h3><p>Entre com o e-mail da compra. No download do filme ou episódio, escolha o trecho.</p></li>
         </ol>
-        <div className={styles.actions}>
-          {instalador.url ? (
-            <a href={instalador.url} rel="noopener nofollow" className={styles.primary} data-cortes-cta="instalador">
-              Baixar para Windows <ArrowDown size={18} aria-hidden />
-            </a>
-          ) : (
-            <span className={styles.availability}>
-              <Monitor size={15} aria-hidden /> Instalador com Cortes em preparação.
-            </span>
-          )}
-        </div>
       </section>
 
       <section
@@ -373,6 +358,7 @@ export default function CortesPage() {
           Dúvidas sobre o produto <ArrowUpRight size={14} aria-hidden />
         </a>
       </footer>
+      <FooterLegalCortes />
       <JsonLd
         data={{
           "@context": "https://schema.org",
