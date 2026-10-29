@@ -31,7 +31,7 @@ export function criarFake(estado: any, erros: unknown[] = []) {
   };
   const banco:any={
     ...revisao,
-    pedidoPagamento:{findUnique:async()=>estado.pedido,update:async({data}:any)=>Object.assign(estado.pedido,data)},
+    pedidoPagamento:{findUnique:async()=>estado.pedido,update:async({data}:any)=>Object.assign(estado.pedido,data),updateMany:async({where,data}:any)=>{ if(where.metaPurchaseEnviadoEm===null&&estado.pedido.metaPurchaseEnviadoEm) return {count:0}; Object.assign(estado.pedido,data); return {count:1}; }},
     $transaction:async(fn:any)=>{ transacoes++; const erro=erros.shift(); if(erro) throw erro; return fn(tx); },
   };
   return { banco, estado, invalidacoes, transacoes:()=>transacoes, invalidar:async(id:string)=>{invalidacoes.push(id)}, agora:()=>AGORA, consultar:async()=>({ok:true as const,confirmacao:{transactionId:"tx",status:"PAID" as const,amount:1000,paidAt:null}}) };

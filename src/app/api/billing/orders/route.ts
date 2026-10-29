@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { ehPlanoCortes, ordemNaFamilia } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
+import { capturaMetaDaRequisicao } from "@/lib/metaCapi";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
 import { caktoPixAtivo, pilotoCaktoAutorizado, pilotoCaktoAdminPermitido } from "@/lib/billing/cakto";
 import {
@@ -432,6 +433,14 @@ export async function POST(req: NextRequest) {
     detail: `pedido ${resultado.pedidoId} operacao:${resultado.operacao}`,
   });
   if (ehPlanoCortes(planoId)) audit("cortes_checkout_pix_created", { detail: planoId });
+  // Rastreio do Pixel capturado no pedido (para a Meta CAPI). Sem _fbp válido (Pixel bloqueado), nada é gravado.
+  const rastreio = ehPlanoCortes(planoId) ? capturaMetaDaRequisicao(req.cookies, req.headers.get("user-agent")) : null;
+  if (rastreio) {
+    await prisma.pedidoPagamento.update({
+      where: { id: resultado.pedidoId },
+      data: { metaRastreioCapturadoEm: new Date(), metaFbp: rastreio.fbp, metaFbc: rastreio.fbc, metaUserAgent: rastreio.userAgent },
+    }).catch(() => { /* sem registro, sem envio */ });
+  }
 
   // 9. A resposta, no nosso contrato. O QR e o copia-e-cola não são persistidos
   //    nem logados. `operacao`, `creditoCentavos` e `iniciaEm` explicam o valor;

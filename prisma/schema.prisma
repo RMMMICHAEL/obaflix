@@ -639,6 +639,17 @@ model PedidoPagamento {
   /// colidir com o primeiro.
   provedor String @default("blackcat")
 
+  /// Meta CAPI: instante em que o pedido foi criado com o Pixel ativo no navegador (_fbp válido).
+  /// null = Pixel ausente/bloqueado ou pedido anterior à CAPI: nada é enviado à Meta. Não é consentimento.
+  metaRastreioCapturadoEm DateTime?
+  /// Identificadores do Pixel (_fbp/_fbc) capturados nesse instante.
+  metaFbp String?
+  metaFbc String?
+  /// User agent do navegador na criação do pedido (exigido pela Meta para action_source website).
+  metaUserAgent String?
+  /// Purchase aceito pela Meta; evita reenviar.
+  metaPurchaseEnviadoEm DateTime?
+
   /// Domínio fechado por CHECK, mesmo critério de `Assinatura.status`:
   /// CRIADO | AGUARDANDO | CONFIRMANDO | PAGO | EXPIRADO | CANCELADO | FALHOU |
   /// ESTORNADO | REVISAO_MANUAL. A Fase 4 só escreve os três primeiros estados

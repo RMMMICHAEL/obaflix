@@ -94,6 +94,9 @@ export type AuditEvent =
   | "account_delete_rejected"
   | "email_sent"
   | "email_failed"
+  | "meta_capi_purchase_sent"
+  | "meta_capi_purchase_failed"
+  | "meta_capi_teste"
   | "account_activated"
   | "account_activation_rejected"
   // Cortes AI. `detail` leva só códigos, id do conteúdo, contagens e tokens —

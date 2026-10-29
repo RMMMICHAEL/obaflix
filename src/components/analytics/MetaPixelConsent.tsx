@@ -8,31 +8,32 @@ import {
   CONSENTIMENTO_ANUNCIOS, EVENTO_PIXEL_PRONTO, EVENTO_PREFERENCIAS, META_PIXEL_ID, enviarEventoMeta, pixelPronto,
 } from "@/lib/metaPixelCortes";
 
-const lerEscolha = () => {
-  try { return localStorage.getItem(CONSENTIMENTO_ANUNCIOS); } catch { return null; }
+const jaViu = () => {
+  try { return localStorage.getItem(CONSENTIMENTO_ANUNCIOS) !== null; } catch { return false; }
 };
 
-/** Botão do rodapé para o visitante rever a escolha. */
+/** Botão do rodapé para reler o aviso. */
 export function BotaoPreferenciasCookies({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <button type="button" className={className} style={style} onClick={() => window.dispatchEvent(new Event(EVENTO_PREFERENCIAS))}>
-      Preferências de cookies
+      Aviso de cookies
     </button>
   );
 }
 
-/** Pixel só carrega após aceite explícito. O layout já exclui a superfície admin. */
+/**
+ * Meta Pixel sempre ativo fora do admin (o layout já exclui a superfície admin e a rota é conferida aqui).
+ * O aviso é só informativo: não oferece recusa, porque o Pixel não é desligado por ele.
+ */
 export function MetaPixelConsent() {
   const pathname = usePathname();
-  const [escolha, setEscolha] = useState<string | null | undefined>(undefined);
+  const admin = pathname.startsWith("/admin");
   const [pronto, setPronto] = useState(false);
   const [aberto, setAberto] = useState(false);
   const ultimaRota = useRef<string | null>(null);
 
   useEffect(() => {
-    const e = lerEscolha();
-    setEscolha(e);
-    setAberto(e === null);
+    setAberto(!jaViu());
     const reabrir = () => setAberto(true);
     window.addEventListener(EVENTO_PREFERENCIAS, reabrir);
     return () => window.removeEventListener(EVENTO_PREFERENCIAS, reabrir);
@@ -40,7 +41,7 @@ export function MetaPixelConsent() {
 
   // Pixel pronto = fbq existe (o snippet oficial enfileira até a biblioteca baixar). Avisa quem aguardava.
   useEffect(() => {
-    if (escolha !== "sim") return;
+    if (admin) return;
     let n = 0;
     const t = window.setInterval(() => {
       if (pixelPronto() || ++n > 50) {
@@ -49,34 +50,28 @@ export function MetaPixelConsent() {
       }
     }, 100);
     return () => window.clearInterval(t);
-  }, [escolha]);
+  }, [admin]);
 
-  // Um PageView por rota, só com consentimento e Pixel pronto.
+  // Um PageView por rota (navegação), só com o Pixel pronto.
   useEffect(() => {
-    if (escolha !== "sim" || !pronto || pathname.startsWith("/admin") || ultimaRota.current === pathname) return;
+    if (admin || !pronto || ultimaRota.current === pathname) return;
     if (enviarEventoMeta("PageView")) ultimaRota.current = pathname;
-  }, [escolha, pronto, pathname]);
+  }, [admin, pronto, pathname]);
 
-  if (pathname.startsWith("/admin")) return null;
-  const decidir = (v: "sim" | "nao") => {
-    try { localStorage.setItem(CONSENTIMENTO_ANUNCIOS, v); } catch {}
-    // Revogar depois de aceitar: recarrega para descartar o Pixel já carregado.
-    if (v === "nao" && escolha === "sim") { window.location.reload(); return; }
-    setEscolha(v);
+  if (admin) return null;
+  const entendi = () => {
+    try { localStorage.setItem(CONSENTIMENTO_ANUNCIOS, "visto"); } catch {}
     setAberto(false);
   };
 
   return (
     <>
-      {escolha === "sim" && (
-        <Script id="meta-pixel" strategy="afterInteractive">{`!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');`}</Script>
-      )}
+      <Script id="meta-pixel" strategy="afterInteractive">{`!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');`}</Script>
       {aberto && (
-        <div role="dialog" aria-label="Preferências de cookies" style={{ position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 60, maxWidth: 560, margin: "0 auto", background: "#18181b", color: "#e4e4e7", border: "1px solid #3f3f46", borderRadius: 12, padding: 16, fontSize: 13 }}>
-          <p>Usamos o Pixel da Meta para medir anúncios. Você aceita? Veja a <Link href="/privacidade" style={{ textDecoration: "underline" }}>Política de Privacidade</Link>. Você pode mudar depois em “Preferências de cookies”.</p>
+        <div role="dialog" aria-label="Aviso de cookies" style={{ position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 60, maxWidth: 560, margin: "0 auto", background: "#18181b", color: "#e4e4e7", border: "1px solid #3f3f46", borderRadius: 12, padding: 16, fontSize: 13 }}>
+          <p>Este site usa o Pixel da Meta para medir anúncios. Veja a <Link href="/privacidade" style={{ textDecoration: "underline" }}>Política de Privacidade</Link>.</p>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button type="button" onClick={() => decidir("sim")} style={{ background: "#dc2626", color: "#fff", borderRadius: 8, padding: "8px 14px" }}>Aceitar</button>
-            <button type="button" onClick={() => decidir("nao")} style={{ border: "1px solid #52525b", borderRadius: 8, padding: "8px 14px" }}>Recusar</button>
+            <button type="button" onClick={entendi} style={{ background: "#dc2626", color: "#fff", borderRadius: 8, padding: "8px 14px" }}>Entendi</button>
           </div>
         </div>
       )}
