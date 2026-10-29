@@ -10,6 +10,7 @@ import {
 import { JsonLd } from "@/components/seo/JsonLd";
 import { VideoVslCortes } from "./VideoVslCortes";
 import { FooterLegalCortes } from "./FooterLegalCortes";
+import { FaixaBlackFriday } from "./FaixaBlackFriday";
 import { PlanosCortes } from "./PlanosCortes";
 import styles from "./cortes.module.css";
 
@@ -129,6 +130,7 @@ export default function CortesPage() {
         </a>
       </header>
 
+      <FaixaBlackFriday />
       <VideoVslCortes />
       <section className={styles.hero} id="conteudo" aria-labelledby="titulo">
         <div className={styles.heroCopy}>
