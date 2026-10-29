@@ -639,6 +639,15 @@ model PedidoPagamento {
   /// colidir com o primeiro.
   provedor String @default("blackcat")
 
+  /// Consentimento de publicidade (Meta CAPI), lido do cookie ao criar o pedido.
+  /// null = sem consentimento: nada é enviado à Meta. Nunca guarda dado pessoal.
+  consentimentoAnunciosEm DateTime?
+  /// Identificadores do Pixel (_fbp/_fbc), só com consentimento.
+  metaFbp String?
+  metaFbc String?
+  /// Purchase aceito pela Meta; evita reenviar.
+  metaPurchaseEnviadoEm DateTime?
+
   /// Domínio fechado por CHECK, mesmo critério de `Assinatura.status`:
   /// CRIADO | AGUARDANDO | CONFIRMANDO | PAGO | EXPIRADO | CANCELADO | FALHOU |
   /// ESTORNADO | REVISAO_MANUAL. A Fase 4 só escreve os três primeiros estados

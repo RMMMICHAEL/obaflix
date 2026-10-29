@@ -8,6 +8,7 @@ import { abrirRevisao, marcarPedidoEmRevisao, motivoDaConfirmacao, type MotivoDe
 import { confirmadorDoPedido } from "./simulado";
 import { notificarPrimeiroAcesso, type ContaDoComprador } from "../primeiroAcesso";
 import { OFERTAS_CAKTO, TAXA_SERVICO_CAKTO_CENTAVOS } from "./cakto";
+import { enviarPurchaseMeta, type CompraParaMeta, type ResultadoMeta } from "../metaCapi";
 
 type Pedido = { id: string; userId: string | null; planoId: string; planoPrecoId: string; status: string; valorCentavos: number; moeda: string; duracaoDias: number | null; transacaoId: string | null; expiraEm: Date | null };
 export type Decisao = "MANTER" | "ATIVAR" | "EXPIRAR" | "CANCELAR" | "ESTORNAR" | "REVISAR";
@@ -83,7 +84,7 @@ export function planejarAtivacao(
 
 const MAX_TENTATIVAS_TRANSACAO = 3;
 /** Portas estreitas para testes; produção usa os defaults abaixo. */
-export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string, esperado?: { planoId?: string })=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; }
+export interface DependenciasConfirmacao { prisma: typeof prisma; consultarStatusBlackcat: (id:string, esperado?: { planoId?: string })=>ReturnType<NonNullable<ReturnType<typeof criarConfirmadorBlackcat>>>; invalidarEntitlements: typeof invalidarEntitlements; agora: ()=>Date; notificarPrimeiroAcesso: (c: ContaDoComprador)=>Promise<unknown>; enviarPurchaseMeta: (c: CompraParaMeta)=>Promise<ResultadoMeta>; }
 function conflitoRetryable(erro: unknown) { return typeof erro === "object" && erro !== null && "code" in erro && (erro as {code?:unknown}).code === "P2034"; }
 function conflitoPedidoId(erro: unknown) { const e=erro as {code?:unknown;meta?:{target?:unknown}}; return e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("pedidoId"); }
 async function transacaoComRetry<T>(banco: typeof prisma, fn: (tx: Parameters<typeof prisma.$transaction>[0] extends (arg: infer U) => unknown ? U : never) => Promise<T>): Promise<T> {
@@ -101,9 +102,9 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   const confirmar = injetadas.consultarStatusBlackcat ?? confirmadorDoPedido(pedido.provedor ?? "blackcat"); if (!confirmar) return { resultado: "configuracao" };
   const externo = await confirmar(pedido.transacaoId, { planoId: pedido.planoId });
   if (!externo.ok) { audit("billing_reconcile_failed", { userId: pedido.userId, detail: externo.falha }); return { resultado: "retry" }; }
-  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null;
+  const agora = relogio(); const decisao = decidirConfirmacao(pedido, externo.confirmacao, agora); let userParaInvalidar: string | null = null; let comprador: ContaDoComprador | null = null; let compraMeta: CompraParaMeta | null = null;
   try { await transacaoComRetry(banco, async (tx) => {
-    comprador = null;
+    comprador = null; compraMeta = null;
     const incluir = { assinatura: true, plano: { select: { cortesNivel: true, nome: true } } } as const;
     const atual = await tx.pedidoPagamento.findUnique({ where: { id: pedidoId }, include: incluir }); if (!atual) return;
     // Repetição após commit é sucesso idempotente; nunca reabre uma compra paga.
@@ -158,6 +159,11 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
     await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=userId;
+    // Purchase no servidor: só compra Cortes Cakto recém-ativada, com consentimento registrado no pedido e sem envio anterior.
+    if (atual.provedor === "cakto" && ehPlanoCortes(atual.plano?.cortesNivel) && atual.consentimentoAnunciosEm && !atual.metaPurchaseEnviadoEm) {
+      const comTaxa = OFERTAS_CAKTO[atual.planoId]?.centavos === atual.valorCentavos;
+      compraMeta = { pedidoId: atual.id, planoId: atual.planoId, valorTotalCentavos: atual.valorCentavos + (comTaxa ? TAXA_SERVICO_CAKTO_CENTAVOS : 0), fbp: atual.metaFbp, fbc: atual.metaFbc, em: agora };
+    }
   }); } catch (erro) {
     if (!conflitoPedidoId(erro)) throw erro;
     const reconciliado=await banco.pedidoPagamento.findUnique({where:{id:pedidoId},include:{assinatura:true}});
@@ -170,6 +176,13 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
   const avisar = comprador as ContaDoComprador | null;
   if (avisar) try { await (injetadas.notificarPrimeiroAcesso ?? notificarPrimeiroAcesso)(avisar); } catch { audit("email_failed",{userId:avisar.userId,detail:"primeiro_acesso apos_commit"}); }
   if(userParaInvalidar) try { await invalidar(userParaInvalidar); } catch { audit("billing_entitlements_invalidation_failed",{userId:userParaInvalidar,detail:"apos_commit"}); }
+  // Depois do e-mail e da invalidação: falha ou lentidão da Meta nunca atrasa nem desfaz a ativação.
+  const meta = compraMeta as CompraParaMeta | null;
+  if (meta) try {
+    const r = await (injetadas.enviarPurchaseMeta ?? enviarPurchaseMeta)(meta);
+    if (r.ok) { await banco.pedidoPagamento.updateMany({ where: { id: meta.pedidoId, metaPurchaseEnviadoEm: null }, data: { metaPurchaseEnviadoEm: relogio() } }); audit("meta_capi_purchase_sent", { userId: pedido.userId, detail: `pedido ${meta.pedidoId}` }); }
+    else audit("meta_capi_purchase_failed", { userId: pedido.userId, detail: `pedido ${meta.pedidoId} ${r.motivo}` });
+  } catch { audit("meta_capi_purchase_failed", { userId: pedido.userId, detail: `pedido ${meta.pedidoId} erro` }); }
   audit(decisao === "ATIVAR" ? "billing_payment_confirmed" : decisao === "ESTORNAR" ? "billing_payment_refunded" : "billing_payment_review",{userId:pedido.userId,detail:`pedido ${pedidoId}`});
   return { resultado:decisao.toLowerCase() };
 }

@@ -8,6 +8,11 @@ import {
   CONSENTIMENTO_ANUNCIOS, EVENTO_PIXEL_PRONTO, EVENTO_PREFERENCIAS, META_PIXEL_ID, enviarEventoMeta, pixelPronto,
 } from "@/lib/metaPixelCortes";
 
+// Cópia da escolha em cookie de primeira parte: o servidor só registra o consentimento no pedido se ele existir.
+const gravarCookie = (sim: boolean) => {
+  document.cookie = `obaflix_ads=${sim ? "1" : ""}; path=/; max-age=${sim ? 15552000 : 0}; SameSite=Lax; Secure`;
+};
+
 const lerEscolha = () => {
   try { return localStorage.getItem(CONSENTIMENTO_ANUNCIOS); } catch { return null; }
 };
@@ -31,6 +36,7 @@ export function MetaPixelConsent() {
 
   useEffect(() => {
     const e = lerEscolha();
+    if (e) gravarCookie(e === "sim");
     setEscolha(e);
     setAberto(e === null);
     const reabrir = () => setAberto(true);
@@ -60,6 +66,7 @@ export function MetaPixelConsent() {
   if (pathname.startsWith("/admin")) return null;
   const decidir = (v: "sim" | "nao") => {
     try { localStorage.setItem(CONSENTIMENTO_ANUNCIOS, v); } catch {}
+    gravarCookie(v === "sim");
     // Revogar depois de aceitar: recarrega para descartar o Pixel já carregado.
     if (v === "nao" && escolha === "sim") { window.location.reload(); return; }
     setEscolha(v);
