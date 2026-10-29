@@ -77,9 +77,9 @@ const nextConfig = {
       value: [
         "default-src 'self'",
         // Scripts: nosso app + JW Player CDN + Chromecast SDK
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://ssl.p.jwpcdn.com https://www.gstatic.com",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://ssl.p.jwpcdn.com https://www.gstatic.com https://connect.facebook.net",
         "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data: blob: https://image.tmdb.org https://lh3.googleusercontent.com",
+        "img-src 'self' data: blob: https://image.tmdb.org https://lh3.googleusercontent.com https://www.facebook.com",
         `frame-src ${frame}`,
         // HLS.js baixa segmentos diretamente dos CDNs dinamicos dos provedores.
         "connect-src 'self' https:",
