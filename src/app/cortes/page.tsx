@@ -77,7 +77,7 @@ const faqs = [
   ],
   [
     "Como funciona o Cortes AI?",
-    "No editor de vários trechos da versão Windows, escreva o tema ou roteiro. A IA lê a legenda do título, sugere cortes de cerca de 20 a 90 segundos com título e preenche a lista para você conferir, ajustar e baixar. A IA usa só o texto da legenda, não o vídeo, e há limite de análises por dia e por mês.",
+    "No editor de vários trechos da versão Windows, escreva o tema ou roteiro. A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo. Ela sugere cenas e horários, de cerca de 20 a 90 segundos, com base no tema ou roteiro que você escreve, e preenche a lista para você conferir, ajustar e baixar. A IA não processa o vídeo visualmente, e há limite de análises por dia e por mês.",
   ],
   [
     "Como contrato? Preciso criar conta antes?",
@@ -256,7 +256,7 @@ export default function CortesPage() {
       <aside className={`${styles.section} ${styles.futureNote}`} aria-labelledby="ai-titulo">
         <span className={styles.future}><Sparkles size={14} aria-hidden /> Novo · Obaflix Cortes AI</span>
         <h2 id="ai-titulo">Diga o tema. A IA encontra as cenas.</h2>
-        <p>Escreva o tema ou roteiro no editor de vários trechos. A IA lê a legenda do título, sugere os melhores momentos com horários e títulos e preenche a lista para você revisar, ajustar e baixar em lote.</p>
+        <p>Escreva o tema ou roteiro no editor de vários trechos. A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo. Ela sugere cenas e horários com base no tema ou roteiro e preenche a lista para você revisar, ajustar e baixar em lote.</p>
       </aside>
 
       <section

@@ -22,7 +22,7 @@ type Pedido = {
 const planos = {
   "cortes-start": { nome: "Start", subtitulo: "Encontre a cena, marque início e fim e exporte um trecho de cada vez.", beneficios: ["Marcação de início e fim no player", "Prévia para revisar antes de exportar", "Exportação de trechos individuais", "Aplicativo Windows"] },
   "cortes-pro": { nome: "Pro", subtitulo: "Organize uma sequência de cenas para a edição.", beneficios: ["Tudo do Start", "Lista de múltiplos trechos", "Exportação em lote", "Aplicativo Windows"] },
-  "cortes-ai": { nome: "AI", subtitulo: "Receba sugestões de momentos a partir das legendas e do tema.", beneficios: ["Tudo do Pro", "Sugestões por tema ou roteiro", "Revisão dos trechos sugeridos", "Limites de análises previstos no plano"] },
+  "cortes-ai": { nome: "AI", subtitulo: "A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo.", beneficios: ["Tudo do Pro", "Sugestões de cenas e horários a partir do tema ou roteiro", "Revisão dos trechos sugeridos", "Limites de análises previstos no plano"] },
 } as const;
 type Id = keyof typeof planos;
 const dinheiro = (n: number, moeda = "BRL") => new Intl.NumberFormat("pt-BR", { style: "currency", currency: moeda }).format(n / 100);

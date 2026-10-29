@@ -24,8 +24,8 @@ const PLANOS = [
   },
   {
     id: "cortes-ai", nome: "AI", destaque: false,
-    texto: "Descreva o tema: a IA usa as legendas para sugerir momentos e horários.",
-    beneficios: ["Tudo do Pro", "Sugestões de cortes por tema ou roteiro", "Usa as legendas do episódio com Gemini", "Até 5 análises a cada 24 horas"],
+    texto: "A IA analisa o conteúdo e encontra os melhores momentos para seu vídeo.",
+    beneficios: ["Tudo do Pro", "Sugestões de cenas e horários a partir do tema ou roteiro", "Você revisa e ajusta antes de baixar", "Até 5 análises a cada 24 horas"],
   },
 ] as const;
 

@@ -14,4 +14,5 @@ export function PaginaLegal({ titulo, children, pendencias }: { titulo: string; 
   );
 }
 
-export const emailSuporte = () => process.env.OBAFLIX_PRIVACY_CONTACT_EMAIL?.trim() || null;
+export const EMAIL_SUPORTE = "obaflixsuporte@gmail.com";
+export const emailSuporte = () => EMAIL_SUPORTE;
