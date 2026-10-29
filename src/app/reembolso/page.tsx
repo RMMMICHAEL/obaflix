@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { PaginaLegal, emailSuporte } from "@/components/legal/PaginaLegal";
 
-export const metadata: Metadata = { title: "Política de Reembolso | Obaflix Cortes", robots: { index: true } };
+export const metadata: Metadata = { title: "Política de Reembolso | Obaflix Cortes", robots: { index: false, follow: false } };
 
 export default function Pagina() {
   const email = emailSuporte();

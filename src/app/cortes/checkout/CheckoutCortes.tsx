@@ -9,7 +9,7 @@ import { Check, ShieldCheck, Scissors, ArrowRight } from "lucide-react";
 import { corpoCriarPedido, descricaoDaOperacao, deveFazerPolling, mensagemErroCheckout } from "@/lib/billing/checkout";
 import { emailDoComprador, cpfValido, telefoneBrasileiroValido, nomeCompletoValido, IDADE_MINIMA_COMPRA, soDigitos } from "@/lib/billing/pagador";
 import { mascararCheckout } from "@/lib/billing/mascarasCheckout";
-import { enviarEventoMeta } from "@/lib/metaPixelCortes";
+import { EVENTO_PIXEL_PRONTO, enviarEventoMeta, pixelPronto, totalPixCentavos } from "@/lib/metaPixelCortes";
 import { MENSAGEM_DE_REVISAO_AO_COMPRADOR } from "@/lib/billing/revisao";
 
 type Preco = { id: string; rotulo: string; duracaoDias: number | null; duracaoMeses: number | null; precoCentavos: number; moeda: string };
@@ -154,7 +154,7 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
         return;
       }
       setPedido(data);
-      if (data?.pix?.copiaECola) enviarEventoMeta("AddPaymentInfo", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: data.valorCentavos / 100 }, "pix_" + data.pedidoId);
+      if (data?.pix?.copiaECola) enviarEventoMeta("AddPaymentInfo", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: totalPixCentavos(id ?? "", data.valorCentavos) / 100 }, "pix_" + data.pedidoId);
     } catch {
       // Rede incerta: o servidor pode ter criado o Pix, então não tentar novamente sem consulta.
       setErro("Não foi possível verificar se o Pix foi criado. Não tente de novo agora; entre em contato com o suporte.");
@@ -162,13 +162,22 @@ export function CheckoutCortes({ vendasPublicas, instaladorUrl }: { vendasPublic
     } finally { envioEmCurso.current = false; setEnviando(false); }
   }
 
-  // Purchase só com PAGO vindo do backend; eventID=pedidoId e sessionStorage evitam repetição.
+  // Purchase só com PAGO vindo do backend. Só marca como enviado se o Pixel recebeu; sem consentimento/Pixel, tenta de novo quando ele ficar pronto.
+  // eventID=pedidoId deduplica no lado da Meta.
+  const [pixelOk, setPixelOk] = useState(false);
   useEffect(() => {
-    if (pedido?.status !== "PAGO") return;
+    setPixelOk(pixelPronto());
+    const f = () => setPixelOk(true);
+    window.addEventListener(EVENTO_PIXEL_PRONTO, f);
+    return () => window.removeEventListener(EVENTO_PIXEL_PRONTO, f);
+  }, []);
+  useEffect(() => {
+    if (pedido?.status !== "PAGO" || !pixelOk) return;
     const marca = "meta_purchase_" + pedido.pedidoId;
-    try { if (sessionStorage.getItem(marca)) return; sessionStorage.setItem(marca, "1"); } catch {}
-    enviarEventoMeta("Purchase", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: pedido.valorCentavos / 100 }, pedido.pedidoId);
-  }, [pedido?.status, pedido?.pedidoId, pedido?.valorCentavos, id]);
+    try { if (localStorage.getItem(marca)) return; } catch {}
+    if (!enviarEventoMeta("Purchase", { content_ids: [id ?? "cortes"], content_type: "product", currency: "BRL", value: totalPixCentavos(id ?? "", pedido.valorCentavos) / 100 }, pedido.pedidoId)) return;
+    try { localStorage.setItem(marca, "1"); } catch {}
+  }, [pedido?.status, pedido?.pedidoId, pedido?.valorCentavos, id, pixelOk]);
 
   useEffect(() => {
     if (pedido?.status !== "PAGO" || !id) return;
