@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enviarEventoTesteMeta, enviarPurchaseMeta, marketingDosCookies } from "../metaCapi";
+import { enviarEventoTesteMeta, enviarPurchaseMeta, capturaMetaDaRequisicao } from "../metaCapi";
 
 const compra = { pedidoId: "ped_1", planoId: "cortes-start", valorTotalCentavos: 2799, fbp: "fb.1.1700000000000.1234567890", fbc: null, userAgent: "Mozilla/5.0 (Teste)", em: new Date("2026-10-29T12:00:00Z") };
 const resposta = (status: number, corpo: unknown = { events_received: 1 }) => new Response(JSON.stringify(corpo), { status });
@@ -53,16 +53,15 @@ test("teste de conexão: PageView com test_event_code, nunca Purchase", async ()
   assert.ok(String(corpo.data[0].event_id).startsWith("capi-teste-"));
 });
 
-test("cookies: sem aceite não há marketing; fbp/fbc inválidos são descartados", () => {
+test("captura: exige _fbp válido (Pixel ativo); fbc e user agent inválidos são descartados", () => {
   const jar = (o: Record<string, string>) => ({ get: (n: string) => (n in o ? { value: o[n] } : undefined) });
-  assert.equal(marketingDosCookies(jar({ _fbp: "fb.1.1700000000000.1234567890" })), null);
-  assert.equal(marketingDosCookies(jar({ obaflix_ads: "0" })), null);
-  assert.deepEqual(marketingDosCookies(jar({ obaflix_ads: "1", _fbp: "lixo", _fbc: "fb.1.1700000000000.AbC_-1" })), { fbp: null, fbc: "fb.1.1700000000000.AbC_-1", userAgent: null });
-  const com = marketingDosCookies(jar({ obaflix_ads: "1" }), "Mozilla/5.0 (X11; Linux)");
-  assert.equal(com?.userAgent, "Mozilla/5.0 (X11; Linux)");
-  assert.equal(marketingDosCookies(jar({ obaflix_ads: "1" }), "ruim\r\nHeader: x")?.userAgent, null);
-  assert.equal(marketingDosCookies(jar({ obaflix_ads: "1" }), "a".repeat(513))?.userAgent, null);
-  assert.equal(marketingDosCookies(jar({}), "Mozilla/5.0"), null);
+  const FBP = "fb.1.1700000000000.1234567890";
+  assert.equal(capturaMetaDaRequisicao(jar({}), "Mozilla/5.0"), null);
+  assert.equal(capturaMetaDaRequisicao(jar({ _fbp: "lixo" }), "Mozilla/5.0"), null);
+  assert.deepEqual(capturaMetaDaRequisicao(jar({ _fbp: FBP, _fbc: "x" })), { fbp: FBP, fbc: null, userAgent: null });
+  assert.equal(capturaMetaDaRequisicao(jar({ _fbp: FBP, _fbc: "fb.1.1700000000000.AbC_-1" }), "Mozilla/5.0 (X11; Linux)")?.userAgent, "Mozilla/5.0 (X11; Linux)");
+  assert.equal(capturaMetaDaRequisicao(jar({ _fbp: FBP }), "ruim\r\nHeader: x")?.userAgent, null);
+  assert.equal(capturaMetaDaRequisicao(jar({ _fbp: FBP }), "a".repeat(513))?.userAgent, null);
 });
 
 test("HTTP 200 com events_received 0 ou ausente não é entrega", async () => {

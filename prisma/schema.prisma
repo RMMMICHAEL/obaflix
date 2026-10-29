@@ -639,13 +639,13 @@ model PedidoPagamento {
   /// colidir com o primeiro.
   provedor String @default("blackcat")
 
-  /// Consentimento de publicidade (Meta CAPI), lido do cookie ao criar o pedido.
-  /// null = sem consentimento: nada é enviado à Meta. Nunca guarda dado pessoal.
-  consentimentoAnunciosEm DateTime?
-  /// Identificadores do Pixel (_fbp/_fbc), só com consentimento.
+  /// Meta CAPI: instante em que o pedido foi criado com o Pixel ativo no navegador (_fbp válido).
+  /// null = Pixel ausente/bloqueado ou pedido anterior à CAPI: nada é enviado à Meta. Não é consentimento.
+  metaRastreioCapturadoEm DateTime?
+  /// Identificadores do Pixel (_fbp/_fbc) capturados nesse instante.
   metaFbp String?
   metaFbc String?
-  /// User agent do navegador na criação do pedido, só com consentimento (exigido pela Meta para action_source website).
+  /// User agent do navegador na criação do pedido (exigido pela Meta para action_source website).
   metaUserAgent String?
   /// Purchase aceito pela Meta; evita reenviar.
   metaPurchaseEnviadoEm DateTime?

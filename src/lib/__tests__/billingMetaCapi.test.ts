@@ -3,7 +3,7 @@ import test from "node:test";
 import { confirmarPedidoPorId } from "../billing/confirmacao";
 import { criarFake, pedido } from "./helpers/billingConfirmacaoFake";
 
-const cakto = (over: any = {}) => ({ ...pedido(), provedor: "cakto", planoId: "cortes-start", valorCentavos: 2700, plano: { cortesNivel: "individual", nome: "Start" }, consentimentoAnunciosEm: new Date("2026-10-29"), metaFbp: "fb.1.1700000000000.1234567890", metaFbc: null, metaUserAgent: "Mozilla/5.0 (Teste)", metaPurchaseEnviadoEm: null, ...over });
+const cakto = (over: any = {}) => ({ ...pedido(), provedor: "cakto", planoId: "cortes-start", valorCentavos: 2700, plano: { cortesNivel: "individual", nome: "Start" }, metaRastreioCapturadoEm: new Date("2026-10-29"), metaFbp: "fb.1.1700000000000.1234567890", metaFbc: null, metaUserAgent: "Mozilla/5.0 (Teste)", metaPurchaseEnviadoEm: null, ...over });
 
 async function confirmar(f: any, o: { status?: string; meta?: any; avisar?: any } = {}) {
   const enviados: any[] = [];
@@ -20,7 +20,7 @@ async function confirmar(f: any, o: { status?: string; meta?: any; avisar?: any 
   return enviados;
 }
 
-test("PAGO + ativado + consentimento: um Purchase com event_id do pedido e total com taxa", async () => {
+test("PAGO + ativado + rastreio do Pixel capturado: um Purchase com event_id do pedido e total com taxa", async () => {
   const f = criarFake({ pedido: cakto() });
   const e = await confirmar(f);
   assert.equal(e.length, 1);
@@ -29,8 +29,8 @@ test("PAGO + ativado + consentimento: um Purchase com event_id do pedido e total
   assert.equal((await confirmar(f)).length, 0); // repetição não reenvia
 });
 
-test("não envia sem consentimento, fora do Cortes/Cakto, ou sem pagamento confirmado", async () => {
-  assert.equal((await confirmar(criarFake({ pedido: cakto({ consentimentoAnunciosEm: null }) }))).length, 0);
+test("não envia sem rastreio capturado, fora do Cortes/Cakto, ou sem pagamento confirmado", async () => {
+  assert.equal((await confirmar(criarFake({ pedido: cakto({ metaRastreioCapturadoEm: null }) }))).length, 0);
   assert.equal((await confirmar(criarFake({ pedido: cakto({ provedor: "blackcat" }) }))).length, 0);
   assert.equal((await confirmar(criarFake({ pedido: cakto({ plano: { cortesNivel: "nenhum", nome: "Plus" } }) }))).length, 0);
   for (const status of ["PENDING", "CANCELLED", "REFUNDED"]) assert.equal((await confirmar(criarFake({ pedido: cakto() }), { status })).length, 0, status);

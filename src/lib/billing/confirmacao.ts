@@ -159,8 +159,8 @@ export async function confirmarPedidoPorId(pedidoId: string, injetadas: Partial<
     for (const id of plano.cancelar) await tx.assinatura.update({where:{id},data:{status:"CANCELADA",observacao:`substituida pelo pedido ${atual.id}`}});
     await tx.assinatura.create({data:{userId,planoId:atual.planoId,planoPrecoId:atual.planoPrecoId,pedidoId:atual.id,status:"ATIVA",origem:"pagamento",iniciaEm:plano.iniciaEm,terminaEm:plano.terminaEm,telasAdicionais:extra.telasAdicionais ?? 0,servidorVip:extra.servidorVip === true}});
     await tx.pedidoPagamento.update({where:{id:atual.id},data:{status:"PAGO"}}); userParaInvalidar=userId;
-    // Purchase no servidor: só compra Cortes Cakto recém-ativada, com consentimento registrado no pedido e sem envio anterior.
-    if (atual.provedor === "cakto" && ehPlanoCortes(atual.plano?.cortesNivel) && atual.consentimentoAnunciosEm && !atual.metaPurchaseEnviadoEm) {
+    // Purchase no servidor: só compra Cortes Cakto recém-ativada, com rastreio do Pixel capturado no pedido e sem envio anterior.
+    if (atual.provedor === "cakto" && ehPlanoCortes(atual.plano?.cortesNivel) && atual.metaRastreioCapturadoEm && !atual.metaPurchaseEnviadoEm) {
       const comTaxa = OFERTAS_CAKTO[atual.planoId]?.centavos === atual.valorCentavos;
       compraMeta = { pedidoId: atual.id, planoId: atual.planoId, valorTotalCentavos: atual.valorCentavos + (comTaxa ? TAXA_SERVICO_CAKTO_CENTAVOS : 0), fbp: atual.metaFbp, fbc: atual.metaFbc, userAgent: atual.metaUserAgent, em: agora };
     }

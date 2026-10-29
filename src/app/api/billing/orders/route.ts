@@ -8,7 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { ehPlanoCortes, ordemNaFamilia } from "@/lib/planos";
 import { checkRateLimit, clientIp, headerMatchesHost, readJsonBody } from "@/lib/requestSecurity";
 import { audit } from "@/lib/auditLog";
-import { marketingDosCookies } from "@/lib/metaCapi";
+import { capturaMetaDaRequisicao } from "@/lib/metaCapi";
 import { provedorDeCobranca } from "@/lib/billing/simulado";
 import { caktoPixAtivo, pilotoCaktoAutorizado, pilotoCaktoAdminPermitido } from "@/lib/billing/cakto";
 import {
@@ -433,13 +433,13 @@ export async function POST(req: NextRequest) {
     detail: `pedido ${resultado.pedidoId} operacao:${resultado.operacao}`,
   });
   if (ehPlanoCortes(planoId)) audit("cortes_checkout_pix_created", { detail: planoId });
-  // Consentimento de publicidade verificável no pedido (para a Meta CAPI). Sem o cookie de aceite, nada é gravado.
-  const marketing = ehPlanoCortes(planoId) ? marketingDosCookies(req.cookies, req.headers.get("user-agent")) : null;
-  if (marketing) {
+  // Rastreio do Pixel capturado no pedido (para a Meta CAPI). Sem _fbp válido (Pixel bloqueado), nada é gravado.
+  const rastreio = ehPlanoCortes(planoId) ? capturaMetaDaRequisicao(req.cookies, req.headers.get("user-agent")) : null;
+  if (rastreio) {
     await prisma.pedidoPagamento.update({
       where: { id: resultado.pedidoId },
-      data: { consentimentoAnunciosEm: new Date(), metaFbp: marketing.fbp, metaFbc: marketing.fbc, metaUserAgent: marketing.userAgent },
-    }).catch(() => { /* sem registro, sem envio: falha segura */ });
+      data: { metaRastreioCapturadoEm: new Date(), metaFbp: rastreio.fbp, metaFbc: rastreio.fbc, metaUserAgent: rastreio.userAgent },
+    }).catch(() => { /* sem registro, sem envio */ });
   }
 
   // 9. A resposta, no nosso contrato. O QR e o copia-e-cola não são persistidos
