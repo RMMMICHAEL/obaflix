@@ -134,6 +134,10 @@ function LoginForm() {
           </button>
         </form>
 
+        <p className="text-zinc-500 text-sm text-center mt-4">
+          <Link href="/redefinir-senha" className="text-red-400 hover:text-red-300">Esqueci minha senha</Link>
+        </p>
+
         {!ADMIN_SURFACE && <p className="text-zinc-500 text-sm text-center mt-5">
           Não tem conta?{" "}
           <Link

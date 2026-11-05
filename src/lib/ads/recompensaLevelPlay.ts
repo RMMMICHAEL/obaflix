@@ -293,6 +293,20 @@ async function decidirCallback(
   const quando = instanteDoTimestamp(timestamp);
   if (quando === null || Math.abs(entrada.agora - quando) > JANELA_TIMESTAMP_MS) return recusa(400, "timestamp invalido");
 
+  return registrarReciboDaRecompensa({ identidade: lpUid, eventId, dynamicUserId, agora: entrada.agora }, store);
+}
+
+
+/**
+ * Núcleo comum aos receptores de Rewarded (LevelPlay MD5 e AdMob SSV): com a prova do provedor JÁ VALIDADA pelo chamador
+ * (assinatura, origem, janela), liga o evento à conta pela identidade e ao único desafio pendente pelo segredo de uso único.
+ * Persiste o evento e o recibo e só então devolve o ACK; falha de armazenamento é 503 sem ACK. Nada aqui concede conteúdo.
+ */
+export async function registrarReciboDaRecompensa(
+  entrada: { identidade: string; eventId: string; dynamicUserId: string; agora: number },
+  store: ArmazemDeRecompensa,
+): Promise<ResultadoDoCallback> {
+  const { identidade: lpUid, eventId, dynamicUserId } = entrada;
   try {
     // 1. a conta, pela identidade assinada (em paralelo com a consulta de reentrega)
     const [userId, donoDoEvento] = await Promise.all([store.get(kIdentidadeReversa(lpUid)), store.get(kEvento(eventId))]);

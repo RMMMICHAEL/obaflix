@@ -99,6 +99,8 @@ export type AuditEvent =
   | "meta_capi_teste"
   | "account_activated"
   | "account_activation_rejected"
+  | "password_reset"
+  | "password_reset_rejected"
   // Cortes AI. `detail` leva só códigos, id do conteúdo, contagens e tokens —
   // nunca o pedido do usuário, a legenda, a chave ou o corpo do provedor.
   | "cortes_ai_negado"
