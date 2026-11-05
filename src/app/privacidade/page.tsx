@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Política de Privacidade | Obaflix",
 export default function Pagina() {
   return (
     <PaginaLegal titulo="Política de Privacidade">
-      <p>Esta página reúne as regras de privacidade do Obaflix — Filmes e Séries (aplicativo para Android e site) e do Obaflix Cortes (aplicativo para Windows). A primeira parte vale para o Obaflix — Filmes e Séries; a parte "Obaflix Cortes" mantém as informações já existentes desse produto.</p>
+      <p>Esta página reúne as regras de privacidade do Obaflix — Filmes e Séries (aplicativo para Android e site) e do Obaflix Cortes (aplicativo para Windows). A primeira parte vale para o Obaflix — Filmes e Séries; a parte &quot;Obaflix Cortes&quot; mantém as informações já existentes desse produto.</p>
       <h2 style={{ fontSize: 20, fontWeight: 700 }}>Obaflix — Filmes e Séries: o serviço</h2>
       <p>O Obaflix — Filmes e Séries é um aplicativo e site para pesquisar títulos, organizar listas e acompanhar o que você assiste. Os vídeos são reunidos de servidores e provedores externos. Ao reproduzir, esses servidores recebem o seu endereço IP e dados técnicos da conexão, como em qualquer acesso à internet. Capas e imagens também podem ser carregadas de serviços externos.</p>
       <h2 style={{ fontSize: 20, fontWeight: 700 }}>Obaflix — Filmes e Séries: cadastro e dados da conta</h2>

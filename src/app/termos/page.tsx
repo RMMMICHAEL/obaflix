@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Termos de Uso | Obaflix", robots: { 
 export default function Pagina() {
   return (
     <PaginaLegal titulo="Termos de Uso">
-      <p>Esta página reúne os termos de uso do Obaflix — Filmes e Séries (aplicativo para Android e site) e do Obaflix Cortes (aplicativo para Windows). A primeira parte vale para o Obaflix — Filmes e Séries; a parte "Obaflix Cortes" mantém as condições já existentes desse produto.</p>
+      <p>Esta página reúne os termos de uso do Obaflix — Filmes e Séries (aplicativo para Android e site) e do Obaflix Cortes (aplicativo para Windows). A primeira parte vale para o Obaflix — Filmes e Séries; a parte &quot;Obaflix Cortes&quot; mantém as condições já existentes desse produto.</p>
       <h2 style={{ fontSize: 20, fontWeight: 700 }}>Obaflix — Filmes e Séries: o serviço</h2>
       <p>O Obaflix — Filmes e Séries permite pesquisar títulos, organizar listas e assistir a conteúdos reunidos de servidores e provedores externos. A disponibilidade de cada título e de cada servidor depende desses provedores e pode mudar ou ser interrompida a qualquer momento. O serviço não concede licença sobre filmes, séries ou outros materiais de terceiros.</p>
       <h2 style={{ fontSize: 20, fontWeight: 700 }}>Obaflix — Filmes e Séries: conta</h2>
