@@ -2,8 +2,8 @@ import Link from "next/link";
 import { BotaoPreferenciasCookies } from "@/components/analytics/MetaPixelConsent";
 
 const LINKS = [
-  ["/termos", "Termos de Uso"],
-  ["/privacidade", "Política de Privacidade"],
+  ["/cortes/termos", "Termos de Uso"],
+  ["/cortes/privacidade", "Política de Privacidade"],
   ["/reembolso", "Política de Reembolso"],
   ["/suporte", "Contato / Suporte"],
 ] as const;
