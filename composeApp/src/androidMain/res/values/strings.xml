@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Obaflix Lab</string>
+    <string name="obaflix_playback_channel">Playback</string>
+    <string name="obaflix_playback_controls">Media playback controls</string>
+    <string name="obaflix_pause">Pause</string>
+    <string name="obaflix_play">Play</string>
+</resources>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Empty unless assembled with -PobaflixPreviewUrl; NuvioApplication applies it in debuggable builds only. -->
+        <meta-data
+            android:name="obaflix.preview_url"
+            android:value="${obaflixPreviewUrl}" />
+        <activity
+            android:name="com.nuvio.android.BackgroundDownloadTestActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Nuvio" />
+        <activity
+            android:name="com.nuvio.android.RewardedHomologActivity"
+            android:exported="true"
+            android:label="Obaflix Rewarded HML"
+            android:theme="@style/Theme.Nuvio">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
