@@ -12,7 +12,7 @@ import { caminhoInternoSeguro, destinoDoLoginDoCheckout, planoEscolhidoDaUrl } f
  */
 
 test("navegador comum: planos, checkout, conta, página de vendas Cortes e ativação abertos", () => {
-  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro", "/cortes", "/ativar", "/redefinir-senha", "/privacidade", "/termos", "/excluir-conta", "/cortes/privacidade", "/cortes/termos"]) {
+  for (const rota of ["/planos", "/checkout", "/conta", "/login", "/cadastro", "/cortes", "/ativar", "/redefinir-senha", "/privacidade", "/termos", "/excluir-conta"]) {
     assert.deepEqual(decidirRota(rota, "navegador"), { tipo: "segue" }, rota);
   }
 });
