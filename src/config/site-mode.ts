@@ -123,6 +123,9 @@ const PUBLICO = [
   // streaming — explica o efeito e, para quem não está logado, manda entrar e
   // volta para cá. O DELETE real continua exigindo sessão, origem e confirmação.
   "/excluir-conta",
+  // Política de privacidade e termos: a loja e o aplicativo precisam alcançá-las sem login. Só texto; não é streaming.
+  "/privacidade",
+  "/termos",
   "/admin",
   "/api",
   "/robots.txt",
