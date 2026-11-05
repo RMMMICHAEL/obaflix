@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { recordAdminAudit, requireAdminAction } from "@/lib/admin-action";
 import { readJsonBody } from "@/lib/requestSecurity";
+import { revogarSessoesAposTrocaDeSenha } from "@/lib/sessionRevocation";
 
 // POST /api/admin/reset-password
 // Body: { userId: string, novaSenha: string, motivo: string }
@@ -27,6 +28,12 @@ export async function POST(req: NextRequest) {
 
   if (!user) return NextResponse.json({ error: "Usuário não encontrado" }, { status: 404 });
 
+  // Antes de trocar a senha: sessões abertas com a senha antiga deixam de valer; sem confirmar a revogação, nada muda.
+  try {
+    await revogarSessoesAposTrocaDeSenha(user.id);
+  } catch {
+    return NextResponse.json({ error: "Não foi possível encerrar as sessões da conta. Tente novamente." }, { status: 503 });
+  }
   const senhaHash = await bcrypt.hash(novaSenha, 10);
   await prisma.user.update({
     where: { id: user.id },

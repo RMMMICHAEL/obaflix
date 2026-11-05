@@ -6,6 +6,8 @@ import bcrypt from "bcryptjs";
 import { enviarRecuperacaoDeSenha } from "../recuperarSenha";
 import { emitirTokenDeAtivacao, consumirTokenDeAtivacao } from "../primeiroAcesso";
 import type { MensagemDeEmail } from "../email/enviar";
+import { readFileSync } from "node:fs";
+import { credencialRevogada, revogarSessoesAposTrocaDeSenha } from "../sessionRevocation";
 import { POST as recuperar } from "../../app/api/auth/recuperar/route";
 import { POST as redefinir } from "../../app/api/auth/redefinir/route";
 
@@ -78,6 +80,44 @@ describe("recuperação de senha", () => {
     const reuso = await h(pedir("/api/auth/redefinir", { token, senha: "OutraSenha123" }));
     assert.equal(reuso.status, 400);
     assert.equal(gravado.length, 1);
+  });
+
+  test("troca de senha encerra as sessões antigas e deixa entrar de novo na hora", async () => {
+    const uid = `reset-sess-${Date.now()}`;
+    const antes = Math.floor(Date.now() / 1000) - 5; // sessão aberta antes da troca
+    assert.equal(await credencialRevogada(uid, antes), false);
+    const h = redefinir.createForTest({ prisma: { user: { updateMany: async () => ({ count: 1 }) } } as never, limitar: liberado });
+    const token = await emitirTokenDeAtivacao(uid);
+    assert.equal((await h(pedir("/api/auth/redefinir", { token, senha: "NovaSenha123" }))).status, 200);
+    assert.equal(await credencialRevogada(uid, antes), true, "sessão antiga continua valendo");
+    assert.equal(await credencialRevogada(uid, undefined), true, "token legado sem authTime continua valendo");
+    const novoLogin = Math.floor(Date.now() / 1000) + 1; // login com a senha nova, logo depois
+    assert.equal(await credencialRevogada(uid, novoLogin), false, "login com a senha nova foi barrado");
+    assert.equal(await credencialRevogada(`${uid}-outra`, antes), false, "outra conta não pode ser afetada");
+  });
+
+  test("sem confirmar a revogação a senha não muda", async () => {
+    let gravou = false;
+    const h = redefinir.createForTest({
+      prisma: { user: { updateMany: async () => { gravou = true; return { count: 1 }; } } } as never,
+      limitar: liberado,
+      revogar: async () => { throw new Error("revogacao_nao_persistida"); },
+    });
+    const token = await emitirTokenDeAtivacao("u-sem-revogar");
+    assert.equal((await h(pedir("/api/auth/redefinir", { token, senha: "NovaSenha123" }))).status, 503);
+    assert.equal(gravou, false);
+  });
+
+  test("o reset administrativo também revoga antes de trocar a senha", async () => {
+    const fonte = readFileSync("src/app/api/admin/reset-password/route.ts", "utf8");
+    const revoga = fonte.indexOf("revogarSessoesAposTrocaDeSenha(user.id)");
+    assert.ok(revoga > 0, "rota admin não chama a revogação");
+    assert.ok(revoga < fonte.indexOf("prisma.user.update("), "revogação deve vir antes de gravar a senha");
+    // a função em si: revoga só o que já existia
+    const uid = `adm-${Date.now()}`;
+    await revogarSessoesAposTrocaDeSenha(uid);
+    assert.equal(await credencialRevogada(uid, Math.floor(Date.now() / 1000) - 10), true);
+    assert.equal(await credencialRevogada(uid, Math.floor(Date.now() / 1000) + 1), false);
   });
 
   test("redefinir: token inválido, vazio ou com formato errado é recusado sem tocar no banco", async () => {

@@ -167,6 +167,19 @@ export async function revogarSessoesDoUsuario(
 }
 
 /**
+ * Troca de senha: encerra as sessões que já existem, mas deixa entrar de novo na hora com a senha nova. Diferente da
+ * exclusão, o cutoff é o próprio instante (sem a janela adiantada): só `authTime <= agora` é revogado, então o login
+ * seguinte à troca (authTime posterior) vale. Lança se o Redis não confirma, para a rota não trocar a senha sem revogar.
+ */
+export async function revogarSessoesAposTrocaDeSenha(
+  userId: string,
+  agoraSeg: number = Math.floor(Date.now() / 1000),
+  redis?: Pick<RedisClient, "set">,
+): Promise<void> {
+  await revogarSessoesDoUsuario(userId, agoraSeg - JANELA_CORRIDA_SEG, redis);
+}
+
+/**
  * `true` quando a credencial está revogada OU quando não foi possível confirmar
  * que ela não está (fail-closed). **Nunca lança**: erro de Redis vira revogado,
  * para o chamador poder apenas negar a sessão sem precisar tratar exceção.
